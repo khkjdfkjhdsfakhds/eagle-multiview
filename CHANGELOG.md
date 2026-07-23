@@ -2,6 +2,19 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.5.2 - 2026-07-23
+
+### Folder covers
+
+- Matched Eagle's folder-card proportions, stacked sheet spacing, and dark radial cover surface.
+- Fixed portrait folder covers being scaled by width and vertically clipped into a landscape strip.
+- Kept Eagle's single-cover behavior while centering portrait, square, and landscape covers at their original aspect ratio.
+
+### Validation
+
+- Added a regression test for the folder-card height and aspect-ratio-safe cover constraints.
+- Passed syntax checks and all automated tests.
+
 ## 1.5.1 - 2026-07-23
 
 ### Library navigation

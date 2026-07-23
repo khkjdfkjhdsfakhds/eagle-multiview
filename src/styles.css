@@ -592,7 +592,14 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   background: rgba(0, 114, 239, .08);
   box-shadow: 0 0 0 1px rgba(0, 114, 239, .09);
 }
-.folder-thumbnail { position: relative; aspect-ratio: 4 / 3; margin: 2px 1px 11px; border-radius: 11px; }
+.folder-thumbnail {
+  position: relative;
+  height: 0;
+  padding-bottom: calc(75% + 10px);
+  margin: 2px 1px 12px;
+  border-radius: 10px;
+  box-sizing: border-box;
+}
 .folder-sheet {
   position: absolute;
   display: block;
@@ -602,21 +609,17 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   border-radius: 9px 9px 0 0;
   pointer-events: none;
 }
-.folder-sheet-back { z-index: 0; top: 1px; right: 22px; left: 22px; background: #242529; }
-.folder-sheet-middle { z-index: 1; top: 6px; right: 11px; left: 11px; background: #292a2e; }
+.folder-sheet-back { z-index: 0; top: 2px; right: 20px; left: 20px; height: 2px; background: rgba(247, 248, 248, .1); }
+.folder-sheet-middle { z-index: 1; top: 6px; right: 10px; left: 10px; height: 2px; background: rgba(247, 248, 248, .15); }
 .folder-cover {
   position: absolute;
   z-index: 2;
-  inset: 12px 0 0;
-  display: grid;
-  place-items: center;
+  inset: 10px 0 0;
   overflow: hidden;
-  padding: 5px;
   border: 1px solid rgba(247, 248, 248, .08);
-  border-top-color: rgba(247, 248, 248, .14);
-  border-radius: 10px 10px 11px 11px;
-  background: linear-gradient(180deg, #303135, #27282c);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, .16), inset 0 1px rgba(255, 255, 255, .035);
+  border-top-color: rgba(247, 248, 248, .15);
+  border-radius: 10px;
+  background: radial-gradient(100% 100% at 50% 0%, rgba(247, 248, 248, .15) 0%, rgba(247, 248, 248, .05) 100%);
 }
 .folder-cover::after {
   content: "";
@@ -627,16 +630,19 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   pointer-events: none;
 }
 .folder-cover img {
-  position: relative;
+  position: absolute;
   z-index: 0;
-  max-width: 100%;
-  max-height: 100%;
+  top: 50%;
+  left: 50%;
+  max-width: calc(100% - 8px);
+  max-height: calc(100% - 8px);
   width: auto;
   height: auto;
-  border-radius: 5px;
+  border-radius: 4px;
   object-fit: contain;
   opacity: 0;
   filter: saturate(.92) contrast(.98);
+  transform: translate(-50%, -50%);
   transition: opacity .18s ease, filter .15s ease;
 }
 .folder-cover img.loaded { opacity: 1; }
