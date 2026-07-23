@@ -1,0 +1,37 @@
+{
+  "name": "eagle-multiview",
+  "version": "1.5.1",
+  "description": "Safe multi-window companion for Eagle 4",
+  "main": "main.js",
+  "author": "Local build",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "pack:mac": "electron-builder --mac dir --arm64",
+    "dist:mac": "electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.eagle.multiview",
+    "productName": "Eagle MultiView",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns",
+      "target": ["dmg"],
+      "artifactName": "Eagle-MultiView-${version}-${arch}.${ext}",
+      "identity": null
+    }
+  }
+}

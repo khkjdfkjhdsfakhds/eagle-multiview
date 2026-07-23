@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' eaglemv: data:; media-src 'self' eaglemv:; style-src 'self'; script-src 'self'">
+  <title>Eagle MultiView</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="titlebar">
+    <div class="drag-region"></div>
+    <div class="app-title">
+      <span class="app-mark"><img src="brand-icon.png" alt=""></span>
+      <span id="windowTitle">Eagle MultiView</span>
+    </div>
+    <div class="title-actions no-drag">
+      <div class="view-switcher">
+        <button id="toggleSidebarButton" class="icon-button panel-button active" title="显示/隐藏文件夹栏（⌘⇧L）" aria-label="显示或隐藏文件夹栏">
+          <img class="eagle-ui-icon" src="eagle-assets/ic_toggle-sidebar.svg" alt="">
+        </button>
+        <button id="toggleInspectorButton" class="icon-button panel-button active" title="显示/隐藏检查器（⌘⇧I）" aria-label="显示或隐藏检查器">
+          <img class="eagle-ui-icon mirror-x" src="eagle-assets/ic_toggle-sidebar.svg" alt="">
+        </button>
+      </div>
+      <button id="newWindowButton" class="icon-button new-window-button" title="新建窗口（⌘N）">
+        <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="5.5" width="10.5" height="10.5" rx="2"></rect><path d="M7 5.5V4.8C7 3.8 7.8 3 8.8 3H15c1.1 0 2 .9 2 2v6.2c0 1-.8 1.8-1.8 1.8h-1.7"></path><path d="M8.25 8.5v4.5M6 10.75h4.5"></path></svg>
+        <span>新窗口</span>
+      </button>
+    </div>
+  </header>
+
+  <section class="toolbar">
+    <div class="search-box">
+      <img class="search-icon" src="eagle-assets/ic_search.svg" alt="">
+      <input id="searchInput" type="search" placeholder="搜索名称、标签、备注…">
+      <kbd>⌘F</kbd>
+    </div>
+    <select id="extFilter" title="文件格式">
+      <option value="">全部格式</option>
+      <option value="jpg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option>
+      <option value="gif">GIF</option><option value="svg">SVG</option><option value="mp4">视频</option>
+      <option value="pdf">PDF</option><option value="txt">TXT</option><option value="psd">PSD</option>
+    </select>
+    <select id="ratingFilter" title="评分">
+      <option value="">全部评分</option>
+      <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
+      <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
+    </select>
+    <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
+      <div id="filterTagChips" class="tag-chips"></div>
+      <input id="filterTagInput" list="tagSuggestions" placeholder="筛选标签…" autocomplete="off">
+    </div>
+    <button id="clearFiltersButton" class="filter-clear hidden" title="清除搜索与筛选">清除筛选</button>
+    <span class="toolbar-spacer"></span>
+    <label class="size-control" title="缩略图大小">小<input id="sizeSlider" type="range" min="110" max="260" value="168">大</label>
+    <button id="refreshButton" class="secondary-button refresh-button">刷新</button>
+    <button id="importButton" class="primary-button import-button" title="选择文件导入（⌘⇧O）；也可拖入或复制后按 ⌘V">导入</button>
+  </section>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-heading">
+        <span>资料库</span>
+        <button id="addFolderButton" class="mini-button" title="新建文件夹" aria-label="新建文件夹">
+          <img class="eagle-ui-icon" src="eagle-assets/ic-sidebar-add.svg" alt="">
+        </button>
+      </div>
+      <nav id="folderTree" class="folder-tree"></nav>
+    </aside>
+
+    <section class="content-panel">
+      <div class="content-heading">
+        <div class="navigation-controls">
+          <button id="backButton" class="nav-button" title="返回（⌥←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="forwardButton" class="nav-button" title="前进（⌥→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="upButton" class="nav-button up" title="上一级（⌥↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
+        </div>
+        <div class="location-block">
+          <div id="breadcrumb" class="breadcrumb" aria-label="当前路径"></div>
+          <h1 id="viewTitle">全部素材</h1>
+          <span id="resultCount" class="muted">正在连接…</span>
+        </div>
+        <select id="sortSelect" class="sort-select">
+          <option value="default">Eagle 顺序</option>
+          <option value="name">名称</option>
+          <option value="newest">最近修改</option>
+          <option value="size">文件大小</option>
+          <option value="resolution">分辨率</option>
+        </select>
+      </div>
+      <div id="gridScroller" class="grid-scroller">
+        <div id="emptyState" class="empty-state hidden">
+          <div class="empty-icon"><img src="brand-icon.png" alt=""></div>
+          <h2>这里还没有素材</h2>
+          <p>可以调整筛选条件，或将文件导入当前文件夹。</p>
+        </div>
+        <div id="itemGrid" class="item-grid"></div>
+        <div id="loadIndicator" class="load-indicator hidden">正在载入更多…</div>
+        <button id="scrollTopButton" class="scroll-top-button hidden" title="回到顶部（Home）">↑</button>
+      </div>
+      <div id="dropOverlay" class="drop-overlay hidden"><div><strong>导入到当前文件夹</strong><span>松开即可导入文件</span></div></div>
+    </section>
+
+    <aside class="inspector">
+      <div id="noSelection" class="inspector-empty">
+        <div class="inspector-placeholder"><img src="brand-icon.png" alt=""></div>
+        <p>选择一个素材查看详情</p>
+        <small>多个窗口可以停留在不同文件夹和搜索结果中</small>
+      </div>
+      <div id="inspectorContent" class="inspector-content hidden">
+        <div id="previewBox" class="preview-box"></div>
+        <div id="staleBanner" class="stale-banner hidden">此素材已在另一个窗口更新；保存时会检查冲突。</div>
+        <label>名称<input id="itemName" autocomplete="off"></label>
+        <label>标签
+          <div id="itemTagEditor" class="tag-editor">
+            <div id="itemTagChips" class="tag-chips"></div>
+            <input id="itemTagInput" list="tagSuggestions" placeholder="输入标签后按 Return" autocomplete="off">
+          </div>
+        </label>
+        <label>评分
+          <select id="itemRating">
+            <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
+            <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+          </select>
+        </label>
+        <label>备注<textarea id="itemAnnotation" rows="5"></textarea></label>
+        <label>来源<input id="itemURL" autocomplete="off"></label>
+        <div id="itemMeta" class="item-meta"></div>
+        <div class="inspector-actions">
+          <button id="pinButton" class="secondary-button" title="素材置顶只在普通文件夹中生效">置顶</button>
+          <button id="openDefaultButton" class="secondary-button" title="快捷键：⌘O">默认应用打开</button>
+          <button id="finderButton" class="secondary-button">在 Finder 中显示</button>
+          <button id="saveButton" class="primary-button" disabled>保存修改</button>
+        </div>
+        <button id="trashButton" class="danger-link">移入废纸篓</button>
+      </div>
+      <div id="multiSelection" class="multi-selection hidden">
+        <h2><span id="multiCount">0</span> 个素材</h2>
+        <p>将所选素材拖到左侧文件夹即可批量归类。</p>
+        <label>批量添加标签
+          <div id="batchTagEditor" class="tag-editor">
+            <div id="batchTagChips" class="tag-chips"></div>
+            <input id="batchTagInput" list="tagSuggestions" placeholder="输入标签后按 Return" autocomplete="off">
+          </div>
+        </label>
+        <button id="batchTagButton" class="primary-button">添加标签</button>
+        <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="connectionDot" class="connection-dot"></span>
+    <span id="connectionText">正在连接 Eagle…</span>
+    <span class="status-spacer"></span>
+    <span id="scrollStatus">已载入 0 / 0</span>
+    <span class="status-divider">·</span>
+    <span id="syncText">等待同步</span>
+  </footer>
+
+  <div id="previewModal" class="preview-modal hidden">
+    <button id="closePreview" class="modal-close">×</button>
+    <button id="prevPreview" class="modal-nav prev">‹</button>
+    <div id="modalMedia" class="modal-media"></div>
+    <div id="modalCaption" class="modal-caption"></div>
+    <button id="nextPreview" class="modal-nav next">›</button>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <datalist id="tagSuggestions"></datalist>
+  <script src="renderer.js"></script>
+</body>
+</html>

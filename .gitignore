@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.codex-local/
+AGENTS.md
+AGENTS.override.md
+.DS_Store
+*.log
+*.app
+*.dmg
+*.zip
+*.asar
