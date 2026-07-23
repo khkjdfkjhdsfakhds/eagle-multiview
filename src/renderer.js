@@ -39,9 +39,11 @@ const state = {
   batchTags: [],
   copiedTags: [],
   contextMenu: null,
+  trashDialogResolve: null,
   localPins: {},
   importing: false,
-  dragDepth: 0
+  dragDepth: 0,
+  draggingItemIds: null
 };
 
 function escapeHTML(value) {
@@ -402,6 +404,22 @@ function folderCardMarkup(folder) {
   </article>`;
 }
 
+function bindGifHover(card) {
+  const image = card.querySelector('img[data-gif-static]');
+  if (!image) return;
+  const staticSrc = image.dataset.gifStatic;
+  const animatedSrc = image.dataset.gifAnimated;
+  card.addEventListener('mouseenter', () => {
+    image.src = animatedSrc;
+  });
+  card.addEventListener('mouseleave', () => {
+    image.src = staticSrc;
+  });
+  image.addEventListener('error', () => {
+    if (image.src !== staticSrc) image.src = staticSrc;
+  });
+}
+
 function renderGrid({ preserveScroll = true } = {}) {
   const scroller = $('#gridScroller');
   const scrollTop = scroller.scrollTop;
@@ -414,16 +432,23 @@ function renderGrid({ preserveScroll = true } = {}) {
   const itemSection = items.length && folders.length
     ? `<div class="grid-section-heading"><span>文件</span><span>${state.total.toLocaleString()}</span></div>`
     : '';
-  $('#itemGrid').innerHTML = `${folderSection}${itemSection}${items.map(item => `
+  $('#itemGrid').innerHTML = `${folderSection}${itemSection}${items.map(item => {
+    const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
+    const isGif = ext === 'gif';
+    const thumbURL = `eaglemv://thumb/${encodeURIComponent(item.id)}`;
+    const originalURL = `eaglemv://original/${encodeURIComponent(item.id)}`;
+    return `
     <article class="item-card ${state.selected.has(item.id) ? 'selected' : ''} ${itemIsPinned(item) ? 'pinned' : ''}" data-id="${escapeHTML(item.id)}" draggable="true" tabindex="0">
       <div class="thumb-wrap">
-        <img loading="lazy" src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">
+        <img loading="lazy" src="${thumbURL}" alt="${escapeHTML(item.name)}"${isGif ? ` data-gif-static="${thumbURL}" data-gif-animated="${originalURL}"` : ''}>
         ${itemIsPinned(item) ? `<span class="pin-badge" title="已在当前文件夹置顶">${eagleIcon('ic-toolbar-pin.svg', 'pin-icon')}</span>` : ''}
-        ${!isImageItem(item) && item.ext ? `<span class="format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}
+        ${(isGif || (!isImageItem(item) && item.ext)) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
       </div>
       <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
-    </article>`).join('')}`;
+    </article>`;
+  }).join('')}`;
+  for (const card of document.querySelectorAll('#itemGrid .item-card')) bindGifHover(card);
   for (const image of document.querySelectorAll('.thumb-wrap img, .folder-cover img')) {
     if (image.complete) image.classList.add('loaded');
     image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
@@ -498,7 +523,8 @@ function attachFolderDragTargets() {
         return;
       }
       try {
-        const ids = JSON.parse(event.dataTransfer.getData('application/x-eagle-multiview-items') || '[]');
+        let ids = JSON.parse(event.dataTransfer.getData('application/x-eagle-multiview-items') || '[]');
+        if ((!Array.isArray(ids) || !ids.length) && state.draggingItemIds?.length) ids = state.draggingItemIds;
         if (!Array.isArray(ids) || !ids.length) return;
         setSyncStatus(`正在归类 ${ids.length} 个素材…`);
         await Promise.all(ids.map(id => window.eagleMV.mutateSet({
@@ -629,7 +655,7 @@ function renderInspector() {
   if (count >= 2) {
     $('#multiCount').textContent = count;
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
-    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓';
+    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
     state.selectedBase = null;
     state.inspectorDirty = false;
     return;
@@ -664,7 +690,7 @@ function renderInspector() {
   $('#saveButton').disabled = true;
   $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
   $('#itemMeta').innerHTML = `<span>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span>${formatBytes(item.size)}</span><span>${item.width || 0} × ${item.height || 0}</span><span>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
-  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓';
+  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓…';
   const canPin = state.currentView.kind === 'folder';
   $('#pinButton').disabled = !canPin || !state.connected;
   $('#pinButton').textContent = canPin && itemIsPinned(item) ? '取消置顶' : '置顶';
@@ -753,10 +779,34 @@ async function setPinned(ids, pinned) {
   }
 }
 
-async function setTrash(ids, deleted) {
+function closeTrashDialog(choice = null) {
+  $('#trashDialog').classList.add('hidden');
+  const resolve = state.trashDialogResolve;
+  state.trashDialogResolve = null;
+  resolve?.(choice);
+}
+
+async function canRemoveFromCurrentFolder(ids) {
+  const currentFolder = state.currentView.kind === 'folder' ? state.currentView.id : null;
+  if (!currentFolder) return false;
+  const items = await Promise.all(ids.map(async id => itemById(id) || window.eagleMV.getItem(id).catch(() => null)));
+  return items.some(item => {
+    const folders = Array.isArray(item?.folders) ? item.folders : [];
+    return folders.includes(currentFolder) && folders.some(folderId => folderId !== currentFolder);
+  });
+}
+
+function chooseTrashAction(ids) {
+  $('#trashDialogMessage').textContent = `已选择 ${ids.length} 个素材。请选择只从当前文件夹移除，还是删除素材并移入回收站。`;
+  $('#trashRemoveButton').classList.remove('hidden');
+  $('#trashDialog').classList.remove('hidden');
+  $('#trashDeleteButton').focus();
+  return new Promise(resolve => { state.trashDialogResolve = resolve; });
+}
+
+async function applyTrash(ids, deleted) {
   if (!ids.length) return;
   const action = deleted ? '移入废纸篓' : '恢复';
-  if (!confirm(`确定要${action} ${ids.length} 个素材吗？`)) return;
   setSyncStatus(`正在${action}…`);
   try {
     for (const id of ids) {
@@ -778,6 +828,15 @@ async function setTrash(ids, deleted) {
   } finally {
     setSyncStatus('所有窗口已同步');
   }
+}
+
+async function setTrash(ids, deleted) {
+  if (!ids.length) return;
+  if (!deleted) return applyTrash(ids, false);
+  if (!(await canRemoveFromCurrentFolder(ids))) return applyTrash(ids, true);
+  const choice = await chooseTrashAction(ids);
+  if (choice === 'remove') return removeSelectionFromFolder({ ids, folderId: state.currentView.id });
+  if (choice === 'delete') return applyTrash(ids, true);
 }
 
 async function mutateSelectionSet(ids, field, delta, message) {
@@ -1193,7 +1252,7 @@ async function importFiles(paths = null, source = 'picker') {
   state.importing = true;
   $('#importButton').disabled = true;
   $('#importButton').textContent = '导入中…';
-  setSyncStatus('正在交给 Eagle 导入…');
+  setSyncStatus('正在导入到 Eagle…');
   try {
     const payload = { folderId: importTargetFolderId(), libraryPath: state.library?.path };
     const result = source === 'clipboard'
@@ -1204,6 +1263,7 @@ async function importFiles(paths = null, source = 'picker') {
       toast(source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 3800);
       return;
     }
+    await window.eagleMV.focusWindow().catch(() => {});
     await refresh({ reset: true, preserveScroll: true });
     const pending = Math.max(0, result.count - result.ready);
     const rejected = result.rejected?.length || 0;
@@ -1285,6 +1345,7 @@ function contextMenuMarkup(data) {
   const ratingEntries = [0, 1, 2, 3, 4, 5].map(rating => contextMenuRow({ icon: 'more', label: rating ? `${'★'.repeat(rating)}（${rating} 星）` : '未评分', action: 'rating', payload: { rating } })).join('');
   const moreEntries = [
     contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename', disabled: !one }),
+    contextMenuRow({ icon: 'copy', label: one ? '复制素材名称' : `复制 ${data.ids.length} 个素材名称`, action: 'copy-name' }),
     contextMenuRow({ icon: 'copy', label: '复制标签', shortcut: '⌘ ⇧ C', action: 'copy-tags' }),
     contextMenuRow({ icon: 'tag', label: '粘贴标签', shortcut: '⌘ ⇧ V', action: 'paste-tags' }),
     contextMenuRow({ icon: 'more', label: '设置评分', submenu: ratingEntries }),
@@ -1304,14 +1365,14 @@ function contextMenuMarkup(data) {
     contextMenuRow({ icon: 'share', label: '分享', disabled: true }),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'pin', label: data.allPinned ? '取消置顶' : '置顶', action: 'pin', disabled: !currentFolder }),
-    contextMenuRow({ icon: 'copy', label: '复制文件', shortcut: '⌘ C', action: 'copy-name' }),
+    contextMenuRow({ icon: 'copy', label: one ? '复制文件' : `复制 ${data.ids.length} 个文件`, shortcut: '⌘ C', action: 'copy-files' }),
     contextMenuRow({ icon: 'path', label: '复制文件路径', shortcut: '⌘ ⌥ C', action: 'copy-path', disabled: !one }),
     contextMenuRow({ icon: 'copy', label: '复制…', submenu: contextMenuRow({ label: '复制到其它位置暂未提供', disabled: true }) }),
     contextMenuRow({ icon: 'copy', label: '创建副本', shortcut: '⌘ D', disabled: true }),
     contextMenuRow({ icon: 'more', label: '更多', submenu: moreEntries }),
     '<div class="context-menu-separator"></div>',
     ...(currentFolder ? [contextMenuRow({ icon: 'remove', label: '从文件夹中移除', shortcut: '⌘ ⇧ ⌫', action: 'remove-folder' })] : []),
-    contextMenuRow({ icon: 'trashMenu', label: data.allDeleted ? '恢复素材' : '丢到回收站', shortcut: '⌘ ⌫', action: 'trash', danger: !data.allDeleted })
+    contextMenuRow({ icon: 'trashMenu', label: data.allDeleted ? '恢复素材' : '丢到回收站…', shortcut: '⌘ ⌫', action: 'trash', danger: !data.allDeleted })
   ].join('');
 }
 
@@ -1343,6 +1404,7 @@ async function executeContextAction(action, payload) {
   if (action === 'open-window') return window.eagleMV.newWindow();
   if (action === 'open-default') return openWithDefault(firstId);
   if (action === 'finder') return window.eagleMV.showInFinder(firstId).then(ok => { if (!ok) toast('找不到素材原文件', 3500); });
+  if (action === 'copy-files') return copySelectedFiles(ids);
   if (action === 'copy-name') return window.eagleMV.copyText(ids.map(id => itemById(id)?.name || '').filter(Boolean).join('\n'));
   if (action === 'copy-path') {
     const filePath = await window.eagleMV.filePath(firstId);
@@ -1376,6 +1438,16 @@ async function executeContextAction(action, payload) {
     return;
   }
   if (action === 'trash') return setTrash(ids, !data.allDeleted);
+}
+
+async function copySelectedFiles(ids = [...state.selected]) {
+  if (!ids.length) return;
+  const result = await window.eagleMV.copyFiles(ids);
+  if (!result.count) {
+    toast(result.message ? `复制失败：${result.message}` : '找不到可复制的素材原文件', 4000);
+    return;
+  }
+  toast(`已复制 ${result.count} 个文件${result.missing ? ` · ${result.missing} 个原文件缺失` : ''}`);
 }
 
 function bindEvents() {
@@ -1414,6 +1486,12 @@ function bindEvents() {
   });
   $('#refreshButton').addEventListener('click', () => refresh({ reset: true, preserveScroll: true }));
   $('#importButton').addEventListener('click', () => importFiles());
+  $('#trashRemoveButton').addEventListener('click', () => closeTrashDialog('remove'));
+  $('#trashDeleteButton').addEventListener('click', () => closeTrashDialog('delete'));
+  $('#trashCancelButton').addEventListener('click', () => closeTrashDialog());
+  $('#trashDialog').addEventListener('click', event => {
+    if (event.target === event.currentTarget) closeTrashDialog();
+  });
   $('#addFolderButton').addEventListener('click', async () => {
     const name = prompt('新文件夹名称');
     if (!name?.trim()) return;
@@ -1458,8 +1536,12 @@ function bindEvents() {
     const card = event.target.closest('.item-card');
     if (!card) return;
     if (!state.selected.has(card.dataset.id)) selectItem(card.dataset.id);
-    event.dataTransfer.setData('application/x-eagle-multiview-items', JSON.stringify([...state.selected]));
+    const ids = [...state.selected];
+    state.draggingItemIds = ids;
+    event.dataTransfer.setData('application/x-eagle-multiview-items', JSON.stringify(ids));
     event.dataTransfer.effectAllowed = 'copy';
+    window.eagleMV.startDrag(ids);
+    event.preventDefault();
   });
   $('#itemGrid').addEventListener('contextmenu', event => {
     const card = event.target.closest('.item-card');
@@ -1601,6 +1683,7 @@ function bindEvents() {
   scroller.addEventListener('drop', event => {
     state.dragDepth = 0;
     $('#dropOverlay').classList.add('hidden');
+    if (state.draggingItemIds?.length) return;
     if (!event.dataTransfer?.files?.length) return;
     event.preventDefault();
     const paths = [...event.dataTransfer.files].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
@@ -1637,6 +1720,10 @@ function bindEvents() {
       updateCardSelectionStyles();
       renderInspector();
     }
+    if (!editable && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
+      event.preventDefault();
+      copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
+    }
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       moveCardFocus(event.key);
@@ -1657,6 +1744,7 @@ function bindEvents() {
       saveInspector();
     }
     if (event.key === 'Escape') {
+      if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
       if (!$('#contextMenu').classList.contains('hidden')) { hideContextMenu(); return; }
       if (!$('#previewModal').classList.contains('hidden')) closePreview();
       else if (!editable && (state.selected.size || state.selectedFolderCard) && confirmDiscardChanges()) {
@@ -1673,6 +1761,11 @@ function bindEvents() {
 }
 
 function bindHubEvents() {
+  window.eagleMV.onDragFinished(result => {
+    state.draggingItemIds = null;
+    if (!result?.ok) toast(`拖动失败：${result?.message || '无法导出素材文件'}`, 4000);
+    else if (result.missing) toast(`已拖动 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
+  });
   window.eagleMV.onRequestClose(() => {
     const hasUnsaved = state.inspectorDirty || state.textSession?.dirty;
     if (hasUnsaved && !confirm('当前窗口有尚未保存的素材信息或 TXT 内容。\n\n按“确定”放弃修改并关闭窗口；按“取消”继续编辑。')) {

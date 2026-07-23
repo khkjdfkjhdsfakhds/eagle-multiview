@@ -721,6 +721,17 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   text-transform: uppercase;
   backdrop-filter: blur(7px);
 }
+.format-badge.gif-badge {
+  top: 7px;
+  left: 7px;
+  right: auto;
+  bottom: auto;
+  border-color: rgba(255, 154, 139, .45);
+  background: rgba(185, 47, 35, .9);
+  color: #fff1ed;
+  font-size: 10px;
+  letter-spacing: .02em;
+}
 .preview-format-badge {
   position: absolute;
   top: 9px;
@@ -943,6 +954,29 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   color: #e8edf4;
   backdrop-filter: blur(12px);
 }
+.trash-dialog {
+  position: fixed;
+  z-index: 35;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 11, 14, .56);
+  backdrop-filter: blur(4px);
+}
+.trash-dialog-card {
+  width: min(430px, calc(100vw - 36px));
+  padding: 22px 22px 18px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 10px;
+  background: #25262b;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .52);
+}
+.trash-dialog-card h2 { margin: 0; color: #f7f8f8; font-size: 16px; font-weight: 650; }
+.trash-dialog-card p { margin: 10px 0 18px; color: #b9bbc2; line-height: 1.55; }
+.trash-dialog-actions { display: flex; flex-direction: column; gap: 8px; }
+.trash-dialog-actions button { width: 100%; min-height: 34px; }
+.trash-dialog-actions .danger-button { border-color: rgba(240, 116, 130, .34); background: rgba(198, 67, 83, .2); color: #f0a0a8; }
+.trash-dialog-actions .danger-button:hover { background: rgba(198, 67, 83, .32); color: #ffd7db; }
 .context-menu {
   position: fixed;
   z-index: 45;
