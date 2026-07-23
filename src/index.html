@@ -36,22 +36,34 @@
       <input id="searchInput" type="search" placeholder="搜索名称、标签、备注…">
       <kbd>⌘F</kbd>
     </div>
-    <select id="extFilter" title="文件格式">
-      <option value="">全部格式</option>
-      <option value="jpg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option>
-      <option value="gif">GIF</option><option value="svg">SVG</option><option value="mp4">视频</option>
-      <option value="pdf">PDF</option><option value="txt">TXT</option><option value="psd">PSD</option>
-    </select>
-    <select id="ratingFilter" title="评分">
-      <option value="">全部评分</option>
-      <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
-      <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
-    </select>
-    <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
-      <div id="filterTagChips" class="tag-chips"></div>
-      <input id="filterTagInput" list="tagSuggestions" placeholder="筛选标签…" autocomplete="off">
+    <button id="filterButton" class="filter-button" title="打开筛选器">筛选 <span id="filterCount" class="filter-count hidden">0</span></button>
+    <div id="filterPopover" class="filter-popover hidden">
+      <div class="filter-popover-heading"><strong>筛选素材</strong><button id="closeFilterButton" type="button" class="popover-close" aria-label="关闭筛选器">×</button></div>
+      <label>文件格式
+        <select id="extFilter" title="文件格式">
+          <option value="">全部格式</option>
+          <option value="jpg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option>
+          <option value="gif">GIF</option><option value="svg">SVG</option><option value="mp4">视频</option>
+          <option value="pdf">PDF</option><option value="txt">TXT</option><option value="psd">PSD</option>
+        </select>
+      </label>
+      <label>评分
+        <select id="ratingFilter" title="评分">
+          <option value="">全部评分</option>
+          <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
+          <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
+        </select>
+      </label>
+      <label>标签
+        <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
+          <div id="filterTagChips" class="tag-chips"></div>
+          <input id="filterTagInput" list="tagSuggestions" placeholder="筛选标签…" autocomplete="off">
+        </div>
+      </label>
+      <button id="toggleTagColorsButton" type="button" class="tag-colors-toggle">管理标签颜色</button>
+      <div id="tagColorManager" class="tag-color-manager hidden"></div>
+      <button id="clearFiltersButton" class="filter-clear hidden" title="清除搜索与筛选">清除筛选</button>
     </div>
-    <button id="clearFiltersButton" class="filter-clear hidden" title="清除搜索与筛选">清除筛选</button>
     <span class="toolbar-spacer"></span>
     <label class="size-control" title="缩略图大小">小<input id="sizeSlider" type="range" min="110" max="260" value="168">大</label>
     <button id="refreshButton" class="secondary-button refresh-button">刷新</button>
@@ -111,22 +123,31 @@
       <div id="inspectorContent" class="inspector-content hidden">
         <div id="previewBox" class="preview-box"></div>
         <div id="staleBanner" class="stale-banner hidden">此素材已在另一个窗口更新；保存时会检查冲突。</div>
-        <label>名称<input id="itemName" autocomplete="off"></label>
-        <label>标签
-          <div id="itemTagEditor" class="tag-editor">
-            <div id="itemTagChips" class="tag-chips"></div>
-            <input id="itemTagInput" list="tagSuggestions" placeholder="输入标签后按 Return" autocomplete="off">
-          </div>
-        </label>
-        <label>评分
-          <select id="itemRating">
-            <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
-            <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
-          </select>
-        </label>
-        <label>备注<textarea id="itemAnnotation" rows="5"></textarea></label>
-        <label>来源<input id="itemURL" autocomplete="off"></label>
-        <div id="itemMeta" class="item-meta"></div>
+        <section class="inspector-section">
+          <h3>基本信息</h3>
+          <label>名称<input id="itemName" autocomplete="off"></label>
+          <label>标签
+            <div id="itemTagEditor" class="tag-editor">
+              <div id="itemTagChips" class="tag-chips"></div>
+              <input id="itemTagInput" list="tagSuggestions" placeholder="输入标签后按 Return" autocomplete="off">
+            </div>
+          </label>
+          <label>评分
+            <select id="itemRating">
+              <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
+              <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+            </select>
+          </label>
+        </section>
+        <section class="inspector-section">
+          <h3>备注与来源</h3>
+          <label>备注<textarea id="itemAnnotation" rows="5"></textarea></label>
+          <label>来源<input id="itemURL" autocomplete="off"></label>
+        </section>
+        <section class="inspector-section">
+          <h3>文件信息</h3>
+          <div id="itemMeta" class="item-meta"></div>
+        </section>
         <div class="inspector-actions">
           <button id="pinButton" class="secondary-button" title="素材置顶只在普通文件夹中生效">置顶</button>
           <button id="openDefaultButton" class="secondary-button" title="快捷键：⌘O">默认应用打开</button>
@@ -163,11 +184,19 @@
     <button id="closePreview" class="modal-close">×</button>
     <button id="prevPreview" class="modal-nav prev">‹</button>
     <div id="modalMedia" class="modal-media"></div>
+    <div class="preview-toolbar" aria-label="预览缩放">
+      <button id="previewFit" type="button" title="适应窗口">适应</button>
+      <button id="previewActual" type="button" title="实际大小">100%</button>
+      <button id="previewZoomOut" type="button" title="缩小">−</button>
+      <span id="previewZoomLabel">100%</span>
+      <button id="previewZoomIn" type="button" title="放大">＋</button>
+    </div>
     <div id="modalCaption" class="modal-caption"></div>
     <button id="nextPreview" class="modal-nav next">›</button>
   </div>
 
   <div id="toast" class="toast hidden"></div>
+  <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="素材操作菜单"></div>
   <datalist id="tagSuggestions"></datalist>
   <script src="renderer.js"></script>
 </body>
