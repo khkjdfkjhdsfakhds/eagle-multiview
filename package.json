@@ -1,6 +1,6 @@
 {
   "name": "eagle-multiview",
-  "version": "1.5.2",
+  "version": "1.5.1",
   "description": "Safe multi-window companion for Eagle 4",
   "main": "main.js",
   "author": "Eagle MultiView contributors",
