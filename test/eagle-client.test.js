@@ -38,6 +38,34 @@ test('all-items view has no folder restriction', async () => {
   assert.equal('isUnfiled' in client.calls[0].options.body, false);
 });
 
+test('random view uses Eagle random ordering endpoint', async () => {
+  const client = new RecordingClient();
+  await client.queryItems({ random: true, offset: 0, limit: 12, search: 'cat', ext: 'png', tags: ['ref', 'blue'] });
+  assert.match(client.calls[0].path, /^\/api\/item\/list\?/);
+  assert.match(client.calls[0].path, /orderBy=RANDOM/);
+  assert.match(client.calls[0].path, /keyword=cat/);
+  assert.match(client.calls[0].path, /ext=png/);
+  assert.match(client.calls[0].path, /tags=ref%2Cblue/);
+});
+
+test('random view applies rating consistently to returned items', async () => {
+  const client = new RecordingClient();
+  client.request = async () => [
+    { id: 'one', star: 1 },
+    { id: 'two', star: 4 },
+    { id: 'three', star: 4 }
+  ];
+  const page = await client.queryItems({ random: true, rating: 4 });
+  assert.deepEqual(page.data.map(item => item.id), ['two', 'three']);
+  assert.equal(page.total, 2);
+});
+
+test('recent folders use Eagle recent-folder endpoint', async () => {
+  const client = new RecordingClient();
+  await client.listRecentFolders();
+  assert.equal(client.calls[0].path, '/api/folder/listRecent');
+});
+
 test('does not send unsupported trash filters that Eagle would silently ignore', async () => {
   const client = new RecordingClient();
   await client.queryItems({ deleted: true, offset: 0, limit: 160 });

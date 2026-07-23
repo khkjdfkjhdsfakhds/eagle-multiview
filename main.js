@@ -20,8 +20,43 @@ const client = new EagleClient();
 const hub = new DataHub(client);
 const windows = new Set();
 const thumbnailCache = new Map();
+const trashCache = new Map();
+const TRASH_SCAN_TIMEOUT_MS = 8000;
 let quitting = false;
 let pinStore;
+let tagColorState;
+
+async function loadTagColors() {
+  if (tagColorState) return tagColorState;
+  tagColorState = { version: 1, libraries: {} };
+  try {
+    const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
+    const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+    if (parsed?.version === 1 && parsed.libraries && typeof parsed.libraries === 'object') tagColorState = parsed;
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Unable to read tag colors:', error);
+  }
+  return tagColorState;
+}
+
+async function getTagColors(libraryPath) {
+  const state = await loadTagColors();
+  return structuredClone(state.libraries[path.resolve(libraryPath)] || {});
+}
+
+async function setTagColor(libraryPath, tag, color) {
+  const state = await loadTagColors();
+  const key = path.resolve(libraryPath);
+  state.libraries[key] ||= {};
+  if (color) state.libraries[key][tag] = color;
+  else delete state.libraries[key][tag];
+  const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  await fsp.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await fsp.rename(temporary, file);
+  return structuredClone(state.libraries[key]);
+}
 
 const importPaths = createImportService({
   client,
@@ -52,11 +87,20 @@ function broadcast(channel, payload) {
 
 hub.on('status', payload => broadcast('hub:status', payload));
 hub.on('library-changed', payload => {
-  if (payload.libraryChanged) thumbnailCache.clear();
+  if (payload.libraryChanged) {
+    thumbnailCache.clear();
+    trashCache.clear();
+  }
   broadcast('hub:library-changed', payload);
 });
-hub.on('items-changed', payload => broadcast('hub:items-changed', payload));
-hub.on('query-invalidated', payload => broadcast('hub:query-invalidated', payload));
+hub.on('items-changed', payload => {
+  trashCache.clear();
+  broadcast('hub:items-changed', payload);
+});
+hub.on('query-invalidated', payload => {
+  trashCache.clear();
+  broadcast('hub:query-invalidated', payload);
+});
 
 function createWindow() {
   hub.startPolling();
@@ -175,6 +219,66 @@ async function itemFilePath(id) {
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
 }
 
+function withTimeout(promise, milliseconds, message) {
+  let timeout;
+  const expired = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      const error = new Error(message);
+      error.code = 'TRASH_SCAN_TIMEOUT';
+      reject(error);
+    }, milliseconds);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timeout));
+}
+
+async function scanTrashItems(libraryPath) {
+  const imagesRoot = path.join(libraryPath, 'images');
+  const entries = await fsp.readdir(imagesRoot, { withFileTypes: true });
+  const metadataPaths = entries
+    .filter(entry => entry.isDirectory() && entry.name.endsWith('.info'))
+    .map(entry => path.join(imagesRoot, entry.name, 'metadata.json'));
+  const items = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < metadataPaths.length) {
+      const metadataPath = metadataPaths[cursor++];
+      try {
+        const item = JSON.parse(await fsp.readFile(metadataPath, 'utf8'));
+        if (item?.isDeleted === true && item.id) items.push(item);
+      } catch {}
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(24, metadataPaths.length) }, worker));
+  items.sort((left, right) => (right.modificationTime || right.mtime || 0) - (left.modificationTime || left.mtime || 0));
+  return items;
+}
+
+async function readTrashItems(libraryPath) {
+  await hub.ensureLibraryPath(libraryPath);
+  const cached = trashCache.get(libraryPath);
+  if (cached && cached.expiresAt > Date.now()) return cached.items;
+  const items = await withTimeout(
+    scanTrashItems(libraryPath),
+    TRASH_SCAN_TIMEOUT_MS,
+    '回收站读取超时，请点击刷新重试'
+  );
+  trashCache.set(libraryPath, { expiresAt: Date.now() + 1200, items });
+  return items;
+}
+
+function filterTrashItems(items, query = {}) {
+  let filtered = items;
+  const keyword = query.search?.trim().toLocaleLowerCase('zh-CN');
+  if (keyword) {
+    const words = keyword.split(/\s+/).filter(Boolean);
+    filtered = filtered.filter(item => words.every(word => `${item.name || ''} ${(item.tags || []).join(' ')} ${item.annotation || ''}`.toLocaleLowerCase('zh-CN').includes(word)));
+  }
+  if (query.tags?.length) filtered = filtered.filter(item => query.tags.every(tag => (item.tags || []).includes(tag)));
+  if (query.ext) filtered = filtered.filter(item => String(item.ext || '').toLowerCase() === String(query.ext).toLowerCase());
+  if (Number.isInteger(query.rating)) filtered = filtered.filter(item => Number(item.star || 0) === query.rating);
+  return filtered;
+}
+
 async function showItemContextMenu(event, data) {
   const parent = BrowserWindow.fromWebContents(event.sender);
   const selectedIds = [...new Set(data?.ids || [])];
@@ -183,6 +287,24 @@ async function showItemContextMenu(event, data) {
   const one = selectedIds.length === 1;
   const folderId = data?.folderId || null;
   const allPinned = Boolean(data?.allPinned);
+  const allDeleted = Boolean(data?.allDeleted);
+  const send = (channel, payload = {}) => event.sender.send(channel, { ids: selectedIds, ...payload });
+  const folders = [];
+  const collectFolders = (nodes, depth = 0) => (nodes || []).forEach(folder => {
+    if (folder.id !== folderId) folders.push({ id: folder.id, name: `${'  '.repeat(Math.min(depth, 3))}${folder.name}` });
+    collectFolders(folder.children, depth + 1);
+  });
+  collectFolders(hub.library?.folders);
+  const folderSubmenu = folders.length
+    ? folders.map(folder => ({ label: folder.name, click: () => send('command:add-to-folder', { folderId: folder.id }) }))
+    : [{ label: '没有可用文件夹', enabled: false }];
+  const moveFolderSubmenu = folders.length
+    ? folders.map(folder => ({ label: folder.name, click: () => send('command:move-to-folder', { folderId: folder.id }) }))
+    : [{ label: '没有可用文件夹', enabled: false }];
+  const tags = (data?.tags || []).map(tag => typeof tag === 'string' ? tag : tag?.name).filter(Boolean).slice(0, 30);
+  const tagColorSubmenu = tags.length
+    ? tags.map(tag => ({ label: `${tag} · 设置颜色`, click: () => event.sender.send('command:set-tag-color', { tag }) }))
+    : [{ label: '请在检查器中选择标签', enabled: false }];
   const menu = Menu.buildFromTemplate([
     {
       label: one ? '使用默认应用打开' : `使用默认应用打开（已选择 ${selectedIds.length} 项）`,
@@ -209,11 +331,32 @@ async function showItemContextMenu(event, data) {
       }
     },
     { type: 'separator' },
+    {
+      label: '加入文件夹',
+      submenu: folderSubmenu
+    },
+    {
+      label: '移动到文件夹',
+      submenu: moveFolderSubmenu
+    },
+    ...(folderId ? [{ label: '从当前文件夹移除', click: () => send('command:remove-from-folder', { folderId }) }] : []),
+    {
+      label: '添加标签',
+      submenu: tags.length
+        ? tags.map(tag => ({ label: tag, click: () => send('command:add-tag', { tag }) }))
+        : [{ label: '暂无已有标签', enabled: false }]
+    },
+    { label: '标签颜色', submenu: tagColorSubmenu },
+    {
+      label: '设置评分',
+      submenu: [0, 1, 2, 3, 4, 5].map(rating => ({ label: rating ? `${'★'.repeat(rating)}（${rating} 星）` : '未评分', click: () => send('command:set-rating', { rating }) }))
+    },
+    { type: 'separator' },
     ...(folderId ? [{
       label: allPinned ? '取消置顶' : '置顶',
-      click: () => event.sender.send('command:pin-selection', { pinned: !allPinned })
+      click: () => send('command:pin-selection', { pinned: !allPinned })
     }, { type: 'separator' }] : []),
-    { label: '移入废纸篓…', click: () => event.sender.send('command:trash-selection') }
+    { label: allDeleted ? '恢复素材' : '移入废纸篓…', click: () => send('command:trash-selection', { deleted: !allDeleted }) }
   ]);
   menu.popup({ window: parent });
   return true;
@@ -260,8 +403,29 @@ function setupIPC() {
   ipcMain.handle('hub:connect', () => hub.connect());
   ipcMain.handle('hub:identity', event => event.sender.id);
   ipcMain.handle('hub:query', (_event, query) => hub.query(query));
+  ipcMain.handle('hub:recent-folders', () => client.listRecentFolders());
+  ipcMain.handle('hub:trash-items', async (_event, { libraryPath, ...query }) => {
+    try {
+      const filtered = filterTrashItems(await readTrashItems(libraryPath), query);
+      const offset = Math.max(0, Number(query.offset) || 0);
+      const limit = Math.min(500, Math.max(1, Number(query.limit) || 160));
+      const data = filtered.slice(offset, offset + limit);
+      return { data, total: filtered.length, nextOffset: offset + data.length, hasMore: offset + data.length < filtered.length };
+    } catch (error) {
+      if (error.code !== 'TRASH_SCAN_TIMEOUT') throw error;
+      return {
+        data: [],
+        total: 0,
+        nextOffset: 0,
+        hasMore: false,
+        error: { code: error.code, message: error.message }
+      };
+    }
+  });
   ipcMain.handle('hub:get-item', (_event, id) => client.getItem(id));
   ipcMain.handle('hub:tags', () => client.listTags());
+  ipcMain.handle('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
+  ipcMain.handle('tag-colors:set', (_event, { libraryPath, tag, color }) => setTagColor(libraryPath, tag, color));
   ipcMain.handle('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   ipcMain.handle('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
   ipcMain.handle('hub:watch-items', (event, ids) => {
@@ -312,11 +476,19 @@ function setupIPC() {
     shell.showItemInFolder(filePath);
     return true;
   });
+  ipcMain.handle('item:file-path', async (_event, id) => {
+    const { filePath } = await itemFilePath(id);
+    return filePath || null;
+  });
   ipcMain.handle('item:open-default', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return { ok: false, message: '找不到素材原文件' };
     const message = await shell.openPath(filePath);
     return message ? { ok: false, message } : { ok: true };
+  });
+  ipcMain.handle('clipboard:write-text', (_event, value) => {
+    clipboard.writeText(String(value || ''));
+    return true;
   });
   ipcMain.handle('item:context-menu', (event, data) => showItemContextMenu(event, data));
   ipcMain.handle('pins:get', async (_event, { libraryPath }) => {

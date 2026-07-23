@@ -3,8 +3,8 @@
   "version": "1.5.1",
   "description": "Safe multi-window companion for Eagle 4",
   "main": "main.js",
-  "author": "Local build",
-  "license": "UNLICENSED",
+  "author": "Eagle MultiView contributors",
+  "license": "MIT",
   "scripts": {
     "start": "electron .",
     "test": "node --test",

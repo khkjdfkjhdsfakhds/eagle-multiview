@@ -15,7 +15,7 @@ const state = {
   selected: new Set(),
   selectedBase: null,
   inspectorDirty: false,
-  query: { folderId: null, smartFolderId: null, search: '', tags: [], ext: '', rating: null, unfiled: true },
+  query: { folderId: null, smartFolderId: null, search: '', tags: [], ext: '', rating: null, unfiled: true, random: false },
   sort: 'default',
   viewTitle: '资料库',
   refreshTimer: null,
@@ -29,11 +29,16 @@ const state = {
   sidebarVisible: true,
   inspectorVisible: true,
   previewId: null,
+  previewZoom: { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
   textSession: null,
   previewToken: 0,
   availableTags: [],
+  tagColors: {},
+  recentFolders: [],
   draftTags: [],
   batchTags: [],
+  copiedTags: [],
+  contextMenu: null,
   localPins: {},
   importing: false,
   dragDepth: 0
@@ -49,10 +54,25 @@ function uiIcon(name, className = 'tree-icon-svg') {
     library: '<rect x="3" y="4" width="14" height="12.5" rx="2.2"></rect><path d="M6.5 4v12.5M3 7.5h3.5"></path>',
     all: '<rect x="3" y="3" width="5.5" height="5.5" rx="1.4"></rect><rect x="11.5" y="3" width="5.5" height="5.5" rx="1.4"></rect><rect x="3" y="11.5" width="5.5" height="5.5" rx="1.4"></rect><rect x="11.5" y="11.5" width="5.5" height="5.5" rx="1.4"></rect>',
     unfiled: '<path d="M3 6.5h14v8.2a2.3 2.3 0 0 1-2.3 2.3H5.3A2.3 2.3 0 0 1 3 14.7V6.5Z"></path><path d="M2.5 6.5 5 3h10l2.5 3.5M7.2 10h5.6"></path>',
+    recent: '<circle cx="10" cy="10" r="7"></circle><path d="M10 6v4l2.8 1.8"></path>',
+    random: '<path d="M4 5h2.2c2.9 0 3.4 5 6.2 5h3.6"></path><path d="m13.5 7.3 2.5 2.7-2.5 2.7"></path><path d="M4 15h2.2c1.2 0 2-1 2.7-2.1M13.5 12.7 16 15.4 13.5 18"></path>',
+    trash: '<path d="M4.5 6.5h11l-.6 10.5H5.1L4.5 6.5Z"></path><path d="M3.5 6.5h13M7.3 6.5V4h5.4v2.5M8 9.2v5.2M12 9.2v5.2"></path>',
     smart: '<path d="m10 2 1.35 4.15L15.5 7.5l-4.15 1.35L10 13l-1.35-4.15L4.5 7.5l4.15-1.35L10 2Z"></path><path d="m15.7 12 .65 2 2 .65-2 .65-.65 2-.65-2-2-.65 2-.65.65-2Z"></path>',
     chevronDown: '<path d="m5.5 7.5 4.5 5 4.5-5"></path>',
     chevronRight: '<path d="m7.5 5.5 5 4.5-5 4.5"></path>',
-    pin: '<path d="m7 3 6 6-1.9 1.9 3.3 3.3-1.2 1.2-3.3-3.3L8 14 6 12l1.9-1.9-3.3-3.3L7 3Z"></path><path d="m6.8 13.2-3.3 3.3"></path>'
+    pin: '<path d="m7 3 6 6-1.9 1.9 3.3 3.3-1.2 1.2-3.3-3.3L8 14 6 12l1.9-1.9-3.3-3.3L7 3Z"></path><path d="m6.8 13.2-3.3 3.3"></path>',
+    open: '<path d="M4 4.5h5l1.5 2H16a1.8 1.8 0 0 1 1.8 1.8v6.2a1.8 1.8 0 0 1-1.8 1.8H4A1.8 1.8 0 0 1 2.2 14.5V6.3A1.8 1.8 0 0 1 4 4.5Z"></path><path d="m9.5 12 5-5M11 7h3.5v3.5"></path>',
+    finder: '<path d="M3 3.5h14v13H3z"></path><path d="M6 7h8M6 10h5M6 13h3"></path>',
+    copy: '<rect x="6" y="6" width="10" height="11" rx="1.7"></rect><path d="M4 13H3.8A1.8 1.8 0 0 1 2 11.2V4.8A1.8 1.8 0 0 1 3.8 3h6.4A1.8 1.8 0 0 1 12 4.8V5"></path>',
+    path: '<path d="M4 3.5h8l4 4v9H4z"></path><path d="M12 3.5v4h4M6.5 11h7M6.5 14h5"></path>',
+    tag: '<path d="M3.5 5.5V3.8h7.3l5.7 5.7-6 6-7-7V5.5Z"></path><circle cx="7.2" cy="6.4" r="1"></circle>',
+    rename: '<path d="m4 14.8-.7 2.7 2.7-.7L16.7 6l-2-2L4 14.8Z"></path><path d="m12.8 5.9 2 2"></path>',
+    share: '<circle cx="5" cy="10" r="2"></circle><circle cx="15" cy="5" r="2"></circle><circle cx="15" cy="15" r="2"></circle><path d="m6.8 9 6.4-3M6.8 11l6.4 3"></path>',
+    remove: '<path d="M4 5h12M6 5v11h8V5M8 8v5M12 8v5M8 3h4"></path>',
+    trashMenu: '<path d="M4.5 6.5h11l-.6 10.5H5.1L4.5 6.5Z"></path><path d="M3.5 6.5h13M7.3 6.5V4h5.4v2.5"></path>',
+    more: '<circle cx="5" cy="10" r="1"></circle><circle cx="10" cy="10" r="1"></circle><circle cx="15" cy="10" r="1"></circle>',
+    window: '<rect x="3" y="4" width="14" height="12" rx="1.8"></rect><path d="M3 7h14M6 5.5h.1M8.5 5.5h.1"></path>',
+    export: '<path d="M10 3v9M6.5 6.5 10 3l3.5 3.5M4 12.5V17h12v-4.5"></path>'
   };
   return `<svg class="${className}" viewBox="0 0 20 20" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -100,6 +120,10 @@ function formatBytes(bytes) {
   while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
+
+const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp', 'heic', 'tif', 'tiff']);
+function isImageItem(item) { return imageExtensions.has(String(item?.ext || '').toLowerCase()); }
+function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase(); }
 
 function sortedItems() {
   const items = [...state.items];
@@ -150,12 +174,27 @@ function findFolderPath(nodes, id, trail = []) {
   return [];
 }
 
+function quickAccessEntries() {
+  return (state.library?.quickAccess || []).map(entry => {
+    if (entry?.type === 'folder') {
+      const folder = findFolder(state.library?.folders, entry.id);
+      return folder ? { ...folder, quickType: 'folder' } : null;
+    }
+    if (entry?.type === 'smartFolder' || entry?.type === 'smart') {
+      const folder = (state.library?.smartFolders || []).find(candidate => candidate.id === entry.id);
+      return folder ? { ...folder, quickType: 'smart' } : null;
+    }
+    return null;
+  }).filter(Boolean);
+}
+
 function currentFolder() {
   return state.currentView.kind === 'folder' ? findFolder(state.library?.folders, state.currentView.id) : null;
 }
 
 function visibleChildFolders() {
   if (!state.library) return [];
+  if (state.currentView.kind === 'recent') return state.recentFolders || [];
   const folders = state.currentView.kind === 'root'
     ? (state.library.folders || [])
     : (currentFolder()?.children || []);
@@ -180,7 +219,12 @@ function filtersActive() {
 }
 
 function renderFilterState() {
-  $('#clearFiltersButton').classList.toggle('hidden', !filtersActive());
+  const active = filtersActive();
+  $('#clearFiltersButton').classList.toggle('hidden', !active);
+  $('#filterButton').classList.toggle('active', active || !$('#filterPopover').classList.contains('hidden'));
+  const count = [state.query.search.trim(), state.query.tags.length, state.query.ext, Number.isInteger(state.query.rating)].filter(value => Boolean(value)).length;
+  $('#filterCount').textContent = count;
+  $('#filterCount').classList.toggle('hidden', !count);
 }
 
 const tagEditors = {
@@ -202,7 +246,10 @@ function normalizeTags(tags) {
 function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
-  chips.innerHTML = tagValues(kind).map(tag => `<span class="tag-chip"><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-tag="${escapeHTML(tag)}" aria-label="移除 ${escapeHTML(tag)}">×</button></span>`).join('');
+  chips.innerHTML = tagValues(kind).map(tag => {
+    const color = state.tagColors[tag];
+    return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-tag="${escapeHTML(tag)}" aria-label="移除 ${escapeHTML(tag)}">×</button></span>`;
+  }).join('');
 }
 
 function setTagValues(kind, tags, changed = true) {
@@ -236,6 +283,29 @@ const scheduleTagFilterRefresh = debounce(() => refresh({ reset: true, preserveS
 
 function renderTagSuggestions() {
   $('#tagSuggestions').innerHTML = state.availableTags.slice(0, 1000).map(tag => `<option value="${escapeHTML(tag.name || tag)}"></option>`).join('');
+}
+
+function renderTagColors() {
+  const manager = $('#tagColorManager');
+  if (!manager) return;
+  manager.innerHTML = state.availableTags.slice(0, 200).map(tag => {
+    const name = tag.name || tag;
+    const color = state.tagColors[name] || '#0072ef';
+    return `<label class="tag-color-row"><span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><input type="color" value="${escapeHTML(color)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></label>`;
+  }).join('') || '<small class="muted">当前资料库还没有标签</small>';
+}
+
+async function updateTagColor(tag, color) {
+  if (!tag || !/^#[0-9a-f]{6}$/i.test(color || '')) return;
+  try {
+    state.tagColors = await window.eagleMV.setTagColor({ libraryPath: state.library?.path, tag, color });
+    renderTagColors();
+    renderTagEditor('item');
+    renderTagEditor('batch');
+    renderTagEditor('filter');
+  } catch (error) {
+    toast(`标签颜色保存失败：${error.message}`, 4000);
+  }
 }
 
 function clearFilters() {
@@ -349,7 +419,7 @@ function renderGrid({ preserveScroll = true } = {}) {
       <div class="thumb-wrap">
         <img loading="lazy" src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">
         ${itemIsPinned(item) ? `<span class="pin-badge" title="已在当前文件夹置顶">${eagleIcon('ic-toolbar-pin.svg', 'pin-icon')}</span>` : ''}
-        <span class="format-badge">${escapeHTML(item.ext || '')}</span>
+        ${!isImageItem(item) && item.ext ? `<span class="format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}
       </div>
       <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
@@ -392,10 +462,19 @@ function renderFolderTree() {
     <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>
     </button>`).join('');
+  const quickHTML = quickAccessEntries().map(folder => folder.quickType === 'smart'
+    ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
+      <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
+    : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
+      <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${Number.isFinite(folder.descendantImageCount) ? `<span class="folder-count">${folder.descendantImageCount}</span>` : ''}</button>`).join('');
   tree.innerHTML = `
     <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
     <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
     <button class="folder-row ${state.currentView.kind === 'unfiled' ? 'active' : ''}" data-special="unfiled"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-unfiled.svg')}</span><span class="folder-name">未分类</span></button>
+    <button class="folder-row ${state.currentView.kind === 'recent' ? 'active' : ''}" data-special="recent"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('recent')}</span><span class="folder-name">最近使用</span></button>
+    <button class="folder-row ${state.currentView.kind === 'random' ? 'active' : ''}" data-special="random"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('random')}</span><span class="folder-name">随机模式</span></button>
+    <button class="folder-row ${state.currentView.kind === 'trash' ? 'active' : ''}" data-special="trash"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('trash')}</span><span class="folder-name">回收站</span></button>
+    ${quickHTML ? `<div class="folder-section-label">快速访问</div>${quickHTML}` : ''}
     ${smartHTML ? `<div class="folder-section-label">智能文件夹</div>${smartHTML}` : ''}
     <div class="folder-section-label">文件夹</div>${folderHTML(state.library.folders)}
     `;
@@ -449,7 +528,16 @@ async function refresh({ reset = true, preserveScroll = true } = {}) {
     const selectedBefore = selectedId ? itemById(selectedId) : null;
     const offset = reset ? 0 : state.nextOffset;
     const query = structuredClone(state.query);
-    const page = await window.eagleMV.query({ ...query, offset, limit: state.pageSize });
+    const page = state.currentView.kind === 'recent'
+      ? { data: [], total: 0, nextOffset: 0, hasMore: false }
+      : state.currentView.kind === 'trash'
+        ? await window.eagleMV.getTrashItems({ ...query, libraryPath: state.library?.path, offset, limit: state.pageSize })
+        : await window.eagleMV.query({ ...query, offset, limit: state.pageSize });
+    if (page.error) {
+      const error = new Error(page.error.message || '读取失败');
+      error.code = page.error.code;
+      throw error;
+    }
     if (refreshToken !== state.refreshToken) return;
     state.total = page.total || 0;
     state.nextOffset = page.nextOffset ?? (offset + (page.data || []).length);
@@ -477,8 +565,22 @@ async function refresh({ reset = true, preserveScroll = true } = {}) {
     setConnection(true);
   } catch (error) {
     if (refreshToken !== state.refreshToken) return;
-    setConnection(false, error.message);
-    toast(`无法读取 Eagle：${error.message}`, 4000);
+    if (state.currentView.kind === 'trash' && error?.code === 'TRASH_SCAN_TIMEOUT') {
+      state.items = [];
+      state.total = 0;
+      state.nextOffset = 0;
+      state.hasMore = false;
+      $('#resultCount').textContent = '读取失败，请重试';
+      $('#viewTitle').textContent = state.viewTitle;
+      renderLocation();
+      renderGrid({ preserveScroll: false });
+      setConnection(true);
+      setSyncStatus('回收站读取超时');
+      toast(error.message, 5000);
+    } else {
+      setConnection(false, error.message);
+      toast(`无法读取 Eagle：${error.message}`, 4000);
+    }
   } finally {
     if (refreshToken === state.refreshToken) {
       state.loading = false;
@@ -526,7 +628,8 @@ function renderInspector() {
   $('#multiSelection').classList.toggle('hidden', count < 2);
   if (count >= 2) {
     $('#multiCount').textContent = count;
-    $('#batchTrashButton').textContent = '移入废纸篓';
+    const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
+    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓';
     state.selectedBase = null;
     state.inspectorDirty = false;
     return;
@@ -559,9 +662,9 @@ function renderInspector() {
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
   $('#saveButton').disabled = true;
-  $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">`;
+  $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
   $('#itemMeta').innerHTML = `<span>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span>${formatBytes(item.size)}</span><span>${item.width || 0} × ${item.height || 0}</span><span>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
-  $('#trashButton').textContent = '移入废纸篓';
+  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓';
   const canPin = state.currentView.kind === 'folder';
   $('#pinButton').disabled = !canPin || !state.connected;
   $('#pinButton').textContent = canPin && itemIsPinned(item) ? '取消置顶' : '置顶';
@@ -677,6 +780,82 @@ async function setTrash(ids, deleted) {
   }
 }
 
+async function mutateSelectionSet(ids, field, delta, message) {
+  if (!ids?.length || !state.connected) return;
+  setSyncStatus(message);
+  try {
+    await Promise.all(ids.map(id => window.eagleMV.mutateSet({
+      id,
+      field,
+      ...delta,
+      libraryPath: state.library?.path
+    })));
+    state.selected.clear();
+    renderInspector();
+    await refresh({ reset: true, preserveScroll: true });
+    toast('操作已同步到所有窗口');
+  } catch (error) {
+    toast(`操作失败：${error.message}`, 4000);
+  } finally {
+    setSyncStatus('所有窗口已同步');
+  }
+}
+
+function addSelectionToFolder(payload) {
+  const folderId = payload?.folderId;
+  if (!folderId) return;
+  mutateSelectionSet(payload.ids, 'folders', { add: [folderId] }, '正在加入文件夹…');
+}
+
+function moveSelectionToFolder(payload) {
+  const folderId = payload?.folderId;
+  if (!folderId) return;
+  const ids = payload?.ids || [...state.selected];
+  if (!ids.length || !state.connected) return;
+  setSyncStatus('正在移动到文件夹…');
+  Promise.all(ids.map(async id => {
+    const item = itemById(id) || await window.eagleMV.getItem(id);
+    const remove = (item.folders || []).filter(value => value !== folderId);
+    return window.eagleMV.mutateSet({ id, field: 'folders', add: [folderId], remove, libraryPath: state.library?.path });
+  })).then(async () => {
+    state.selected.clear();
+    renderInspector();
+    await refresh({ reset: true, preserveScroll: true });
+    toast('已移动到目标文件夹');
+  }).catch(error => toast(`移动失败：${error.message}`, 4000)).finally(() => setSyncStatus('所有窗口已同步'));
+}
+
+function removeSelectionFromFolder(payload) {
+  const folderId = payload?.folderId || (state.currentView.kind === 'folder' ? state.currentView.id : null);
+  if (!folderId) return;
+  mutateSelectionSet(payload.ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…');
+}
+
+function addTagToSelection(payload) {
+  const tags = normalizeTags(Array.isArray(payload?.tag) ? payload.tag : [payload?.tag]);
+  if (!tags.length) return;
+  mutateSelectionSet(payload.ids, 'tags', { add: tags }, '正在添加标签…');
+}
+
+async function setSelectionRating(payload) {
+  const rating = Math.max(0, Math.min(5, Number(payload?.rating) || 0));
+  const ids = payload?.ids || [...state.selected];
+  if (!ids.length || !state.connected) return;
+  setSyncStatus('正在设置评分…');
+  try {
+    await Promise.all(ids.map(async id => {
+      const item = itemById(id) || await window.eagleMV.getItem(id);
+      return window.eagleMV.mutate({ id, patch: { star: rating }, base: item, libraryPath: state.library?.path });
+    }));
+    await refresh({ reset: true, preserveScroll: true });
+    toast(`已设置为 ${rating ? `${rating} 星` : '未评分'}`);
+  } catch (error) {
+    toast(`评分失败：${error.message}`, 4000);
+  } finally {
+    setSyncStatus('所有窗口已同步');
+  }
+}
+
 function mediaMarkup(item) {
   const url = `eaglemv://original/${encodeURIComponent(item.id)}`;
   const ext = String(item.ext || '').toLowerCase();
@@ -687,10 +866,48 @@ function mediaMarkup(item) {
   return `<div class="unsupported-preview"><img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⌘O 使用默认应用打开</span></p></div>`;
 }
 
+function previewImage() { return $('#modalMedia img.preview-image'); }
+
+function renderPreviewZoom() {
+  const image = previewImage();
+  const zoom = state.previewZoom;
+  $('#previewZoomLabel').textContent = `${Math.round(zoom.scale * 100)}%`;
+  if (!image) return;
+  const fit = zoom.mode === 'fit';
+  image.classList.toggle('preview-actual', !fit);
+  image.style.maxWidth = fit ? '100%' : 'none';
+  image.style.maxHeight = fit ? '100%' : 'none';
+  image.style.width = 'auto';
+  image.style.height = 'auto';
+  image.style.transform = fit ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
+  image.style.cursor = !fit ? (zoom.dragging ? 'grabbing' : 'grab') : 'zoom-in';
+}
+
+function setPreviewZoom(mode, scale = null) {
+  const nextScale = scale === null ? (mode === 'fit' ? 1 : mode === 'actual' ? 1 : state.previewZoom.scale) : scale;
+  state.previewZoom = { ...state.previewZoom, mode, scale: Math.max(.25, Math.min(6, nextScale)), x: 0, y: 0, dragging: false };
+  renderPreviewZoom();
+}
+
+function changePreviewZoom(delta) {
+  const next = Math.max(.25, Math.min(6, state.previewZoom.scale + delta));
+  setPreviewZoom('zoom', next);
+}
+
+function setupPreviewMedia() {
+  const image = $('#modalMedia img');
+  if (image) {
+    image.classList.add('preview-image');
+    image.addEventListener('load', () => renderPreviewZoom(), { once: true });
+  }
+  renderPreviewZoom();
+}
+
 function updatePreviewChrome(item) {
-  $('#modalCaption').textContent = `${item.name}.${item.ext}`;
   const items = sortedItems();
   const index = items.findIndex(candidate => candidate.id === item.id);
+  const position = index >= 0 ? `${index + 1} / ${state.total || items.length}` : '';
+  $('#modalCaption').textContent = `${position}${position ? ' · ' : ''}${item.name}.${item.ext}`;
   $('#prevPreview').disabled = index <= 0;
   $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
 }
@@ -744,8 +961,11 @@ async function openPreview(id, { forceReload = false } = {}) {
   if (String(item.ext || '').toLowerCase() !== 'txt') {
     state.textSession = null;
     $('#modalMedia').innerHTML = mediaMarkup(item);
+    setPreviewZoom('fit');
+    setupPreviewMedia();
     return true;
   }
+  setPreviewZoom('fit');
   $('#modalMedia').innerHTML = '<div class="unsupported-preview"><p>正在读取 TXT…</p></div>';
   try {
     const result = await window.eagleMV.readText({ id, libraryPath: state.library?.path });
@@ -858,13 +1078,14 @@ function applyView(view) {
   state.query.folderId = view.kind === 'folder' ? view.id : null;
   state.query.smartFolderId = view.kind === 'smart' ? view.id : null;
   state.query.unfiled = view.kind === 'root' || view.kind === 'unfiled';
+  state.query.random = view.kind === 'random';
   if (view.kind === 'folder') {
     const folder = findFolder(state.library?.folders, view.id);
     state.viewTitle = folder?.name || '文件夹';
   } else if (view.kind === 'smart') {
     state.viewTitle = view.name || '智能文件夹';
   } else {
-    state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类' })[view.kind] || '资料库';
+    state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类', recent: '最近使用', random: '随机模式', trash: '回收站' })[view.kind] || '资料库';
   }
 }
 
@@ -881,6 +1102,7 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.historyIndex = 0;
   }
   applyView(view);
+  $('#viewTitle').textContent = state.viewTitle;
   closePreview({ commitSelection: false, skipDiscard: true });
   state.selected.clear();
   state.selectedFolderCard = null;
@@ -1028,11 +1250,161 @@ function bindTagEditor(kind) {
   });
 }
 
+function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false }) {
+  const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"` : '';
+  const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}`;
+  const child = submenu ? `<span class="context-menu-arrow">›</span><div class="context-submenu">${submenu}</div>` : '';
+  return `<div class="${className}" role="menuitem"${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
+    <span class="context-menu-leading">${uiIcon(icon, 'context-menu-icon')}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(shortcut)}</span>` : ''}${child}
+  </div>`;
+}
+
+function contextFolderEntries(action) {
+  const entries = [];
+  const visit = (nodes, depth = 0) => (nodes || []).forEach(folder => {
+    if (entries.length >= 80) return;
+    if (folder.id !== state.contextMenu?.folderId) entries.push(contextMenuRow({ icon: 'folder', label: `${'  '.repeat(Math.min(depth, 3))}${folder.name}`, action, payload: { folderId: folder.id } }));
+    visit(folder.children, depth + 1);
+  });
+  visit(state.library?.folders);
+  return entries.join('') || contextMenuRow({ label: '没有可用文件夹', disabled: true });
+}
+
+function contextTagEntries(action = 'add-tag') {
+  const tags = (state.availableTags || []).map(tag => typeof tag === 'string' ? tag : tag?.name).filter(Boolean).slice(0, 30);
+  return tags.length
+    ? tags.map(tag => contextMenuRow({ icon: 'tag', label: tag, action, payload: { tag } })).join('')
+    : contextMenuRow({ label: '暂无已有标签', disabled: true });
+}
+
+function contextMenuMarkup(data) {
+  const one = data.ids.length === 1;
+  const currentFolder = state.currentView.kind === 'folder' ? state.currentView.id : null;
+  const folderEntries = contextFolderEntries('add-folder');
+  const moveEntries = contextFolderEntries('move-folder');
+  const ratingEntries = [0, 1, 2, 3, 4, 5].map(rating => contextMenuRow({ icon: 'more', label: rating ? `${'★'.repeat(rating)}（${rating} 星）` : '未评分', action: 'rating', payload: { rating } })).join('');
+  const moreEntries = [
+    contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename', disabled: !one }),
+    contextMenuRow({ icon: 'copy', label: '复制标签', shortcut: '⌘ ⇧ C', action: 'copy-tags' }),
+    contextMenuRow({ icon: 'tag', label: '粘贴标签', shortcut: '⌘ ⇧ V', action: 'paste-tags' }),
+    contextMenuRow({ icon: 'more', label: '设置评分', submenu: ratingEntries }),
+    contextMenuRow({ icon: 'tag', label: '标签颜色', submenu: contextTagEntries('tag-color') })
+  ].join('');
+  return [
+    contextMenuRow({ icon: 'window', label: '在新窗口打开', shortcut: '⌘ O', action: 'open-window' }),
+    contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one }),
+    contextMenuRow({ icon: 'open', label: '在其它应用打开', submenu: contextMenuRow({ label: '暂未提供其它应用列表', disabled: true }) }),
+    contextMenuRow({ icon: 'finder', label: '在 Finder 中显示', shortcut: '⌘ Enter', action: 'finder' }),
+    contextMenuRow({ icon: 'path', label: '打开文件所在的位置', submenu: contextMenuRow({ label: '在 Finder 中显示', action: 'finder' }) }),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'folder', label: '添加至上次使用的文件夹…', shortcut: '⇧ D', action: 'last-folder', disabled: !state.recentFolders?.length }),
+    contextMenuRow({ icon: 'folder', label: '添加至文件夹…', shortcut: '⌘ ⇧ J', submenu: folderEntries }),
+    contextMenuRow({ icon: 'folder', label: '移动到文件夹…', submenu: moveEntries }),
+    contextMenuRow({ icon: 'export', label: '导出', submenu: contextMenuRow({ label: '导出功能暂未提供', disabled: true }) }),
+    contextMenuRow({ icon: 'share', label: '分享', disabled: true }),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'pin', label: data.allPinned ? '取消置顶' : '置顶', action: 'pin', disabled: !currentFolder }),
+    contextMenuRow({ icon: 'copy', label: '复制文件', shortcut: '⌘ C', action: 'copy-name' }),
+    contextMenuRow({ icon: 'path', label: '复制文件路径', shortcut: '⌘ ⌥ C', action: 'copy-path', disabled: !one }),
+    contextMenuRow({ icon: 'copy', label: '复制…', submenu: contextMenuRow({ label: '复制到其它位置暂未提供', disabled: true }) }),
+    contextMenuRow({ icon: 'copy', label: '创建副本', shortcut: '⌘ D', disabled: true }),
+    contextMenuRow({ icon: 'more', label: '更多', submenu: moreEntries }),
+    '<div class="context-menu-separator"></div>',
+    ...(currentFolder ? [contextMenuRow({ icon: 'remove', label: '从文件夹中移除', shortcut: '⌘ ⇧ ⌫', action: 'remove-folder' })] : []),
+    contextMenuRow({ icon: 'trashMenu', label: data.allDeleted ? '恢复素材' : '丢到回收站', shortcut: '⌘ ⌫', action: 'trash', danger: !data.allDeleted })
+  ].join('');
+}
+
+function hideContextMenu() {
+  state.contextMenu = null;
+  $('#contextMenu').classList.add('hidden');
+  $('#contextMenu').innerHTML = '';
+}
+
+function showContextMenu(event, data) {
+  state.contextMenu = { ...data, x: event.clientX, y: event.clientY };
+  const menu = $('#contextMenu');
+  menu.innerHTML = contextMenuMarkup(state.contextMenu);
+  menu.classList.remove('hidden');
+  menu.style.left = `${Math.max(8, event.clientX)}px`;
+  menu.style.top = `${Math.max(8, event.clientY)}px`;
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8))}px`;
+  });
+}
+
+async function executeContextAction(action, payload) {
+  const data = state.contextMenu;
+  if (!data) return;
+  const ids = data.ids;
+  const firstId = ids[0];
+  if (action === 'open-window') return window.eagleMV.newWindow();
+  if (action === 'open-default') return openWithDefault(firstId);
+  if (action === 'finder') return window.eagleMV.showInFinder(firstId).then(ok => { if (!ok) toast('找不到素材原文件', 3500); });
+  if (action === 'copy-name') return window.eagleMV.copyText(ids.map(id => itemById(id)?.name || '').filter(Boolean).join('\n'));
+  if (action === 'copy-path') {
+    const filePath = await window.eagleMV.filePath(firstId);
+    if (filePath) await window.eagleMV.copyText(filePath);
+    else toast('找不到素材原文件', 3500);
+    return;
+  }
+  if (action === 'copy-tags') {
+    state.copiedTags = normalizeTags(ids.flatMap(id => itemById(id)?.tags || []));
+    toast(state.copiedTags.length ? `已复制 ${state.copiedTags.length} 个标签` : '所选素材没有标签');
+    return;
+  }
+  if (action === 'paste-tags') return addTagToSelection({ ids, tag: state.copiedTags });
+  if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId });
+  if (action === 'move-folder') return moveSelectionToFolder({ ids, folderId: payload.folderId });
+  if (action === 'remove-folder') return removeSelectionFromFolder({ ids, folderId: state.currentView.id });
+  if (action === 'last-folder') return addSelectionToFolder({ ids, folderId: state.recentFolders[0]?.id });
+  if (action === 'add-tag') return addTagToSelection({ ids, tag: payload.tag });
+  if (action === 'tag-color') {
+    const tag = String(payload.tag || '').trim();
+    if (!tag) return;
+    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, state.tagColors[tag] || '#0072ef');
+    if (color !== null) return updateTagColor(tag, color.trim());
+    return;
+  }
+  if (action === 'rating') return setSelectionRating({ ids, rating: payload.rating });
+  if (action === 'pin') return setPinned(ids, !data.allPinned);
+  if (action === 'rename') {
+    selectItem(firstId);
+    requestAnimationFrame(() => $('#itemName').focus());
+    return;
+  }
+  if (action === 'trash') return setTrash(ids, !data.allDeleted);
+}
+
 function bindEvents() {
   $('#newWindowButton').addEventListener('click', () => window.eagleMV.newWindow().catch(error => toast(`无法新建窗口：${error.message}`, 4000)));
   $('#toggleSidebarButton').addEventListener('click', () => togglePanel('sidebar'));
   $('#toggleInspectorButton').addEventListener('click', () => togglePanel('inspector'));
   $('#clearFiltersButton').addEventListener('click', clearFilters);
+  $('#filterButton').addEventListener('click', () => {
+    $('#filterPopover').classList.toggle('hidden');
+    renderFilterState();
+  });
+  $('#closeFilterButton').addEventListener('click', () => {
+    $('#filterPopover').classList.add('hidden');
+    renderFilterState();
+  });
+  $('#toggleTagColorsButton').addEventListener('click', () => {
+    $('#tagColorManager').classList.toggle('hidden');
+    renderTagColors();
+  });
+  $('#tagColorManager').addEventListener('change', event => {
+    const input = event.target.closest('[data-tag-color]');
+    if (input) updateTagColor(input.dataset.tagColor, input.value);
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('#filterButton, #filterPopover')) {
+      $('#filterPopover').classList.add('hidden');
+      renderFilterState();
+    }
+  });
   $('#backButton').addEventListener('click', () => navigateHistory(-1));
   $('#forwardButton').addEventListener('click', () => navigateHistory(1));
   $('#upButton').addEventListener('click', navigateUp);
@@ -1095,11 +1467,33 @@ function bindEvents() {
     event.preventDefault();
     if (!state.selected.has(card.dataset.id) && !selectItem(card.dataset.id)) return;
     const selectedItems = [...state.selected].map(itemById).filter(Boolean);
-    window.eagleMV.showItemContextMenu({
+    showContextMenu(event, {
       ids: [...state.selected],
       folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
-      allPinned: selectedItems.length > 0 && selectedItems.every(itemIsPinned)
-    }).catch(error => toast(`无法打开菜单：${error.message}`, 4000));
+      allPinned: selectedItems.length > 0 && selectedItems.every(itemIsPinned),
+      allDeleted: selectedItems.length > 0 && selectedItems.every(item => item.isDeleted),
+      tags: state.availableTags
+    });
+  });
+  $('#contextMenu').addEventListener('click', event => {
+    const row = event.target.closest('[data-context-action]');
+    if (!row || row.classList.contains('disabled')) return;
+    let payload = {};
+    try { payload = JSON.parse(row.dataset.contextPayload || '{}'); } catch {}
+    const execution = executeContextAction(row.dataset.contextAction, payload);
+    hideContextMenu();
+    execution.catch(error => toast(`操作失败：${error.message}`, 4000));
+  });
+  $('#contextMenu').addEventListener('mouseenter', event => {
+    const row = event.target.closest('.has-submenu');
+    if (row) row.classList.add('submenu-open');
+  }, true);
+  $('#contextMenu').addEventListener('mouseleave', event => {
+    const row = event.target.closest('.has-submenu');
+    if (row && !row.contains(event.relatedTarget)) row.classList.remove('submenu-open');
+  }, true);
+  document.addEventListener('click', event => {
+    if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card')) hideContextMenu();
   });
   $('#gridScroller').addEventListener('scroll', event => {
     const element = event.currentTarget;
@@ -1124,7 +1518,11 @@ function bindEvents() {
     }
   });
   $('#trashButton').addEventListener('click', () => { const item = itemById([...state.selected][0]); if (item) setTrash([item.id], !item.isDeleted); });
-  $('#batchTrashButton').addEventListener('click', () => setTrash([...state.selected], true));
+  $('#batchTrashButton').addEventListener('click', () => {
+    const ids = [...state.selected];
+    const restore = ids.length > 0 && ids.every(id => itemById(id)?.isDeleted);
+    setTrash(ids, !restore);
+  });
   $('#batchTagButton').addEventListener('click', async () => {
     commitTagInput('batch');
     const tags = [...state.batchTags];
@@ -1151,6 +1549,38 @@ function bindEvents() {
   $('#previewModal').addEventListener('click', event => { if (event.target === event.currentTarget) closePreview(); });
   $('#prevPreview').addEventListener('click', () => movePreview(-1));
   $('#nextPreview').addEventListener('click', () => movePreview(1));
+  $('#previewFit').addEventListener('click', () => setPreviewZoom('fit'));
+  $('#previewActual').addEventListener('click', () => setPreviewZoom('actual'));
+  $('#previewZoomOut').addEventListener('click', () => changePreviewZoom(-.25));
+  $('#previewZoomIn').addEventListener('click', () => changePreviewZoom(.25));
+  $('#modalMedia').addEventListener('wheel', event => {
+    if (!previewImage()) return;
+    event.preventDefault();
+    changePreviewZoom(event.deltaY < 0 ? .15 : -.15);
+  }, { passive: false });
+  $('#modalMedia').addEventListener('pointerdown', event => {
+    const image = previewImage();
+    if (!image || state.previewZoom.mode === 'fit' || event.button !== 0) return;
+    state.previewZoom.dragging = true;
+    state.previewZoom.startX = event.clientX;
+    state.previewZoom.startY = event.clientY;
+    state.previewZoom.originX = state.previewZoom.x;
+    state.previewZoom.originY = state.previewZoom.y;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    renderPreviewZoom();
+  });
+  $('#modalMedia').addEventListener('pointermove', event => {
+    if (!state.previewZoom.dragging) return;
+    state.previewZoom.x = state.previewZoom.originX + event.clientX - state.previewZoom.startX;
+    state.previewZoom.y = state.previewZoom.originY + event.clientY - state.previewZoom.startY;
+    renderPreviewZoom();
+  });
+  $('#modalMedia').addEventListener('pointerup', event => {
+    if (!state.previewZoom.dragging) return;
+    state.previewZoom.dragging = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    renderPreviewZoom();
+  });
 
   const scroller = $('#gridScroller');
   scroller.addEventListener('dragenter', event => {
@@ -1227,6 +1657,7 @@ function bindEvents() {
       saveInspector();
     }
     if (event.key === 'Escape') {
+      if (!$('#contextMenu').classList.contains('hidden')) { hideContextMenu(); return; }
       if (!$('#previewModal').classList.contains('hidden')) closePreview();
       else if (!editable && (state.selected.size || state.selectedFolderCard) && confirmDiscardChanges()) {
         state.selected.clear();
@@ -1252,8 +1683,20 @@ function bindHubEvents() {
     if (state.textSession) state.textSession.dirty = false;
     window.eagleMV.confirmClose();
   });
-  window.eagleMV.onTrashSelection(() => setTrash([...state.selected], true));
-  window.eagleMV.onPinSelection(payload => setPinned([...state.selected], payload.pinned));
+  window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
+  window.eagleMV.onPinSelection(payload => setPinned(payload?.ids || [...state.selected], payload.pinned));
+  window.eagleMV.onAddToFolder(payload => addSelectionToFolder(payload));
+  window.eagleMV.onMoveToFolder(payload => moveSelectionToFolder(payload));
+  window.eagleMV.onRemoveFromFolder(payload => removeSelectionFromFolder(payload));
+  window.eagleMV.onAddTag(payload => addTagToSelection(payload));
+  window.eagleMV.onSetRating(payload => setSelectionRating(payload));
+  window.eagleMV.onSetTagColor(async payload => {
+    const tag = String(payload?.tag || '').trim();
+    if (!tag) return;
+    const current = state.tagColors[tag] || '#0072ef';
+    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, current);
+    if (color !== null) updateTagColor(tag, color.trim());
+  });
   window.eagleMV.onImportRequest(() => importFiles());
   window.eagleMV.onPinsChanged(payload => {
     if (payload.libraryPath !== state.library?.path) return;
@@ -1291,7 +1734,7 @@ function bindHubEvents() {
     $('#windowTitle').textContent = `Eagle MultiView — ${payload.library.name}`;
     setConnection(true);
     if (pathChanged) {
-      state.query = { folderId: null, smartFolderId: null, search: '', tags: [], ext: '', rating: null, unfiled: true };
+      state.query = { folderId: null, smartFolderId: null, search: '', tags: [], ext: '', rating: null, unfiled: true, random: false };
       state.expandedFolders.clear();
       state.history = [];
       state.historyIndex = -1;
@@ -1332,14 +1775,19 @@ function bindHubEvents() {
 async function loadLibraryExtras() {
   const libraryPath = state.library?.path;
   if (!libraryPath) return;
-  const [pins, tags] = await Promise.all([
+  const [pins, tags, recentFolders, tagColors] = await Promise.all([
     window.eagleMV.getPins({ libraryPath }).catch(() => ({})),
-    window.eagleMV.getTags().catch(() => [])
+    window.eagleMV.getTags().catch(() => []),
+    window.eagleMV.getRecentFolders().catch(() => []),
+    window.eagleMV.getTagColors({ libraryPath }).catch(() => ({}))
   ]);
   if (state.library?.path !== libraryPath) return;
   state.localPins = pins || {};
   state.availableTags = tags || [];
+  state.recentFolders = recentFolders || [];
+  state.tagColors = tagColors || {};
   renderTagSuggestions();
+  renderTagColors();
 }
 
 async function start() {
