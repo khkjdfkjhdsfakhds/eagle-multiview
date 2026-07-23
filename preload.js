@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   mutateSet: mutation => ipcRenderer.invoke('hub:mutate-set', mutation),
   watchItems: ids => ipcRenderer.invoke('hub:watch-items', ids),
   newWindow: () => ipcRenderer.invoke('window:new'),
+  focusWindow: () => ipcRenderer.invoke('window:focus'),
   confirmClose: () => ipcRenderer.send('window:confirm-close'),
   cancelClose: () => ipcRenderer.send('window:cancel-close'),
   createFolder: data => ipcRenderer.invoke('folder:create', data),
@@ -29,7 +30,9 @@ contextBridge.exposeInMainWorld('eagleMV', {
   showInFinder: id => ipcRenderer.invoke('item:show-in-finder', id),
   filePath: id => ipcRenderer.invoke('item:file-path', id),
   openDefault: id => ipcRenderer.invoke('item:open-default', id),
+  copyFiles: ids => ipcRenderer.invoke('clipboard:write-files', ids),
   copyText: text => ipcRenderer.invoke('clipboard:write-text', String(text || '')),
+  startDrag: ids => ipcRenderer.send('item:start-drag', ids),
   showItemContextMenu: data => ipcRenderer.invoke('item:context-menu', data),
   getPins: data => ipcRenderer.invoke('pins:get', data),
   setPins: data => ipcRenderer.invoke('pins:set', data),
@@ -52,5 +55,6 @@ contextBridge.exposeInMainWorld('eagleMV', {
   onImportRequest: callback => on('command:import', callback),
   onPinsChanged: callback => on('pins:changed', callback),
   onTextChanged: callback => on('text:changed', callback),
+  onDragFinished: callback => on('item:drag-finished', callback),
   onRequestClose: callback => on('command:request-close', callback)
 });

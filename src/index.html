@@ -197,6 +197,17 @@
 
   <div id="toast" class="toast hidden"></div>
   <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="素材操作菜单"></div>
+  <div id="trashDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="trashDialogTitle">
+    <div class="trash-dialog-card">
+      <h2 id="trashDialogTitle">删除素材</h2>
+      <p id="trashDialogMessage"></p>
+      <div class="trash-dialog-actions">
+        <button id="trashRemoveButton" class="secondary-button">从当前文件夹移除</button>
+        <button id="trashDeleteButton" class="danger-button">删除素材</button>
+        <button id="trashCancelButton" class="secondary-button">取消</button>
+      </div>
+    </div>
+  </div>
   <datalist id="tagSuggestions"></datalist>
   <script src="renderer.js"></script>
 </body>

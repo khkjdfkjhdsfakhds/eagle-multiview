@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -10,7 +10,7 @@ const { DataHub } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
 const { readText, saveText } = require('./lib/text-file-service');
 const { createImportService } = require('./lib/import-service');
-const { clipboardFilePaths } = require('./lib/clipboard-files');
+const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'eaglemv', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -83,6 +83,16 @@ function broadcast(channel, payload) {
   for (const window of windows) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
+}
+
+function focusBrowserWindow(window) {
+  if (!window || window.isDestroyed()) return false;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  app.focus({ steal: true });
+  window.focus();
+  window.moveTop();
+  return true;
 }
 
 hub.on('status', payload => broadcast('hub:status', payload));
@@ -219,6 +229,47 @@ async function itemFilePath(id) {
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
 }
 
+function cachedItemFilePath(id) {
+  const item = hub.itemCache.get(id);
+  const libraryPath = hub.library?.path;
+  if (!item || !libraryPath) return null;
+  const itemFolder = path.join(libraryPath, 'images', `${item.id}.info`);
+  const expected = path.join(itemFolder, `${item.name}.${item.ext}`);
+  if (fs.existsSync(expected)) return expected;
+  try {
+    const extension = `.${String(item.ext || '').toLowerCase()}`;
+    const match = fs.readdirSync(itemFolder).find(name => name.toLowerCase().endsWith(extension) && !name.includes('_thumbnail'));
+    return match ? path.join(itemFolder, match) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function copyItemFiles(ids) {
+  const resolved = await Promise.all([...new Set(ids || [])].map(id => itemFilePath(id)));
+  const paths = resolved.map(entry => entry.filePath).filter(Boolean);
+  const copied = writeClipboardFilePaths(clipboard, paths);
+  if (copied.length === 1) {
+    const scriptPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'copy-image.applescript')
+      : path.join(__dirname, 'resources', 'copy-image.applescript');
+    const finalized = finalizeMacImageClipboard(copied[0], scriptPath);
+    if (!finalized.ok) {
+      return { count: 0, missing: resolved.length - copied.length, message: finalized.message };
+    }
+  }
+  return { count: copied.length, missing: resolved.length - copied.length };
+}
+
+function dragIcon(id, filePath) {
+  for (const candidate of [thumbnailCache.get(id), filePath, path.join(process.resourcesPath, 'icon.icns')]) {
+    if (!candidate) continue;
+    const image = nativeImage.createFromPath(candidate);
+    if (!image.isEmpty()) return image.resize({ width: 96, height: 96, quality: 'good' });
+  }
+  return nativeImage.createEmpty();
+}
+
 function withTimeout(promise, milliseconds, message) {
   let timeout;
   const expired = new Promise((_, reject) => {
@@ -323,12 +374,8 @@ async function showItemContextMenu(event, data) {
       click: () => first.filePath && clipboard.writeText(first.filePath)
     },
     {
-      label: one ? '复制素材名称' : `复制 ${selectedIds.length} 个素材名称`,
-      click: async () => {
-        const names = [];
-        for (const id of selectedIds) names.push((hub.itemCache.get(id) || await client.getItem(id)).name);
-        clipboard.writeText(names.join('\n'));
-      }
+      label: one ? '复制文件' : `复制 ${selectedIds.length} 个文件`,
+      click: () => copyItemFiles(selectedIds)
     },
     { type: 'separator' },
     {
@@ -436,6 +483,9 @@ function setupIPC() {
     createWindow();
     return true;
   });
+  ipcMain.handle('window:focus', event => {
+    return focusBrowserWindow(BrowserWindow.fromWebContents(event.sender));
+  });
   ipcMain.on('window:confirm-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window || window.isDestroyed()) return;
@@ -467,7 +517,10 @@ function setupIPC() {
       if (result.canceled || !result.filePaths.length) return { canceled: true };
       filePaths = result.filePaths;
     }
-    return { canceled: false, ...(await importPaths({ paths: filePaths, folderId, libraryPath })) };
+    const pendingImport = importPaths({ paths: filePaths, folderId, libraryPath });
+    focusBrowserWindow(parent);
+    setTimeout(() => focusBrowserWindow(parent), 350);
+    return { canceled: false, ...(await pendingImport) };
   });
   ipcMain.handle('items:import-clipboard', (_event, data) => importClipboard(data));
   ipcMain.handle('item:show-in-finder', async (_event, id) => {
@@ -486,9 +539,24 @@ function setupIPC() {
     const message = await shell.openPath(filePath);
     return message ? { ok: false, message } : { ok: true };
   });
+  ipcMain.handle('clipboard:write-files', (_event, ids) => copyItemFiles(ids));
   ipcMain.handle('clipboard:write-text', (_event, value) => {
     clipboard.writeText(String(value || ''));
     return true;
+  });
+  ipcMain.on('item:start-drag', (event, ids) => {
+    const uniqueIds = [...new Set(ids || [])];
+    const files = uniqueIds.map(cachedItemFilePath).filter(Boolean);
+    if (!files.length) {
+      event.sender.send('item:drag-finished', { ok: false, message: '找不到素材原文件' });
+      return;
+    }
+    try {
+      event.sender.startDrag({ file: files[0], files, icon: dragIcon(uniqueIds[0], files[0]) });
+      event.sender.send('item:drag-finished', { ok: true, count: files.length, missing: uniqueIds.length - files.length });
+    } catch (error) {
+      event.sender.send('item:drag-finished', { ok: false, message: error.message || '无法开始文件拖动' });
+    }
   });
   ipcMain.handle('item:context-menu', (event, data) => showItemContextMenu(event, data));
   ipcMain.handle('pins:get', async (_event, { libraryPath }) => {

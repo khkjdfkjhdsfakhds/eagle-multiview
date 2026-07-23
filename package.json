@@ -26,12 +26,23 @@
       "src/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/copy-image.applescript",
+        "to": "copy-image.applescript"
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
       "target": ["dmg"],
       "artifactName": "Eagle-MultiView-${version}-${arch}.${ext}",
       "identity": null
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": ["nsis"],
+      "artifactName": "Eagle-MultiView-${version}-Setup.${ext}"
     }
   }
 }
