@@ -1,16 +1,28 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage, ShareMenu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const { spawn } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
 const { DataHub } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
+const { SupplementalItemStore } = require('./lib/supplemental-item-store');
 const { readText, saveText } = require('./lib/text-file-service');
 const { createImportService } = require('./lib/import-service');
-const { clipboardFilePaths } = require('./lib/clipboard-files');
+const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
+const { readMetadata } = require('./lib/metadata-reader');
+const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
+const { createTrashScanService } = require('./lib/trash-scan-service');
+const { exportFiles } = require('./lib/export-service');
+const {
+  normalizeNewFileType,
+  validateNewItemName,
+  nextAvailableName,
+  createTemporaryNewFile
+} = require('./lib/new-file-service');
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'eaglemv', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -20,10 +32,14 @@ const client = new EagleClient();
 const hub = new DataHub(client);
 const windows = new Set();
 const thumbnailCache = new Map();
-const trashCache = new Map();
-const TRASH_SCAN_TIMEOUT_MS = 8000;
+const metadataCache = new Map();
+const duplicateIndex = new DuplicateIndex();
+let dragSequence = 0;
+const dragCleanupTimers = new Map();
+const trashScans = createTrashScanService({ fs: fsp });
 let quitting = false;
 let pinStore;
+let supplementalItemStore;
 let tagColorState;
 
 async function loadTagColors() {
@@ -64,10 +80,77 @@ const importPaths = createImportService({
   onInvalidate: reason => broadcast('hub:query-invalidated', { reason }),
   itemCache: hub.itemCache
 });
+const creationQueues = new Map();
+
+function enqueueCreation(key, operation) {
+  const previous = creationQueues.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  creationQueues.set(key, current);
+  return current.finally(() => {
+    if (creationQueues.get(key) === current) creationQueues.delete(key);
+  });
+}
+
+async function listDestinationItems(folderId) {
+  const items = [];
+  let offset = 0;
+  while (true) {
+    const page = await hub.query({
+      ...(folderId ? { folderId } : { unfiled: true }),
+      offset,
+      limit: 500
+    });
+    const batch = Array.isArray(page?.data) ? page.data : [];
+    items.push(...batch);
+    const nextOffset = Number(page?.nextOffset ?? offset + batch.length);
+    if (!page?.hasMore || nextOffset <= offset || !batch.length) break;
+    offset = nextOffset;
+  }
+  return items;
+}
+
+async function waitForImportedFile(id, libraryPath, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  let item = null;
+  while (Date.now() < deadline) {
+    try {
+      item = await client.getItem(id);
+      const fileURL = await client.fileURLForItem(item, libraryPath);
+      if (fileURL) return { item, fileURL };
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return { item, fileURL: null };
+}
+
+function siblingFolders(folders, parentId) {
+  if (!parentId) return folders || [];
+  return findFolder(folders, parentId)?.children || [];
+}
 
 function getPinStore() {
   pinStore ||= new PinStore(path.join(app.getPath('userData'), 'state', 'pins.json'));
   return pinStore;
+}
+
+function getSupplementalItemStore() {
+  supplementalItemStore ||= new SupplementalItemStore(path.join(app.getPath('userData'), 'state', 'supplemental-items.json'));
+  return supplementalItemStore;
+}
+
+async function hydrateSupplementalItems(libraryPath, { notify = false } = {}) {
+  if (!libraryPath) {
+    hub.setSupplementalItems(null, []);
+    return [];
+  }
+  const ids = await getSupplementalItemStore().get(libraryPath);
+  const loaded = await Promise.all(ids.map(id => client.getItem(id).catch(() => null)));
+  const items = loaded.filter(item => item?.id && !item.isDeleted);
+  hub.setSupplementalItems(libraryPath, items);
+  const validIds = items.map(item => item.id);
+  if (validIds.length !== ids.length) await getSupplementalItemStore().set(libraryPath, validIds);
+  if (notify) hub.emit('query-invalidated', { reason: 'supplemental-items-hydrated', ids: validIds });
+  return items;
 }
 
 function findFolder(nodes, id) {
@@ -85,24 +168,49 @@ function broadcast(channel, payload) {
   }
 }
 
+function finishDrag(token) {
+  if (!token) return;
+  const timer = dragCleanupTimers.get(token);
+  if (timer) clearTimeout(timer);
+  dragCleanupTimers.delete(token);
+  broadcast('item:drag-state', { active: false, token });
+}
+
+function focusBrowserWindow(window) {
+  if (!window || window.isDestroyed()) return false;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  app.focus({ steal: true });
+  window.focus();
+  window.moveTop();
+  return true;
+}
+
 hub.on('status', payload => broadcast('hub:status', payload));
 hub.on('library-changed', payload => {
+  duplicateIndex.invalidate();
+  duplicateIndex.warm(payload.library?.path).catch(() => {});
+  trashScans.invalidateAll({ abort: payload.libraryChanged });
   if (payload.libraryChanged) {
     thumbnailCache.clear();
-    trashCache.clear();
+    metadataCache.clear();
+    hydrateSupplementalItems(payload.library?.path, { notify: true }).catch(error => console.error('Unable to hydrate supplemental items:', error));
   }
   broadcast('hub:library-changed', payload);
 });
 hub.on('items-changed', payload => {
-  trashCache.clear();
+  trashScans.invalidateAll({ abort: true });
   broadcast('hub:items-changed', payload);
 });
 hub.on('query-invalidated', payload => {
-  trashCache.clear();
+  trashScans.invalidateAll({ abort: true });
   broadcast('hub:query-invalidated', payload);
 });
+hub.on('supplemental-indexed', payload => {
+  getSupplementalItemStore().remove(payload.libraryPath, payload.ids).catch(error => console.error('Unable to prune supplemental items:', error));
+});
 
-function createWindow() {
+function createWindow(initialState = null) {
   hub.startPolling();
   const window = new BrowserWindow({
     width: 1440,
@@ -124,6 +232,7 @@ function createWindow() {
   const webContentsId = window.webContents.id;
   window.__allowClose = false;
   window.__closePromptPending = false;
+  window.__initialState = initialState;
   window.on('close', event => {
     if (window.__allowClose || window.webContents.isDestroyed()) return;
     event.preventDefault();
@@ -135,6 +244,8 @@ function createWindow() {
     windows.delete(window);
     hub.removeWatcher(webContentsId);
   });
+  window.on('enter-full-screen', () => window.webContents.send('window:chrome-state', { fullScreen: true }));
+  window.on('leave-full-screen', () => window.webContents.send('window:chrome-state', { fullScreen: false }));
   window.loadFile(path.join(__dirname, 'src', 'index.html'));
   return window;
 }
@@ -155,7 +266,20 @@ function setupMenu() {
     {
       label: '文件',
       submenu: [
-        { label: '新建资料库窗口', accelerator: 'CmdOrCtrl+N', click: () => createWindow() },
+        { label: '新建文件夹', accelerator: 'Alt+N', click: (_item, window) => window?.webContents.send('command:create-folder') },
+        { label: '新建 TXT', accelerator: 'Alt+Shift+N', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'txt' }) },
+        {
+          label: '新建文件',
+          submenu: [
+            { label: 'Markdown', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'md' }) },
+            { label: 'JSON', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'json' }) },
+            { label: 'HTML', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'html' }) },
+            { label: 'SVG', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'svg' }) }
+          ]
+        },
+        { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
+        { type: 'separator' },
+        { label: '新建资料库窗口', accelerator: 'CmdOrCtrl+Alt+N', click: () => createWindow() },
         { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
         { type: 'separator' },
         { role: 'close', label: '关闭窗口' }
@@ -167,6 +291,8 @@ function setupMenu() {
         { role: 'undo', label: '撤销' },
         { role: 'redo', label: '重做' },
         { type: 'separator' },
+        { label: '重命名', accelerator: 'CmdOrCtrl+R', click: (_item, window) => window?.webContents.send('command:rename') },
+        { type: 'separator' },
         { role: 'cut', label: '剪切' },
         { role: 'copy', label: '复制' },
         { role: 'paste', label: '粘贴' },
@@ -176,7 +302,7 @@ function setupMenu() {
     {
       label: '显示',
       submenu: [
-        { role: 'reload', label: '重新载入窗口' },
+        { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' },
         { role: 'togglefullscreen', label: '全屏' }
       ]
     },
@@ -219,51 +345,75 @@ async function itemFilePath(id) {
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
 }
 
-function withTimeout(promise, milliseconds, message) {
-  let timeout;
-  const expired = new Promise((_, reject) => {
-    timeout = setTimeout(() => {
-      const error = new Error(message);
-      error.code = 'TRASH_SCAN_TIMEOUT';
-      reject(error);
-    }, milliseconds);
-  });
-  return Promise.race([promise, expired]).finally(() => clearTimeout(timeout));
-}
-
-async function scanTrashItems(libraryPath) {
-  const imagesRoot = path.join(libraryPath, 'images');
-  const entries = await fsp.readdir(imagesRoot, { withFileTypes: true });
-  const metadataPaths = entries
-    .filter(entry => entry.isDirectory() && entry.name.endsWith('.info'))
-    .map(entry => path.join(imagesRoot, entry.name, 'metadata.json'));
-  const items = [];
+async function settleWithConcurrency(values, worker, concurrency = 8) {
+  const results = [];
   let cursor = 0;
-  const worker = async () => {
-    while (cursor < metadataPaths.length) {
-      const metadataPath = metadataPaths[cursor++];
+  const run = async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
       try {
-        const item = JSON.parse(await fsp.readFile(metadataPath, 'utf8'));
-        if (item?.isDeleted === true && item.id) items.push(item);
-      } catch {}
+        results[index] = { ok: true, value: await worker(values[index]) };
+      } catch (error) {
+        results[index] = { ok: false, error };
+      }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(24, metadataPaths.length) }, worker));
-  items.sort((left, right) => (right.modificationTime || right.mtime || 0) - (left.modificationTime || left.mtime || 0));
-  return items;
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, run));
+  return results;
+}
+
+async function resolveItemFiles(ids) {
+  const uniqueIds = [...new Set(ids || [])].filter(Boolean);
+  const results = await settleWithConcurrency(uniqueIds, itemFilePath, 8);
+  return results.map((result, index) => result.ok
+    ? { id: uniqueIds[index], ...result.value, error: null }
+    : { id: uniqueIds[index], item: null, filePath: null, error: result.error });
+}
+
+function cachedItemFilePath(id) {
+  const item = hub.itemCache.get(id);
+  const libraryPath = hub.library?.path;
+  if (!item || !libraryPath) return null;
+  const itemFolder = path.join(libraryPath, 'images', `${item.id}.info`);
+  const expected = path.join(itemFolder, `${item.name}.${item.ext}`);
+  if (fs.existsSync(expected)) return expected;
+  try {
+    const extension = `.${String(item.ext || '').toLowerCase()}`;
+    const match = fs.readdirSync(itemFolder).find(name => name.toLowerCase().endsWith(extension) && !name.includes('_thumbnail'));
+    return match ? path.join(itemFolder, match) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function copyItemFiles(ids) {
+  const resolved = await resolveItemFiles(ids);
+  const paths = resolved.map(entry => entry.filePath).filter(Boolean);
+  const copied = writeClipboardFilePaths(clipboard, paths);
+  if (copied.length === 1) {
+    const scriptPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'copy-image.applescript')
+      : path.join(__dirname, 'resources', 'copy-image.applescript');
+    const finalized = finalizeMacImageClipboard(copied[0], scriptPath);
+    if (!finalized.ok) {
+      return { count: 0, missing: resolved.length - copied.length, message: finalized.message };
+    }
+  }
+  return { count: copied.length, missing: resolved.length - copied.length };
+}
+
+function dragIcon(id, filePath) {
+  for (const candidate of [thumbnailCache.get(id), filePath, path.join(process.resourcesPath, 'icon.icns')]) {
+    if (!candidate) continue;
+    const image = nativeImage.createFromPath(candidate);
+    if (!image.isEmpty()) return image.resize({ width: 96, height: 96, quality: 'good' });
+  }
+  return nativeImage.createEmpty();
 }
 
 async function readTrashItems(libraryPath) {
   await hub.ensureLibraryPath(libraryPath);
-  const cached = trashCache.get(libraryPath);
-  if (cached && cached.expiresAt > Date.now()) return cached.items;
-  const items = await withTimeout(
-    scanTrashItems(libraryPath),
-    TRASH_SCAN_TIMEOUT_MS,
-    '回收站读取超时，请点击刷新重试'
-  );
-  trashCache.set(libraryPath, { expiresAt: Date.now() + 1200, items });
-  return items;
+  return trashScans.read(libraryPath);
 }
 
 function filterTrashItems(items, query = {}) {
@@ -298,7 +448,7 @@ async function showItemContextMenu(event, data) {
   const folderSubmenu = folders.length
     ? folders.map(folder => ({ label: folder.name, click: () => send('command:add-to-folder', { folderId: folder.id }) }))
     : [{ label: '没有可用文件夹', enabled: false }];
-  const moveFolderSubmenu = folders.length
+  const moveFolderSubmenu = folderId && folders.length
     ? folders.map(folder => ({ label: folder.name, click: () => send('command:move-to-folder', { folderId: folder.id }) }))
     : [{ label: '没有可用文件夹', enabled: false }];
   const tags = (data?.tags || []).map(tag => typeof tag === 'string' ? tag : tag?.name).filter(Boolean).slice(0, 30);
@@ -323,22 +473,15 @@ async function showItemContextMenu(event, data) {
       click: () => first.filePath && clipboard.writeText(first.filePath)
     },
     {
-      label: one ? '复制素材名称' : `复制 ${selectedIds.length} 个素材名称`,
-      click: async () => {
-        const names = [];
-        for (const id of selectedIds) names.push((hub.itemCache.get(id) || await client.getItem(id)).name);
-        clipboard.writeText(names.join('\n'));
-      }
+      label: one ? '复制文件' : `复制 ${selectedIds.length} 个文件`,
+      click: () => copyItemFiles(selectedIds)
     },
     { type: 'separator' },
     {
       label: '加入文件夹',
       submenu: folderSubmenu
     },
-    {
-      label: '移动到文件夹',
-      submenu: moveFolderSubmenu
-    },
+    ...(folderId ? [{ label: '移动到文件夹', submenu: moveFolderSubmenu }] : []),
     ...(folderId ? [{ label: '从当前文件夹移除', click: () => send('command:remove-from-folder', { folderId }) }] : []),
     {
       label: '添加标签',
@@ -400,7 +543,12 @@ async function installProtocol() {
 }
 
 function setupIPC() {
-  ipcMain.handle('hub:connect', () => hub.connect());
+  ipcMain.handle('hub:connect', async () => {
+    const result = await hub.connect();
+    await hydrateSupplementalItems(result.library?.path);
+    duplicateIndex.warm(result.library?.path).catch(() => {});
+    return result;
+  });
   ipcMain.handle('hub:identity', event => event.sender.id);
   ipcMain.handle('hub:query', (_event, query) => hub.query(query));
   ipcMain.handle('hub:recent-folders', () => client.listRecentFolders());
@@ -412,7 +560,7 @@ function setupIPC() {
       const data = filtered.slice(offset, offset + limit);
       return { data, total: filtered.length, nextOffset: offset + data.length, hasMore: offset + data.length < filtered.length };
     } catch (error) {
-      if (error.code !== 'TRASH_SCAN_TIMEOUT') throw error;
+      if (!['TRASH_SCAN_TIMEOUT', 'TRASH_SCAN_INVALIDATED'].includes(error.code)) throw error;
       return {
         data: [],
         total: 0,
@@ -423,18 +571,126 @@ function setupIPC() {
     }
   });
   ipcMain.handle('hub:get-item', (_event, id) => client.getItem(id));
+  const refreshItemAfterCommentMutation = async (event, payload, operation, reason) => {
+    const { id, libraryPath } = payload || {};
+    if (!id) throw new Error('缺少素材 ID');
+    await hub.ensureLibraryPath(libraryPath);
+    const result = await operation(id);
+    await hub.ensureLibraryPath(libraryPath);
+    const item = await client.getItem(id);
+    hub.itemCache.set(id, item);
+    broadcast('hub:items-changed', { items: [item], source: 'multiview', origin: event.sender.id });
+    broadcast('hub:query-invalidated', { reason, id });
+    return result;
+  };
+  ipcMain.handle('item:comments', async (_event, { id, libraryPath }) => {
+    await hub.ensureLibraryPath(libraryPath);
+    return client.getComments(id);
+  });
+  ipcMain.handle('item:add-comment', (event, payload) => {
+    const { id, libraryPath, ...comment } = payload || {};
+    return refreshItemAfterCommentMutation(event, { id, libraryPath }, itemId => client.addComment(itemId, comment), 'comment-add');
+  });
+  ipcMain.handle('item:update-comment', (event, payload) =>
+    refreshItemAfterCommentMutation(event, payload, (id) => client.updateComment(id, payload.commentId, payload.patch || {}), 'comment-update'));
+  ipcMain.handle('item:remove-comment', (event, payload) =>
+    refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove'));
+  ipcMain.handle('item:set-custom-thumbnail', async (event, payload) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const { id, libraryPath } = payload || {};
+    if (!id) throw new Error('缺少素材 ID');
+    let filePath = payload.filePath;
+    if (!filePath) {
+      const chooser = await dialog.showOpenDialog(parent, {
+        title: '选择自定义缩略图',
+        buttonLabel: '使用缩略图',
+        properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff'] }]
+      });
+      if (chooser.canceled || !chooser.filePaths[0]) return { canceled: true };
+      filePath = chooser.filePaths[0];
+    }
+    await hub.ensureLibraryPath(libraryPath);
+    const result = await client.setCustomThumbnail(id, filePath, payload.width, payload.height);
+    thumbnailCache.delete(id);
+    await hub.ensureLibraryPath(libraryPath);
+    const item = await client.getItem(id);
+    hub.itemCache.set(id, item);
+    broadcast('hub:items-changed', { items: [item], source: 'multiview', origin: event.sender.id });
+    broadcast('hub:query-invalidated', { reason: 'custom-thumbnail', id });
+    return { canceled: false, result, item };
+  });
   ipcMain.handle('hub:tags', () => client.listTags());
+  ipcMain.handle('hub:tag-groups', () => client.listTagGroups());
+  const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
+    await hub.ensureLibraryPath(libraryPath);
+    const result = await operation();
+    const [library, folders] = await Promise.all([client.libraryInfo(), client.folderTree()]);
+    library.folders = folders;
+    hub.library = library;
+    hub.lastModificationTime = library.modificationTime;
+    broadcast('hub:library-changed', { library, libraryChanged: false, source: 'multiview', origin: event.sender.id });
+    broadcast('hub:query-invalidated', { reason });
+    return result;
+  };
+  ipcMain.handle('smart-folder:create', (event, { libraryPath, ...payload }) =>
+    refreshLibraryAfterMutation(event, libraryPath, () => client.createSmartFolder(payload), 'smart-folder-create'));
+  ipcMain.handle('smart-folder:update', (event, { libraryPath, id, patch }) =>
+    refreshLibraryAfterMutation(event, libraryPath, () => client.updateSmartFolder(id, patch), 'smart-folder-update'));
+  ipcMain.handle('smart-folder:remove', (event, { libraryPath, id }) =>
+    refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
   ipcMain.handle('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
   ipcMain.handle('tag-colors:set', (_event, { libraryPath, tag, color }) => setTagColor(libraryPath, tag, color));
+  const mutateTagData = async (event, libraryPath, operation, reason) => {
+    await hub.ensureLibraryPath(libraryPath);
+    const result = await operation();
+    broadcast('tag-data:changed', { libraryPath, origin: event.sender.id, reason });
+    broadcast('hub:query-invalidated', { reason });
+    return result;
+  };
+  ipcMain.handle('tag:rename', (event, { libraryPath, originalName, name }) =>
+    mutateTagData(event, libraryPath, () => client.renameTag(originalName, name), 'tag-rename'));
+  ipcMain.handle('tag:merge', (event, { libraryPath, source, target }) =>
+    mutateTagData(event, libraryPath, () => client.mergeTag(source, target), 'tag-merge'));
+  ipcMain.handle('tag-group:create', (event, { libraryPath, name }) =>
+    mutateTagData(event, libraryPath, () => client.createTagGroup(name), 'tag-group-create'));
+  ipcMain.handle('tag-group:update', (event, { libraryPath, id, patch }) =>
+    mutateTagData(event, libraryPath, () => client.updateTagGroup(id, patch), 'tag-group-update'));
+  ipcMain.handle('tag-group:remove', (event, { libraryPath, id }) =>
+    mutateTagData(event, libraryPath, () => client.removeTagGroup(id), 'tag-group-remove'));
+  ipcMain.handle('tag-group:add-tags', (event, { libraryPath, groupId, tags }) =>
+    mutateTagData(event, libraryPath, () => client.addTagsToGroup(groupId, tags), 'tag-group-add-tags'));
+  ipcMain.handle('tag-group:remove-tags', (event, { libraryPath, groupId, tags }) =>
+    mutateTagData(event, libraryPath, () => client.removeTagsFromGroup(groupId, tags), 'tag-group-remove-tags'));
   ipcMain.handle('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   ipcMain.handle('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
+  ipcMain.handle('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  ipcMain.on('folder:used', (event, payload = {}) => {
+    broadcast('folder:used', {
+      folderId: payload.folderId || null,
+      libraryPath: payload.libraryPath || null,
+      origin: event.sender.id
+    });
+  });
   ipcMain.handle('hub:watch-items', (event, ids) => {
     hub.setWatchedIds(event.sender.id, ids);
     return true;
   });
-  ipcMain.handle('window:new', () => {
-    createWindow();
+  ipcMain.handle('window:new', (_event, initialState = null) => {
+    createWindow(initialState);
     return true;
+  });
+  ipcMain.handle('window:initial-state', event => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const initialState = window?.__initialState || null;
+    if (window) window.__initialState = null;
+    return initialState;
+  });
+  ipcMain.handle('window:focus', event => {
+    return focusBrowserWindow(BrowserWindow.fromWebContents(event.sender));
+  });
+  ipcMain.handle('window:is-fullscreen', event => {
+    return Boolean(BrowserWindow.fromWebContents(event.sender)?.isFullScreen());
   });
   ipcMain.on('window:confirm-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -449,13 +705,100 @@ function setupIPC() {
     if (window && !window.isDestroyed()) window.__closePromptPending = false;
     quitting = false;
   });
-  ipcMain.handle('folder:create', async (_event, { name, parent, libraryPath }) => {
-    await hub.ensureLibraryPath(libraryPath);
-    const result = await client.createFolder(name, parent);
-    broadcast('hub:query-invalidated', { reason: 'folder-create' });
-    return result;
+  ipcMain.handle('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
+    const requestedName = validateNewItemName(name);
+    const libraryKey = path.resolve(libraryPath);
+    return enqueueCreation(`folder:${libraryKey}:${parent || 'root'}`, async () => {
+      await hub.ensureLibraryPath(libraryPath);
+      const folders = await client.folderTree();
+      if (parent && !findFolder(folders, parent)) throw new Error('目标文件夹已不存在，请刷新后重试');
+      const availableName = nextAvailableName(requestedName, siblingFolders(folders, parent));
+      const apiResult = await refreshLibraryAfterMutation(event, libraryPath, () => client.createFolder(availableName, parent), 'folder-create');
+      const createdFolder = siblingFolders(hub.library?.folders, parent).find(folder =>
+        String(folder?.name || '').trim().toLocaleLowerCase('zh-CN') === availableName.toLocaleLowerCase('zh-CN'));
+      return {
+        id: createdFolder?.id || apiResult?.id || null,
+        name: availableName,
+        renamed: availableName !== requestedName
+      };
+    });
   });
-  ipcMain.handle('items:import', async (event, { folderId, libraryPath, paths }) => {
+  ipcMain.handle('document:create', (event, payload = {}) => {
+    const type = normalizeNewFileType(payload.type);
+    const requestedName = validateNewItemName(payload.name, { extension: type });
+    const folderId = payload.folderId || null;
+    const libraryPath = payload.libraryPath;
+    const libraryKey = path.resolve(libraryPath);
+    return enqueueCreation(`document:${libraryKey}:${folderId || 'unfiled'}`, async () => {
+      await hub.ensureLibraryPath(libraryPath);
+      if (folderId) {
+        const folders = await client.folderTree();
+        if (!findFolder(folders, folderId)) throw new Error('目标文件夹已不存在，请刷新后重试');
+      }
+      const existingItems = await listDestinationItems(folderId);
+      const availableName = nextAvailableName(requestedName, existingItems, type);
+      const temporary = await createTemporaryNewFile({
+        root: path.join(app.getPath('userData'), 'temp', 'new-files'),
+        name: availableName,
+        type
+      });
+      let importedId = null;
+      try {
+        const imported = await importPaths({
+          paths: [temporary.filePath],
+          folderId,
+          libraryPath,
+          waitTimeoutMs: 4000
+        });
+        if (!imported.count || !imported.ids?.length) {
+          throw new Error(imported.rejected?.[0]?.message || 'Eagle 没有返回新文件的素材 ID');
+        }
+        duplicateIndex.invalidate(libraryPath);
+        const id = imported.ids[0];
+        importedId = id;
+        const ready = await waitForImportedFile(id, libraryPath);
+        if (!ready.fileURL) throw new Error(`Eagle 未能完成 ${type.toUpperCase()} 文件复制`);
+        const item = ready.item;
+        if (item) hub.itemCache.set(id, item);
+        const currentLibrary = await client.libraryInfo().catch(() => null);
+        if (currentLibrary?.path === libraryPath) {
+          currentLibrary.folders = await client.folderTree();
+          hub.library = currentLibrary;
+          hub.lastModificationTime = currentLibrary.modificationTime;
+          broadcast('hub:library-changed', {
+            library: currentLibrary,
+            libraryChanged: false,
+            source: 'multiview',
+            origin: event.sender.id
+          });
+        }
+        broadcast('hub:items-changed', {
+          items: item ? [item] : [],
+          ids: [id],
+          source: 'multiview',
+          origin: event.sender.id,
+          reason: 'document-create'
+        });
+        return {
+          ...imported,
+          id,
+          item,
+          type,
+          name: availableName,
+          renamed: availableName !== requestedName
+        };
+      } catch (error) {
+        if (importedId) {
+          await client.updateItem(importedId, { isDeleted: true }).catch(() => {});
+          broadcast('hub:query-invalidated', { reason: 'document-create-rollback', id: importedId });
+        }
+        throw error;
+      } finally {
+        await temporary.cleanup().catch(error => console.error('Unable to clean new-file temporary directory:', error));
+      }
+    });
+  });
+  ipcMain.handle('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     let filePaths = paths;
     if (!filePaths?.length) {
@@ -467,7 +810,45 @@ function setupIPC() {
       if (result.canceled || !result.filePaths.length) return { canceled: true };
       filePaths = result.filePaths;
     }
-    return { canceled: false, ...(await importPaths({ paths: filePaths, folderId, libraryPath })) };
+    try {
+      const duplicates = await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex });
+      if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates };
+      if (duplicateChoice === 'cancel') return { canceled: true };
+      const duplicateByPath = new Map();
+      for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
+      const useExisting = duplicateChoice === 'use-existing';
+      const existing = useExisting ? [...duplicateByPath.values()] : [];
+      const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
+      const imported = importPathsToUse.length
+        ? await importPaths({ paths: importPathsToUse, folderId, libraryPath })
+        : { count: 0, ready: 0, ids: [], rejected: [] };
+      if (imported.count) duplicateIndex.invalidate(libraryPath);
+      let existingIds = existing.map(duplicate => duplicate.id);
+      let duplicateFailed = 0;
+      if (useExisting && existing.length && folderId) {
+        const assignments = await settleWithConcurrency(existing, duplicate => hub.mutateSet({
+          id: duplicate.id,
+          field: 'folders',
+          add: [folderId],
+          libraryPath,
+          origin: event.sender.id
+        }), 4);
+        existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
+        duplicateFailed = assignments.length - existingIds.length;
+      }
+      const result = {
+        ...imported,
+        count: imported.count + existingIds.length,
+        ready: imported.ready + existingIds.length,
+        ids: [...imported.ids, ...existingIds],
+        duplicateCount: existingIds.length,
+        duplicateFailed
+      };
+      return { canceled: false, ...result };
+    } finally {
+      focusBrowserWindow(parent);
+      setTimeout(() => focusBrowserWindow(parent), 350);
+    }
   });
   ipcMain.handle('items:import-clipboard', (_event, data) => importClipboard(data));
   ipcMain.handle('item:show-in-finder', async (_event, id) => {
@@ -480,16 +861,151 @@ function setupIPC() {
     const { filePath } = await itemFilePath(id);
     return filePath || null;
   });
+  ipcMain.handle('item:metadata', async (_event, id) => {
+    const { item, filePath } = await itemFilePath(id);
+    if (!filePath) return { itemId: id, metadata: null, error: '找不到素材原文件' };
+    const cacheKey = `${id}:${item.modificationTime || item.size || 0}`;
+    if (metadataCache.has(cacheKey)) return { itemId: id, metadata: metadataCache.get(cacheKey) };
+    try {
+      const metadata = await readMetadata(filePath, item.ext);
+      if (metadataCache.size > 500) metadataCache.delete(metadataCache.keys().next().value);
+      metadataCache.set(cacheKey, metadata);
+      return { itemId: id, metadata };
+    } catch (error) {
+      return { itemId: id, metadata: null, error: error.message || '读取元数据失败' };
+    }
+  });
   ipcMain.handle('item:open-default', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return { ok: false, message: '找不到素材原文件' };
     const message = await shell.openPath(filePath);
     return message ? { ok: false, message } : { ok: true };
   });
+  ipcMain.handle('items:export', async (event, { ids, libraryPath }) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const destination = await dialog.showOpenDialog(parent, {
+      title: '导出素材到文件夹',
+      buttonLabel: '选择导出目录',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (destination.canceled || !destination.filePaths[0]) return { canceled: true };
+    const resolved = await resolveItemFiles(ids);
+    const exported = await exportFiles({
+      filePaths: resolved.map(entry => entry.filePath).filter(Boolean),
+      destinationRoot: destination.filePaths[0],
+      libraryPath,
+      fs: { ...fsp, existsSync: candidate => fs.existsSync(candidate) }
+    });
+    return {
+      canceled: false,
+      ...exported,
+      missing: exported.missing + resolved.filter(entry => !entry.filePath).length,
+      requested: resolved.length
+    };
+  });
+  ipcMain.handle('items:open-other', async (event, { ids }) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const chooser = await dialog.showOpenDialog(parent, {
+      title: '选择打开素材的应用',
+      buttonLabel: '选择应用',
+      defaultPath: process.platform === 'darwin' ? '/Applications' : undefined,
+      properties: ['openFile']
+    });
+    if (chooser.canceled || !chooser.filePaths[0]) return { canceled: true };
+    const resolved = await resolveItemFiles(ids);
+    const files = resolved.map(entry => entry.filePath).filter(Boolean);
+    if (!files.length) return { canceled: false, count: 0, missing: resolved.length };
+    if (process.platform !== 'darwin') return { canceled: false, count: 0, missing: 0, message: '其它应用打开目前仅支持 macOS' };
+    await new Promise((resolve, reject) => {
+      const child = spawn('/usr/bin/open', ['-a', chooser.filePaths[0], ...files], { detached: true, stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('spawn', () => { child.unref(); resolve(); });
+    });
+    return { canceled: false, count: files.length, missing: resolved.length - files.length };
+  });
+  ipcMain.handle('items:share', async (event, { ids }) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const resolved = await resolveItemFiles(ids);
+    const files = resolved.map(entry => entry.filePath).filter(Boolean);
+    if (!files.length) return { ok: false, message: '找不到可分享的素材原文件' };
+    if (typeof ShareMenu !== 'function') return { ok: false, message: '当前系统不支持分享菜单' };
+    new ShareMenu({ filePaths: files }).popup({ window: parent });
+    return { ok: true, count: files.length, missing: resolved.length - files.length };
+  });
+  ipcMain.handle('items:duplicate', async (event, { ids, folderId, libraryPath, preserveFolders = false }) => {
+    const resolved = await resolveItemFiles(ids);
+    const paths = resolved.map(entry => entry.filePath).filter(Boolean);
+    if (!paths.length) return { count: 0, missing: resolved.length };
+    const imported = await importPaths({ paths, folderId: folderId || null, libraryPath });
+    if (preserveFolders && imported.ids?.length) {
+      const assignments = pairImportedIdsWithFolders(imported.ids, resolved.filter(entry => entry.filePath));
+      const folderAssignments = await settleWithConcurrency(assignments, ({ id, folders }) => hub.mutateSet({
+        id,
+        field: 'folders',
+        add: folders,
+        libraryPath,
+        origin: event.sender.id
+      }), 4);
+      imported.folderAssignmentFailed = folderAssignments.filter(result => !result.ok).length;
+    }
+    const supplementalItems = (await Promise.all((imported.ids || []).map(id => client.getItem(id).catch(() => null)))).filter(Boolean);
+    if (supplementalItems.length) {
+      await getSupplementalItemStore().add(libraryPath, supplementalItems.map(item => item.id));
+      hub.addSupplementalItems(libraryPath, supplementalItems);
+      for (const item of supplementalItems) hub.itemCache.set(item.id, item);
+      hub.emit('items-changed', { items: supplementalItems, source: 'multiview', origin: event.sender.id });
+      hub.emit('query-invalidated', { reason: 'duplicate-supplemental', ids: supplementalItems.map(item => item.id) });
+    }
+    return { ...imported, missing: resolved.length - paths.length };
+  });
+  ipcMain.handle('clipboard:write-files', (_event, ids) => copyItemFiles(ids));
   ipcMain.handle('clipboard:write-text', (_event, value) => {
     clipboard.writeText(String(value || ''));
     return true;
   });
+  ipcMain.on('item:start-drag', (event, data) => {
+    const payload = Array.isArray(data) ? { ids: data } : (data || {});
+    const uniqueIds = [...new Set(payload.ids || [])];
+    // Resolve from the in-memory item cache synchronously. Calling startDrag
+    // after an async IPC round-trip can outlive the renderer's dragstart event
+    // and leave Chromium's native drag session waiting indefinitely on macOS.
+    const resolved = uniqueIds.map(id => ({ id, filePath: cachedItemFilePath(id) }));
+    const files = resolved.map(entry => entry.filePath).filter(Boolean);
+    if (!files.length) {
+      broadcast('item:drag-state', { active: false });
+      event.returnValue = { ok: false, message: '找不到素材原文件' };
+      event.sender.send('item:drag-finished', { ok: false, message: '找不到素材原文件' });
+      return;
+    }
+    const token = ++dragSequence;
+    broadcast('item:drag-state', {
+      active: true,
+      token,
+      ids: uniqueIds,
+      sourceFolderId: payload.sourceFolderId || null,
+      sourcePaneId: payload.sourcePaneId || null,
+      sourceWindowId: payload.sourceWindowId || null,
+      libraryPath: payload.libraryPath || hub.library?.path || null
+    });
+    try {
+      event.sender.startDrag({ file: files[0], files, icon: dragIcon(uniqueIds[0], files[0]) });
+      event.returnValue = { ok: true, count: files.length, missing: uniqueIds.length - files.length };
+      event.sender.send('item:drag-finished', { ok: true, count: files.length, missing: uniqueIds.length - files.length });
+    } catch (error) {
+      finishDrag(token);
+      event.returnValue = { ok: false, message: error.message || '无法开始文件拖动' };
+      event.sender.send('item:drag-finished', { ok: false, message: error.message || '无法开始文件拖动' });
+    }
+    // Keep the fallback ids available for the complete native drag session.
+    // A short timer made long drags lose their ids before drop and could leave
+    // the renderer stuck in a drag state. Renderer drop/dragend clears this;
+    // the long timer is only a last-resort recovery for an aborted session.
+    clearTimeout(dragCleanupTimers.get(token));
+    dragCleanupTimers.set(token, setTimeout(() => {
+      finishDrag(token);
+    }, 30000));
+  });
+  ipcMain.on('item:cancel-drag', (_event, token) => finishDrag(token));
   ipcMain.handle('item:context-menu', (event, data) => showItemContextMenu(event, data));
   ipcMain.handle('pins:get', async (_event, { libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
