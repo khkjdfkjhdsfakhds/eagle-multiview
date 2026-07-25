@@ -2,18 +2,50 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
-## 1.5.2 - 2026-07-23
+## 1.5.2 - 2026-07-25
 
-### Folder covers
+### Multi-pane workspace
+
+- Added single, two-pane, three-pane, and four-pane layouts inside each window.
+- Kept folder, search, filter, selection, scroll, preview, and inspector state independent for every pane.
+- Bound delayed imports, bulk writes, inspector saves, TXT saves, pin updates, and refreshes to the pane that started them.
+
+### Creation, organization, and file actions
+
+- Added Eagle-style creation flows for folders, TXT and other supported documents, and smart folders.
+- Added export, duplicate creation, native file copying, Finder dragging, default-app opening, and file-manager reveal actions.
+- Added duplicate detection for imports and safer partial-success handling for bulk folder, tag, rating, trash, restore, export, and duplicate operations.
+- Matched Eagle's folder-removal versus trash behavior when an item belongs to more than one folder.
+
+### Metadata and navigation
+
+- Added local reading for common NovelAI, Stable Diffusion WebUI, ComfyUI, and InvokeAI generation metadata.
+- Expanded folder navigation, smart-folder conversion, history, multi-pane refresh behavior, and keyboard shortcuts.
+- Added `Option-N` for folders, `Option-Shift-N` for TXT documents, and `Command-Option-N` for new windows without intercepting `Command-N`.
+
+### Drag, drop, and asynchronous reliability
+
+- Reworked native and HTML5 drag lifecycles so folder drops release the pointer session before Eagle API writes begin.
+- Preserved source window, source pane, source folder, and library identity across cross-window and cross-pane drops.
+- Added bounded concurrency, per-item timeouts, partial-failure reporting, close blocking for high-risk writes, and stale-response protection.
+- Prevented slow background refreshes or failed pane queries from repainting unrelated panes or disabling the whole application.
+
+### Folder covers and interface
 
 - Matched Eagle's folder-card proportions, stacked sheet spacing, and dark radial cover surface.
 - Fixed portrait folder covers being scaled by width and vertically clipped into a landscape strip.
 - Kept Eagle's single-cover behavior while centering portrait, square, and landscape covers at their original aspect ratio.
 
+### Windows experimental build
+
+- Added a Windows x64 NSIS build and Windows application icon.
+- The unsigned Windows artifact is provided from the current source without Windows hardware/VM GUI validation and without a maintenance commitment.
+
 ### Validation
 
-- Added a regression test for the folder-card height and aspect-ratio-safe cover constraints.
-- Passed syntax checks and all automated tests.
+- Added regression coverage for pane isolation, drag/drop lifecycle, asynchronous operations, shortcuts, smart folders, duplicate handling, metadata reading, exporting, new-file creation, Trash scanning, folder covers, and Eagle API behavior.
+- Passed JavaScript syntax checks and the full automated test suite.
+- Verified the signed arm64 installed app with an isolated public test-library copy; Windows runtime behavior remains unverified.
 
 ## 1.5.1 - 2026-07-23
 
