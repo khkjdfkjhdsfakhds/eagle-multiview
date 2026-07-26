@@ -111,6 +111,19 @@ test('narrow screens get chrome that fits them', () => {
   assert.ok(renderer.includes("window.matchMedia('(pointer: coarse)').matches && position"), 'touch has no hover for the file name');
 });
 
+test('the layout switcher stays reachable on a phone', () => {
+  // The container query hides .view-mode-group under 460px of pane width,
+  // which on a phone is always. Compact layouts wrap the row instead.
+  assert.match(styles, /@container \(max-width: 460px\) \{\s*\.content-heading \.view-mode-group \{ display: none; \}/);
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {'), styles.indexOf('@media (max-width: 600px) {'));
+  assert.ok(compact.includes('.content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }'));
+  assert.ok(compact.includes('.content-pane .content-heading .view-mode-group { display: inline-flex; }'));
+  // No forced 100% basis: the row wraps only when it has to, so a phone in
+  // landscape keeps a single-row header.
+  assert.ok(compact.includes('.content-pane .content-heading .location-block { flex: 1 1 210px; }'));
+  assert.ok(!compact.includes('flex: 1 1 100%'), 'the controls must not be forced onto their own row');
+});
+
 test('preview modal supports two-finger pinch zoom', () => {
   assert.ok(renderer.includes('const previewPointers = new Map();'));
   assert.ok(renderer.includes('pinchBase = { ...pinchGeometry()'));

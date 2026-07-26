@@ -1984,6 +1984,18 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .toolbar .new-create-button span:not(.new-button-chevron) { display: none; }
   /* One pane at a time down here, so the "栏 N" badge is noise. */
   .pane-badge { display: none; }
+  /* A phone-width pane cannot fit navigation + title + layout + sort on one
+     line, and the container query drops the layout switch first — but the
+     layout choice matters most on the narrowest screen, where 网格 reads far
+     better than justified. Let the row wrap instead of shedding controls;
+     with no forced basis it only wraps when it actually has to, so a phone in
+     landscape still gets a single-row header. Desktop splits keep the
+     container-query behaviour, where vertical space is the scarcer resource. */
+  .content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }
+  .content-pane .content-heading .location-block { flex: 1 1 210px; }
+  .content-pane .content-heading .sort-controls { display: flex; margin-left: auto; }
+  .content-pane .content-heading .view-mode-group { display: inline-flex; }
+  .content-pane .content-heading .breadcrumb { display: flex; }
   /* The filter popover is 286px anchored to a button two thirds across the
      toolbar — on a phone that runs straight off the right edge. Turn it into
      a bottom sheet so every control stays reachable. */
