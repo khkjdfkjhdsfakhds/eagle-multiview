@@ -666,12 +666,12 @@ const rpcRegistry = new Map();
 
 function handleRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  handleRPC(channel, handler);
+  ipcMain.handle(channel, handler);
 }
 
 function onRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  onRPC(channel, handler);
+  ipcMain.on(channel, handler);
 }
 
 async function invokeWebRPC(method, args, sender) {

@@ -72,6 +72,16 @@ test('host-only channels are all real registered channels', () => {
   }
 });
 
+test('registry helpers bridge to ipcMain instead of recursing', () => {
+  // A blanket ipcMain→helper rename once turned these into self-calls that
+  // blew the stack on the first registration.
+  const helper = main.slice(main.indexOf('function handleRPC'), main.indexOf('async function invokeWebRPC'));
+  assert.ok(helper.includes('ipcMain.handle(channel, handler);'));
+  assert.ok(helper.includes('ipcMain.on(channel, handler);'));
+  assert.ok(!/function handleRPC[^]*?handleRPC\(channel/.test(helper), 'handleRPC 不得自递归');
+  assert.ok(!/function onRPC[^]*?onRPC\(channel/.test(helper), 'onRPC 不得自递归');
+});
+
 test('preload invoke channels not in the shim are declared host-only', () => {
   // Channels the desktop preload reaches over IPC but the shim replaces with
   // local behavior must be fenced off from the web RPC endpoint. hub:identity
