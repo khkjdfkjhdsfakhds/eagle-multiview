@@ -157,7 +157,8 @@ const paneStateKeys = [
   'sort', 'sortDir', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query',
   'viewMemory', 'restoreScroll'
 ];
-const paneViewModes = new Set(['justified', 'waterfall', 'list']);
+// Eagle offers four grid layouts; 'justified' is our default, as it is there.
+const paneViewModes = new Set(['justified', 'grid', 'waterfall', 'list']);
 function storedPaneViewModes() {
   try {
     const parsed = JSON.parse(localStorage.getItem('eaglemv.paneViewModes') || '{}');
@@ -344,6 +345,7 @@ function uiIcon(name, className = 'tree-icon-svg') {
     trash: '<path d="M4.5 6.5h11l-.6 10.5H5.1L4.5 6.5Z"></path><path d="M3.5 6.5h13M7.3 6.5V4h5.4v2.5M8 9.2v5.2M12 9.2v5.2"></path>',
     smart: '<path d="m10 2 1.35 4.15L15.5 7.5l-4.15 1.35L10 13l-1.35-4.15L4.5 7.5l4.15-1.35L10 2Z"></path><path d="m15.7 12 .65 2 2 .65-2 .65-.65 2-.65-2-2-.65 2-.65.65-2Z"></path>',
     layoutJustified: '<rect x="3" y="3.5" width="8" height="5.5" rx="1.2"></rect><rect x="12.5" y="3.5" width="4.5" height="5.5" rx="1.2"></rect><rect x="3" y="11" width="4.5" height="5.5" rx="1.2"></rect><rect x="9" y="11" width="8" height="5.5" rx="1.2"></rect>',
+    layoutGrid: '<rect x="3" y="3.5" width="6" height="6" rx="1.2"></rect><rect x="11" y="3.5" width="6" height="6" rx="1.2"></rect><rect x="3" y="10.5" width="6" height="6" rx="1.2"></rect><rect x="11" y="10.5" width="6" height="6" rx="1.2"></rect>',
     layoutWaterfall: '<rect x="3" y="3" width="6" height="7.5" rx="1.2"></rect><rect x="3" y="12.5" width="6" height="4.5" rx="1.2"></rect><rect x="11" y="3" width="6" height="4.5" rx="1.2"></rect><rect x="11" y="9.5" width="6" height="7.5" rx="1.2"></rect>',
     layoutList: '<rect x="3" y="3.5" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 5.2H17"></path><rect x="3" y="8.2" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 10H17"></path><rect x="3" y="13" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 14.8H17"></path>',
     chevronDown: '<path d="m5.5 7.5 4.5 5 4.5-5"></path>',
@@ -424,12 +426,14 @@ function paneMarkup(id, index) {
       <div class="sort-controls">
         <div id="viewModeGroup" class="view-mode-group" role="group" aria-label="当前栏布局">
           <button class="view-mode-button" data-view-mode="justified" title="自适应布局" aria-label="自适应布局">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
+          <button class="view-mode-button" data-view-mode="grid" title="网格" aria-label="网格">${uiIcon('layoutGrid', 'view-mode-svg')}</button>
           <button class="view-mode-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
           <button class="view-mode-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
         </div>
         <select id="sortSelect" class="sort-select" aria-label="当前栏排序">
           <option value="default">Eagle 顺序</option>
           <option value="name">名称</option>
+          <option value="added">添加日期</option>
           <option value="newest">最近修改</option>
           <option value="size">文件大小</option>
           <option value="resolution">分辨率</option>
@@ -1419,7 +1423,9 @@ function renderGrid({ preserveScroll = true } = {}) {
   const folderSection = folders.length
     ? `<div class="grid-section-heading"><span>子文件夹</span><span>${folders.length.toLocaleString()}</span></div><div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`
     : '';
-  const viewModeClass = state.viewMode === 'waterfall' ? ' waterfall' : state.viewMode === 'list' ? ' list' : '';
+  // Every layout carries its own class (including the default) so the CSS can
+  // target one mode instead of excluding all the others.
+  const viewModeClass = ` ${paneViewModes.has(state.viewMode) ? state.viewMode : 'justified'}`;
   const headingHTML = items.length && folders.length
     ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>`
     : '';

@@ -23,7 +23,9 @@ test('asset previews use their own aspect-ratio flow instead of the folder grid'
   const itemGridRule = styles.match(/\.item-grid\s*\{([^}]+)\}/)?.[1] || '';
   const folderGridRule = styles.match(/\.folder-grid\s*\{([^}]+)\}/)?.[1] || '';
   const assetGridRule = styles.match(/\.asset-grid\s*\{([^}]+)\}/)?.[1] || '';
-  const cardRule = styles.match(/\.item-card\s*\{([^}]+)\}/)?.[1] || '';
+  // Anchored: layout-specific rules like `.asset-grid.grid .item-card` also
+  // contain `.item-card` and would otherwise be matched first.
+  const cardRule = styles.match(/^\.item-card\s*\{([^}]+)\}/m)?.[1] || '';
   const thumbnailRule = styles.match(/^\.thumb-wrap\s*\{([^}]+)\}/m)?.[1] || '';
 
   assert.match(itemGridRule, /display:\s*block/);

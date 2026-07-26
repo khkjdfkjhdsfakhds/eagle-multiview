@@ -32,13 +32,18 @@
   // sort key stays stable (equal keys keep Eagle's original order).
   const sortComparators = {
     name: (a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'),
+    // Eagle separates 添加日期 from 修改日期: btime is when the item entered the
+    // library, modificationTime is when the file itself last changed. They are
+    // genuinely different orders — an old file imported today sorts first by
+    // one and last by the other.
+    added: (a, b) => (a?.btime || 0) - (b?.btime || 0),
     newest: (a, b) => (a?.modificationTime || 0) - (b?.modificationTime || 0),
     size: (a, b) => (a?.size || 0) - (b?.size || 0),
     resolution: (a, b) => ((a?.width || 0) * (a?.height || 0)) - ((b?.width || 0) * (b?.height || 0)),
     rating: (a, b) => (Number(a?.star) || 0) - (Number(b?.star) || 0),
     type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en')
   };
-  const defaultSortDirections = { name: 'asc', type: 'asc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
+  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
 
   function defaultSortDir(sort) {
     return defaultSortDirections[sort] || 'asc';

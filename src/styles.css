@@ -1125,10 +1125,20 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   align-items: flex-start;
   gap: 12px;
 }
-.asset-grid:not(.waterfall):not(.list)::after {
+/* Justified rows only: a greedy trailing flex item keeps the last row from
+   stretching its few cards across the full width. */
+.asset-grid.justified::after {
   content: "";
   flex: 999 1 calc(var(--thumb) * 2);
 }
+/* Eagle's 网格: equal square cells, thumbnails letterboxed inside them. */
+.asset-grid.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--thumb), 1fr));
+  align-items: start;
+}
+.asset-grid.grid .item-card { flex: none; }
+.asset-grid.grid .thumb-wrap { aspect-ratio: 1; }
 .grid-section-heading {
   min-height: 24px;
   display: flex;

@@ -13,9 +13,9 @@ const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'
 const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
 
 const items = [
-  { id: 'a', name: '苹果', ext: 'png', size: 300, star: 2, width: 10, height: 10, modificationTime: 3 },
-  { id: 'b', name: 'banana', ext: 'jpg', size: 100, star: 5, width: 30, height: 30, modificationTime: 1 },
-  { id: 'c', name: 'Cherry', ext: 'png', size: 200, width: 20, height: 20, modificationTime: 2 }
+  { id: 'a', name: '苹果', ext: 'png', size: 300, star: 2, width: 10, height: 10, modificationTime: 3, btime: 20 },
+  { id: 'b', name: 'banana', ext: 'jpg', size: 100, star: 5, width: 30, height: 30, modificationTime: 1, btime: 30 },
+  { id: 'c', name: 'Cherry', ext: 'png', size: 200, width: 20, height: 20, modificationTime: 2, btime: 10 }
 ];
 const sortIds = (sort, dir) => [...items].sort((a, b) => compareBySort(sort, dir, a, b)).map(item => item.id);
 
@@ -57,7 +57,20 @@ test('type groups by extension and default sort keeps Eagle order', () => {
   assert.equal(compareBySort('default', 'auto', items[0], items[1]), 0);
 });
 
+test('添加日期 sorts by btime, independently of the file modification time', () => {
+  // Eagle keeps these as two separate sorts because they disagree in practice:
+  // an old file imported today is newest by btime and oldest by mtime.
+  assert.deepEqual(sortIds('added', 'auto'), ['b', 'a', 'c'], 'newest import first by default');
+  assert.deepEqual(sortIds('added', 'asc'), ['c', 'a', 'b']);
+  assert.notDeepEqual(sortIds('added', 'auto'), sortIds('newest', 'auto'));
+  assert.equal(defaultSortDir('added'), 'desc');
+  assert.equal(compareBySort('added', 'auto', { id: 'x', btime: 5 }, { id: 'y', btime: 5 }), 0);
+  // Items predating the field sort as epoch rather than throwing them around.
+  assert.equal(compareBySort('added', 'asc', { id: 'x' }, { id: 'y', btime: 1 }), -1);
+});
+
 test('pane markup offers rating/type options and a direction toggle', () => {
+  assert.ok(renderer.includes('<option value="added">添加日期</option>'));
   assert.ok(renderer.includes('<option value="rating">评分</option>'));
   assert.ok(renderer.includes('<option value="type">文件类型</option>'));
   assert.ok(renderer.includes('id="sortDirButton"'));
