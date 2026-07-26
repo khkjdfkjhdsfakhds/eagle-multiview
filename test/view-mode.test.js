@@ -39,7 +39,7 @@ test('waterfall uses CSS columns and list restyles rows without overlays', () =>
 
 test('the grid layout uses equal square cells', () => {
   assert.match(cssSource, /\.asset-grid\.grid\s*\{[^}]*display: grid/);
-  assert.match(cssSource, /\.asset-grid\.grid\s*\{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(var\(--thumb\), 1fr\)\)/);
+  assert.match(cssSource, /\.asset-grid\.grid\s*\{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(var\(--thumb\), 100%\), 1fr\)\)/);
   // Square cells: the justified aspect-ratio and flex-basis both have to go.
   assert.ok(cssSource.includes('.asset-grid.grid .thumb-wrap { aspect-ratio: 1; }'));
   assert.ok(cssSource.includes('.asset-grid.grid .item-card { flex: none; }'));

@@ -30,7 +30,7 @@ test('asset previews use their own aspect-ratio flow instead of the folder grid'
 
   assert.match(itemGridRule, /display:\s*block/);
   assert.match(folderGridRule, /display:\s*grid/);
-  assert.match(folderGridRule, /grid-template-columns:\s*repeat\(auto-fill, minmax\(var\(--thumb\), 1fr\)\)/);
+  assert.match(folderGridRule, /grid-template-columns:\s*repeat\(auto-fill, minmax\(min\(var\(--thumb\), 100%\), 1fr\)\)/);
   assert.match(assetGridRule, /display:\s*flex/);
   assert.match(assetGridRule, /flex-wrap:\s*wrap/);
   assert.match(cardRule, /flex:\s*var\(--item-aspect\) 1 calc\(var\(--thumb\) \* var\(--item-aspect\)\)/);

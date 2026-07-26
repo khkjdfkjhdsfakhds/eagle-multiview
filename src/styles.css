@@ -788,6 +788,12 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   .content-heading .breadcrumb { display: none; }
   .content-heading { min-height: 54px; }
 }
+/* …but only where the pane can hold them. A compact window split four ways
+   leaves ~224px panes, and forcing the controls back would push the row 23px
+   past the window; below this the container rules above still hide them. */
+@container (min-width: 340px) {
+  body.compact-layout .content-heading .view-mode-group { display: inline-flex; }
+}
 @container (max-width: 340px) {
   /* Keep the view title and counts readable in extreme splits; sorting can
      wait until the pane is widened. */
@@ -1123,7 +1129,10 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .grid-scroller.marquee-active { user-select: none; }
 .folder-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--thumb), 1fr));
+  /* min() so a pane narrower than --thumb shrinks the track instead of
+     overflowing: a 700px window split four ways leaves ~140px of content and
+     a bare minmax(168px, 1fr) pushed the cards 22px past the pane. */
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--thumb), 100%), 1fr));
   gap: 12px;
   align-items: start;
 }
@@ -1142,7 +1151,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 /* Eagle's 网格: equal square cells, thumbnails letterboxed inside them. */
 .asset-grid.grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--thumb), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--thumb), 100%), 1fr));
   align-items: start;
 }
 .asset-grid.grid .item-card { flex: none; }
@@ -2128,8 +2137,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
      container-query behaviour, where vertical space is the scarcer resource. */
   .content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }
   .content-pane .content-heading .location-block { flex: 1 1 210px; }
-  .content-pane .content-heading .sort-controls { display: flex; margin-left: auto; }
-  .content-pane .content-heading .view-mode-group { display: inline-flex; }
+  .content-pane .content-heading .sort-controls { margin-left: auto; }
   .content-pane .content-heading .breadcrumb { display: flex; }
   /* The filter popover is 286px anchored to a button two thirds across the
      toolbar — on a phone that runs straight off the right edge. Turn it into
