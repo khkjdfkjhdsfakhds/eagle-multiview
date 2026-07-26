@@ -16,6 +16,18 @@
     return createQuery(source);
   }
 
+  // A lazy-load page appends to the end when the already-rendered ids form an
+  // exact prefix of the next list; anything else (reorder, shrink, in-place
+  // change) needs a full grid rebuild.
+  function appendableTailCount(renderedIds, items) {
+    if (!Array.isArray(renderedIds) || !renderedIds.length) return -1;
+    if (!Array.isArray(items) || items.length <= renderedIds.length) return -1;
+    for (let index = 0; index < renderedIds.length; index += 1) {
+      if (items[index]?.id !== renderedIds[index]) return -1;
+    }
+    return items.length - renderedIds.length;
+  }
+
   // Ascending base comparators; direction is applied as a factor so every
   // sort key stays stable (equal keys keep Eagle's original order).
   const sortComparators = {
@@ -73,5 +85,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags };
+  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags, appendableTailCount };
 });

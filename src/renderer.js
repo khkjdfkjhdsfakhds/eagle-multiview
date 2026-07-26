@@ -52,7 +52,8 @@ const {
   selectRange,
   effectiveSortDir,
   compareBySort: compareItemsBySort,
-  sharedTags: computeSharedTags
+  sharedTags: computeSharedTags,
+  appendableTailCount
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
@@ -1255,13 +1256,52 @@ function renderGrid({ preserveScroll = true } = {}) {
   const folderSection = folders.length
     ? `<div class="grid-section-heading"><span>子文件夹</span><span>${folders.length.toLocaleString()}</span></div><div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`
     : '';
-  const itemCards = items.map(item => {
-    const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
-    const isGif = ext === 'gif';
-    const thumbURL = `eaglemv://thumb/${encodeURIComponent(item.id)}`;
-    const originalURL = `eaglemv://original/${encodeURIComponent(item.id)}`;
-    const aspect = itemThumbnailAspect(item);
-    return `
+  const viewModeClass = state.viewMode === 'waterfall' ? ' waterfall' : state.viewMode === 'list' ? ' list' : '';
+  const headingHTML = items.length && folders.length
+    ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>`
+    : '';
+  const gridPrefixHTML = folderSection + headingHTML;
+  const itemGrid = $('#itemGrid');
+  // Fast path for lazy-load pages: when the already-rendered cards are an
+  // exact prefix of the new list and everything before the asset grid is
+  // unchanged, append only the tail. This keeps a 3000-card grid from being
+  // rebuilt on every page and preserves focus/hover state while scrolling.
+  const grid = itemGrid.querySelector('.asset-grid');
+  const appended = preserveScroll && grid && itemGrid._gridPrefix === gridPrefixHTML &&
+    grid.className === `asset-grid${viewModeClass}`.trim()
+    ? appendableTailCount([...grid.children].map(card => card.dataset.id), items)
+    : -1;
+  if (appended > 0) {
+    const renderedCount = items.length - appended;
+    grid.insertAdjacentHTML('beforeend', items.slice(renderedCount).map(itemCardMarkup).join(''));
+    hydrateGridCards([...grid.children].slice(renderedCount));
+    state.scrollTop = scrollTop;
+    if (updateSharedFooter) updateScrollUI();
+    scheduleVisibleItemWatch();
+    return;
+  }
+  const itemSection = items.length ? `${headingHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
+  itemGrid.innerHTML = `${folderSection}${itemSection}`;
+  itemGrid._gridPrefix = gridPrefixHTML;
+  const root = paneRoot();
+  hydrateGridCards(root?.querySelectorAll('#itemGrid .item-card') || []);
+  for (const image of root?.querySelectorAll('.folder-cover img') || []) {
+    if (image.complete) image.classList.add('loaded');
+    image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+  }
+  state.scrollTop = preserveScroll ? scrollTop : 0;
+  scroller.scrollTop = state.scrollTop;
+  if (updateSharedFooter) updateScrollUI();
+  scheduleVisibleItemWatch();
+}
+
+function itemCardMarkup(item) {
+  const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
+  const isGif = ext === 'gif';
+  const thumbURL = `eaglemv://thumb/${encodeURIComponent(item.id)}`;
+  const originalURL = `eaglemv://original/${encodeURIComponent(item.id)}`;
+  const aspect = itemThumbnailAspect(item);
+  return `
     <article class="item-card ${state.selected.has(item.id) ? 'selected' : ''} ${itemIsPinned(item) ? 'pinned' : ''}" data-id="${escapeHTML(item.id)}" draggable="true" tabindex="0" style="--item-aspect: ${aspect.toFixed(4)}">
       <div class="thumb-wrap">
         <img loading="lazy" src="${thumbURL}" alt="${escapeHTML(item.name)}"${isGif ? ` data-gif-static="${thumbURL}" data-gif-animated="${originalURL}"` : ''}>
@@ -1272,22 +1312,16 @@ function renderGrid({ preserveScroll = true } = {}) {
       <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
     </article>`;
-  }).join('');
-  const viewModeClass = state.viewMode === 'waterfall' ? ' waterfall' : state.viewMode === 'list' ? ' list' : '';
-  const itemSection = items.length
-    ? `${folders.length ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>` : ''}<div class="asset-grid${viewModeClass}">${itemCards}</div>`
-    : '';
-  $('#itemGrid').innerHTML = `${folderSection}${itemSection}`;
-  const root = paneRoot();
-  for (const card of root?.querySelectorAll('#itemGrid .item-card') || []) bindGifHover(card);
-  for (const image of root?.querySelectorAll('.thumb-wrap img, .folder-cover img') || []) {
-    if (image.complete) image.classList.add('loaded');
-    image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+}
+
+function hydrateGridCards(cards) {
+  for (const card of cards) {
+    bindGifHover(card);
+    for (const image of card.querySelectorAll('.thumb-wrap img')) {
+      if (image.complete) image.classList.add('loaded');
+      image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+    }
   }
-  state.scrollTop = preserveScroll ? scrollTop : 0;
-  scroller.scrollTop = state.scrollTop;
-  if (updateSharedFooter) updateScrollUI();
-  scheduleVisibleItemWatch();
 }
 
 function updateScrollUI() {
@@ -1482,7 +1516,10 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       renderLocation();
       // Quiet pages belong to a sort backfill: skip the grid rebuild per page
       // and render once when the backfill settles (in the finally block).
-      if (!quiet) renderGrid({ preserveScroll: preserveScroll && reset });
+      // Append pages must keep the scroll position (`preserveScroll && reset`
+      // used to reset it, teleporting scroll-driven paging back to the top)
+      // — with it preserved, renderGrid can take the append fast path.
+      if (!quiet) renderGrid({ preserveScroll });
       if (reset && selectedId) {
         const selectedAfter = itemById(selectedId);
         if (!selectedAfter) {

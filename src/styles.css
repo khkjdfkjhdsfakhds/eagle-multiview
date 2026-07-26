@@ -1112,6 +1112,10 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   position: relative;
   width: 100%;
   aspect-ratio: var(--item-aspect);
+  /* 大网格性能：视口外缩略图跳过布局/绘制/解码。尺寸完全由
+     width+aspect-ratio（样式）决定，不依赖内容，因此几何精确不变——
+     框选命中、键盘导航、offset 读取都不受影响。 */
+  content-visibility: auto;
   display: grid;
   place-items: center;
   overflow: hidden;

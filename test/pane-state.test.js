@@ -221,7 +221,9 @@ test('background grid renders respect the visibly active pane before updating th
   const end = source.indexOf('\nfunction updateScrollUI', start);
   const handler = source.slice(start, end);
   assert.ok(handler.includes("const updateSharedFooter = paneRoot()?.classList.contains('active') ?? true;"));
-  assert.equal((handler.match(/if \(updateSharedFooter\) updateScrollUI\(\);/g) || []).length, 2);
+  // Three exits: tag-manager view, the lazy-load append fast path, and the
+  // full rebuild — each may only touch the shared footer from the active pane.
+  assert.equal((handler.match(/if \(updateSharedFooter\) updateScrollUI\(\);/g) || []).length, 3);
 });
 
 test('delayed import refreshes stay attached to the pane that received the import', () => {
