@@ -14,6 +14,7 @@ const { readText, saveText } = require('./lib/text-file-service');
 const { createImportService } = require('./lib/import-service');
 const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 const { readMetadata } = require('./lib/metadata-reader');
+const { mimeForPath } = require('./lib/media-mime');
 const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
@@ -537,7 +538,16 @@ async function installProtocol() {
         return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" rx="24" fill="#0b0d11"/><path d="M112 76h58l38 38v110H112z" fill="#242832"/><path d="M170 76v40h38" fill="none" stroke="#59606d" stroke-width="8"/><text x="160" y="178" text-anchor="middle" fill="#7e8590" font-family="sans-serif" font-size="22">FILE</text></svg>', { headers: { 'Content-Type': 'image/svg+xml' } });
       }
       const range = request.headers.get('Range');
-      return net.fetch(fileURL, range ? { headers: { Range: range } } : undefined);
+      const response = await net.fetch(fileURL, range ? { headers: { Range: range } } : undefined);
+      // file:// responses carry no Content-Type and no CORS headers. Images
+      // and media survive on sniffing, but Chromium's PDF viewer and fetch()
+      // callers are blocked by ORB/CORS without them.
+      const headers = new Headers(response.headers);
+      const mime = mimeForPath(fileURL.pathname || fileURL);
+      if (mime) headers.set('Content-Type', mime);
+      headers.set('Access-Control-Allow-Origin', '*');
+      headers.set('Accept-Ranges', 'bytes');
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
     } catch (error) {
       return new Response(error.message || 'Media error', { status: 500 });
     }

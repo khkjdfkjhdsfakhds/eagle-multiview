@@ -2170,7 +2170,9 @@ function mediaMarkup(item) {
   const ext = String(item.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay></video>`;
   if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return `<audio src="${url}" controls autoplay></audio>`;
-  if (ext === 'pdf') return `<embed src="${url}" type="application/pdf" width="100%" height="100%">`;
+  // Chromium's PDF viewer refuses custom-protocol streams, so the PDF embed
+  // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
+  if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) return `<img src="${url}" alt="${escapeHTML(item.name)}">`;
   return `<div class="unsupported-preview"><img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⇧Enter 使用默认应用打开</span></p></div>`;
 }
@@ -2225,6 +2227,14 @@ function setupPreviewMedia() {
   if (image) {
     image.classList.add('preview-image');
     image.addEventListener('load', () => renderPreviewZoom(), { once: true });
+  }
+  const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
+  if (pdfEmbed) {
+    const token = state.previewToken;
+    window.eagleMV.filePath(pdfEmbed.dataset.pdfItem).then(filePath => {
+      if (!filePath || token !== state.previewToken || !pdfEmbed.isConnected) return;
+      pdfEmbed.src = 'file://' + filePath.split('/').map(encodeURIComponent).join('/');
+    }).catch(() => {});
   }
   renderPreviewZoom();
 }
