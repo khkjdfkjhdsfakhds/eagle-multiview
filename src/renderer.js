@@ -2525,6 +2525,19 @@ function removeTagFromSelection(tag) {
   });
 }
 
+// The address the preview shows for an image, or null when the item is not
+// displayed as an <img> (video/audio/PDF/unsupported). Shared by the preview
+// markup and the neighbour prefetch so they can never drift apart.
+function previewImageURL(item) {
+  const ext = String(item?.ext || '').toLowerCase();
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) return mediaURL('original', item.id);
+  // Chromium cannot decode these originals (PSD/TIFF/HEIC and camera RAW);
+  // Eagle's generated preview image in the .info folder stands in at full
+  // resolution, with the thumbnail as fallback.
+  if (previewStandInExtensions.has(ext)) return mediaURL('preview', item.id);
+  return null;
+}
+
 function mediaMarkup(item) {
   const url = mediaURL('original', item.id);
   const ext = String(item.ext || '').toLowerCase();
@@ -2533,12 +2546,43 @@ function mediaMarkup(item) {
   // Chromium's PDF viewer refuses custom-protocol streams, so the PDF embed
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
   if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) return `<img src="${url}" alt="${escapeHTML(item.name)}">`;
-  // Chromium cannot decode these originals (PSD/TIFF/HEIC and camera RAW);
-  // Eagle's generated preview image in the .info folder stands in at full
-  // resolution, with the thumbnail as fallback.
-  if (previewStandInExtensions.has(ext)) return `<img src="${mediaURL('preview', item.id)}" alt="${escapeHTML(item.name)}">`;
+  const imageURL = previewImageURL(item);
+  if (imageURL) return `<img src="${imageURL}" alt="${escapeHTML(item.name)}">`;
   return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览${hasCapability('openDefault') ? '<br><span>按 ⇧Enter 使用默认应用打开</span>' : ''}</p></div>`;
+}
+
+// Warming the neighbours makes swiping (and ←/→) show the next full-size
+// image immediately instead of flashing an empty frame while it downloads.
+// The Image objects stay referenced so the decoded bitmap survives long
+// enough to be reused; the ring is small because these are full-size files.
+const PREFETCH_RING = 6;
+const PREFETCH_MAX_BYTES = 48 * 1024 * 1024;
+const previewPrefetch = new Map();
+
+function prefetchPreviewImage(item) {
+  if (!item || previewPrefetch.has(item.id)) return;
+  // Metered or explicitly data-saving connections should not pay for images
+  // the user may never swipe to.
+  if (navigator.connection?.saveData) return;
+  if (Number(item.size) > PREFETCH_MAX_BYTES) return;
+  const url = previewImageURL(item);
+  if (!url) return;
+  const image = new Image();
+  image.decoding = 'async';
+  image.src = url;
+  previewPrefetch.set(item.id, image);
+  while (previewPrefetch.size > PREFETCH_RING) {
+    previewPrefetch.delete(previewPrefetch.keys().next().value);
+  }
+}
+
+function prefetchPreviewNeighbours(id) {
+  const items = sortedItems();
+  const index = items.findIndex(item => item.id === id);
+  if (index < 0) return;
+  // Forward first: swiping left (next) is the common direction.
+  prefetchPreviewImage(items[index + 1]);
+  prefetchPreviewImage(items[index - 1]);
 }
 
 function previewImage() { return $('#modalMedia img.preview-image'); }
@@ -2672,6 +2716,7 @@ async function openPreview(id, { forceReload = false } = {}) {
     $('#modalMedia').innerHTML = mediaMarkup(item);
     setPreviewZoom('fit');
     setupPreviewMedia();
+    prefetchPreviewNeighbours(id);
     return true;
   }
   setPreviewZoom('fit');
@@ -5449,6 +5494,7 @@ async function applyLibraryChange(payload) {
     setConnection(true);
     if (pathChanged) {
       state.expandedFolders.clear();
+      previewPrefetch.clear();
       for (const pane of state.panes) {
         pane.query = createQuery();
         withActivePane(pane.id, () => {
