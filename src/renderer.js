@@ -26,6 +26,7 @@ const {
   sharedTags: computeSharedTags
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
+const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
 const { createOperationTracker } = window.EagleMVOperationState;
 const newFileTypes = Object.freeze({
   txt: { label: 'TXT', defaultName: '未命名文本' },
@@ -2480,6 +2481,16 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.historyIndex = 0;
   }
   applyView(view);
+  if (changed) {
+    // Eagle remembers the sort per folder: entering a view restores its
+    // saved order, unlisted views fall back to Eagle order.
+    const remembered = sortMemory.recall(state.library?.path, descriptorKey(view));
+    state.sort = remembered?.sort || 'default';
+    state.sortDir = remembered?.sortDir || 'auto';
+    const pane = activePane();
+    if (pane) pane.sortCapNotified = false;
+    renderSortControls();
+  }
   if (view.kind === 'folder') revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
   closePreview({ commitSelection: false, skipDiscard: true });
@@ -3571,6 +3582,7 @@ function bindPaneEvents(paneId) {
     state.sortDir = 'auto';
     const pane = paneById(paneId);
     if (pane) pane.sortCapNotified = false;
+    sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
     renderSortControls();
     renderGrid({ preserveScroll: true });
     if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
@@ -3579,6 +3591,7 @@ function bindPaneEvents(paneId) {
     activatePane(paneId);
     if (!state.sort || state.sort === 'default') return;
     state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
+    sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
     renderSortControls();
     renderGrid({ preserveScroll: true });
   });
