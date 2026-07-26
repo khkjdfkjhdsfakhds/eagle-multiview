@@ -77,7 +77,7 @@ test('non-default sorts backfill the whole folder up to the cap', () => {
   assert.ok(renderer.includes('const SORT_FETCH_CAP = 3000;'));
   const start = renderer.indexOf('const sortBackfillActive');
   assert.ok(start >= 0);
-  const block = renderer.slice(start, start + 1000);
+  const block = renderer.slice(start, start + 1800);
   assert.ok(block.includes('state.items.length < SORT_FETCH_CAP'));
   // Backfill pages render quietly; the grid rebuilds once when it settles.
   assert.ok(block.includes('quiet: nextQuiet'));

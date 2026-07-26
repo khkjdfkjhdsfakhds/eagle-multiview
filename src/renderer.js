@@ -139,12 +139,15 @@ const state = {
   dragDepth: 0,
   draggingItemIds: null,
   dragSourcePaneId: null,
-  internalDrag: null
+  internalDrag: null,
+  viewMemory: new Map(),
+  restoreScroll: null
 };
 
 const paneStateKeys = [
   'items', 'total', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
-  'sort', 'sortDir', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query'
+  'sort', 'sortDir', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query',
+  'viewMemory', 'restoreScroll'
 ];
 const paneViewModes = new Set(['justified', 'waterfall', 'list']);
 function storedPaneViewModes() {
@@ -181,7 +184,9 @@ function createPaneState(id, source = state) {
     dragDepth: 0,
     draggingItemIds: null,
     scrollTop: 0,
-    query: cloneQuery(source.query)
+    query: cloneQuery(source.query),
+    viewMemory: new Map(source.viewMemory || []),
+    restoreScroll: null
   };
 }
 state.panes = [createPaneState('pane-1')];
@@ -1655,13 +1660,23 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
         const sortBackfillActive = state.sort !== 'default' && state.hasMore;
         const continueBackfill = sortBackfillActive && state.items.length < SORT_FETCH_CAP;
-        if (needsViewportFill || continueBackfill) {
+        const restoreTarget = pane.restoreScroll;
+        const continueRestore = Boolean(restoreTarget) && state.hasMore && state.items.length < restoreTarget.count;
+        if (needsViewportFill || continueBackfill || continueRestore) {
           // Backfill pages render nothing until the last one; viewport fill
           // must keep rendering so scrollHeight grows.
-          const nextQuiet = continueBackfill && !needsViewportFill;
+          const nextQuiet = (continueBackfill || continueRestore) && !needsViewportFill;
           setTimeout(() => refresh({ reset: false, preserveScroll: true, paneId, quiet: nextQuiet }), 0);
         } else {
           if (quiet) renderGrid({ preserveScroll: true });
+          if (restoreTarget) {
+            // Back/up navigation: every remembered page is in, land where the
+            // user left off (the browser clamps if the list shrank meanwhile).
+            pane.restoreScroll = null;
+            scroller.scrollTop = restoreTarget.scrollTop;
+            pane.scrollTop = scroller.scrollTop;
+            if (paneIsActive) updateScrollUI();
+          }
           if (sortBackfillActive && state.items.length >= SORT_FETCH_CAP) {
             // One notice per (view, sort) episode — the key derives staleness
             // away instead of resetting a flag from every sort/navigation site.
@@ -2705,7 +2720,21 @@ function applyView(view) {
   renderSortControls();
 }
 
-function navigate(view, { record = true, refreshView = true, skipDiscard = false } = {}) {
+// Leaving a view keeps its scroll offset and loaded-item count so back/up
+// navigation can land where the user left off instead of the top of page one.
+const VIEW_MEMORY_LIMIT = 50;
+function rememberViewPosition() {
+  const key = descriptorKey(state.currentView);
+  const memory = state.viewMemory;
+  memory.delete(key);
+  const scroller = $('#gridScroller');
+  const scrollTop = scroller ? scroller.scrollTop : state.scrollTop || 0;
+  if (!state.items.length || scrollTop <= 0) return;
+  memory.set(key, { scrollTop, count: Math.min(state.items.length, SORT_FETCH_CAP) });
+  while (memory.size > VIEW_MEMORY_LIMIT) memory.delete(memory.keys().next().value);
+}
+
+function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = false } = {}) {
   if (!state.library) return;
   view = normalizeView(view);
   if (view.kind === 'folder') {
@@ -2725,6 +2754,8 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.history = [{ ...view }];
     state.historyIndex = 0;
   }
+  if (changed) rememberViewPosition();
+  state.restoreScroll = changed && restoreScroll ? state.viewMemory.get(descriptorKey(view)) || null : null;
   applyView(view);
   if (view.kind === 'folder') revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
@@ -2752,7 +2783,7 @@ function navigateHistory(delta) {
   if (next < 0 || next >= state.history.length) return;
   if (!confirmDiscardChanges()) return;
   state.historyIndex = next;
-  navigate(state.history[next], { record: false, skipDiscard: true });
+  navigate(state.history[next], { record: false, skipDiscard: true, restoreScroll: true });
 }
 
 function parentView() {
@@ -2761,7 +2792,7 @@ function parentView() {
 
 function navigateUp() {
   const parent = parentView();
-  if (parent) navigate(parent);
+  if (parent) navigate(parent, { restoreScroll: true });
 }
 
 function renderLocation() {
@@ -3956,7 +3987,7 @@ function bindPaneEvents(paneId) {
   query('#breadcrumb').addEventListener('click', event => {
     activatePane(paneId);
     const button = event.target.closest('[data-crumb-index]');
-    if (button) navigate($('#breadcrumb')._crumbs[Number(button.dataset.crumbIndex)].view);
+    if (button) navigate($('#breadcrumb')._crumbs[Number(button.dataset.crumbIndex)].view, { restoreScroll: true });
   });
   query('#sortSelect').addEventListener('change', event => {
     activatePane(paneId);
