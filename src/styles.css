@@ -1059,6 +1059,51 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .grid-scroller::-webkit-scrollbar-thumb:hover, .sidebar::-webkit-scrollbar-thumb:hover, .inspector::-webkit-scrollbar-thumb:hover { background: #626368; background-clip: padding-box; }
 .item-grid { display: block; }
+/* Pull-to-refresh banner: parked just above the scroller's top edge and
+   translated into view by the touch handler, so it never affects layout. */
+.pull-refresh {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 38px;
+  margin-top: -38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pull-refresh.armed { color: #8fbcf5; }
+.pull-refresh-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line-strong);
+  border-top-color: currentColor;
+  border-radius: 50%;
+}
+.pull-refresh.refreshing .pull-refresh-spinner { animation: pull-refresh-spin .8s linear infinite; }
+@keyframes pull-refresh-spin { to { transform: rotate(360deg); } }
+/* Live readout while two fingers resize the thumbnails. */
+.pinch-badge {
+  position: absolute;
+  z-index: 14;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 7px 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(24, 25, 29, .9);
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 .marquee-rect {
   position: absolute;
   z-index: 40;
@@ -1854,6 +1899,10 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   /* Our long-press owns the gesture: block iOS image callouts and text
      selection flashes inside the grid. */
   .item-grid, .item-grid img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  /* Vertical scrolling stays native; pinch-zoom and double-tap zoom belong to
+     the grid's own thumbnail-resize gesture (Safari ignores user-scalable=no,
+     so touch-action is the only reliable way to claim them). */
+  .grid-scroller { touch-action: pan-y; }
 }
 
 /* Web access QR panels */

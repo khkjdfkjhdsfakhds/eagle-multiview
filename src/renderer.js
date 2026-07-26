@@ -440,6 +440,9 @@ function paneMarkup(id, index) {
       </div>
     </div>
     <div id="gridScroller" class="grid-scroller">
+      <div id="pullRefresh" class="pull-refresh" aria-hidden="true">
+        <span class="pull-refresh-spinner"></span><span id="pullRefreshText" class="pull-refresh-text">下拉刷新</span>
+      </div>
       <div id="emptyState" class="empty-state hidden">
         <div class="empty-icon"><img src="brand-icon.png" alt=""></div>
         <h2>这里还没有素材</h2>
@@ -451,6 +454,7 @@ function paneMarkup(id, index) {
       <button id="scrollTopButton" class="scroll-top-button hidden" title="回到顶部（Home）">↑</button>
     </div>
     <div id="dropOverlay" class="drop-overlay hidden"><div><strong>导入到当前文件夹</strong><span>松开即可导入文件</span></div></div>
+    <div id="pinchBadge" class="pinch-badge hidden" aria-hidden="true"></div>
   </section>`;
 }
 
@@ -1124,6 +1128,22 @@ const compactLayoutQuery = window.matchMedia('(max-width: 900px)');
 const isCompactLayout = () => compactLayoutQuery.matches;
 const isTouchEvent = event => event.pointerType === 'touch' ||
   (event.pointerType === undefined && window.matchMedia('(pointer: coarse)').matches);
+
+// Thumbnail size has three drivers (slider, two-finger pinch, restore on
+// launch) that must agree; they all go through here.
+const gestures = window.EagleMVGridGestures;
+function currentThumbnailSize() {
+  const value = Number($('#sizeSlider')?.value);
+  return Number.isFinite(value) && value > 0 ? value : gestures.THUMB_DEFAULT;
+}
+function applyThumbnailSize(size, { persist = true } = {}) {
+  const clamped = gestures.clampThumbnailSize(size);
+  document.documentElement.style.setProperty('--thumb', `${clamped}px`);
+  const slider = $('#sizeSlider');
+  if (slider) slider.value = String(clamped);
+  if (persist) { try { localStorage.setItem('eaglemv.thumbnailSize', String(clamped)); } catch {} }
+  return clamped;
+}
 
 function renderPanels() {
   const compact = isCompactLayout();
@@ -4034,6 +4054,97 @@ function bindMarqueeSelection(paneId, scroller) {
   scroller.addEventListener('pointercancel', finishMarquee);
 }
 
+// Grid touch gestures: pull-to-refresh and two-finger thumbnail resizing.
+// These use native touch events rather than pointer events because both have
+// to call preventDefault — the pull to keep the browser's own overscroll
+// refresh out of the way, the pinch to stop iOS page zoom (Safari ignores
+// user-scalable=no). `touch-action: pan-y` on coarse pointers claims the
+// gesture before the browser's zoom recognizer sees it. The gesture maths
+// live in src/grid-gestures.js so they can be unit tested.
+function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
+  const indicator = scroller.querySelector('#pullRefresh');
+  const indicatorText = scroller.querySelector('#pullRefreshText');
+  const badge = paneRoot(paneId)?.querySelector('#pinchBadge');
+  if (!indicator || !indicatorText || !badge) return;
+  let pull = null;
+  let pinch = null;
+  const drawPull = (offset, label) => {
+    indicator.style.transform = `translateY(${offset}px)`;
+    indicator.style.opacity = String(gestures.pullOpacity(offset));
+    indicatorText.textContent = label;
+  };
+  const resetPull = () => {
+    pull = null;
+    indicator.classList.remove('armed', 'refreshing');
+    indicator.style.transform = '';
+    indicator.style.opacity = '';
+  };
+  scroller.addEventListener('touchstart', event => {
+    if (event.touches.length === 2) {
+      resetPull();
+      cancelLongPress();
+      pinch = { spread: gestures.spread(event.touches), size: currentThumbnailSize() };
+      return;
+    }
+    if (pinch || event.touches.length !== 1 || scroller.scrollTop > 0) return;
+    pull = { startY: event.touches[0].clientY, offset: 0, armed: false };
+  }, { passive: true });
+  scroller.addEventListener('touchmove', event => {
+    if (pinch) {
+      if (event.touches.length !== 2) return;
+      event.preventDefault();
+      const size = applyThumbnailSize(
+        gestures.pinchThumbnailSize(pinch.size, pinch.spread, gestures.spread(event.touches)),
+        { persist: false }
+      );
+      badge.textContent = `缩略图 ${size}`;
+      badge.classList.remove('hidden');
+      return;
+    }
+    if (!pull || event.touches.length !== 1) return;
+    const delta = event.touches[0].clientY - pull.startY;
+    // Scrolling up, or a list that scrolled away from the top mid-gesture,
+    // hands the gesture back to the scroller instead of fighting it.
+    if (delta <= 0 || scroller.scrollTop > 0) {
+      if (pull.offset) resetPull();
+      pull = null;
+      return;
+    }
+    event.preventDefault();
+    pull.offset = gestures.pullOffset(delta);
+    pull.armed = gestures.pullArmed(pull.offset);
+    indicator.classList.toggle('armed', pull.armed);
+    drawPull(pull.offset, pull.armed ? '松开刷新' : '下拉刷新');
+  }, { passive: false });
+  const settle = event => {
+    if (pinch && event.touches.length < 2) {
+      pinch = null;
+      applyThumbnailSize(currentThumbnailSize());
+      badge.classList.add('hidden');
+      suppressGridClickUntil = Date.now() + 400;
+    }
+    if (!pull) return;
+    const { armed, offset } = pull;
+    pull = null;
+    // A pull is not a tap: keep it from reaching the blank-space handler that
+    // clears a touch multi-selection.
+    if (offset > 4) suppressGridClickUntil = Date.now() + 400;
+    if (!armed) {
+      resetPull();
+      return;
+    }
+    indicator.classList.remove('armed');
+    indicator.classList.add('refreshing');
+    drawPull(gestures.PULL_TRIGGER, '正在刷新…');
+    activatePane(paneId);
+    Promise.resolve(refresh({ reset: true, preserveScroll: false, paneId }))
+      .catch(() => {})
+      .finally(() => setTimeout(resetPull, 220));
+  };
+  scroller.addEventListener('touchend', settle);
+  scroller.addEventListener('touchcancel', settle);
+}
+
 function bindPaneEvents(paneId) {
   const root = paneRoot(paneId);
   if (!root || root.dataset.bound === 'true') return;
@@ -4310,6 +4421,7 @@ function bindPaneEvents(paneId) {
   });
   const scroller = query('#gridScroller');
   bindMarqueeSelection(paneId, scroller);
+  bindGridTouchGestures(paneId, scroller, cancelLongPress);
   scroller.addEventListener('contextmenu', event => {
     if (event.target.closest('.item-card, .folder-card')) return;
     event.preventDefault();
@@ -4542,10 +4654,7 @@ function bindEvents() {
     renderFilterState();
     schedulePaneFilterRefresh(paneId);
   });
-  $('#sizeSlider').addEventListener('input', event => {
-    document.documentElement.style.setProperty('--thumb', `${event.target.value}px`);
-    try { localStorage.setItem('eaglemv.thumbnailSize', event.target.value); } catch {}
-  });
+  $('#sizeSlider').addEventListener('input', event => applyThumbnailSize(event.target.value));
   $('#folderTree').addEventListener('click', event => {
     const toggle = event.target.closest('[data-toggle-folder]');
     if (toggle) { event.stopPropagation(); toggleFolder(toggle.dataset.toggleFolder); return; }
@@ -5415,10 +5524,7 @@ async function start() {
   renderPaneLayout(savedPaneLayout, { refresh: false });
   try {
     const thumbnailSize = Number(localStorage.getItem('eaglemv.thumbnailSize'));
-    if (thumbnailSize >= 110 && thumbnailSize <= 260) {
-      $('#sizeSlider').value = String(thumbnailSize);
-      document.documentElement.style.setProperty('--thumb', `${thumbnailSize}px`);
-    }
+    if (Number.isFinite(thumbnailSize) && thumbnailSize > 0) applyThumbnailSize(thumbnailSize, { persist: false });
   } catch {}
   renderPanels();
   renderQueryControls();
