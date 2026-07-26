@@ -1562,10 +1562,6 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .modal-nav:disabled { opacity: .18; cursor: default; }
 .modal-nav.prev { left: 20px; }.modal-nav.next { right: 20px; }
 .modal-caption { position: absolute; bottom: 24px; max-width: min(40vw, calc(100vw - 460px)); overflow: hidden; color: #d6dce5; text-overflow: ellipsis; white-space: nowrap; }
-.preview-toolbar { position: absolute; right: 76px; bottom: 17px; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 9px; background: rgba(36, 37, 41, .86); box-shadow: 0 10px 30px rgba(0, 0, 0, .26); backdrop-filter: blur(10px); }
-.preview-toolbar button { min-width: 30px; height: 26px; padding: 0 7px; border: 0; border-radius: 6px; background: transparent; color: #d7d9df; cursor: pointer; font-size: 11px; }
-.preview-toolbar button:hover { background: rgba(255, 255, 255, .1); color: white; }
-.preview-toolbar span { min-width: 42px; color: #8f929a; text-align: center; font-size: 10px; }
 .text-preview {
   width: min(1020px, calc(100vw - 150px));
   height: min(760px, calc(100vh - 125px));

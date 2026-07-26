@@ -2420,7 +2420,6 @@ function previewImage() { return $('#modalMedia img.preview-image'); }
 function renderPreviewZoom() {
   const image = previewImage();
   const zoom = state.previewZoom;
-  $('#previewZoomLabel').textContent = `${Math.round(zoom.scale * 100)}%`;
   if (!image) return;
   const fit = zoom.mode === 'fit';
   image.classList.toggle('preview-actual', !fit);
@@ -4531,10 +4530,12 @@ function bindEvents() {
   $('#previewModal').addEventListener('click', event => { if (event.target === event.currentTarget) closePreview(); });
   $('#prevPreview').addEventListener('click', () => movePreview(-1));
   $('#nextPreview').addEventListener('click', () => movePreview(1));
-  $('#previewFit').addEventListener('click', () => setPreviewZoom('fit'));
-  $('#previewActual').addEventListener('click', () => setPreviewZoom('actual'));
-  $('#previewZoomOut').addEventListener('click', () => changePreviewZoom(-.25));
-  $('#previewZoomIn').addEventListener('click', () => changePreviewZoom(.25));
+  // The zoom toolbar is gone by user request; the wheel still zooms at the
+  // cursor and double-click toggles 适应/100% like Eagle's preview.
+  $('#modalMedia').addEventListener('dblclick', event => {
+    if (!event.target.closest('img.preview-image')) return;
+    setPreviewZoom(state.previewZoom.mode === 'fit' ? 'actual' : 'fit');
+  });
   $('#modalMedia').addEventListener('wheel', event => {
     if (!previewImage()) return;
     event.preventDefault();
