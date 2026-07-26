@@ -1154,6 +1154,9 @@ function renderPanels() {
   document.body.classList.toggle('inspector-hidden', !compact && !state.inspectorVisible);
   $('#toggleSidebarButton').classList.toggle('active', compact ? state.openDrawer === 'sidebar' : state.sidebarVisible);
   $('#toggleInspectorButton').classList.toggle('active', compact ? state.openDrawer === 'inspector' : state.inspectorVisible);
+  // Rotating into or out of compact mode changes whether the selection strip
+  // belongs on screen at all.
+  renderSelectionBar();
 }
 
 function closeDrawers() {
@@ -1182,6 +1185,16 @@ function updateCardSelectionStyles() {
   for (const card of root.querySelectorAll('#itemGrid .item-card')) {
     card.classList.toggle('selected', state.selected.has(card.dataset.id));
   }
+}
+
+function clearSelection() {
+  if (!confirmDiscardChanges()) return false;
+  state.selected.clear();
+  state.selectedFolderCard = null;
+  updateCardSelectionStyles();
+  renderInspector();
+  if (isCompactLayout()) closeDrawers();
+  return true;
 }
 
 function selectFolderCard(id) {
@@ -1828,7 +1841,27 @@ function updateURLActions() {
   if (copyButton) copyButton.disabled = !url;
 }
 
+// Compact layouts hide the inspector behind a drawer, so a selection would
+// otherwise be invisible once the drawer closes. This strip keeps what is
+// selected — and the way out of it — one thumb-reach from the grid.
+function renderSelectionBar() {
+  const bar = $('#selectionBar');
+  if (!bar) return;
+  const count = state.selected.size;
+  const visible = isCompactLayout() && count > 0;
+  bar.classList.toggle('hidden', !visible);
+  document.body.classList.toggle('selection-bar-open', visible);
+  if (!visible) return;
+  const single = count === 1 ? itemById([...state.selected][0]) : null;
+  $('#selectionBarTitle').textContent = single ? `${single.name}.${single.ext}` : `已选 ${count.toLocaleString()} 个素材`;
+  $('#selectionBarMeta').textContent = single
+    ? `${single.width || 0}×${single.height || 0} · ${formatBytes(single.size)}`
+    : '拖到文件夹可批量归类';
+  $('#selectionBarPreview').classList.toggle('hidden', !single);
+}
+
 function renderInspector() {
+  renderSelectionBar();
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
   $('#inspectorContent').classList.toggle('hidden', count !== 1);
@@ -4235,11 +4268,8 @@ function bindPaneEvents(paneId) {
   query('#gridScroller').addEventListener('click', event => {
     if (!isTouchEvent(event) || Date.now() < suppressGridClickUntil) return;
     if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a, [data-tag-action]')) return;
-    if (!(state.selected.size || state.selectedFolderCard) || !confirmDiscardChanges()) return;
-    state.selected.clear();
-    state.selectedFolderCard = null;
-    updateCardSelectionStyles();
-    renderInspector();
+    if (!(state.selected.size || state.selectedFolderCard)) return;
+    clearSelection();
   });
   // Long-press: first use selects (entering multi-select), later ones open
   // the context menu. The browser's synthetic contextmenu/click that follow
@@ -4530,13 +4560,15 @@ function bindEvents() {
   $('#toggleInspectorButton').addEventListener('click', () => togglePanel('inspector'));
   $('#drawerBackdrop').addEventListener('click', closeDrawers);
   // Touch has no Esc: the multi-select panel needs an explicit way out.
-  $('#clearSelectionButton').addEventListener('click', () => {
-    if (!confirmDiscardChanges()) return;
-    state.selected.clear();
-    state.selectedFolderCard = null;
-    updateCardSelectionStyles();
-    renderInspector();
-    if (isCompactLayout()) closeDrawers();
+  $('#clearSelectionButton').addEventListener('click', clearSelection);
+  $('#selectionBarClear').addEventListener('click', clearSelection);
+  $('#selectionBarPreview').addEventListener('click', () => {
+    const id = [...state.selected][0];
+    if (id) openPreview(id);
+  });
+  $('#selectionBarDetails').addEventListener('click', () => {
+    state.openDrawer = 'inspector';
+    renderPanels();
   });
   // Rotating a tablet between drawer and column modes re-renders the panels.
   compactLayoutQuery.addEventListener?.('change', () => renderPanels());

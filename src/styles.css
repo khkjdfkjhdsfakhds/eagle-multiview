@@ -1601,6 +1601,54 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   color: #74757a;
   font-size: 9px;
 }
+/* Compact-only strip above the status bar: what is selected, and the way out.
+   Sits below the drawer backdrop so opening a drawer covers it. */
+.selection-bar {
+  position: fixed;
+  z-index: 50;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px max(9px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line-strong);
+  background: rgba(31, 32, 36, .97);
+  box-shadow: 0 -10px 26px rgba(0, 0, 0, .34);
+}
+.selection-bar-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
+.selection-bar-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selection-bar-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selection-bar-action {
+  flex: none;
+  min-width: 52px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--panel-3);
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+.selection-bar-action:active { background: #3a3b40; }
+.selection-bar-clear { border-color: var(--accent-line); background: var(--accent-soft); color: #a8c9f5; }
+/* Non-compact windows keep the real inspector, so the strip stays away. */
+@media (min-width: 901px) { .selection-bar { display: none; } }
+
 .status-divider { color: #404146; }
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #74757a; }
 .connection-dot.online { background: #55d291; box-shadow: 0 0 8px rgba(85, 210, 145, .48); }
@@ -1872,6 +1920,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   /* Web page: no macOS traffic lights, reclaim the title strip. */
   body.no-traffic-lights .titlebar { height: 0; min-height: 0; }
   .statusbar { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  /* The selection strip covers the status bar; give the last row room to
+     scroll clear of it. */
+  body.selection-bar-open .grid-scroller { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
   .toolbar .size-control,
   .toolbar .pane-layout-control,
   .toolbar #newWindowButton span,

@@ -49,6 +49,25 @@ test('preview swipes: horizontal switches, downward closes, videos play inline',
   assert.ok(renderer.includes('controls autoplay playsinline'), 'videos stay inline on iOS');
 });
 
+test('a compact selection shows the bottom strip and a single way to clear', () => {
+  assert.ok(indexHTML.includes('id="selectionBar"'));
+  assert.ok(indexHTML.includes('id="selectionBarPreview"'));
+  assert.ok(indexHTML.includes('id="selectionBarDetails"'));
+  assert.ok(renderer.includes('function renderSelectionBar()'));
+  assert.ok(renderer.includes('const visible = isCompactLayout() && count > 0;'), 'the strip is compact-only');
+  assert.ok(renderer.includes('function renderInspector() {\n  renderSelectionBar();'), 'every selection change repaints it');
+  assert.ok(renderer.includes('  renderSelectionBar();\n}'), 'so does rotating in or out of compact mode');
+  assert.ok(renderer.includes("$('#selectionBarDetails').addEventListener('click', () => {\n    state.openDrawer = 'inspector';"));
+  assert.ok(styles.includes('body.selection-bar-open .grid-scroller'), 'the grid clears the strip');
+  assert.ok(styles.includes('@media (min-width: 901px) { .selection-bar { display: none; } }'));
+  // Clearing a selection lives in one place, used by the panel button, the
+  // strip button and the blank-space tap.
+  assert.ok(renderer.includes('function clearSelection() {'));
+  assert.ok(renderer.includes("$('#clearSelectionButton').addEventListener('click', clearSelection);"));
+  assert.ok(renderer.includes("$('#selectionBarClear').addEventListener('click', clearSelection);"));
+  assert.ok(renderer.includes('    clearSelection();\n  });'), 'the blank-space tap routes through it too');
+});
+
 test('preview modal supports two-finger pinch zoom', () => {
   assert.ok(renderer.includes('const previewPointers = new Map();'));
   assert.ok(renderer.includes('pinchBase = { ...pinchGeometry()'));
