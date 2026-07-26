@@ -1405,10 +1405,50 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
      flex container, blowing the rows apart. */
   flex: none;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-columns: 42px minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px auto;
   align-items: center;
   column-gap: 10px;
   padding: 4px 8px;
+}
+.asset-grid.list .card-list-tags {
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+}
+.card-list-tag {
+  flex: none;
+  max-width: 96px;
+  overflow: hidden;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(247, 248, 248, .07);
+  color: #a9aab0;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-grid.list .card-list-rating { color: #ffce69; font-size: 10px; letter-spacing: .5px; white-space: nowrap; }
+.asset-grid.list .card-list-date { color: #74757a; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A squeezed pane sheds the softer columns before the name and the size. */
+@container (max-width: 620px) {
+  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .card-list-date { display: none; }
+}
+@container (max-width: 500px) {
+  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .card-list-tags { display: none; }
+}
+@container (max-width: 400px) {
+  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) auto; }
+  .asset-grid.list .card-list-rating { display: none; }
+}
+/* A four-way vertical split leaves ~185px per pane, where even the dimensions
+   column cannot shrink and pushed the row past its scroller. The name is what
+   a list at that width is for. */
+@container (max-width: 300px) {
+  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr); }
+  .asset-grid.list .card-meta { display: none; }
 }
 .asset-grid.list .item-card:hover { transform: none; }
 .asset-grid.list .thumb-wrap {

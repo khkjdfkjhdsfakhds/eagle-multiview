@@ -46,3 +46,21 @@ test('the grid layout uses equal square cells', () => {
   assert.ok(rendererSource.includes(`data-view-mode="grid" title="网格"`));
   assert.ok(rendererSource.includes('layoutGrid:'), 'the toolbar button has an icon');
 });
+
+test('the list layout earns extra columns, and only there', () => {
+  assert.ok(rendererSource.includes("${state.viewMode === 'list' ? listRowColumns(item) : ''}"),
+    'a grid of thousands must not carry three dead nodes per card');
+  assert.ok(rendererSource.includes('function listRowColumns(item)'));
+  assert.ok(rendererSource.includes('class="card-list-tags"'));
+  assert.ok(rendererSource.includes('class="card-list-rating"'));
+  assert.ok(rendererSource.includes('class="card-list-date"'));
+  assert.match(cssSource, /\.asset-grid\.list \.item-card \{[^}]*grid-template-columns: 42px minmax\(0, 1\.6fr\) minmax\(0, 1fr\) 62px 84px auto/);
+  // Narrow panes shed the soft columns in order rather than overflowing; the
+  // last step drops the dimensions too, which a 185px four-way split needs.
+  for (const [width, dropped] of [[620, '.card-list-date'], [500, '.card-list-tags'], [400, '.card-list-rating'], [300, '.card-meta']]) {
+    const block = cssSource.slice(cssSource.indexOf(`@container (max-width: ${width}px) {`));
+    assert.ok(block.startsWith(`@container (max-width: ${width}px) {`), `${width}px breakpoint exists`);
+    assert.ok(block.slice(0, 320).includes(`${dropped} { display: none; }`) || block.slice(0, 320).includes(`${dropped} {\n    display: none;`)
+      || block.slice(0, 320).includes(`.asset-grid.list ${dropped} { display: none; }`), `${width}px drops ${dropped}`);
+  }
+});

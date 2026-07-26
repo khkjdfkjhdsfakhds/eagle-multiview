@@ -1580,8 +1580,22 @@ function itemCardMarkup(item) {
         ${Number(item.star) > 0 ? `<span class="card-stars" title="${Number(item.star)} 星">${'★'.repeat(Number(item.star))}</span>` : ''}
       </div>
       <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
+      ${state.viewMode === 'list' ? listRowColumns(item) : ''}
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
     </article>`;
+}
+
+// The list is for triage, so it earns the columns a grid cannot show: tags,
+// rating and the date the item entered the library. Rendered only in list
+// mode — the other layouts would carry three dead nodes per card, and the grid
+// holds thousands.
+function listRowColumns(item) {
+  const tags = (item.tags || []).map(String).filter(Boolean);
+  const rating = Math.max(0, Math.min(5, Number(item.star) || 0));
+  const added = Number(item.btime) || 0;
+  return `<div class="card-list-tags" title="${escapeHTML(tags.join('、'))}">${tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('')}</div>
+      <div class="card-list-rating"${rating ? ` title="${rating} 星"` : ''}>${rating ? '★'.repeat(rating) : ''}</div>
+      <div class="card-list-date" title="添加日期">${added ? new Date(added).toLocaleDateString('zh-CN') : ''}</div>`;
 }
 
 function hydrateGridCards(cards) {
