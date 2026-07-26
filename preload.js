@@ -56,7 +56,6 @@ contextBridge.exposeInMainWorld('eagleMV', {
   openExternal: url => ipcRenderer.invoke('shell:open-external', String(url || '')),
   startDrag: data => ipcRenderer.send('item:start-drag', data),
   cancelDrag: token => ipcRenderer.send('item:cancel-drag', token),
-  showItemContextMenu: data => ipcRenderer.invoke('item:context-menu', data),
   getPins: data => ipcRenderer.invoke('pins:get', data),
   setPins: data => ipcRenderer.invoke('pins:set', data),
   readText: data => ipcRenderer.invoke('text:read', data),

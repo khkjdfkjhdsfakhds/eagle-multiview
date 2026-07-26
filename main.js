@@ -431,82 +431,6 @@ function filterTrashItems(items, query = {}) {
   return filtered;
 }
 
-async function showItemContextMenu(event, data) {
-  const parent = BrowserWindow.fromWebContents(event.sender);
-  const selectedIds = [...new Set(data?.ids || [])];
-  if (!selectedIds.length) return false;
-  const first = await itemFilePath(selectedIds[0]);
-  const one = selectedIds.length === 1;
-  const folderId = data?.folderId || null;
-  const allPinned = Boolean(data?.allPinned);
-  const allDeleted = Boolean(data?.allDeleted);
-  const send = (channel, payload = {}) => event.sender.send(channel, { ids: selectedIds, ...payload });
-  const folders = [];
-  const collectFolders = (nodes, depth = 0) => (nodes || []).forEach(folder => {
-    if (folder.id !== folderId) folders.push({ id: folder.id, name: `${'  '.repeat(Math.min(depth, 3))}${folder.name}` });
-    collectFolders(folder.children, depth + 1);
-  });
-  collectFolders(hub.library?.folders);
-  const folderSubmenu = folders.length
-    ? folders.map(folder => ({ label: folder.name, click: () => send('command:add-to-folder', { folderId: folder.id }) }))
-    : [{ label: '没有可用文件夹', enabled: false }];
-  const moveFolderSubmenu = folderId && folders.length
-    ? folders.map(folder => ({ label: folder.name, click: () => send('command:move-to-folder', { folderId: folder.id }) }))
-    : [{ label: '没有可用文件夹', enabled: false }];
-  const tags = (data?.tags || []).map(tag => typeof tag === 'string' ? tag : tag?.name).filter(Boolean).slice(0, 30);
-  const tagColorSubmenu = tags.length
-    ? tags.map(tag => ({ label: `${tag} · 设置颜色`, click: () => event.sender.send('command:set-tag-color', { tag }) }))
-    : [{ label: '请在检查器中选择标签', enabled: false }];
-  const menu = Menu.buildFromTemplate([
-    {
-      label: one ? '使用默认应用打开' : `使用默认应用打开（已选择 ${selectedIds.length} 项）`,
-      enabled: one && Boolean(first.filePath),
-      click: () => first.filePath && shell.openPath(first.filePath)
-    },
-    {
-      label: '在 Finder 中显示',
-      enabled: Boolean(first.filePath),
-      click: () => first.filePath && shell.showItemInFolder(first.filePath)
-    },
-    { type: 'separator' },
-    {
-      label: '复制文件路径',
-      enabled: one && Boolean(first.filePath),
-      click: () => first.filePath && clipboard.writeText(first.filePath)
-    },
-    {
-      label: one ? '复制文件' : `复制 ${selectedIds.length} 个文件`,
-      click: () => copyItemFiles(selectedIds)
-    },
-    { type: 'separator' },
-    {
-      label: '加入文件夹',
-      submenu: folderSubmenu
-    },
-    ...(folderId ? [{ label: '移动到文件夹', submenu: moveFolderSubmenu }] : []),
-    ...(folderId ? [{ label: '从当前文件夹移除', click: () => send('command:remove-from-folder', { folderId }) }] : []),
-    {
-      label: '添加标签',
-      submenu: tags.length
-        ? tags.map(tag => ({ label: tag, click: () => send('command:add-tag', { tag }) }))
-        : [{ label: '暂无已有标签', enabled: false }]
-    },
-    { label: '标签颜色', submenu: tagColorSubmenu },
-    {
-      label: '设置评分',
-      submenu: [0, 1, 2, 3, 4, 5].map(rating => ({ label: rating ? `${'★'.repeat(rating)}（${rating} 星）` : '未评分', click: () => send('command:set-rating', { rating }) }))
-    },
-    { type: 'separator' },
-    ...(folderId ? [{
-      label: allPinned ? '取消置顶' : '置顶',
-      click: () => send('command:pin-selection', { pinned: !allPinned })
-    }, { type: 'separator' }] : []),
-    { label: allDeleted ? '恢复素材' : '移入废纸篓…', click: () => send('command:trash-selection', { deleted: !allDeleted }) }
-  ]);
-  menu.popup({ window: parent });
-  return true;
-}
-
 async function importClipboard({ folderId, libraryPath }) {
   const filePaths = clipboardFilePaths(clipboard);
   if (filePaths.length) return { ...(await importPaths({ paths: filePaths, folderId, libraryPath })), source: 'files' };
@@ -1025,7 +949,6 @@ function setupIPC() {
     }, 30000));
   });
   ipcMain.on('item:cancel-drag', (_event, token) => finishDrag(token));
-  ipcMain.handle('item:context-menu', (event, data) => showItemContextMenu(event, data));
   ipcMain.handle('pins:get', async (_event, { libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     return getPinStore().get(libraryPath);
