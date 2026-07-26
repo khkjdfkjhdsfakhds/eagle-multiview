@@ -279,6 +279,28 @@
       </div>
     </form>
   </div>
+  <div id="webAccessDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="webAccessTitle">
+    <div class="trash-dialog-card web-access-card">
+      <h2 id="webAccessTitle">Web 访问</h2>
+      <p class="web-access-intro">在手机或平板的浏览器中打开当前资料库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
+      <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（本机所有网络接口）</label>
+      <label class="folder-dialog-field web-access-port-field"><span>端口</span>
+        <input id="webAccessPort" type="number" min="1024" max="65535" placeholder="41600">
+      </label>
+      <div class="web-access-key-row">
+        <span>访问密钥</span>
+        <code id="webAccessKey">—</code>
+        <button id="webAccessCopyKey" type="button" class="small-action" title="复制访问密钥">复制</button>
+        <button id="webAccessResetKey" type="button" class="small-action" title="生成新密钥并踢掉所有已登录的网页端">重置</button>
+      </div>
+      <div id="webAccessAddresses" class="web-access-addresses"></div>
+      <div id="webAccessStatus" class="web-access-status muted"></div>
+      <div class="trash-dialog-actions">
+        <button id="webAccessSaveButton" class="primary-button">应用</button>
+        <button id="webAccessCloseButton" type="button" class="secondary-button">关闭</button>
+      </div>
+    </div>
+  </div>
   <datalist id="tagSuggestions"></datalist>
   <datalist id="extensionSuggestions">
     <option value="jpg"></option><option value="jpeg"></option><option value="png"></option><option value="webp"></option>

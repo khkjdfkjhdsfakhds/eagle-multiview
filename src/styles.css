@@ -1724,3 +1724,26 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   .new-create-button { width: 42px; }
   .new-button-chevron { margin-left: 1px; }
 }
+
+/* Web access settings dialog */
+.web-access-card { width: min(460px, calc(100vw - 36px)); display: grid; gap: 12px; }
+.web-access-card .web-access-intro { margin: 6px 0 0; }
+.web-access-toggle { display: flex; align-items: center; gap: 8px; color: #dfe1e6; font-size: 13px; cursor: pointer; }
+.web-access-toggle input { accent-color: #0072ef; }
+.web-access-port-field input { width: 110px; }
+.web-access-key-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b9bbc2; min-width: 0; }
+.web-access-key-row code {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 5px 8px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 6px;
+  background: rgba(0, 0, 0, .28); color: #e8ecf3; font-size: 12px; letter-spacing: .06em;
+}
+.web-access-addresses { display: grid; gap: 6px; }
+.web-access-address {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0;
+  padding: 7px 10px; border: 1px solid rgba(111, 159, 226, .24); border-radius: 7px;
+  background: rgba(111, 159, 226, .07); color: #cfd3da; font-size: 12px; cursor: pointer; text-align: left;
+}
+.web-access-address:hover { border-color: rgba(111, 159, 226, .5); background: rgba(111, 159, 226, .14); }
+.web-access-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a8c9f5; }
+.web-access-net { flex: none; color: #8b919c; font-size: 11px; }
+.web-access-status { font-size: 12px; min-height: 18px; }

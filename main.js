@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboa
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
@@ -18,6 +19,7 @@ const { mimeForPath } = require('./lib/media-mime');
 const { findPreviewImagePath } = require('./lib/preview-image');
 const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createErrorLog } = require('./lib/error-log');
+const { createWebServer, generateAccessKey } = require('./lib/web-server');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
 const {
@@ -201,6 +203,109 @@ function broadcast(channel, payload) {
   for (const window of windows) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
+  // Web clients are additional "windows": every hub broadcast fans out to the
+  // /events WebSocket so browsers stay in the same live-sync loop.
+  webServer?.broadcast(channel, payload);
+}
+
+// --- optional web access ----------------------------------------------------
+let webServer = null;
+let webAccessState = null;
+let lastWebServerError = null;
+
+function webAccessFile() {
+  return path.join(app.getPath('userData'), 'state', 'web-access.json');
+}
+
+async function loadWebAccessState() {
+  if (webAccessState) return webAccessState;
+  webAccessState = { version: 1, enabled: false, port: 41600, key: null };
+  try {
+    const parsed = JSON.parse(await fsp.readFile(webAccessFile(), 'utf8'));
+    if (parsed?.version === 1) {
+      webAccessState.enabled = Boolean(parsed.enabled);
+      const port = Number(parsed.port);
+      if (Number.isInteger(port) && port >= 1024 && port <= 65535) webAccessState.port = port;
+      if (typeof parsed.key === 'string' && parsed.key) webAccessState.key = parsed.key;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') logFault('web', `无法读取 Web 访问设置：${error.message}`, error);
+  }
+  return webAccessState;
+}
+
+async function saveWebAccessState(state) {
+  webAccessState = state;
+  const file = webAccessFile();
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  await fsp.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await fsp.rename(temporary, file);
+}
+
+async function resolveMediaPathForWeb(kind, id) {
+  const fileURL = await resolveMediaURL(kind, id);
+  if (!fileURL || !String(fileURL).startsWith('file:')) return null;
+  try {
+    return fileURLToPath(fileURL);
+  } catch {
+    return null;
+  }
+}
+
+function listWebAddresses(port) {
+  const results = [];
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
+    for (const info of entries || []) {
+      if (info.family !== 'IPv4' || info.internal || info.address.startsWith('169.254.')) continue;
+      // Tailscale hands out CGNAT range addresses (100.64.0.0/10).
+      const tailscale = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(info.address);
+      results.push({ interface: name, address: info.address, url: `http://${info.address}:${port}`, tailscale });
+    }
+  }
+  return results.sort((a, b) => Number(a.tailscale) - Number(b.tailscale));
+}
+
+async function webAccessStatus() {
+  const state = await loadWebAccessState();
+  return {
+    enabled: state.enabled,
+    port: state.port,
+    key: state.key,
+    running: Boolean(webServer?.listening),
+    clientCount: webServer?.clientCount || 0,
+    addresses: listWebAddresses(state.port),
+    error: lastWebServerError
+  };
+}
+
+async function applyWebAccess() {
+  lastWebServerError = null;
+  if (webServer) {
+    const stopping = webServer;
+    webServer = null;
+    await stopping.stop().catch(() => {});
+  }
+  const state = await loadWebAccessState();
+  if (!state.enabled || !state.key) return;
+  const server = createWebServer({
+    srcDir: path.join(__dirname, 'src'),
+    invoke: invokeWebRPC,
+    resolveMediaPath: resolveMediaPathForWeb,
+    accessKey: state.key,
+    onClientGone: id => hub.removeWatcher(id),
+    logError: (message, detail) => logFault('web', message, detail)
+  });
+  try {
+    await server.start(state.port);
+    webServer = server;
+    hub.startPolling();
+    getErrorLog().write({ level: 'info', source: 'web', message: `Web 访问已启动：0.0.0.0:${state.port}` });
+  } catch (error) {
+    lastWebServerError = error?.message || 'Web 服务启动失败';
+    await server.stop().catch(() => {});
+    logFault('web', `Web 服务启动失败（端口 ${state.port}）：${lastWebServerError}`);
+  }
 }
 
 function finishDrag(token) {
@@ -347,6 +452,11 @@ function setupMenu() {
       submenu: [
         { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' },
         { role: 'togglefullscreen', label: '全屏' },
+        { type: 'separator' },
+        {
+          label: 'Web 访问…',
+          click: (_item, window) => window?.webContents.send('command:web-access')
+        },
         { type: 'separator' },
         {
           label: '打开错误日志文件夹',
@@ -1092,6 +1202,25 @@ function setupIPC() {
     const { item, filePath } = await itemFilePath(id);
     return readText({ item, filePath, libraryPath });
   });
+  handleRPC('web-access:get', () => webAccessStatus());
+  handleRPC('web-access:set', async (_event, payload = {}) => {
+    const state = await loadWebAccessState();
+    const port = Number(payload.port ?? state.port);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('端口无效，应为 1024–65535');
+    const enabled = Boolean(payload.enabled);
+    if (enabled && !state.key) state.key = generateAccessKey();
+    await saveWebAccessState({ ...state, enabled, port });
+    await applyWebAccess();
+    return webAccessStatus();
+  });
+  handleRPC('web-access:reset-key', async () => {
+    const state = await loadWebAccessState();
+    state.key = generateAccessKey();
+    await saveWebAccessState(state);
+    // Live sessions and sockets die with the old key.
+    webServer?.setAccessKey(state.key);
+    return webAccessStatus();
+  });
   handleRPC('text:save', async (_event, { id, libraryPath, content, base, force }) => {
     await hub.ensureLibraryPath(libraryPath);
     const { item, filePath } = await itemFilePath(id);
@@ -1117,7 +1246,10 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('before-quit', () => { quitting = true; });
+  app.on('before-quit', () => {
+    quitting = true;
+    webServer?.stop().catch(() => {});
+  });
   app.on('second-instance', () => createWindow());
   app.whenReady().then(async () => {
     getErrorLog().write({
@@ -1130,12 +1262,15 @@ if (!gotLock) {
     await installProtocol();
     createWindow();
     hub.startPolling();
+    applyWebAccess().catch(error => logFault('web', `Web 访问初始化失败：${error.message}`, error));
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
   app.on('window-all-closed', () => {
-    hub.stopPolling();
+    // Web clients keep the hub alive: with the server up they still need
+    // polling-driven change events even when every desktop window is gone.
+    if (!webServer?.listening) hub.stopPolling();
     if (process.platform !== 'darwin') app.quit();
   });
 }

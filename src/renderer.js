@@ -2199,7 +2199,7 @@ function closeDuplicateDialog(choice = null) {
 }
 
 function blockingSurfaceOpen() {
-  return ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu']
+  return ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
     .some(selector => !$(selector).classList.contains('hidden'));
 }
 
@@ -2434,7 +2434,7 @@ function mediaMarkup(item) {
   // Eagle's generated preview image in the .info folder stands in at full
   // resolution, with the thumbnail as fallback.
   if (previewStandInExtensions.has(ext)) return `<img src="${mediaURL('preview', item.id)}" alt="${escapeHTML(item.name)}">`;
-  return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⇧Enter 使用默认应用打开</span></p></div>`;
+  return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览${hasCapability('openDefault') ? '<br><span>按 ⇧Enter 使用默认应用打开</span>' : ''}</p></div>`;
 }
 
 function previewImage() { return $('#modalMedia img.preview-image'); }
@@ -2578,7 +2578,7 @@ async function openPreview(id, { forceReload = false } = {}) {
   } catch (error) {
     if (token !== state.previewToken) return false;
     state.textSession = null;
-    $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt=""><p>无法读取 TXT<br><span>${escapeHTML(error.message)} · 可按 ⇧Enter 用默认应用打开</span></p></div>`;
+    $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt=""><p>无法读取 TXT<br><span>${escapeHTML(error.message)}${hasCapability('openDefault') ? ' · 可按 ⇧Enter 用默认应用打开' : ''}</span></p></div>`;
     return false;
   }
 }
@@ -3068,7 +3068,7 @@ function contextMenuMarkup(data) {
     return [
       newCreationMenuMarkup({ folderId: data.folderId, paneId: data.paneId }),
       '<div class="context-menu-separator"></div>',
-      contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing }),
+      ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing })] : []),
       contextMenuRow({ icon: 'refresh', label: '刷新所有分栏', action: 'refresh-all', disabled: !state.connected })
     ].join('');
   }
@@ -3089,20 +3089,22 @@ function contextMenuMarkup(data) {
   ].join('');
   return [
     contextMenuRow({ icon: 'window', label: '在新窗口打开', shortcut: '⌘ O', action: 'open-window' }),
-    contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one }),
-    contextMenuRow({ icon: 'open', label: '在其它应用打开…', action: 'open-other', disabled: !one }),
-    contextMenuRow({ icon: 'finder', label: finderLabel, shortcut: '⌘ Enter', action: 'finder' }),
-    contextMenuRow({ icon: 'path', label: '打开文件所在的位置', submenu: contextMenuRow({ label: finderLabel, action: 'finder' }) }),
+    ...(hasCapability('openDefault') ? [contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one })] : []),
+    ...(hasCapability('openOther') ? [contextMenuRow({ icon: 'open', label: '在其它应用打开…', action: 'open-other', disabled: !one })] : []),
+    ...(hasCapability('finder') ? [
+      contextMenuRow({ icon: 'finder', label: finderLabel, shortcut: '⌘ Enter', action: 'finder' }),
+      contextMenuRow({ icon: 'path', label: '打开文件所在的位置', submenu: contextMenuRow({ label: finderLabel, action: 'finder' }) })
+    ] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'folder', label: '添加至上次使用的文件夹…', shortcut: '⇧ D', action: 'last-folder', disabled: !state.recentFolders?.length }),
     contextMenuRow({ icon: 'folder', label: '添加至文件夹…', shortcut: '⌘ ⇧ J', submenu: folderEntries }),
     ...(currentFolder ? [contextMenuRow({ icon: 'folder', label: '移动到文件夹…', submenu: moveEntries })] : []),
-    contextMenuRow({ icon: 'export', label: '导出', action: 'export' }),
-    contextMenuRow({ icon: 'share', label: '分享', action: 'share' }),
+    ...(hasCapability('export') ? [contextMenuRow({ icon: 'export', label: '导出', action: 'export' })] : []),
+    ...(hasCapability('share') ? [contextMenuRow({ icon: 'share', label: '分享', action: 'share' })] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'pin', label: data.allPinned ? '取消置顶' : '置顶', action: 'pin', disabled: !currentFolder }),
-    contextMenuRow({ icon: 'copy', label: one ? '复制文件' : `复制 ${data.ids.length} 个文件`, shortcut: '⌘ C', action: 'copy-files' }),
-    contextMenuRow({ icon: 'path', label: '复制文件路径', shortcut: '⌘ ⌥ C', action: 'copy-path', disabled: !one }),
+    ...(hasCapability('clipboardFiles') ? [contextMenuRow({ icon: 'copy', label: one ? '复制文件' : `复制 ${data.ids.length} 个文件`, shortcut: '⌘ C', action: 'copy-files' })] : []),
+    ...(hasCapability('copyPath') ? [contextMenuRow({ icon: 'path', label: '复制文件路径', shortcut: '⌘ ⌥ C', action: 'copy-path', disabled: !one })] : []),
     contextMenuRow({ icon: 'copy', label: '创建副本', shortcut: '⌘ D', action: 'duplicate' }),
     contextMenuRow({ icon: 'more', label: '更多', submenu: moreEntries }),
     '<div class="context-menu-separator"></div>',
@@ -4096,13 +4098,20 @@ function bindPaneEvents(paneId) {
       clearDragUI();
       return;
     }
-    // Electron's native file drag must replace Chromium's default HTML5
-    // drag session. Leaving the default session alive can make macOS wait
-    // indefinitely after dropping into another pane or the folder tree.
-    event.preventDefault();
     const ids = [...state.selected];
     const libraryPath = state.library?.path;
     const sourceFolderId = state.currentView.kind === 'folder' ? state.currentView.id : null;
+    if (hasCapability('nativeDrag')) {
+      // Electron's native file drag must replace Chromium's default HTML5
+      // drag session. Leaving the default session alive can make macOS wait
+      // indefinitely after dropping into another pane or the folder tree.
+      event.preventDefault();
+    } else {
+      // Web: no native session exists, so the default HTML5 drag stays alive
+      // and carries the ids for in-page drops (folder cards, panes, the tree).
+      event.dataTransfer.setData(window.EagleMVDragDrop.ITEM_TYPE, JSON.stringify(ids));
+      event.dataTransfer.effectAllowed = 'copyMove';
+    }
     state.draggingItemIds = ids;
     state.dragSourcePaneId = paneId;
     state.internalDrag = {
@@ -4196,7 +4205,7 @@ function bindPaneEvents(paneId) {
       clearDragUI();
       return;
     }
-    if (!shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
+    if (!hasCapability('importLocal') || !shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
     state.dragDepth += 1;
     $('#dropOverlay').classList.remove('hidden');
   });
@@ -4612,6 +4621,7 @@ function bindEvents() {
     }
     const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
     if (editable || blockingSurfaceOpen() || !$('#previewModal').classList.contains('hidden')) return;
+    if (!hasCapability('importLocal')) return;
     const paths = [...(event.clipboardData?.files || [])].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
     event.preventDefault();
     importFiles(paths.length ? paths : null, paths.length ? 'paste-files' : 'clipboard');
@@ -4623,6 +4633,7 @@ function bindEvents() {
     if (event.key === 'Escape') {
       if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }
       if (!$('#folderDialog').classList.contains('hidden')) { event.preventDefault(); closeFolderDialog(); return; }
+      if (!$('#webAccessDialog').classList.contains('hidden')) { event.preventDefault(); closeWebAccessDialog(); return; }
       if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
       if (!$('#duplicateDialog').classList.contains('hidden')) { event.preventDefault(); closeDuplicateDialog('cancel'); return; }
       if (!$('#contextMenu').classList.contains('hidden')) { event.preventDefault(); hideContextMenu(); return; }
@@ -4643,12 +4654,12 @@ function bindEvents() {
     const selectedIds = selectedActionIds();
     const activeItemId = previewOpen && state.previewId ? state.previewId : selectedIds[0];
     const deleteKey = event.key === 'Backspace' || event.key === 'Delete';
-    if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && activeItemId) {
+    if (!editable && hasCapability('finder') && primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && activeItemId) {
       event.preventDefault();
       showItemInFileManager(activeItemId);
       return;
     }
-    if (!editable && primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'c' && activeItemId) {
+    if (!editable && hasCapability('copyPath') && primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'c' && activeItemId) {
       event.preventDefault();
       copyItemPath(activeItemId).catch(error => toast(`复制路径失败：${error.message}`, 4000));
       return;
@@ -4692,7 +4703,7 @@ function bindEvents() {
       setTrash(selectedIds, true);
       return;
     }
-    if (!editable && (event.metaKey || event.ctrlKey) && !event.altKey) {
+    if (!editable && hasCapability('uiZoom') && (event.metaKey || event.ctrlKey) && !event.altKey) {
       if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeUIZoom(1); return; }
       if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changeUIZoom(-1); return; }
       if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); setUIZoom(1, { announce: true }); return; }
@@ -4724,7 +4735,7 @@ function bindEvents() {
     if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'l') { event.preventDefault(); togglePanel('sidebar'); }
     if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); togglePanel('inspector'); }
     if (!editable && event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) { event.preventDefault(); locateCurrentFolder(); }
-    if (!editable && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'Enter' && (state.previewId || state.selected.size === 1)) {
+    if (!editable && hasCapability('openDefault') && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'Enter' && (state.previewId || state.selected.size === 1)) {
       event.preventDefault();
       openWithDefault(state.previewId || [...state.selected][0]);
       return;
@@ -4756,7 +4767,7 @@ function bindEvents() {
       updateCardSelectionStyles();
       renderInspector();
     }
-    if (!editable && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
+    if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
       event.preventDefault();
       copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
     }
@@ -4787,6 +4798,94 @@ function bindEvents() {
       return;
     }
     if (deleteKey && !editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && state.selected.size) setTrash([...state.selected], true);
+  });
+}
+
+// --- Web access settings (desktop only; the menu triggers command:web-access)
+function closeWebAccessDialog() {
+  $('#webAccessDialog').classList.add('hidden');
+}
+
+function renderWebAccessStatus(status) {
+  if (!status) {
+    $('#webAccessStatus').textContent = '无法读取 Web 访问状态';
+    return;
+  }
+  $('#webAccessEnabled').checked = Boolean(status.enabled);
+  $('#webAccessPort').value = String(status.port || 41600);
+  $('#webAccessKey').textContent = status.key || '启用后自动生成';
+  $('#webAccessCopyKey').disabled = !status.key;
+  const addresses = $('#webAccessAddresses');
+  if (status.running && status.addresses?.length) {
+    addresses.innerHTML = status.addresses.map(entry => `
+      <button type="button" class="web-access-address" data-url="${escapeHTML(entry.url)}" title="点击复制地址">
+        <span class="web-access-url">${escapeHTML(entry.url)}</span>
+        <span class="web-access-net">${entry.tailscale ? 'Tailscale' : escapeHTML(entry.interface)}</span>
+      </button>`).join('');
+  } else {
+    addresses.innerHTML = '';
+  }
+  $('#webAccessStatus').textContent = status.error
+    ? `启动失败：${status.error}`
+    : status.running
+      ? `运行中 · 端口 ${status.port} · ${status.clientCount || 0} 个网页端连接`
+      : '未运行';
+}
+
+async function openWebAccessDialog() {
+  if (!hasCapability('webAccess')) return;
+  $('#webAccessDialog').classList.remove('hidden');
+  $('#webAccessStatus').textContent = '正在读取…';
+  $('#webAccessAddresses').innerHTML = '';
+  try {
+    renderWebAccessStatus(await window.eagleMV.getWebAccess());
+  } catch (error) {
+    $('#webAccessStatus').textContent = `无法读取 Web 访问状态：${error.message}`;
+  }
+}
+
+function bindWebAccessDialog() {
+  $('#webAccessCloseButton').addEventListener('click', closeWebAccessDialog);
+  $('#webAccessDialog').addEventListener('mousedown', event => {
+    if (event.target === $('#webAccessDialog')) closeWebAccessDialog();
+  });
+  $('#webAccessSaveButton').addEventListener('click', async () => {
+    const button = $('#webAccessSaveButton');
+    button.disabled = true;
+    try {
+      const status = await window.eagleMV.setWebAccess({
+        enabled: $('#webAccessEnabled').checked,
+        port: Number($('#webAccessPort').value) || 41600
+      });
+      renderWebAccessStatus(status);
+      if (status?.error) toast(`Web 服务启动失败：${status.error}`, 4600);
+      else toast(status?.enabled ? 'Web 访问已开启' : 'Web 访问已关闭');
+    } catch (error) {
+      toast(`保存失败：${error.message}`, 4600);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $('#webAccessResetKey').addEventListener('click', async () => {
+    if (!confirm('重置访问密钥？所有已登录的网页端会立即掉线，需要用新密钥重新登录。')) return;
+    try {
+      renderWebAccessStatus(await window.eagleMV.resetWebAccessKey());
+      toast('访问密钥已重置');
+    } catch (error) {
+      toast(`重置失败：${error.message}`, 4600);
+    }
+  });
+  $('#webAccessCopyKey').addEventListener('click', async () => {
+    const key = $('#webAccessKey').textContent;
+    if (!key || key.includes('生成')) return;
+    await window.eagleMV.copyText(key);
+    toast('访问密钥已复制');
+  });
+  $('#webAccessAddresses').addEventListener('click', async event => {
+    const entry = event.target.closest('[data-url]');
+    if (!entry) return;
+    await window.eagleMV.copyText(entry.dataset.url);
+    toast('访问地址已复制');
   });
 }
 
@@ -4853,6 +4952,7 @@ function bindHubEvents() {
   });
   window.eagleMV.onRenameRequest(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000)));
   window.eagleMV.onImportRequest(() => importFiles());
+  window.eagleMV.onWebAccessRequest(() => openWebAccessDialog());
   window.eagleMV.onCreateFolderRequest(() => {
     const paneId = state.activePaneId;
     const parentId = folderCreationParentForPane(paneId);
@@ -5030,9 +5130,22 @@ async function restoreInitialWindowState() {
   return initial;
 }
 
+// Hide entry points whose backing capability is missing on this client (the
+// web shim reports false for host-bound features like Finder or host dialogs).
+function applyCapabilityVisibility() {
+  const hideWithout = (capability, selector) => {
+    if (!hasCapability(capability)) document.querySelector(selector)?.classList.add('hidden');
+  };
+  hideWithout('openDefault', '#openDefaultButton');
+  hideWithout('finder', '#finderButton');
+  hideWithout('customThumbnail', '#customThumbnailButton');
+}
+
 async function start() {
   bindEvents();
   bindHubEvents();
+  bindWebAccessDialog();
+  applyCapabilityVisibility();
   await restoreWindowChromeState();
   restoreUIZoom();
   restorePanelSizes();

@@ -42,20 +42,22 @@ test('falls back to the active session when custom drag data is malformed', () =
   assert.deepEqual(readItemIds(dataTransfer, ['fallback']), ['fallback']);
 });
 
-test('native item drag cancels Chromium default drag before Electron startDrag', () => {
+test('item drag: Electron cancels the default session, the web keeps HTML5 alive', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf("itemGrid.addEventListener('dragstart'");
   const end = source.indexOf("itemGrid.addEventListener('dragend'", start);
   assert.ok(start >= 0);
   assert.ok(end > start);
   const handler = source.slice(start, end);
+  const capabilityBranch = handler.indexOf("if (hasCapability('nativeDrag'))");
   const nativeGuard = handler.indexOf("Electron's native file drag must replace");
   const cancelDefault = handler.indexOf('event.preventDefault();', nativeGuard);
+  const html5Data = handler.indexOf('event.dataTransfer.setData(window.EagleMVDragDrop.ITEM_TYPE', capabilityBranch);
   const startNativeDrag = handler.indexOf('window.eagleMV.startDrag(');
-  assert.ok(nativeGuard >= 0);
-  assert.ok(cancelDefault > nativeGuard);
-  assert.ok(cancelDefault < startNativeDrag);
-  assert.equal(handler.includes('dataTransfer.setData'), false);
+  assert.ok(capabilityBranch >= 0, 'dragstart branches on the nativeDrag capability');
+  assert.ok(nativeGuard > capabilityBranch);
+  assert.ok(cancelDefault > nativeGuard && cancelDefault < startNativeDrag, 'Electron path cancels the HTML5 session before startDrag');
+  assert.ok(html5Data > cancelDefault && html5Data < startNativeDrag, 'web path carries ids on the live HTML5 session');
 });
 
 test('folder drops keep every queued mutation inside the library where the drag began', () => {
