@@ -42,6 +42,13 @@ test('touch pointers tap to preview, long-press to select, and never marquee', (
   assert.ok(clickHandler.includes("navigate({ kind: 'folder', id: folder.dataset.openFolder })"), 'touch tap enters folders directly');
 });
 
+test('preview swipes: horizontal switches, downward closes, videos play inline', () => {
+  assert.ok(renderer.includes('swipeSession = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };'));
+  assert.ok(renderer.includes('movePreview(dx < 0 ? 1 : -1);'), 'horizontal swipe switches items');
+  assert.ok(renderer.includes('if (dy > 90 && dy > Math.abs(dx) * 1.4) {'), 'downward swipe closes');
+  assert.ok(renderer.includes('controls autoplay playsinline'), 'videos stay inline on iOS');
+});
+
 test('preview modal supports two-finger pinch zoom', () => {
   assert.ok(renderer.includes('const previewPointers = new Map();'));
   assert.ok(renderer.includes('pinchBase = { ...pinchGeometry()'));

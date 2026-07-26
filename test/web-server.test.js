@@ -288,23 +288,26 @@ test('sessions derive from the key: they survive restarts and die on key reset',
     accessKey: ACCESS_KEY,
     loginFailureDelayMs: 0
   });
-  const first = makeServer();
-  const { port } = await first.start(0, '127.0.0.1');
-  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-    JSON.stringify({ key: ACCESS_KEY }));
-  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
-  assert.match(String(login.headers['set-cookie'][0]), /Max-Age=31536000/, 'one login lasts a year');
-  assert.equal((await request(port, { path: '/', headers: { Cookie: cookie } })).status, 200);
-  await first.stop();
+  try {
+    const first = makeServer();
+    const { port } = await first.start(0, '127.0.0.1');
+    const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      JSON.stringify({ key: ACCESS_KEY }));
+    const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+    assert.match(String(login.headers['set-cookie'][0]), /Max-Age=31536000/, 'one login lasts a year');
+    assert.equal((await request(port, { path: '/', headers: { Cookie: cookie } })).status, 200);
+    await first.stop();
 
-  // A brand-new server instance (an app restart) accepts the same cookie.
-  const second = makeServer();
-  const { port: port2 } = await second.start(0, '127.0.0.1');
-  assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 200, 'cookie survives restart');
-  second.setAccessKey('QQQQ-WWWW-EEEE-RRRR');
-  assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 302, 'key reset kills the cookie');
-  await second.stop();
-  fs.rmSync(srcDir, { recursive: true, force: true });
+    // A brand-new server instance (an app restart) accepts the same cookie.
+    const second = makeServer();
+    const { port: port2 } = await second.start(0, '127.0.0.1');
+    assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 200, 'cookie survives restart');
+    second.setAccessKey('QQQQ-WWWW-EEEE-RRRR');
+    assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 302, 'key reset kills the cookie');
+    await second.stop();
+  } finally {
+    fs.rmSync(srcDir, { recursive: true, force: true });
+  }
 });
 
 test('requireKey:false serves everything without a login', async () => {
@@ -374,4 +377,58 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   await server.stop();
   fs.rmSync(srcDir, { recursive: true, force: true });
   fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
+test('transformIndexHTML adds PWA tags for the web build only', () => {
+  const html = '<head>\n<meta http-equiv="Content-Security-Policy" content="x">\n</head>\n<body><script src="renderer.js"></script></body>';
+  const transformed = require('../lib/web-server').transformIndexHTML(html);
+  assert.ok(transformed.includes('rel="manifest"'));
+  assert.ok(transformed.includes('apple-mobile-web-app-capable'));
+  assert.ok(transformed.includes('apple-touch-icon'));
+});
+
+test('export downloads one file directly and zips several (verified via ditto)', async () => {
+  const { execFile } = require('node:child_process');
+  const srcDir = makeFixtureDir();
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-export-'));
+  fs.writeFileSync(path.join(mediaDir, '图片一.png'), 'AAAA-content-1');
+  fs.writeFileSync(path.join(mediaDir, 'photo2.jpg'), 'BBBB-content-22');
+  const byId = { one: path.join(mediaDir, '图片一.png'), two: path.join(mediaDir, 'photo2.jpg') };
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async (kind, id) => (kind === 'original' ? byId[id] || null : null),
+    accessKey: ACCESS_KEY,
+    loginFailureDelayMs: 0
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const authed = { Cookie: String(login.headers['set-cookie'][0]).split(';')[0] };
+
+  assert.equal((await request(port, { path: '/export?ids=one' })).status, 401, 'auth required');
+
+  const single = await request(port, { path: '/export?ids=one', headers: authed });
+  assert.equal(single.status, 200);
+  assert.equal(single.body.toString(), 'AAAA-content-1');
+  assert.match(String(single.headers['content-disposition']), /attachment/);
+  assert.match(String(single.headers['content-disposition']), new RegExp(encodeURIComponent('图片一.png')));
+
+  const multi = await request(port, { path: '/export?ids=one,two,missing', headers: authed });
+  assert.equal(multi.status, 200);
+  assert.equal(multi.headers['content-type'], 'application/zip');
+  const zipPath = path.join(mediaDir, 'out.zip');
+  fs.writeFileSync(zipPath, multi.body);
+  const extractDir = path.join(mediaDir, 'extracted');
+  fs.mkdirSync(extractDir);
+  await new Promise((resolve, reject) => {
+    execFile('/usr/bin/ditto', ['-x', '-k', zipPath, extractDir], error => (error ? reject(error) : resolve()));
+  });
+  assert.equal(fs.readFileSync(path.join(extractDir, '图片一.png'), 'utf8'), 'AAAA-content-1');
+  assert.equal(fs.readFileSync(path.join(extractDir, 'photo2.jpg'), 'utf8'), 'BBBB-content-22');
+
+  assert.equal((await request(port, { path: '/export?ids=missing', headers: authed })).status, 404);
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(mediaDir, { recursive: true, force: true });
 });

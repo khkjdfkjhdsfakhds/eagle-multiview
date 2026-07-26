@@ -185,7 +185,7 @@
       openDefault: false,
       openOther: false,
       share: false,
-      export: false,
+      export: true,
       importLocal: true,
       customThumbnail: false,
       copyPath: false,
@@ -260,7 +260,19 @@
     fileURL: async id => `/media/original/${encodeURIComponent(String(id))}`,
     readMetadata: id => invoke('item:metadata', [id]),
     openDefault: async () => unsupported('网页版无法在主机上打开文件'),
-    exportFiles: async () => ({ canceled: true, ...unsupported('网页版暂不支持导出') }),
+    exportFiles: async data => {
+      // Export means "download to this device": one file arrives as-is,
+      // multiple as a store-zip streamed by the host.
+      const ids = [...new Set(data?.ids || [])].filter(Boolean);
+      if (!ids.length) return { canceled: true };
+      const anchor = document.createElement('a');
+      anchor.href = `/export?ids=${ids.map(encodeURIComponent).join(',')}`;
+      anchor.download = '';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return { canceled: false, count: ids.length, missing: 0, downloaded: true };
+    },
     openOther: async () => ({ canceled: true, ...unsupported('网页版无法在主机上打开文件') }),
     shareFiles: async () => unsupported('网页版不支持系统分享'),
     duplicateFiles: data => invoke('items:duplicate', [data]),

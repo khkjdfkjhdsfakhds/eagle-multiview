@@ -2475,7 +2475,7 @@ function removeTagFromSelection(tag) {
 function mediaMarkup(item) {
   const url = mediaURL('original', item.id);
   const ext = String(item.ext || '').toLowerCase();
-  if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay></video>`;
+  if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay playsinline></video>`;
   if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return `<audio src="${url}" controls autoplay></audio>`;
   // Chromium's PDF viewer refuses custom-protocol streams, so the PDF embed
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
@@ -2534,6 +2534,9 @@ function changePreviewZoom(delta, anchor = null) {
 
 function setupPreviewMedia() {
   const image = $('#modalMedia img');
+  // Image previews own the whole modal as a gesture surface (swipe/pinch);
+  // text/PDF previews keep native touch behavior for their scrollables.
+  $('#previewModal').classList.toggle('image-gesture', Boolean(image));
   if (image) {
     image.classList.add('preview-image');
     image.addEventListener('load', () => renderPreviewZoom(), { once: true });
@@ -3161,7 +3164,7 @@ function contextMenuMarkup(data) {
     contextMenuRow({ icon: 'folder', label: '添加至上次使用的文件夹…', shortcut: '⇧ D', action: 'last-folder', disabled: !state.recentFolders?.length }),
     contextMenuRow({ icon: 'folder', label: '添加至文件夹…', shortcut: '⌘ ⇧ J', submenu: folderEntries }),
     ...(currentFolder ? [contextMenuRow({ icon: 'folder', label: '移动到文件夹…', submenu: moveEntries })] : []),
-    ...(hasCapability('export') ? [contextMenuRow({ icon: 'export', label: '导出', action: 'export' })] : []),
+    ...(hasCapability('export') ? [contextMenuRow({ icon: 'export', label: window.eagleMV.platform === 'web' ? '下载到此设备' : '导出', action: 'export' })] : []),
     ...(hasCapability('share') ? [contextMenuRow({ icon: 'share', label: '分享', action: 'share' })] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'pin', label: data.allPinned ? '取消置顶' : '置顶', action: 'pin', disabled: !currentFolder }),
@@ -3238,7 +3241,9 @@ async function executeContextAction(action, payload) {
   if (action === 'export') {
     return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
       if (result?.canceled) return;
-      toast(`已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
+      toast(result?.downloaded
+        ? `已开始下载 ${result?.count || 0} 个文件${(result?.count || 0) > 1 ? '（打包为 zip）' : ''}`
+        : `已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
     });
   }
   if (action === 'share') {
@@ -4725,7 +4730,10 @@ function bindEvents() {
   });
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);
-  $('#previewModal').addEventListener('click', event => { if (event.target === event.currentTarget) closePreview(); });
+  $('#previewModal').addEventListener('click', event => {
+    if (Date.now() < swipeClickSuppressUntil) return;
+    if (event.target === event.currentTarget) closePreview();
+  });
   $('#prevPreview').addEventListener('click', () => movePreview(-1));
   $('#nextPreview').addEventListener('click', () => movePreview(1));
   // The zoom toolbar is gone by user request; the wheel still zooms at the
@@ -4742,9 +4750,36 @@ function bindEvents() {
     changePreviewZoom(event.deltaY < 0 ? .15 : -.15, anchor);
   }, { passive: false });
   // Preview pointers: one finger/mouse pans a zoomed image, two fingers pinch
-  // to zoom around their midpoint (works from fit mode too).
+  // to zoom around their midpoint (works from fit mode too). In fit mode a
+  // single finger swipes: horizontal switches items, downward closes.
   const previewPointers = new Map();
   let pinchBase = null;
+  let swipeSession = null;
+  let swipeClickSuppressUntil = 0;
+  const settleSwipe = event => {
+    const session = swipeSession;
+    if (!session || event.pointerId !== session.pointerId) return;
+    swipeSession = null;
+    const image = previewImage();
+    const dx = event.clientX - session.startX;
+    const dy = event.clientY - session.startY;
+    if (Math.hypot(dx, dy) > 15) swipeClickSuppressUntil = Date.now() + 400;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      movePreview(dx < 0 ? 1 : -1);
+      return;
+    }
+    if (dy > 90 && dy > Math.abs(dx) * 1.4) {
+      closePreview();
+      return;
+    }
+    if (image) {
+      image.style.transition = 'transform .18s ease';
+      image.style.transform = '';
+      setTimeout(() => {
+        if (image.isConnected) image.style.transition = '';
+      }, 220);
+    }
+  };
   const pinchGeometry = () => {
     const [first, second] = [...previewPointers.values()];
     return {
@@ -4753,7 +4788,7 @@ function bindEvents() {
       centerY: (first.y + second.y) / 2
     };
   };
-  $('#modalMedia').addEventListener('pointerdown', event => {
+  $('#previewModal').addEventListener('pointerdown', event => {
     const image = previewImage();
     if (!image) return;
     if (event.pointerType === 'touch') {
@@ -4761,7 +4796,15 @@ function bindEvents() {
       event.currentTarget.setPointerCapture(event.pointerId);
       if (previewPointers.size === 2) {
         state.previewZoom.dragging = false;
+        if (swipeSession) {
+          swipeSession = null;
+          image.style.transform = '';
+        }
         pinchBase = { ...pinchGeometry(), scale: state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale };
+        return;
+      }
+      if (state.previewZoom.mode === 'fit') {
+        swipeSession = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
         return;
       }
     }
@@ -4774,13 +4817,19 @@ function bindEvents() {
     event.currentTarget.setPointerCapture(event.pointerId);
     renderPreviewZoom();
   });
-  $('#modalMedia').addEventListener('pointermove', event => {
+  $('#previewModal').addEventListener('pointermove', event => {
+    if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1) {
+      previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const image = previewImage();
+      if (image) image.style.transform = `translateX(${event.clientX - swipeSession.startX}px)`;
+      return;
+    }
     if (previewPointers.has(event.pointerId)) {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (previewPointers.size === 2 && pinchBase) {
         const current = pinchGeometry();
         if (pinchBase.distance > 0 && current.distance > 0) {
-          const box = event.currentTarget.getBoundingClientRect();
+          const box = $('#modalMedia').getBoundingClientRect();
           const anchor = { x: current.centerX - box.left - box.width / 2, y: current.centerY - box.top - box.height / 2 };
           const targetScale = Math.max(.25, Math.min(6, pinchBase.scale * (current.distance / pinchBase.distance)));
           changePreviewZoom(targetScale - (state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale), anchor);
@@ -4794,14 +4843,15 @@ function bindEvents() {
     renderPreviewZoom();
   });
   const releasePreviewPointer = event => {
+    settleSwipe(event);
     if (previewPointers.delete(event.pointerId) && previewPointers.size < 2) pinchBase = null;
     if (!state.previewZoom.dragging) return;
     state.previewZoom.dragging = false;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     renderPreviewZoom();
   };
-  $('#modalMedia').addEventListener('pointerup', releasePreviewPointer);
-  $('#modalMedia').addEventListener('pointercancel', releasePreviewPointer);
+  $('#previewModal').addEventListener('pointerup', releasePreviewPointer);
+  $('#previewModal').addEventListener('pointercancel', releasePreviewPointer);
 
   document.addEventListener('paste', event => {
     if (Date.now() < state.suppressPasteUntil) {
@@ -5016,11 +5066,15 @@ function renderWebAccessStatus(status) {
   $('#webAccessNoKey').checked = status.requireKey === false;
   const addresses = $('#webAccessAddresses');
   if (status.running && status.addresses?.length) {
-    addresses.innerHTML = status.addresses.map(entry => `
-      <button type="button" class="web-access-address" data-url="${escapeHTML(entry.url)}" title="点击复制地址">
-        <span class="web-access-url">${escapeHTML(entry.url)}</span>
-        <span class="web-access-net">${entry.tailscale ? 'Tailscale' : escapeHTML(entry.interface)}</span>
-      </button>`).join('');
+    addresses.innerHTML = status.addresses.map((entry, index) => `
+      <div class="web-access-address-group">
+        <button type="button" class="web-access-address" data-url="${escapeHTML(entry.url)}" title="点击复制地址">
+          <span class="web-access-url">${escapeHTML(entry.url)}</span>
+          <span class="web-access-net">${entry.tailscale ? 'Tailscale' : escapeHTML(entry.interface)}</span>
+        </button>
+        ${entry.qrSVG ? `<button type="button" class="web-access-qr-toggle" data-qr-index="${index}" title="显示二维码，手机扫码直达">二维码</button>` : ''}
+        ${entry.qrSVG ? `<div class="web-access-qr hidden" data-qr-panel="${index}">${entry.qrSVG}</div>` : ''}
+      </div>`).join('');
   } else {
     addresses.innerHTML = '';
   }
@@ -5082,6 +5136,11 @@ function bindWebAccessDialog() {
     toast('访问密钥已复制');
   });
   $('#webAccessAddresses').addEventListener('click', async event => {
+    const qrToggle = event.target.closest('[data-qr-index]');
+    if (qrToggle) {
+      $(`[data-qr-panel="${qrToggle.dataset.qrIndex}"]`)?.classList.toggle('hidden');
+      return;
+    }
     const entry = event.target.closest('[data-url]');
     if (!entry) return;
     await window.eagleMV.copyText(entry.dataset.url);

@@ -1855,3 +1855,14 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
      selection flashes inside the grid. */
   .item-grid, .item-grid img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
+
+/* Web access QR panels */
+.web-access-address-group { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+.web-access-address-group .web-access-qr-toggle {
+  min-height: 28px; padding: 0 10px; border: 1px solid rgba(111, 159, 226, .28); border-radius: 7px;
+  background: rgba(111, 159, 226, .08); color: #a8c9f5; font-size: 11px; cursor: pointer;
+}
+.web-access-address-group .web-access-qr-toggle:hover { border-color: rgba(111, 159, 226, .5); }
+.web-access-qr { grid-column: 1 / -1; display: flex; justify-content: center; padding: 8px 0 4px; }
+.web-access-qr svg { width: 168px; height: 168px; border-radius: 8px; }
+.preview-modal.image-gesture { touch-action: none; }

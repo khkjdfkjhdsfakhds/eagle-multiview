@@ -96,7 +96,7 @@ test('created documents stay attached to the source pane and TXT opens only when
 
 test('macOS context-menu labels match Eagle wording for common file actions', () => {
   assert.match(renderer, /finderLabel = window\.eagleMV\.platform === 'darwin' \? '在访达中打开'/);
-  assert.match(renderer, /label: '导出', action: 'export'/);
+  assert.match(renderer, /label: window\.eagleMV\.platform === 'web' \? '下载到此设备' : '导出', action: 'export'/);
   assert.match(renderer, /label: '分享', action: 'share'/);
   assert.match(renderer, /label: data\.allDeleted \? '恢复素材' : '丢到回收站'/);
 });

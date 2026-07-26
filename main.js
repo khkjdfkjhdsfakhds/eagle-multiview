@@ -20,6 +20,7 @@ const { findPreviewImagePath } = require('./lib/preview-image');
 const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createErrorLog } = require('./lib/error-log');
 const { createWebServer, generateAccessKey } = require('./lib/web-server');
+const { qrToSVG } = require('./lib/qr-code');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
 const {
@@ -261,7 +262,12 @@ function listWebAddresses(port) {
       if (info.family !== 'IPv4' || info.internal || info.address.startsWith('169.254.')) continue;
       // Tailscale hands out CGNAT range addresses (100.64.0.0/10).
       const tailscale = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(info.address);
-      results.push({ interface: name, address: info.address, url: `http://${info.address}:${port}`, tailscale });
+      const url = `http://${info.address}:${port}`;
+      let qrSVG = null;
+      try {
+        qrSVG = qrToSVG(url, { moduleSize: 4, quietZone: 3 });
+      } catch {}
+      results.push({ interface: name, address: info.address, url, tailscale, qrSVG });
     }
   }
   return results.sort((a, b) => Number(a.tailscale) - Number(b.tailscale));
