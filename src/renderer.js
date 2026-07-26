@@ -623,6 +623,22 @@ function renderFilterState() {
   $('#filterCount').classList.toggle('hidden', !count);
 }
 
+const colorFilterChoices = Object.freeze([
+  ['', '全部颜色'], ['#e5484d', '红'], ['#f76b15', '橙'], ['#ffc53d', '黄'], ['#46a758', '绿'],
+  ['#00a2c7', '青'], ['#0090ff', '蓝'], ['#8e4ec6', '紫'], ['#d6409f', '粉'],
+  ['#8d8d8d', '灰'], ['#1a1a1a', '黑'], ['#f2f2f2', '白']
+]);
+
+function renderColorFilter() {
+  const box = $('#colorFilter');
+  if (!box) return;
+  const current = String(state.query.color || '').toLowerCase();
+  box.innerHTML = colorFilterChoices.map(([hex, label]) => {
+    const selected = current === hex;
+    return `<button type="button" class="color-filter-swatch${hex ? '' : ' none'}${selected ? ' selected' : ''}" data-filter-color="${hex}" title="${label}"${hex ? ` style="background:${hex}"` : ''}>${hex ? '' : '✕'}</button>`;
+  }).join('');
+}
+
 function renderQueryControls() {
   const query = state.query;
   $('#searchInput').value = query.search;
@@ -631,6 +647,7 @@ function renderQueryControls() {
   $('#urlFilter').value = query.url;
   $('#shapeFilter').value = query.shape;
   $('#ratingFilter').value = Number.isInteger(query.rating) ? String(query.rating) : '';
+  renderColorFilter();
   renderTagEditor('filter');
   renderFilterState();
 }
@@ -872,6 +889,7 @@ function clearFilters() {
   state.query.annotation = '';
   state.query.url = '';
   state.query.shape = '';
+  state.query.color = '';
   renderQueryControls();
   refresh({ reset: true, preserveScroll: false, paneId: state.activePaneId });
 }
@@ -1458,7 +1476,7 @@ function renderItemPalette(item) {
     const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
     const ratio = Number(entry.ratio) || 0;
     const pct = ratio > 1 ? Math.round(ratio) : Math.round(ratio * 100);
-    return `<button type="button" class="palette-swatch" style="background:rgb(${rgb.join(',')})" data-color="${hex}" title="${hex} · ${pct}%" aria-label="主色 ${hex}"></button>`;
+    return `<button type="button" class="palette-swatch" style="background:rgb(${rgb.join(',')})" data-color="${hex}" title="${hex} · ${pct}% · 点击复制，⌥点击筛选同色" aria-label="主色 ${hex}"></button>`;
   }).join('');
   box.classList.toggle('hidden', !box.innerHTML);
 }
@@ -3954,6 +3972,17 @@ function bindEvents() {
     renderFilterState();
     schedulePaneFilterRefresh(paneId);
   });
+  $('#colorFilter').addEventListener('click', event => {
+    const swatch = event.target.closest('[data-filter-color]');
+    if (!swatch) return;
+    const paneId = state.activePaneId;
+    const pane = paneById(paneId);
+    if (!pane) return;
+    pane.query.color = swatch.dataset.filterColor || '';
+    renderColorFilter();
+    renderFilterState();
+    schedulePaneFilterRefresh(paneId);
+  });
   $('#annotationFilter').addEventListener('input', event => {
     const paneId = state.activePaneId;
     const pane = paneById(paneId);
@@ -4087,6 +4116,18 @@ function bindEvents() {
   $('#itemPalette').addEventListener('click', event => {
     const swatch = event.target.closest('.palette-swatch');
     if (!swatch) return;
+    if (event.altKey) {
+      // Eagle filters by a dominant color from the palette; plain click keeps
+      // the verified copy behaviour, ⌥click applies the color filter.
+      const paneId = state.activePaneId;
+      const pane = paneById(paneId);
+      if (!pane) return;
+      pane.query.color = swatch.dataset.color;
+      renderQueryControls();
+      schedulePaneFilterRefresh(paneId);
+      toast(`按主色筛选 ${swatch.dataset.color}`, 2200);
+      return;
+    }
     window.eagleMV.copyText(swatch.dataset.color);
     toast(`已复制颜色 ${swatch.dataset.color}`, 1600);
   });

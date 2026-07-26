@@ -1318,6 +1318,25 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .multi-selection p { color: #86878d; line-height: 1.55; }
 .multi-selection > button { width: 100%; margin-top: 8px; }
 .shared-tag-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.color-filter { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0; }
+.color-filter-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.color-filter-swatch.none {
+  background: transparent;
+  color: #86878d;
+  font-size: 10px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.color-filter-swatch.selected { outline: 2px solid #0072ef; outline-offset: 1px; }
+.color-filter-swatch:hover { border-color: rgba(255, 255, 255, .55); }
 .inspector-field.url-field { display: flex; gap: 4px; align-items: center; }
 .inspector-field.url-field input { flex: 1 1 auto; min-width: 0; }
 .url-actions { display: flex; gap: 3px; flex: 0 0 auto; }

@@ -20,7 +20,8 @@ test('clones query state without sharing tags between panes', () => {
     rating: null,
     annotation: '',
     url: '',
-    shape: 'portrait'
+    shape: 'portrait',
+    color: ''
   });
   assert.equal(second.search, 'two');
   assert.deepEqual(second.tags, ['a', 'b']);

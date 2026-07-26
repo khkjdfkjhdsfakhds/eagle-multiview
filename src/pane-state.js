@@ -15,7 +15,8 @@
       rating: Number.isInteger(source.rating) ? source.rating : null,
       annotation: String(source.annotation || ''),
       url: String(source.url || ''),
-      shape: String(source.shape || '')
+      shape: String(source.shape || ''),
+      color: String(source.color || '')
     };
   }
 
@@ -26,14 +27,14 @@
   function filtersActive(query) {
     const current = createQuery(query);
     return Boolean(current.search.trim() || current.tags.length || current.ext ||
-      Number.isInteger(current.rating) || current.annotation.trim() || current.url.trim() || current.shape);
+      Number.isInteger(current.rating) || current.annotation.trim() || current.url.trim() || current.shape || current.color);
   }
 
   function filterCount(query) {
     const current = createQuery(query);
     return [
       current.search.trim(), current.tags.length, current.ext, Number.isInteger(current.rating),
-      current.annotation.trim(), current.url.trim(), current.shape
+      current.annotation.trim(), current.url.trim(), current.shape, current.color
     ].filter(Boolean).length;
   }
 
