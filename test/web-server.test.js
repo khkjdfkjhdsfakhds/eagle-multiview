@@ -383,8 +383,14 @@ test('transformIndexHTML adds PWA tags for the web build only', () => {
   const html = '<head>\n<meta http-equiv="Content-Security-Policy" content="x">\n</head>\n<body><script src="renderer.js"></script></body>';
   const transformed = require('../lib/web-server').transformIndexHTML(html);
   assert.ok(transformed.includes('rel="manifest"'));
+  // Manifests are fetched with credentials omitted by default, so behind the
+  // access key the request 401s and installing to the home screen silently
+  // does nothing. Measured against the live server before this attribute.
+  assert.ok(transformed.includes('<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">'));
   assert.ok(transformed.includes('apple-mobile-web-app-capable'));
   assert.ok(transformed.includes('apple-touch-icon'));
+  // Without an explicit icon the browser probes /favicon.ico, which 404s.
+  assert.ok(transformed.includes('<link rel="icon" href="brand-icon.png">'));
 });
 
 test('export downloads one file directly and zips several (verified via ditto)', async () => {

@@ -1588,8 +1588,11 @@ function hydrateGridCards(cards) {
   for (const card of cards) {
     bindGifHover(card);
     for (const image of card.querySelectorAll('.thumb-wrap img')) {
-      if (image.complete) image.classList.add('loaded');
+      if (image.complete && image.naturalWidth > 0) image.classList.add('loaded');
       image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+      // Text files and other items Eagle never generated a thumbnail for leave
+      // an empty box; label it with the format instead of nothing.
+      image.addEventListener('error', () => image.closest('.thumb-wrap')?.classList.add('thumb-missing'), { once: true });
     }
   }
 }
@@ -2760,6 +2763,15 @@ function setupPreviewMedia() {
   if (image) {
     image.classList.add('preview-image');
     image.addEventListener('load', () => renderPreviewZoom(), { once: true });
+    // Eagle can hold an index entry whose file is gone (or a type with no
+    // generated preview). A broken-image glyph in the middle of the modal is
+    // worse than saying so.
+    const token = state.previewToken;
+    image.addEventListener('error', () => {
+      if (token !== state.previewToken || !image.isConnected) return;
+      const item = itemById(state.previewId);
+      $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>无法读取这个素材的图像<br><span>${escapeHTML(String(item?.ext || '文件').toUpperCase())} · 原文件可能已被移动或删除</span></p></div>`;
+    }, { once: true });
   }
   const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
   if (pdfEmbed) {
@@ -5298,7 +5310,10 @@ function bindEvents() {
   };
   $('#previewModal').addEventListener('pointerdown', event => {
     const image = previewImage();
-    if (!image) return;
+    // Gestures belong to whatever claims the image slot — including the
+    // "file is missing" placeholder, which does not scroll. Only the visual
+    // feedback needs a real image; without one the swipe still navigates.
+    if (!$('#previewModal').classList.contains('image-gesture')) return;
     // The modal owns the gesture surface, but capturing the pointer here would
     // steal the tap from the controls sitting on top of it.
     if (event.target.closest('#slideshowControls, #modalRating')) return;
@@ -5306,6 +5321,7 @@ function bindEvents() {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       event.currentTarget.setPointerCapture(event.pointerId);
       if (previewPointers.size === 2) {
+        if (!image) return;
         state.previewZoom.dragging = false;
         if (swipeSession) {
           swipeSession = null;
@@ -5314,12 +5330,12 @@ function bindEvents() {
         pinchBase = { ...pinchGeometry(), scale: state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale };
         return;
       }
-      if (state.previewZoom.mode === 'fit') {
+      if (!image || state.previewZoom.mode === 'fit') {
         swipeSession = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
         return;
       }
     }
-    if (state.previewZoom.mode === 'fit' || event.button !== 0) return;
+    if (!image || state.previewZoom.mode === 'fit' || event.button !== 0) return;
     state.previewZoom.dragging = true;
     state.previewZoom.startX = event.clientX;
     state.previewZoom.startY = event.clientY;

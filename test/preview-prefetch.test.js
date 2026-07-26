@@ -44,3 +44,20 @@ test('the prefetch ring is small enough to stay cheap', () => {
   assert.ok(ring >= 2 && ring <= 12, `ring size ${ring} should stay small`);
   assert.strictEqual(maxBytes, '48 * 1024 * 1024');
 });
+
+test('a missing image degrades to a message instead of a broken glyph', () => {
+  // Eagle can hold an index entry whose file is gone, and text files have no
+  // generated thumbnail at all.
+  assert.ok(renderer.includes("image.addEventListener('error', () => {"), 'the preview image has an error path');
+  assert.ok(renderer.includes('无法读取这个素材的图像'));
+  assert.ok(renderer.includes("if (token !== state.previewToken || !image.isConnected) return;"),
+    'a stale failure must not overwrite a newer preview');
+  assert.ok(renderer.includes("image.addEventListener('error', () => image.closest('.thumb-wrap')?.classList.add('thumb-missing')"),
+    'grid thumbnails mark themselves instead of sitting at opacity 0 forever');
+  assert.ok(renderer.includes('if (image.complete && image.naturalWidth > 0) image.classList.add('),
+    'a cached failure is not mistaken for a cached success');
+  // Replacing the failed image must not take the swipe with it: the gesture
+  // belongs to whatever occupies the image slot, placeholder included.
+  assert.ok(renderer.includes("if (!$('#previewModal').classList.contains('image-gesture')) return;"));
+  assert.ok(renderer.includes("if (!image || state.previewZoom.mode === 'fit') {\n        swipeSession ="));
+});
