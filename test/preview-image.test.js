@@ -57,8 +57,14 @@ test('picks the largest candidate among several previews', async t => {
   assert.equal(await findPreviewImagePath(dir, 'design.psd'), path.join(dir, 'design_large.png'));
 });
 
-test('renderer routes PSD/TIFF/HEIC previews through eaglemv://preview', () => {
-  assert.ok(rendererSource.includes("['psd', 'tif', 'tiff', 'heic', 'heif'].includes(ext)"));
+test('renderer routes PSD/TIFF/HEIC and camera RAW previews through eaglemv://preview', () => {
+  const listStart = rendererSource.indexOf('const previewStandInExtensions');
+  assert.ok(listStart >= 0);
+  const list = rendererSource.slice(listStart, rendererSource.indexOf(');', listStart));
+  for (const ext of ['psd', 'tif', 'tiff', 'heic', 'heif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'raf', 'rw2']) {
+    assert.ok(list.includes(`'${ext}'`), `previewStandInExtensions 缺少 ${ext}`);
+  }
+  assert.ok(rendererSource.includes('previewStandInExtensions.has(ext)'));
   assert.ok(rendererSource.includes('eaglemv://preview/${encodeURIComponent(item.id)}'));
 });
 

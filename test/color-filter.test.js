@@ -87,9 +87,13 @@ test('query state counts the color filter and the UI can clear it', () => {
   assert.ok(html.includes('id="colorFilter"'));
   assert.ok(renderer.includes('function renderColorFilter()'));
   assert.ok(renderer.includes("pane.query.color = swatch.dataset.filterColor || '';"));
-  assert.ok(renderer.includes("state.query.color = '';"), 'clearFilters must reset the color');
+  // clearFilters rebuilds the whole query from the spec table, which resets
+  // the color along with every other filter.
+  assert.ok(renderer.includes('state.query = createQuery();'), 'clearFilters must reset the query from the spec');
   const constrained = fs.readFileSync(path.join(__dirname, '..', 'lib', 'eagle-client.js'), 'utf8');
-  assert.ok(constrained.includes('query.shape || query.color'), 'text search must stay client-filtered with color');
+  assert.ok(constrained.includes('querySpec.clientConstrained(query)'), 'text search must stay client-filtered via the spec table');
+  const { clientConstrained } = require('../src/query-spec');
+  assert.equal(clientConstrained({ color: '#e5484d' }), true, 'an active color keeps the text path client-filtered');
 });
 
 test('alt-clicking a palette swatch applies the color filter, plain click still copies', () => {

@@ -1,41 +1,19 @@
 'use strict';
 
 (function exposePaneState(root, factory) {
-  const api = factory();
+  const querySpec = typeof module === 'object' && module.exports
+    ? require('./query-spec')
+    : root.EagleMVQuerySpec;
+  const api = factory(querySpec);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.EagleMVPanestate = api;
-})(typeof window !== 'undefined' ? window : globalThis, () => {
-  function createQuery(source = {}) {
-    return {
-      folderId: source.folderId || null,
-      smartFolderId: source.smartFolderId || null,
-      search: String(source.search || ''),
-      tags: [...new Set((source.tags || []).map(String).filter(Boolean))],
-      ext: String(source.ext || ''),
-      rating: Number.isInteger(source.rating) ? source.rating : null,
-      annotation: String(source.annotation || ''),
-      url: String(source.url || ''),
-      shape: String(source.shape || ''),
-      color: String(source.color || '')
-    };
-  }
+})(typeof window !== 'undefined' ? window : globalThis, querySpec => {
+  // Query structure, defaults, and filter detection all derive from the
+  // declarative field table in query-spec.js.
+  const { createQuery, filtersActive, filterCount } = querySpec;
 
   function cloneQuery(source) {
     return createQuery(source);
-  }
-
-  function filtersActive(query) {
-    const current = createQuery(query);
-    return Boolean(current.search.trim() || current.tags.length || current.ext ||
-      Number.isInteger(current.rating) || current.annotation.trim() || current.url.trim() || current.shape || current.color);
-  }
-
-  function filterCount(query) {
-    const current = createQuery(query);
-    return [
-      current.search.trim(), current.tags.length, current.ext, Number.isInteger(current.rating),
-      current.annotation.trim(), current.url.trim(), current.shape, current.color
-    ].filter(Boolean).length;
   }
 
   // Ascending base comparators; direction is applied as a factor so every

@@ -529,6 +529,9 @@ function formatBytes(bytes) {
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp', 'heic', 'tif', 'tiff']);
 function isImageItem(item) { return imageExtensions.has(String(item?.ext || '').toLowerCase()); }
+// Originals Chromium cannot decode whose preview rides Eagle's generated
+// .info image (eaglemv://preview): design formats plus camera RAW.
+const previewStandInExtensions = new Set(['psd', 'tif', 'tiff', 'heic', 'heif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'raf', 'rw2']);
 function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase(); }
 
 function compareItemsForView(a, b) {
@@ -698,14 +701,23 @@ function renderColorFilter() {
   }).join('');
 }
 
+// Simple-value filter inputs bind declaratively; tags (chip editor) and
+// color (swatch row) keep their bespoke widgets.
+const filterInputBindings = [
+  { key: 'search', selector: '#searchInput', event: 'input' },
+  { key: 'ext', selector: '#extFilter', event: 'input', parse: value => normalizeExtension(value) },
+  { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
+  { key: 'shape', selector: '#shapeFilter', event: 'change' },
+  { key: 'annotation', selector: '#annotationFilter', event: 'input' },
+  { key: 'url', selector: '#urlFilter', event: 'input' }
+];
+
 function renderQueryControls() {
   const query = state.query;
-  $('#searchInput').value = query.search;
-  $('#extFilter').value = query.ext;
-  $('#annotationFilter').value = query.annotation;
-  $('#urlFilter').value = query.url;
-  $('#shapeFilter').value = query.shape;
-  $('#ratingFilter').value = Number.isInteger(query.rating) ? String(query.rating) : '';
+  for (const binding of filterInputBindings) {
+    const input = $(binding.selector);
+    if (input) input.value = binding.toInput ? binding.toInput(query[binding.key]) : String(query[binding.key] ?? '');
+  }
   renderColorFilter();
   renderTagEditor('filter');
   renderFilterState();
@@ -943,14 +955,7 @@ async function updateTagColor(tag, color) {
 }
 
 function clearFilters() {
-  state.query.search = '';
-  state.query.tags = [];
-  state.query.ext = '';
-  state.query.rating = null;
-  state.query.annotation = '';
-  state.query.url = '';
-  state.query.shape = '';
-  state.query.color = '';
+  state.query = createQuery();
   renderQueryControls();
   refresh({ reset: true, preserveScroll: false, paneId: state.activePaneId });
 }
@@ -2253,9 +2258,10 @@ function mediaMarkup(item) {
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
   if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) return `<img src="${url}" alt="${escapeHTML(item.name)}">`;
-  // Chromium cannot decode these originals; Eagle's generated preview image
-  // in the .info folder stands in at full resolution.
-  if (['psd', 'tif', 'tiff', 'heic', 'heif'].includes(ext)) return `<img src="eaglemv://preview/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">`;
+  // Chromium cannot decode these originals (PSD/TIFF/HEIC and camera RAW);
+  // Eagle's generated preview image in the .info folder stands in at full
+  // resolution, with the thumbnail as fallback.
+  if (previewStandInExtensions.has(ext)) return `<img src="eaglemv://preview/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">`;
   return `<div class="unsupported-preview"><img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⇧Enter 使用默认应用打开</span></p></div>`;
 }
 
@@ -4140,39 +4146,17 @@ function bindEvents() {
   $('#folderDialog').addEventListener('click', event => {
     if (event.target === event.currentTarget) closeFolderDialog();
   });
-  $('#searchInput').addEventListener('input', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.search = event.target.value;
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
+  for (const binding of filterInputBindings) {
+    $(binding.selector).addEventListener(binding.event, event => {
+      const paneId = state.activePaneId;
+      const pane = paneById(paneId);
+      if (!pane) return;
+      pane.query[binding.key] = binding.parse ? binding.parse(event.target.value) : event.target.value;
+      renderFilterState();
+      schedulePaneFilterRefresh(paneId);
+    });
+  }
   for (const kind of Object.keys(tagEditors)) bindTagEditor(kind);
-  $('#extFilter').addEventListener('input', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.ext = normalizeExtension(event.target.value);
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
-  $('#ratingFilter').addEventListener('change', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.rating = event.target.value === '' ? null : Number(event.target.value);
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
-  $('#shapeFilter').addEventListener('change', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.shape = event.target.value;
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
   $('#colorFilter').addEventListener('click', event => {
     const swatch = event.target.closest('[data-filter-color]');
     if (!swatch) return;
@@ -4181,22 +4165,6 @@ function bindEvents() {
     if (!pane) return;
     pane.query.color = swatch.dataset.filterColor || '';
     renderColorFilter();
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
-  $('#annotationFilter').addEventListener('input', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.annotation = event.target.value;
-    renderFilterState();
-    schedulePaneFilterRefresh(paneId);
-  });
-  $('#urlFilter').addEventListener('input', event => {
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    if (!pane) return;
-    pane.query.url = event.target.value;
     renderFilterState();
     schedulePaneFilterRefresh(paneId);
   });
