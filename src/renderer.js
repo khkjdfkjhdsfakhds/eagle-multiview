@@ -125,6 +125,7 @@ const state = {
   previewId: null,
   previewZoom: { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
   slideshow: { timer: null, intervalMs: 4000 },
+  previewView: { background: 'none', grayscale: false },
   textSession: null,
   textSaving: false,
   previewToken: 0,
@@ -2990,6 +2991,57 @@ async function movePreview(delta, { fromSlideshow = false } = {}) {
   return Boolean(next);
 }
 
+// --- Preview view options --------------------------------------------------
+// Eagle lets you park a checkerboard (or a flat colour) behind a transparent
+// image and view it in grayscale. Both are pure display state: the background
+// goes on the <img> itself so it fills exactly the picture's box rather than
+// the whole modal, and both ride classes on the modal so swapping images keeps
+// the setting.
+const PREVIEW_BACKGROUNDS = [
+  { key: 'none', label: '透明区域：默认' },
+  { key: 'checker', label: '透明区域：棋盘格' },
+  { key: 'white', label: '透明区域：白底' },
+  { key: 'black', label: '透明区域：黑底' }
+];
+const PREVIEW_VIEW_KEY = 'eaglemv.previewView';
+
+function renderPreviewView() {
+  const modal = $('#previewModal');
+  if (!modal) return;
+  const { background, grayscale } = state.previewView;
+  for (const option of PREVIEW_BACKGROUNDS) modal.classList.toggle(`bg-${option.key}`, option.key === background);
+  modal.classList.toggle('preview-grayscale', grayscale);
+  const current = PREVIEW_BACKGROUNDS.find(option => option.key === background) || PREVIEW_BACKGROUNDS[0];
+  const backgroundButton = $('#previewBackground');
+  if (backgroundButton) {
+    backgroundButton.title = `${current.label}（B 切换）`;
+    backgroundButton.setAttribute('aria-label', current.label);
+    backgroundButton.dataset.background = background;
+  }
+  const grayscaleButton = $('#previewGrayscale');
+  if (grayscaleButton) grayscaleButton.setAttribute('aria-pressed', String(grayscale));
+}
+
+function persistPreviewView() {
+  try { localStorage.setItem(PREVIEW_VIEW_KEY, JSON.stringify(state.previewView)); } catch {}
+}
+
+function cyclePreviewBackground() {
+  const index = PREVIEW_BACKGROUNDS.findIndex(option => option.key === state.previewView.background);
+  const next = PREVIEW_BACKGROUNDS[(index + 1) % PREVIEW_BACKGROUNDS.length];
+  state.previewView.background = next.key;
+  renderPreviewView();
+  persistPreviewView();
+  toast(next.label, 1600);
+}
+
+function togglePreviewGrayscale() {
+  state.previewView.grayscale = !state.previewView.grayscale;
+  renderPreviewView();
+  persistPreviewView();
+  toast(state.previewView.grayscale ? '灰度查看已开启' : '灰度查看已关闭', 1600);
+}
+
 // --- Slideshow -------------------------------------------------------------
 // Eagle's 幻灯片: dwell on each item, advance, wrap around at the end. Built on
 // the preview rather than beside it, so zoom, swipe and the neighbour prefetch
@@ -5133,6 +5185,8 @@ function bindEvents() {
     if (slideshowPlaying()) scheduleSlideshowStep();
   });
   $('#slideshowControls').addEventListener('click', event => event.stopPropagation());
+  $('#previewBackground').addEventListener('click', cyclePreviewBackground);
+  $('#previewGrayscale').addEventListener('click', togglePreviewGrayscale);
   $('#modalRating').addEventListener('click', event => {
     event.stopPropagation();
     const star = event.target.closest('[data-preview-rating]');
@@ -5401,6 +5455,16 @@ function bindEvents() {
     if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault();
       toggleSlideshow();
+      return;
+    }
+    if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      cyclePreviewBackground();
+      return;
+    }
+    if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      togglePreviewGrayscale();
       return;
     }
     if (!editable && event.code === 'Space' && previewOpen) {
@@ -5843,6 +5907,12 @@ async function start() {
   } catch {}
   $('#slideshowInterval').value = String(state.slideshow.intervalMs);
   renderSlideshow();
+  try {
+    const stored = JSON.parse(localStorage.getItem(PREVIEW_VIEW_KEY) || 'null');
+    if (PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)) state.previewView.background = stored.background;
+    state.previewView.grayscale = Boolean(stored?.grayscale);
+  } catch {}
+  renderPreviewView();
   renderPanels();
   renderQueryControls();
   try {

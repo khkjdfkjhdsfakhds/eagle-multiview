@@ -1760,6 +1760,31 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   cursor: pointer;
 }
 .slideshow-button[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-soft); color: #a8c9f5; }
+.preview-view-button { font-size: 12px; }
+/* The chip previews the choice, so the cycling button says what it is doing. */
+.preview-bg-chip { width: 15px; height: 15px; border: 1px solid rgba(247, 248, 248, .3); border-radius: 4px; }
+#previewBackground[data-background="none"] .preview-bg-chip { background: repeating-linear-gradient(135deg, transparent 0 4px, rgba(247, 248, 248, .35) 4px 5px); }
+#previewBackground[data-background="checker"] .preview-bg-chip {
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #bfbfbf 25%, transparent 25% 75%, #bfbfbf 75%),
+                    linear-gradient(45deg, #bfbfbf 25%, transparent 25% 75%, #bfbfbf 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+#previewBackground[data-background="white"] .preview-bg-chip { background: #fff; }
+#previewBackground[data-background="black"] .preview-bg-chip { background: #000; }
+/* The backing goes on the image itself so it covers exactly the picture's box
+   rather than the whole modal. */
+.preview-modal.bg-checker .preview-image {
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #cdcdcd 25%, transparent 25% 75%, #cdcdcd 75%),
+                    linear-gradient(45deg, #cdcdcd 25%, transparent 25% 75%, #cdcdcd 75%);
+  background-size: 22px 22px;
+  background-position: 0 0, 11px 11px;
+}
+.preview-modal.bg-white .preview-image { background-color: #fff; }
+.preview-modal.bg-black .preview-image { background-color: #000; }
+.preview-modal.preview-grayscale .preview-image { filter: grayscale(1); }
 .slideshow-interval {
   height: 30px;
   padding: 0 6px;

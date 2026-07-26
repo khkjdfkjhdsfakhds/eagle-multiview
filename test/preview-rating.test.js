@@ -40,3 +40,31 @@ test('operations that leave items on screen keep the selection', () => {
   const clears = renderer.match(/pane\.selected = new Set\(outcome\.failed\);/g) || [];
   assert.strictEqual(clears.length, 2, '只剩废纸篓与移动两处仍然清空');
 });
+
+test('preview view options: transparent backing and grayscale', () => {
+  assert.ok(indexHTML.includes('id="previewBackground"'));
+  assert.ok(indexHTML.includes('id="previewGrayscale"'));
+  assert.ok(renderer.includes('function cyclePreviewBackground()'));
+  assert.ok(renderer.includes('function togglePreviewGrayscale()'));
+  // Four states, cycling, with the button chip showing the current one.
+  assert.ok(renderer.includes("{ key: 'none'") && renderer.includes("{ key: 'checker'")
+    && renderer.includes("{ key: 'white'") && renderer.includes("{ key: 'black'"));
+  assert.ok(renderer.includes('PREVIEW_BACKGROUNDS[(index + 1) % PREVIEW_BACKGROUNDS.length]'));
+  // Classes live on the modal, so swapping images keeps the setting.
+  assert.ok(renderer.includes("modal.classList.toggle(`bg-${option.key}`, option.key === background)"));
+  assert.ok(renderer.includes("modal.classList.toggle('preview-grayscale', grayscale)"));
+  // The backing paints the image's own box, not the whole modal.
+  assert.ok(styles.includes('.preview-modal.bg-checker .preview-image {'));
+  assert.ok(styles.includes('.preview-modal.preview-grayscale .preview-image { filter: grayscale(1); }'));
+  assert.ok(!styles.includes('.preview-modal.bg-checker .modal-media'), 'the modal itself must not take the backing');
+  // Remembered, and only a known background is restored.
+  assert.ok(renderer.includes("const PREVIEW_VIEW_KEY = 'eaglemv.previewView';"));
+  assert.ok(renderer.includes('PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)'));
+  // B and G are preview-scoped like S.
+  for (const [letter, fn] of [['b', 'cyclePreviewBackground()'], ['g', 'togglePreviewGrayscale()']]) {
+    const line = renderer.split('\n').find(text => text.includes(`event.key.toLowerCase() === '${letter}'`) && text.includes('previewOpen'));
+    assert.ok(line, `${letter} binding exists`);
+    assert.ok(line.includes('!editable') && line.includes('!primaryKey'), `${letter} is plain and not while typing`);
+    assert.ok(renderer.includes(`      ${fn};`), `${letter} calls ${fn}`);
+  }
+});
