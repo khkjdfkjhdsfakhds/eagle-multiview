@@ -37,6 +37,34 @@
     ].filter(Boolean).length;
   }
 
+  // Ascending base comparators; direction is applied as a factor so every
+  // sort key stays stable (equal keys keep Eagle's original order).
+  const sortComparators = {
+    name: (a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'),
+    newest: (a, b) => (a?.modificationTime || 0) - (b?.modificationTime || 0),
+    size: (a, b) => (a?.size || 0) - (b?.size || 0),
+    resolution: (a, b) => ((a?.width || 0) * (a?.height || 0)) - ((b?.width || 0) * (b?.height || 0)),
+    rating: (a, b) => (Number(a?.star) || 0) - (Number(b?.star) || 0),
+    type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en')
+  };
+  const defaultSortDirections = { name: 'asc', type: 'asc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
+
+  function defaultSortDir(sort) {
+    return defaultSortDirections[sort] || 'asc';
+  }
+
+  function effectiveSortDir(sort, sortDir) {
+    return sortDir === 'asc' || sortDir === 'desc' ? sortDir : defaultSortDir(sort);
+  }
+
+  function compareBySort(sort, sortDir, a, b) {
+    const base = sortComparators[sort];
+    if (!base) return 0;
+    const result = base(a, b);
+    if (result === 0) return 0;
+    return effectiveSortDir(sort, sortDir) === 'desc' ? -result : result;
+  }
+
   function selectRange(items, selectedIds, targetId, additive = false) {
     const current = new Set(selectedIds || []);
     const targetIndex = (items || []).findIndex(item => item?.id === targetId);
@@ -54,5 +82,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange };
+  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort };
 });

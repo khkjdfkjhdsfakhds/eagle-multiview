@@ -867,8 +867,21 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   white-space: nowrap;
 }
 .location-block > .muted { font-size: 10px; color: #74757a; }
-.sort-select { margin-left: auto; border-color: transparent; background-color: transparent; color: #86878d; font-size: 11px; }
+.sort-controls { margin-left: auto; display: flex; align-items: center; gap: 3px; }
+.sort-select { border-color: transparent; background-color: transparent; color: #86878d; font-size: 11px; }
 .sort-select:hover { border-color: var(--line); background-color: rgba(255, 255, 255, .025); }
+.sort-dir-button {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background-color: transparent;
+  color: #86878d;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.sort-dir-button:hover:not(:disabled) { border-color: var(--line); background-color: rgba(255, 255, 255, .025); color: #c8c9ce; }
+.sort-dir-button:disabled { opacity: .35; cursor: default; }
 .grid-scroller {
   position: relative;
   min-height: 0;

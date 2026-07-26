@@ -20,7 +20,9 @@ const {
   cloneQuery,
   filtersActive: queryFiltersActive,
   filterCount: queryFilterCount,
-  selectRange
+  selectRange,
+  effectiveSortDir,
+  compareBySort: compareItemsBySort
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const { createOperationTracker } = window.EagleMVOperationState;
@@ -33,7 +35,7 @@ const newFileTypes = Object.freeze({
 });
 
 const paneScopedSelectors = new Set([
-  '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect',
+  '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect', '#sortDirButton',
   '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay'
 ]);
 const $ = selector => {
@@ -62,6 +64,7 @@ const state = {
   inspectorAutoSaveTimer: null,
   query: createQuery(),
   sort: 'default',
+  sortDir: 'auto',
   viewTitle: '资料库',
   refreshTimer: null,
   toastTimer: null,
@@ -104,7 +107,7 @@ const state = {
 
 const paneStateKeys = [
   'items', 'total', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
-  'sort', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query'
+  'sort', 'sortDir', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query'
 ];
 function createPaneState(id, source = state) {
   return {
@@ -121,6 +124,8 @@ function createPaneState(id, source = state) {
     selected: new Set(source.selected || []),
     selectedBase: source.selectedBase || null,
     sort: source.sort || 'default',
+    sortDir: source.sortDir || 'auto',
+    sortCapNotified: false,
     viewTitle: source.viewTitle || '资料库',
     currentView: { ...(source.currentView || { kind: 'root' }) },
     history: [...(source.history || [])],
@@ -161,6 +166,9 @@ const paneLayouts = {
 const UI_ZOOM_MIN = 0.8;
 const UI_ZOOM_MAX = 1.6;
 const UI_ZOOM_STEP = 0.1;
+// Non-default sorts pull the full folder so the order is exact; very large
+// folders stop auto-fetching here and fall back to scroll-driven loading.
+const SORT_FETCH_CAP = 3000;
 const LIBRARY_SYNC_DEBOUNCE_MS = 320;
 let librarySyncTimer = null;
 let librarySyncRunning = false;
@@ -320,13 +328,18 @@ function paneMarkup(id, index) {
         <h1 id="viewTitle">资料库</h1>
         <span id="resultCount" class="muted">正在连接…</span>
       </div>
-      <select id="sortSelect" class="sort-select" aria-label="当前栏排序">
-        <option value="default">Eagle 顺序</option>
-        <option value="name">名称</option>
-        <option value="newest">最近修改</option>
-        <option value="size">文件大小</option>
-        <option value="resolution">分辨率</option>
-      </select>
+      <div class="sort-controls">
+        <select id="sortSelect" class="sort-select" aria-label="当前栏排序">
+          <option value="default">Eagle 顺序</option>
+          <option value="name">名称</option>
+          <option value="newest">最近修改</option>
+          <option value="size">文件大小</option>
+          <option value="resolution">分辨率</option>
+          <option value="rating">评分</option>
+          <option value="type">文件类型</option>
+        </select>
+        <button id="sortDirButton" class="sort-dir-button" title="切换排序方向" aria-label="切换排序方向">↓</button>
+      </div>
     </div>
     <div id="gridScroller" class="grid-scroller">
       <div id="emptyState" class="empty-state hidden">
@@ -366,7 +379,7 @@ function renderPaneLayout(layout = 'single', { refresh = true } = {}) {
   savePaneScrollPositions();
   const oldPanes = state.panes;
   const count = paneLayouts[layout];
-  state.panes = Array.from({ length: count }, (_, index) => oldPanes[index] || createPaneState(`pane-${index + 1}`, { currentView: { kind: 'root' }, sort: 'default', viewTitle: '资料库' }));
+  state.panes = Array.from({ length: count }, (_, index) => oldPanes[index] || createPaneState(`pane-${index + 1}`, { currentView: { kind: 'root' }, sort: 'default', sortDir: 'auto', viewTitle: '资料库' }));
   state.panes.forEach((pane, index) => { pane.id = `pane-${index + 1}`; });
   if (!paneById(state.activePaneId)) state.activePaneId = state.panes[0].id;
   layoutRoot.dataset.layout = layout;
@@ -375,7 +388,7 @@ function renderPaneLayout(layout = 'single', { refresh = true } = {}) {
   for (const pane of state.panes) bindPaneEvents(pane.id);
   for (const pane of state.panes) {
     withActivePane(pane.id, () => {
-      $('#sortSelect').value = pane.sort || 'default';
+      renderSortControls();
       renderLocation();
       renderGrid({ preserveScroll: true });
     });
@@ -483,13 +496,6 @@ function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase();
 
 function sortedItems() {
   const items = [...state.items];
-  const compareBySort = (a, b) => {
-    if (state.sort === 'name') return String(a.name).localeCompare(String(b.name), 'zh-CN');
-    if (state.sort === 'newest') return (b.modificationTime || 0) - (a.modificationTime || 0);
-    if (state.sort === 'size') return (b.size || 0) - (a.size || 0);
-    if (state.sort === 'resolution') return ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0));
-    return 0;
-  };
   items.sort((a, b) => {
     if (state.currentView.kind === 'folder') {
       const left = pinTimestamp(a);
@@ -498,9 +504,23 @@ function sortedItems() {
       if (!left && right) return 1;
       if (left !== right) return right - left;
     }
-    return compareBySort(a, b);
+    return compareItemsBySort(state.sort, state.sortDir, a, b);
   });
   return items;
+}
+
+function renderSortControls() {
+  const select = $('#sortSelect');
+  if (select) select.value = state.sort || 'default';
+  const dirButton = $('#sortDirButton');
+  if (!dirButton) return;
+  const sortable = Boolean(state.sort) && state.sort !== 'default';
+  const dir = effectiveSortDir(state.sort, state.sortDir);
+  dirButton.disabled = !sortable;
+  dirButton.textContent = dir === 'asc' ? '↑' : '↓';
+  dirButton.title = sortable
+    ? `切换排序方向（当前${dir === 'asc' ? '升序' : '降序'}）`
+    : 'Eagle 顺序不支持切换方向';
 }
 
 function pinTimestamp(item) {
@@ -1367,8 +1387,13 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         }
         if (paneIsActive) updateScrollUI();
         const scroller = $('#gridScroller');
-        if (state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80) {
+        const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
+        const sortBackfillActive = state.sort !== 'default' && state.hasMore;
+        if (needsViewportFill || (sortBackfillActive && state.items.length < SORT_FETCH_CAP)) {
           setTimeout(() => refresh({ reset: false, preserveScroll: true, paneId }), 0);
+        } else if (sortBackfillActive && state.items.length >= SORT_FETCH_CAP && !pane.sortCapNotified) {
+          pane.sortCapNotified = true;
+          toast(`素材较多，当前排序先基于前 ${state.items.length} 个素材，继续滚动会继续载入`, 4200);
         }
       });
     }
@@ -3429,6 +3454,18 @@ function bindPaneEvents(paneId) {
   query('#sortSelect').addEventListener('change', event => {
     activatePane(paneId);
     state.sort = event.target.value;
+    state.sortDir = 'auto';
+    const pane = paneById(paneId);
+    if (pane) pane.sortCapNotified = false;
+    renderSortControls();
+    renderGrid({ preserveScroll: true });
+    if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
+  });
+  query('#sortDirButton').addEventListener('click', () => {
+    activatePane(paneId);
+    if (!state.sort || state.sort === 'default') return;
+    state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
+    renderSortControls();
     renderGrid({ preserveScroll: true });
   });
   query('#itemGrid').addEventListener('click', event => {
