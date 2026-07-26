@@ -225,7 +225,8 @@ function createWindow(initialState = null) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      plugins: true
     }
   });
   windows.add(window);
@@ -535,7 +536,8 @@ async function installProtocol() {
       if (!fileURL) {
         return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" rx="24" fill="#0b0d11"/><path d="M112 76h58l38 38v110H112z" fill="#242832"/><path d="M170 76v40h38" fill="none" stroke="#59606d" stroke-width="8"/><text x="160" y="178" text-anchor="middle" fill="#7e8590" font-family="sans-serif" font-size="22">FILE</text></svg>', { headers: { 'Content-Type': 'image/svg+xml' } });
       }
-      return net.fetch(fileURL);
+      const range = request.headers.get('Range');
+      return net.fetch(fileURL, range ? { headers: { Range: range } } : undefined);
     } catch (error) {
       return new Response(error.message || 'Media error', { status: 500 });
     }

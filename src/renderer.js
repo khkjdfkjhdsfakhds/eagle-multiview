@@ -1115,6 +1115,7 @@ function renderGrid({ preserveScroll = true } = {}) {
         <img loading="lazy" src="${thumbURL}" alt="${escapeHTML(item.name)}"${isGif ? ` data-gif-static="${thumbURL}" data-gif-animated="${originalURL}"` : ''}>
         ${itemIsPinned(item) ? `<span class="pin-badge" title="已在当前文件夹置顶">${eagleIcon('ic-toolbar-pin.svg', 'pin-icon')}</span>` : ''}
         ${(isGif || (!isImageItem(item) && item.ext)) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
+        ${Number(item.star) > 0 ? `<span class="card-stars" title="${Number(item.star)} 星">${'★'.repeat(Number(item.star))}</span>` : ''}
       </div>
       <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
@@ -1396,6 +1397,21 @@ function selectItem(id, additive = false, range = false) {
   return true;
 }
 
+function renderItemPalette(item) {
+  const box = $('#itemPalette');
+  if (!box) return;
+  const palettes = Array.isArray(item?.palettes) ? item.palettes.slice(0, 8) : [];
+  box.innerHTML = palettes.map(entry => {
+    const rgb = Array.isArray(entry?.color) ? entry.color.map(v => Math.max(0, Math.min(255, Math.round(Number(v) || 0)))) : null;
+    if (!rgb || rgb.length < 3) return '';
+    const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+    const ratio = Number(entry.ratio) || 0;
+    const pct = ratio > 1 ? Math.round(ratio) : Math.round(ratio * 100);
+    return `<button type="button" class="palette-swatch" style="background:rgb(${rgb.join(',')})" data-color="${hex}" title="${hex} · ${pct}%" aria-label="主色 ${hex}"></button>`;
+  }).join('');
+  box.classList.toggle('hidden', !box.innerHTML);
+}
+
 function renderInspector() {
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
@@ -1450,7 +1466,8 @@ function renderInspector() {
   $('#itemURL').value = item.url || '';
   resizeAnnotation();
   $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
-  $('#itemMeta').innerHTML = `<span>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span>${formatBytes(item.size)}</span><span>${item.width || 0} × ${item.height || 0}</span><span>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
+  renderItemPalette(item);
+  $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span><span><em>修改日期</em>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
   loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
   loadComments(item);
@@ -3887,6 +3904,12 @@ function bindEvents() {
   });
   $('#itemAnnotation').addEventListener('input', () => { resizeAnnotation(); markDirty(); });
   $('#itemAnnotation').addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
+  $('#itemPalette').addEventListener('click', event => {
+    const swatch = event.target.closest('.palette-swatch');
+    if (!swatch) return;
+    window.eagleMV.copyText(swatch.dataset.color);
+    toast(`已复制颜色 ${swatch.dataset.color}`, 1600);
+  });
   $('#pinButton').addEventListener('click', () => {
     const item = itemById([...state.selected][0]);
     if (item) setPinned([item.id], !itemIsPinned(item));
@@ -4132,6 +4155,11 @@ function bindEvents() {
     }
     if (previewOpen && !editable && event.key === 'ArrowLeft') { event.preventDefault(); movePreview(-1); }
     if (previewOpen && !editable && event.key === 'ArrowRight') { event.preventDefault(); movePreview(1); }
+    if (!editable && !previewOpen && !primaryKey && !event.altKey && !event.shiftKey && /^[0-5]$/.test(event.key) && state.selected.size) {
+      event.preventDefault();
+      setSelectionRating({ ids: [...state.selected], rating: Number(event.key) });
+      return;
+    }
     if (deleteKey && !editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && state.selected.size) setTrash([...state.selected], true);
   });
 }
