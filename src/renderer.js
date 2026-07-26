@@ -640,7 +640,19 @@ function setConnection(connected, message) {
   state.connected = connected;
   document.body.classList.toggle('offline', !connected);
   $('#connectionDot').className = `connection-dot ${connected ? 'online' : 'offline'}`;
-  $('#connectionText').textContent = connected ? (state.library?.name || '已连接 Eagle') : (message || 'Eagle 未连接');
+  const status = connected ? (state.library?.name || '已连接 Eagle') : (message || 'Eagle 未连接');
+  $('#connectionText').textContent = status;
+  // The status bar is 9px tall and sits under the home indicator on a phone,
+  // so a dropped host is effectively invisible there — and every action then
+  // fails silently. Say it across the top instead.
+  const banner = $('#offlineBanner');
+  if (banner) {
+    banner.textContent = window.eagleMV.platform === 'web' ? `${status} · 正在重连主机…` : status;
+    banner.classList.toggle('hidden', connected);
+    // Push the workspace down rather than covering the search box for as long
+    // as the host stays away.
+    document.body.classList.toggle('host-offline', !connected);
+  }
   for (const selector of ['#trashButton', '#batchTrashButton', '#batchTagButton', '#addCommentButton', '#customThumbnailButton']) {
     $(selector).disabled = !connected;
   }

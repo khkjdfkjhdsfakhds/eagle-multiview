@@ -174,3 +174,24 @@ test('context menus become bottom sheets on narrow screens', () => {
   assert.ok(renderer.includes("submenu.classList.toggle('submenu-open');"));
   assert.ok(compact.includes('.context-menu-sheet .context-menu-row:hover > .context-submenu { display: none; }'));
 });
+
+test('a narrow client says when the host is gone', () => {
+  // The status bar is 9px and sits under the home indicator on a phone, so a
+  // dropped host was invisible while every action failed silently.
+  assert.ok(indexHTML.includes('id="offlineBanner"'));
+  assert.ok(renderer.includes("banner.classList.toggle('hidden', connected);"));
+  assert.ok(renderer.includes("document.body.classList.toggle('host-offline', !connected);"));
+  assert.ok(renderer.includes("banner.textContent = window.eagleMV.platform === 'web' ? `${status} · 正在重连主机…` : status;"),
+    'the web client is the one that reconnects on its own');
+  // It is driven from setConnection, which is the single place connection
+  // state changes (hub status events land there too).
+  const setConnection = renderer.slice(renderer.indexOf('function setConnection('), renderer.indexOf('function formatBytes('));
+  assert.ok(setConnection.includes("$('#offlineBanner')"));
+  assert.ok(renderer.includes('window.eagleMV.onStatus(payload => setConnection(payload.connected, payload.message));'));
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  .offline-banner'));
+  assert.match(compact, /\.offline-banner \{[^}]*position: fixed/);
+  // It pushes the workspace down instead of covering the search box, because
+  // an outage can last a while.
+  assert.ok(compact.includes('body.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }'));
+  assert.ok(styles.includes('.offline-banner { display: none; }'), 'wide windows keep the status bar and skip the banner');
+});

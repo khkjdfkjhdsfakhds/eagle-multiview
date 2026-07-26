@@ -1664,6 +1664,33 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   color: #74757a;
   font-size: 9px;
 }
+/* Losing the host is invisible in a 9px status bar, and on a phone that bar is
+   also under the home indicator. Only narrow layouts get the banner; a desktop
+   window has the status bar in plain sight. */
+.offline-banner { display: none; }
+@media (max-width: 900px) {
+  .offline-banner {
+    position: fixed;
+    z-index: 52;
+    top: 0;
+    right: 0;
+    left: 0;
+    display: block;
+    box-sizing: border-box;
+    padding: max(6px, env(safe-area-inset-top)) 12px 6px;
+    background: rgba(229, 111, 122, .94);
+    color: #1a1013;
+    font-size: 12px;
+    font-weight: 560;
+    text-align: center;
+  }
+  .offline-banner.hidden { display: none !important; }
+  /* An outage can last a while, so the banner takes its own strip instead of
+     sitting on top of the search box. */
+  body.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }
+  .offline-banner { height: calc(24px + max(6px, env(safe-area-inset-top))); }
+}
+
 /* Compact-only strip above the status bar: what is selected, and the way out.
    Sits below the drawer backdrop so opening a drawer covers it. */
 .selection-bar {
