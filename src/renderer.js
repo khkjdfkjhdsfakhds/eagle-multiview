@@ -252,7 +252,7 @@ const TOUCH_LONG_PRESS_SLOP = 12;
 // suppression of the synthetic click and native contextmenu that follow.
 // Returns { cancel } so a caller can abandon the press (a second finger, a
 // gesture taking over).
-function bindTouchLongPress(element, { selector, onLongPress }) {
+function bindTouchLongPress(element, { selector, ignore, onLongPress }) {
   let press = null;
   const cancel = () => {
     if (press) clearTimeout(press.timer);
@@ -260,6 +260,7 @@ function bindTouchLongPress(element, { selector, onLongPress }) {
   };
   element.addEventListener('pointerdown', event => {
     if (event.pointerType !== 'touch') return;
+    if (ignore && event.target.closest(ignore)) return;
     const target = selector ? event.target.closest(selector) : element;
     if (!target) return;
     cancel();
@@ -1280,6 +1281,15 @@ function updateCardSelectionStyles() {
   for (const card of root.querySelectorAll('#itemGrid .item-card')) {
     card.classList.toggle('selected', state.selected.has(card.dataset.id));
   }
+}
+
+function selectAllItems() {
+  if (!confirmDiscardChanges()) return false;
+  state.selectedFolderCard = null;
+  state.selected = new Set(state.items.map(item => item.id));
+  updateCardSelectionStyles();
+  renderInspector();
+  return true;
 }
 
 function clearSelection() {
@@ -3481,6 +3491,9 @@ function contextMenuMarkup(data) {
   }
   if (data.kind === 'workspace') {
     return [
+      contextMenuRow({ icon: 'all', label: '全选', shortcut: '⌘ A', action: 'select-all', disabled: !state.items.length }),
+      ...(state.selected.size ? [contextMenuRow({ icon: 'remove', label: '取消选择', action: 'clear-selection' })] : []),
+      '<div class="context-menu-separator"></div>',
       newCreationMenuMarkup({ folderId: data.folderId, paneId: data.paneId }),
       '<div class="context-menu-separator"></div>',
       ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing })] : []),
@@ -3593,6 +3606,10 @@ async function executeContextAction(action, payload) {
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
+  // Touch has no ⌘A and no ⌘-click, so the blank-space menu is the only route
+  // to a whole-view selection there.
+  if (action === 'select-all') { selectAllItems(); return; }
+  if (action === 'clear-selection') { clearSelection(); return; }
   const ids = data.ids || [];
   const firstId = ids[0];
   if (action === 'open-window') return openSelectionInNewWindow(ids);
@@ -4739,18 +4756,45 @@ function bindPaneEvents(paneId) {
   const scroller = query('#gridScroller');
   bindMarqueeSelection(paneId, scroller);
   bindGridTouchGestures(paneId, scroller, cancelLongPress);
-  scroller.addEventListener('contextmenu', event => {
-    if (event.target.closest('.item-card, .folder-card')) return;
-    event.preventDefault();
+  const openWorkspaceMenu = point => {
     if (!activatePane(paneId)) return;
     const pane = paneById(paneId);
-    showContextMenu(event, {
+    showContextMenuAt(point.x, point.y, {
       kind: 'workspace',
       ids: [],
       paneId,
       folderId: pane?.currentView.kind === 'folder' ? pane.currentView.id : null
     });
+  };
+  scroller.addEventListener('contextmenu', event => {
+    if (event.target.closest('.item-card, .folder-card')) return;
+    event.preventDefault();
+    if (touchLongPressActive || Date.now() < suppressTouchClickUntil) return;
+    openWorkspaceMenu({ x: event.clientX, y: event.clientY });
   });
+  // Touch has no right-click and no ⌘A, so the workspace menu (and 全选 with
+  // it) needs a gesture. Blank grid space carries it, but at phone width the
+  // grid is nearly wall-to-wall cards and lazy loading keeps refilling the
+  // tail, so the only reliable gaps are a few pixels between rows. The pane
+  // heading always has room, so it carries the same press.
+  const workspaceLongPress = {
+    ignore: '.item-card, .folder-card, button, input, select, textarea, a, [data-tag-action]',
+    onLongPress: (_target, point) => {
+      navigator.vibrate?.(10);
+      openWorkspaceMenu(point);
+    }
+  };
+  bindTouchLongPress(scroller, workspaceLongPress);
+  const heading = query('.content-heading');
+  if (heading) {
+    bindTouchLongPress(heading, workspaceLongPress);
+    heading.addEventListener('contextmenu', event => {
+      if (event.target.closest('button, input, select, textarea, a')) return;
+      event.preventDefault();
+      if (touchLongPressActive || Date.now() < suppressTouchClickUntil) return;
+      openWorkspaceMenu({ x: event.clientX, y: event.clientY });
+    });
+  }
   scroller.addEventListener('scroll', event => {
     const element = event.currentTarget;
     const pane = paneById(paneId);
@@ -5060,6 +5104,10 @@ function bindEvents() {
     if (row && !row.contains(event.relatedTarget)) row.classList.remove('submenu-open');
   }, true);
   document.addEventListener('click', event => {
+    // The synthetic click that ends a touch long-press must not dismiss the
+    // menu that same long-press just opened. Cards were exempted by selector;
+    // the folder tree and the pane heading need the shared timestamp.
+    if (Date.now() < suppressTouchClickUntil) return;
     if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton')) hideContextMenu();
   });
   for (const selector of ['#itemName', '#itemURL']) {
@@ -5487,11 +5535,7 @@ function bindEvents() {
     }
     if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'a') {
       event.preventDefault();
-      if (!confirmDiscardChanges()) return;
-      state.selectedFolderCard = null;
-      state.selected = new Set(state.items.map(item => item.id));
-      updateCardSelectionStyles();
-      renderInspector();
+      selectAllItems();
     }
     if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
       event.preventDefault();

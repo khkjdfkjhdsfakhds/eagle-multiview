@@ -70,11 +70,12 @@ test('a compact selection shows the bottom strip and a single way to clear', () 
 
 test('touch reaches folder actions and the arrows are big enough to hit', () => {
   // One long-press implementation, shared by the grid and the folder tree.
-  assert.ok(renderer.includes('function bindTouchLongPress(element, { selector, onLongPress }) {'));
+  assert.ok(renderer.includes('function bindTouchLongPress(element, { selector, ignore, onLongPress }) {'));
   assert.ok(renderer.includes('const TOUCH_LONG_PRESS_MS = 480;'));
   assert.ok(renderer.includes('const TOUCH_LONG_PRESS_SLOP = 12;'));
   assert.ok(renderer.includes("bindTouchLongPress(query('#itemGrid'), {"), 'the grid uses it');
   assert.ok(renderer.includes("bindTouchLongPress($('.sidebar'), {"), 'so does the sidebar');
+  assert.ok(renderer.includes('bindTouchLongPress(scroller, workspaceLongPress);'), 'and blank grid space');
   // Right-click and long-press open the same menu.
   assert.ok(renderer.includes('function openSidebarContextMenu(target, point) {'));
   assert.strictEqual((renderer.match(/openSidebarContextMenu\(/g) || []).length, 3);
@@ -129,4 +130,31 @@ test('preview modal supports two-finger pinch zoom', () => {
   assert.ok(renderer.includes('pinchBase = { ...pinchGeometry()'));
   assert.ok(renderer.includes('pinchBase.scale * (current.distance / pinchBase.distance)'));
   assert.ok(styles.includes('.modal-media { touch-action: none; }'));
+});
+
+test('touch can reach the workspace menu and 全选', () => {
+  // ⌘A and right-click both need a keyboard/mouse; long-pressing blank grid
+  // space is the only route on a phone.
+  assert.ok(renderer.includes('const openWorkspaceMenu = point => {'));
+  assert.ok(renderer.includes("    ignore: '.item-card, .folder-card, button, input, select, textarea, a, [data-tag-action]',"),
+    'cards keep their own long-press');
+  assert.ok(renderer.includes('      openWorkspaceMenu(point);'));
+  assert.ok(renderer.includes('function bindTouchLongPress(element, { selector, ignore, onLongPress })'));
+  // The grid is nearly wall-to-wall cards at phone width, so the heading is
+  // the reliable entry point; both carry the same press.
+  assert.ok(renderer.includes('bindTouchLongPress(heading, workspaceLongPress);'));
+  assert.ok(renderer.includes('bindTouchLongPress(scroller, workspaceLongPress);'));
+  // The synthetic click ending the press must not dismiss the menu it opened.
+  assert.ok(renderer.includes("document.addEventListener('click', event => {\n    // The synthetic click that ends a touch long-press must not dismiss the"));
+  // The browser's own long-press menu must not double up.
+  const contextHandler = renderer.slice(renderer.indexOf("scroller.addEventListener('contextmenu'"), renderer.indexOf('bindTouchLongPress(scroller, {'));
+  assert.ok(contextHandler.includes('if (touchLongPressActive || Date.now() < suppressTouchClickUntil) return;'));
+  // 全选 lives in the menu now, sharing one implementation with ⌘A.
+  assert.ok(renderer.includes("label: '全选', shortcut: '⌘ A', action: 'select-all'"));
+  assert.ok(renderer.includes("if (action === 'select-all') { selectAllItems(); return; }"));
+  assert.ok(renderer.includes("if (action === 'clear-selection') { clearSelection(); return; }"));
+  assert.ok(renderer.includes('function selectAllItems() {'));
+  const shortcut = renderer.split('\n').find(text => text.includes("event.key.toLowerCase() === 'a'") && text.includes('primaryKey'));
+  assert.ok(shortcut, 'the ⌘A binding still exists');
+  assert.ok(renderer.includes('      selectAllItems();\n    }'), '⌘A routes through the same function');
 });
