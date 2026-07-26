@@ -412,8 +412,13 @@ select:hover { border-color: rgba(247, 248, 248, .14); }
   position: absolute;
   z-index: 30;
   top: calc(100% + 5px);
+  /* Match the field rather than a fixed 360px: that width assumed the field
+     hugged the left edge, so in the inspector — the main place people type a
+     tag — the popover ran 73px past the window at 1280px wide, and 10px past a
+     390px phone inside the drawer. Long names already ellipsis with a title. */
+  right: -1px;
   left: -1px;
-  width: min(360px, calc(100vw - 38px));
+  width: auto;
   max-height: min(320px, 42vh);
   overflow: auto;
   padding: 5px;

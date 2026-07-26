@@ -110,6 +110,10 @@ test('narrow screens get chrome that fits them', () => {
   // Pinch has to start from the size actually in effect, not the slider's.
   assert.ok(renderer.includes("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--thumb'))"));
   assert.ok(renderer.includes("window.matchMedia('(pointer: coarse)').matches && position"), 'touch has no hover for the file name');
+  // A fixed 360px assumed the field hugged the left edge: measured overflow was
+  // 73px past a 1280px window in the inspector and 10px past a 390px phone.
+  assert.match(styles, /^\.tag-suggestion-popover \{[^}]*right: -1px;\n  left: -1px;\n  width: auto;/m);
+  assert.ok(!styles.includes('width: min(360px, calc(100vw - 38px))'), 'the viewport-relative guess is gone');
 });
 
 test('the layout switcher stays reachable on a phone', () => {
