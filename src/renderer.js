@@ -874,6 +874,7 @@ const dateRange = end => ({
 // color (swatch row) keep their bespoke widgets.
 const filterInputBindings = [
   { key: 'search', selector: '#searchInput', event: 'input' },
+  { key: 'searchScope', selector: '#searchScopeFilter', event: 'change' },
   { key: 'ext', selector: '#extFilter', event: 'input', parse: value => normalizeExtension(value) },
   { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
   { key: 'shape', selector: '#shapeFilter', event: 'change' },

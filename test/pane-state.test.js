@@ -15,6 +15,7 @@ test('clones query state without sharing tags between panes', () => {
     folderId: null,
     smartFolderId: null,
     search: 'one',
+    searchScope: '',
     tags: ['a'],
     ext: '',
     rating: null,

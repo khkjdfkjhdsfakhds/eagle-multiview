@@ -42,6 +42,15 @@
           <button id="filterButton" class="filter-button" title="打开筛选器">筛选 <span id="filterCount" class="filter-count hidden">0</span></button>
           <div id="filterPopover" class="filter-popover hidden">
             <div class="filter-popover-heading"><strong>筛选素材</strong><button id="closeFilterButton" type="button" class="popover-close" aria-label="关闭筛选器">×</button></div>
+            <label>搜索范围
+              <select id="searchScopeFilter" title="限定搜索框匹配的字段">
+                <option value="">全部字段</option>
+                <option value="name">仅名称</option>
+                <option value="tags">仅标签</option>
+                <option value="annotation">仅备注</option>
+                <option value="url">仅来源</option>
+              </select>
+            </label>
             <label>文件格式
               <input id="extFilter" list="extensionSuggestions" placeholder="例如 png、pdf、mov" autocomplete="off">
             </label>

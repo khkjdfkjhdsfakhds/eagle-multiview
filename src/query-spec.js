@@ -37,6 +37,16 @@
     });
   }
 
+  const searchScopes = new Set(['', 'name', 'tags', 'annotation', 'url']);
+
+  function searchScopeText(item, scope) {
+    if (scope === 'name') return lower(`${item?.name ?? ''}.${item?.ext ?? ''}`);
+    if (scope === 'tags') return lower((item?.tags || []).join(' '));
+    if (scope === 'annotation') return lower(item?.annotation);
+    if (scope === 'url') return lower(item?.url);
+    return '';
+  }
+
   // Range fields (file size, added date) are one query key holding {min, max}
   // rather than two keys, so the filter badge counts a range as one filter
   // and clearing either end leaves the other standing.
@@ -75,9 +85,12 @@
   // - clientOnly: true → the Eagle API cannot evaluate it; an active value
   //   must route through the client-side scan pipeline
   // - normalize(raw) → canonical value stored by createQuery
-  // - isActive(value) → the value constrains results
-  // - match(item, value, context) → client predicate; omit when the server
-  //   evaluates the field (full-text search)
+  // - isActive(value, query) → the value constrains results; the whole query
+  //   is available for fields that only bite in combination (search scope is
+  //   inert with an empty search box)
+  // - match(item, value, context) → client predicate; context carries the
+  //   whole query plus any resolved lookups. Omit when the server evaluates
+  //   the field (full-text search)
   // - applyBody(value, body) → server body mapping; omit for client-only
   const spec = [
     {
@@ -116,6 +129,25 @@
       normalize: value => String(value ?? ''),
       isActive: value => Boolean(trimmed(value)),
       applyBody: (value, body) => { body.keywords = trimmed(value).split(/\s+/).filter(Boolean); }
+    },
+    // Eagle can aim the search box at one field. The API only offers whole-item
+    // keyword search, so a narrowed scope keeps the server's recall and filters
+    // it down here. It is inert without search text, which keeps an idle scope
+    // out of the scan pipeline.
+    {
+      key: 'searchScope',
+      clientOnly: true,
+      normalize: value => {
+        const scope = String(value ?? '');
+        return searchScopes.has(scope) ? scope : '';
+      },
+      isActive: (value, query) => Boolean(value) && Boolean(trimmed(query?.search)),
+      match: (item, value, context) => {
+        const terms = lower(trimmed(context?.query?.search)).split(/\s+/).filter(Boolean);
+        if (!terms.length) return true;
+        const haystack = searchScopeText(item, value);
+        return terms.every(term => haystack.includes(term));
+      }
     },
     {
       key: 'tags',
@@ -222,33 +254,34 @@
 
   function filtersActive(query) {
     const current = createQuery(query);
-    return filterEntries.some(entry => entry.isActive(current[entry.key]));
+    return filterEntries.some(entry => entry.isActive(current[entry.key], current));
   }
 
   function filterCount(query) {
     const current = createQuery(query);
-    return filterEntries.filter(entry => entry.isActive(current[entry.key])).length;
+    return filterEntries.filter(entry => entry.isActive(current[entry.key], current)).length;
   }
 
   function matchesConstraints(item, query, context = {}) {
     if (!item || item.isDeleted) return false;
+    const scoped = { ...context, query };
     for (const entry of spec) {
       if (!entry.match) continue;
       const value = query?.[entry.key];
-      if (!entry.isActive(value)) continue;
-      if (!entry.match(item, value, context)) return false;
+      if (!entry.isActive(value, query)) continue;
+      if (!entry.match(item, value, scoped)) return false;
     }
     return true;
   }
 
   // Any active field the server cannot evaluate for us in the text-query path.
   function clientConstrained(query) {
-    return spec.some(entry => entry.match && entry.isActive(query?.[entry.key]));
+    return spec.some(entry => entry.match && entry.isActive(query?.[entry.key], query));
   }
 
   // Any active field that forces the client-side scan pipeline outright.
   function needsClientScan(query) {
-    return spec.some(entry => entry.clientOnly && entry.isActive(query?.[entry.key]));
+    return spec.some(entry => entry.clientOnly && entry.isActive(query?.[entry.key], query));
   }
 
   function itemQueryBody(query) {
@@ -256,7 +289,7 @@
     for (const entry of spec) {
       if (!entry.applyBody) continue;
       const value = query?.[entry.key];
-      if (entry.isActive(value)) entry.applyBody(value, body);
+      if (entry.isActive(value, query)) entry.applyBody(value, body);
     }
     return body;
   }

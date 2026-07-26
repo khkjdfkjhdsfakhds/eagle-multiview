@@ -18,6 +18,7 @@ test('createQuery keeps the historical shape and defaults', () => {
     folderId: null,
     smartFolderId: null,
     search: '',
+    searchScope: '',
     tags: [],
     ext: '',
     rating: null,
@@ -204,4 +205,42 @@ test('the filter panel and the spec table stay in step', () => {
   // Dates are parsed in local time and the end of the range covers its day.
   assert.ok(renderer.includes("const date = new Date(`${value}T00:00:00`);"));
   assert.ok(renderer.includes('return end ? date.getTime() + 86399999 : date.getTime();'));
+});
+
+test('search scope narrows the search to one field and is inert without text', () => {
+  const item = {
+    id: 'a', name: '海边黄昏', ext: 'png', tags: ['风景', '参考'],
+    annotation: '这张的构图很好', url: 'https://example.com/sunset'
+  };
+  const matches = query => matchesConstraints(item, createQuery(query));
+
+  // No text: the scope constrains nothing and must not drag the query into
+  // the client scan pipeline.
+  assert.equal(matches({ searchScope: 'name' }), true);
+  assert.equal(needsClientScan(createQuery({ searchScope: 'name' })), false);
+  assert.equal(clientConstrained(createQuery({ searchScope: 'name' })), false);
+
+  // With text, each scope looks only at its own field.
+  assert.equal(matches({ search: '黄昏', searchScope: 'name' }), true);
+  assert.equal(matches({ search: '黄昏', searchScope: 'tags' }), false);
+  assert.equal(matches({ search: '风景', searchScope: 'tags' }), true);
+  assert.equal(matches({ search: '构图', searchScope: 'annotation' }), true);
+  assert.equal(matches({ search: '构图', searchScope: 'url' }), false);
+  assert.equal(matches({ search: 'sunset', searchScope: 'url' }), true);
+  // The extension is part of the name scope, as it is in the card label.
+  assert.equal(matches({ search: 'png', searchScope: 'name' }), true);
+  // Every term has to land, and matching is case-insensitive.
+  assert.equal(matches({ search: 'SUNSET example', searchScope: 'url' }), true);
+  assert.equal(matches({ search: 'sunset 黄昏', searchScope: 'url' }), false);
+  // An unknown scope degrades to no scoping rather than matching nothing.
+  assert.equal(createQuery({ searchScope: 'nope' }).searchScope, '');
+  assert.equal(createQuery({}).searchScope, '');
+  assert.equal(matches({ search: '黄昏', searchScope: 'nope' }), true);
+
+  // A live scope routes through the scan pipeline and never reaches the body.
+  const scoped = createQuery({ search: '黄昏', searchScope: 'name' });
+  assert.equal(needsClientScan(scoped), true);
+  assert.equal(itemQueryBody(scoped).searchScope, undefined);
+  // The scope is not a filter badge entry; Eagle shows it with the search box.
+  assert.equal(filterCount(scoped), 1, 'only the search text counts');
 });
