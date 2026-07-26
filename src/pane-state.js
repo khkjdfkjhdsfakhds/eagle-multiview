@@ -65,6 +65,18 @@
     return effectiveSortDir(sort, sortDir) === 'desc' ? -result : result;
   }
 
+  // Tags present on every given item, in first-item order (Eagle's multi-select
+  // inspector shows the intersection).
+  function sharedTags(items) {
+    let shared = null;
+    for (const item of items || []) {
+      const tags = new Set((item?.tags || []).map(String));
+      shared = shared === null ? tags : new Set([...shared].filter(tag => tags.has(tag)));
+      if (!shared.size) break;
+    }
+    return [...(shared || [])];
+  }
+
   function selectRange(items, selectedIds, targetId, additive = false) {
     const current = new Set(selectedIds || []);
     const targetIndex = (items || []).findIndex(item => item?.id === targetId);
@@ -82,5 +94,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort };
+  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags };
 });

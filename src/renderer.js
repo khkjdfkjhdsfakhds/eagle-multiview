@@ -22,7 +22,8 @@ const {
   filterCount: queryFilterCount,
   selectRange,
   effectiveSortDir,
-  compareBySort: compareItemsBySort
+  compareBySort: compareItemsBySort,
+  sharedTags: computeSharedTags
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const { createOperationTracker } = window.EagleMVOperationState;
@@ -1437,6 +1438,19 @@ function renderItemPalette(item) {
   box.classList.toggle('hidden', !box.innerHTML);
 }
 
+function renderSharedTags() {
+  const section = $('#sharedTagsSection');
+  const chips = $('#sharedTagChips');
+  if (!section || !chips) return;
+  const selectedItems = [...state.selected].map(id => itemById(id)).filter(Boolean);
+  const tags = computeSharedTags(selectedItems);
+  section.classList.toggle('hidden', !tags.length);
+  chips.innerHTML = tags.map(tag => {
+    const color = state.tagColors[tag];
+    return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-shared-tag="${escapeHTML(tag)}" aria-label="从所选素材移除 ${escapeHTML(tag)}">×</button></span>`;
+  }).join('');
+}
+
 function renderInspector() {
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
@@ -1446,6 +1460,8 @@ function renderInspector() {
     $('#multiCount').textContent = count;
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
     $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
+    renderSharedTags();
+    $('#batchRating').value = '';
     state.selectedBase = null;
     state.inspectorDirty = false;
     clearInspectorAutoSave();
@@ -2082,6 +2098,34 @@ async function setSelectionRating(payload) {
       : `已设置为 ${rating ? `${rating} 星` : '未评分'}`, outcome.failed.length ? 4200 : 2400);
   } catch (error) {
     toast(`评分失败：${error.message}`, 4000);
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+async function removeTagFromSelection(tag) {
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  const ids = [...(pane?.selected || [])];
+  if (!ids.length || !tag || !state.connected) return;
+  const libraryPath = state.library?.path;
+  const operationToken = beginForegroundOperation('正在移除标签…', { key: `shared-tag-remove:${paneId}` });
+  if (!operationToken) return;
+  setSyncStatus('正在移除标签…');
+  try {
+    const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
+      id, field: 'tags', remove: [tag], libraryPath
+    }), 'Eagle 批量标签请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
+    pane.selected = new Set(outcome.failed.length ? outcome.failed : ids);
+    if (state.activePaneId === paneId) renderInspector();
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    toast(outcome.failed.length
+      ? `已从 ${outcome.succeeded.length} 个素材移除「${tag}」 · ${outcome.failed.length} 个失败并保持选中`
+      : `已从 ${outcome.succeeded.length} 个素材移除「${tag}」`, outcome.failed.length ? 4200 : 2400);
+  } catch (error) {
+    toast(`移除标签失败：${error.message}`, 4000);
   } finally {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
@@ -3990,6 +4034,16 @@ function bindEvents() {
       setSyncStatus('所有窗口已同步');
       endForegroundOperation(operationToken);
     }
+  });
+  $('#sharedTagChips').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-shared-tag]');
+    if (button) removeTagFromSelection(button.dataset.removeSharedTag);
+  });
+  $('#batchRating').addEventListener('change', event => {
+    const value = event.target.value;
+    event.target.value = '';
+    if (value === '') return;
+    setSelectionRating({ ids: [...state.selected], rating: Number(value) });
   });
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);

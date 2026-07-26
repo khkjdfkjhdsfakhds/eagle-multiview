@@ -1304,7 +1304,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .multi-selection { padding-top: 18px; }
 .multi-selection h2 { margin: 0; font-size: 17px; }
 .multi-selection p { color: #86878d; line-height: 1.55; }
-.multi-selection button { width: 100%; margin-top: 8px; }
+.multi-selection > button { width: 100%; margin-top: 8px; }
+.shared-tag-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.multi-selection select { width: 100%; color: var(--text-soft); }
 
 .statusbar {
   position: absolute;

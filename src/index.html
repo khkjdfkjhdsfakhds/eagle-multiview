@@ -186,6 +186,20 @@
       <div id="multiSelection" class="multi-selection hidden">
         <h2><span id="multiCount">0</span> 个素材</h2>
         <p>将所选素材拖到左侧文件夹即可批量归类。</p>
+        <label id="sharedTagsSection" class="shared-tags-section hidden">共同标签
+          <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
+        </label>
+        <label>批量设置评分
+          <select id="batchRating">
+            <option value="">选择评分…</option>
+            <option value="0">未评分</option>
+            <option value="1">★</option>
+            <option value="2">★★</option>
+            <option value="3">★★★</option>
+            <option value="4">★★★★</option>
+            <option value="5">★★★★★</option>
+          </select>
+        </label>
         <label>批量添加标签
           <div id="batchTagEditor" class="tag-editor">
             <div id="batchTagChips" class="tag-chips"></div>
