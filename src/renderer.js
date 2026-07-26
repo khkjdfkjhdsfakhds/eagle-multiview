@@ -1,5 +1,25 @@
 'use strict';
 
+// Installed before anything else so failures in the module destructuring
+// below still land in userData/logs/error.log for after-the-fact diagnosis.
+(() => {
+  const report = (message, detail) => {
+    try { window.eagleMV?.logError?.({ level: 'error', message, detail }); } catch {}
+  };
+  window.addEventListener('error', event => {
+    try {
+      const location = event.filename ? `（${event.filename}:${event.lineno}:${event.colno}）` : '';
+      report(`${event.message || '未知脚本错误'}${location}`, event.error?.stack);
+    } catch {}
+  });
+  window.addEventListener('unhandledrejection', event => {
+    try {
+      const reason = event.reason;
+      report(`未处理的 Promise 拒绝：${reason?.message || String(reason)}`, reason?.stack);
+    } catch {}
+  });
+})();
+
 const {
   findFolder,
   findFolderPath,

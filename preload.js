@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   duplicateFiles: data => ipcRenderer.invoke('items:duplicate', data),
   copyFiles: ids => ipcRenderer.invoke('clipboard:write-files', ids),
   copyText: text => ipcRenderer.invoke('clipboard:write-text', String(text || '')),
+  logError: entry => ipcRenderer.send('log:renderer-error', entry),
   openExternal: url => ipcRenderer.invoke('shell:open-external', String(url || '')),
   startDrag: data => ipcRenderer.send('item:start-drag', data),
   cancelDrag: token => ipcRenderer.send('item:cancel-drag', token),

@@ -17,6 +17,7 @@ const { readMetadata } = require('./lib/metadata-reader');
 const { mimeForPath } = require('./lib/media-mime');
 const { findPreviewImagePath } = require('./lib/preview-image');
 const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
+const { createErrorLog } = require('./lib/error-log');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
 const {
@@ -43,6 +44,38 @@ let quitting = false;
 let pinStore;
 let supplementalItemStore;
 let tagColorState;
+let errorLog;
+
+function errorLogDir() {
+  return path.join(app.getPath('userData'), 'logs');
+}
+
+function getErrorLog() {
+  errorLog ||= createErrorLog({ file: path.join(errorLogDir(), 'error.log') });
+  return errorLog;
+}
+
+function logFault(source, message, detail) {
+  console.error(`[${source}] ${message}`, detail ?? '');
+  getErrorLog().write({ level: 'error', source, message, detail });
+}
+
+// Field-support mode: the user reports issues after the fact, so uncaught
+// main-process failures must survive in userData/logs instead of a dialog
+// nobody screenshots. Handlers log and keep the app alive.
+process.on('uncaughtException', error => {
+  logFault('main', `uncaughtException: ${error?.message || error}`, error);
+});
+process.on('unhandledRejection', reason => {
+  logFault('main', `unhandledRejection: ${reason?.message || reason}`, reason);
+});
+app.on('render-process-gone', (_event, contents, details) => {
+  logFault('main', `渲染进程异常退出（${details.reason}，exitCode ${details.exitCode}）：${contents.getURL()}`);
+});
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason === 'clean-exit') return;
+  logFault('main', `子进程异常退出（${details.type}/${details.reason}，exitCode ${details.exitCode ?? '未知'}）`);
+});
 
 async function loadTagColors() {
   if (tagColorState) return tagColorState;
@@ -249,6 +282,13 @@ function createWindow(initialState = null) {
   });
   window.on('enter-full-screen', () => window.webContents.send('window:chrome-state', { fullScreen: true }));
   window.on('leave-full-screen', () => window.webContents.send('window:chrome-state', { fullScreen: false }));
+  window.on('unresponsive', () => logFault(`renderer#${webContentsId}`, '窗口长时间无响应'));
+  window.webContents.on('preload-error', (_event, preloadPath, error) =>
+    logFault(`renderer#${webContentsId}`, `preload 加载失败：${preloadPath}`, error));
+  window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    // -3 (ERR_ABORTED) fires on ordinary in-app navigation cancellations.
+    if (isMainFrame && code !== -3) logFault(`renderer#${webContentsId}`, `窗口页面加载失败（${code} ${description}）：${url}`);
+  });
   window.loadFile(path.join(__dirname, 'src', 'index.html'));
   return window;
 }
@@ -306,7 +346,15 @@ function setupMenu() {
       label: '显示',
       submenu: [
         { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' },
-        { role: 'togglefullscreen', label: '全屏' }
+        { role: 'togglefullscreen', label: '全屏' },
+        { type: 'separator' },
+        {
+          label: '打开错误日志文件夹',
+          click: async () => {
+            await fsp.mkdir(errorLogDir(), { recursive: true }).catch(() => {});
+            shell.openPath(errorLogDir());
+          }
+        }
       ]
     },
     { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }
@@ -492,6 +540,14 @@ async function installProtocol() {
 }
 
 function setupIPC() {
+  ipcMain.on('log:renderer-error', (event, entry) => {
+    getErrorLog().write({
+      level: entry?.level === 'warn' ? 'warn' : 'error',
+      source: `renderer#${event.sender.id}`,
+      message: entry?.message,
+      detail: entry?.detail
+    });
+  });
   ipcMain.handle('hub:connect', async () => {
     const result = await hub.connect();
     await hydrateSupplementalItems(result.library?.path);
@@ -1009,6 +1065,11 @@ if (!gotLock) {
   app.on('before-quit', () => { quitting = true; });
   app.on('second-instance', () => createWindow());
   app.whenReady().then(async () => {
+    getErrorLog().write({
+      level: 'info',
+      source: 'main',
+      message: `Eagle MultiView ${app.getVersion()} 启动（Electron ${process.versions.electron}）`
+    });
     setupMenu();
     setupIPC();
     await installProtocol();
