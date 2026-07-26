@@ -269,6 +269,15 @@
   </footer>
 
   <div id="previewModal" class="preview-modal hidden">
+    <div id="slideshowControls" class="slideshow-controls">
+      <button id="slideshowToggle" class="slideshow-button" type="button" title="幻灯片播放（S）" aria-pressed="false" aria-label="幻灯片播放">▶</button>
+      <select id="slideshowInterval" class="slideshow-interval" aria-label="幻灯片间隔">
+        <option value="2000">2 秒</option>
+        <option value="4000">4 秒</option>
+        <option value="6000">6 秒</option>
+        <option value="10000">10 秒</option>
+      </select>
+    </div>
     <button id="closePreview" class="modal-close">×</button>
     <button id="prevPreview" class="modal-nav prev">‹</button>
     <div id="modalMedia" class="modal-media"></div>

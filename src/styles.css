@@ -1703,6 +1703,44 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 .modal-nav:disabled { opacity: .18; cursor: default; }
 .modal-nav.prev { left: 20px; }.modal-nav.next { right: 20px; }
 .modal-caption { position: absolute; bottom: 24px; max-width: min(40vw, calc(100vw - 460px)); overflow: hidden; color: #d6dce5; text-overflow: ellipsis; white-space: nowrap; }
+/* Slideshow controls sit opposite the close button and fade back while a show
+   is running, so they stop competing with the picture. */
+.slideshow-controls {
+  position: absolute;
+  z-index: 3;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: .72;
+  transition: opacity .18s ease;
+}
+.slideshow-controls:hover,
+.preview-modal.slideshow-playing .slideshow-controls:hover { opacity: 1; }
+.preview-modal.slideshow-playing .slideshow-controls { opacity: .38; }
+.slideshow-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: rgba(24, 25, 29, .72);
+  color: #e7e8ea;
+  font-size: 13px;
+  cursor: pointer;
+}
+.slideshow-button[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-soft); color: #a8c9f5; }
+.slideshow-interval {
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: rgba(24, 25, 29, .72);
+  color: var(--text-soft);
+  font-size: 11px;
+}
 .text-preview {
   width: min(1020px, calc(100vw - 150px));
   height: min(760px, calc(100vh - 125px));
@@ -1981,6 +2019,10 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .modal-close { width: 44px; height: 44px; font-size: 26px; }
   .modal-nav { width: 44px; height: 64px; font-size: 30px; }
   .modal-media { touch-action: none; }
+  .slideshow-button { width: 44px; height: 44px; font-size: 15px; }
+  .slideshow-interval { height: 38px; }
+  /* The gesture surface is the whole modal, so these need to opt back in. */
+  .slideshow-controls { touch-action: auto; }
   /* The desktop cap is `min(40vw, 100vw - 460px)`, which goes negative below a
      460px viewport and collapses the caption to nothing. Phones get the width
      they have, above the home indicator. */

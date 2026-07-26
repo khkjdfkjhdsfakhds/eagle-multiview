@@ -124,6 +124,7 @@ const state = {
   inspectorVisible: true,
   previewId: null,
   previewZoom: { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
+  slideshow: { timer: null, intervalMs: 4000 },
   textSession: null,
   textSaving: false,
   previewToken: 0,
@@ -2909,6 +2910,7 @@ async function saveTextPreview(force = false) {
 
 function closePreview({ commitSelection = true, skipDiscard = false } = {}) {
   if (!skipDiscard && state.textSession?.dirty && !confirmDiscardChanges()) return false;
+  stopSlideshow();
   const finalId = state.previewId;
   ++state.previewToken;
   state.previewId = null;
@@ -2945,7 +2947,7 @@ async function openWithDefault(id) {
   }
 }
 
-async function movePreview(delta) {
+async function movePreview(delta, { fromSlideshow = false } = {}) {
   let items = sortedItems();
   let index = items.findIndex(item => item.id === state.previewId);
   let next = items[index + delta];
@@ -2956,6 +2958,70 @@ async function movePreview(delta) {
     next = items[index + delta];
   }
   if (next) await openPreview(next.id);
+  // Stepping by hand during a slideshow restarts the dwell, so the picture you
+  // just asked for gets its full turn rather than a leftover sliver of one.
+  if (!fromSlideshow && slideshowPlaying()) scheduleSlideshowStep();
+  return Boolean(next);
+}
+
+// --- Slideshow -------------------------------------------------------------
+// Eagle's 幻灯片: dwell on each item, advance, wrap around at the end. Built on
+// the preview rather than beside it, so zoom, swipe and the neighbour prefetch
+// all keep working while it runs.
+const SLIDESHOW_INTERVAL_KEY = 'eaglemv.slideshowInterval';
+
+function slideshowPlaying() {
+  return Boolean(state.slideshow.timer);
+}
+
+function renderSlideshow() {
+  const playing = slideshowPlaying();
+  const button = $('#slideshowToggle');
+  if (!button) return;
+  button.textContent = playing ? '❚❚' : '▶';
+  button.setAttribute('aria-pressed', String(playing));
+  button.title = playing ? '暂停幻灯片（S）' : '幻灯片播放（S）';
+  button.setAttribute('aria-label', playing ? '暂停幻灯片' : '幻灯片播放');
+  $('#previewModal').classList.toggle('slideshow-playing', playing);
+}
+
+function stopSlideshow() {
+  if (state.slideshow.timer) clearTimeout(state.slideshow.timer);
+  state.slideshow.timer = null;
+  renderSlideshow();
+}
+
+function scheduleSlideshowStep() {
+  if (state.slideshow.timer) clearTimeout(state.slideshow.timer);
+  state.slideshow.timer = setTimeout(async () => {
+    state.slideshow.timer = null;
+    if (!state.previewId) return renderSlideshow();
+    const advanced = await advanceSlideshow();
+    if (advanced && state.previewId) scheduleSlideshowStep();
+    else stopSlideshow();
+  }, state.slideshow.intervalMs);
+  renderSlideshow();
+}
+
+// Forward one, wrapping to the first item once the list (and its remaining
+// pages) run out. A single-item view has nowhere to go and ends the show.
+async function advanceSlideshow() {
+  const before = state.previewId;
+  if (await movePreview(1, { fromSlideshow: true })) return true;
+  const items = sortedItems();
+  if (items.length < 2 || items[0].id === before) return false;
+  return openPreview(items[0].id);
+}
+
+function toggleSlideshow() {
+  if (slideshowPlaying()) {
+    stopSlideshow();
+    toast('幻灯片已暂停');
+    return;
+  }
+  if (!state.previewId) return;
+  scheduleSlideshowStep();
+  toast(`幻灯片播放中 · 每 ${Math.round(state.slideshow.intervalMs / 1000)} 秒一张`);
 }
 
 function descriptorFromTarget(target) {
@@ -5024,6 +5090,17 @@ function bindEvents() {
   });
   $('#prevPreview').addEventListener('click', () => movePreview(-1));
   $('#nextPreview').addEventListener('click', () => movePreview(1));
+  $('#slideshowToggle').addEventListener('click', event => {
+    event.stopPropagation();
+    toggleSlideshow();
+  });
+  $('#slideshowInterval').addEventListener('change', event => {
+    state.slideshow.intervalMs = Number(event.target.value) || 4000;
+    try { localStorage.setItem(SLIDESHOW_INTERVAL_KEY, String(state.slideshow.intervalMs)); } catch {}
+    // Take effect on the picture currently showing, not only the next one.
+    if (slideshowPlaying()) scheduleSlideshowStep();
+  });
+  $('#slideshowControls').addEventListener('click', event => event.stopPropagation());
   // The zoom toolbar is gone by user request; the wheel still zooms at the
   // cursor and double-click toggles 适应/100% like Eagle's preview.
   $('#modalMedia').addEventListener('dblclick', event => {
@@ -5079,6 +5156,9 @@ function bindEvents() {
   $('#previewModal').addEventListener('pointerdown', event => {
     const image = previewImage();
     if (!image) return;
+    // The modal owns the gesture surface, but capturing the pointer here would
+    // steal the tap from the slideshow controls sitting on top of it.
+    if (event.target.closest('#slideshowControls')) return;
     if (event.pointerType === 'touch') {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -5278,6 +5358,11 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); navigate({ kind: 'folder', id: state.selectedFolderCard }); }
     else if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
+    if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      toggleSlideshow();
+      return;
+    }
     if (!editable && event.code === 'Space' && previewOpen) {
       event.preventDefault();
       // Eagle: space toggles playback while a video/audio preview is open;
@@ -5706,6 +5791,14 @@ async function start() {
     const thumbnailSize = Number(localStorage.getItem('eaglemv.thumbnailSize'));
     if (Number.isFinite(thumbnailSize) && thumbnailSize > 0) applyThumbnailSize(thumbnailSize, { persist: false });
   } catch {}
+  try {
+    const interval = Number(localStorage.getItem(SLIDESHOW_INTERVAL_KEY));
+    if ([...$('#slideshowInterval').options].some(option => Number(option.value) === interval)) {
+      state.slideshow.intervalMs = interval;
+    }
+  } catch {}
+  $('#slideshowInterval').value = String(state.slideshow.intervalMs);
+  renderSlideshow();
   renderPanels();
   renderQueryControls();
   try {
