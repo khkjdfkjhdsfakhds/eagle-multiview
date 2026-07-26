@@ -101,7 +101,10 @@ test('narrow screens get chrome that fits them', () => {
   assert.match(compact, /\.filter-popover \{[^}]*position: fixed/);
   assert.match(compact, /\.filter-popover \{[^}]*left: 8px/);
   assert.ok(compact.includes('.pane-badge { display: none; }'), 'one pane down here, so no "栏 N"');
-  assert.ok(compact.includes(':root { --thumb: 132px; }'), 'a smaller base size fits more per row');
+  // Phone-only: a 768px tablet is wide enough for the desktop default.
+  assert.ok(!compact.includes(':root { --thumb: 132px; }'));
+  const phone = styles.slice(styles.indexOf('@media (max-width: 600px) {'));
+  assert.ok(phone.slice(0, 700).includes(':root { --thumb: 132px; }'), 'a smaller base size fits more per row');
   assert.ok(compact.includes('body.selection-bar-open .inspector'), 'the drawer clears the strip too');
   // The desktop caption cap goes negative below 460px and collapses to zero.
   const coarse = styles.slice(styles.indexOf('@media (pointer: coarse) {\n  .modal-close'));

@@ -2145,12 +2145,14 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   }
   /* The selection strip overlays the drawer's last rows. */
   body.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
-  /* Phones fit ~2 justified columns at the desktop default and occasionally
-     one, which turns a single card into half a screen. A smaller base size
-     keeps a steadier rhythm; pinch still overrides it (inline style wins). */
-  :root { --thumb: 132px; }
 }
 @media (max-width: 600px) {
+  /* Phones fit ~2 justified columns at the desktop default and occasionally
+     one, which turns a single card into half a screen. A smaller base size
+     keeps a steadier rhythm; pinch still overrides it (inline style wins).
+     Tablets are wide enough not to need it — measured at 820px, 168px still
+     gives ~3.7 cards a row. */
+  :root { --thumb: 132px; }
   /* Force a single column of panes; extra panes stack vertically instead of
      shredding into unusable slivers. */
   .pane-layout,
