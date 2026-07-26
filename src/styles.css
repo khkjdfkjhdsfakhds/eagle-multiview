@@ -917,6 +917,15 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .grid-scroller::-webkit-scrollbar-thumb:hover, .sidebar::-webkit-scrollbar-thumb:hover, .inspector::-webkit-scrollbar-thumb:hover { background: #626368; background-clip: padding-box; }
 .item-grid { display: block; }
+.marquee-rect {
+  position: absolute;
+  z-index: 40;
+  border: 1px solid rgba(0, 114, 239, .85);
+  background: rgba(0, 114, 239, .13);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.grid-scroller.marquee-active { user-select: none; }
 .folder-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--thumb), 1fr));

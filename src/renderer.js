@@ -36,6 +36,15 @@ const {
   shouldShowImportOverlay
 } = window.EagleMVDragDrop;
 const {
+  exceedsThreshold: marqueeExceedsThreshold,
+  normalizeRect: marqueeNormalizeRect,
+  clampRect: marqueeClampRect,
+  hitIds: marqueeHitIds,
+  combineSelection: marqueeCombineSelection,
+  sameSelection: marqueeSameSelection,
+  autoScrollSpeed: marqueeAutoScrollSpeed
+} = window.EagleMVMarquee;
+const {
   createQuery,
   cloneQuery,
   filtersActive: queryFiltersActive,
@@ -200,6 +209,7 @@ let librarySyncTimer = null;
 let librarySyncRunning = false;
 let pendingLibraryChange = null;
 let visibleItemWatchQueued = false;
+let activeMarquee = null;
 
 function setUIZoom(factor, { persist = true, announce = false } = {}) {
   const next = Math.max(UI_ZOOM_MIN, Math.min(UI_ZOOM_MAX, Math.round(Number(factor) * 10) / 10));
@@ -1345,7 +1355,7 @@ function attachFolderDragTargets() {
     row.addEventListener('dragover', event => {
       if (!isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
+      event.dataTransfer.dropEffect = event.altKey ? 'move' : 'copy';
       row.classList.add('drop-target');
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
@@ -1354,6 +1364,8 @@ function attachFolderDragTargets() {
       const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
       const folderId = row.dataset.folderId;
       const folderName = row.dataset.folderName;
+      const move = event.altKey;
+      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
       event.preventDefault();
       event.stopPropagation();
       row.classList.remove('drop-target');
@@ -1362,7 +1374,7 @@ function attachFolderDragTargets() {
         clearDragUI();
         return;
       }
-      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath));
+      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId }));
     });
   }
 }
@@ -3462,22 +3474,31 @@ async function runItemBatch(ids, worker, timeoutMessage) {
   return { succeeded, failed, firstError };
 }
 
-async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path) {
+async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null } = {}) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
   if (!uniqueIds.length || !folderId) return false;
   if (!state.connected) {
     toast('Eagle 未连接，暂时无法修改归类', 3500);
     return true;
   }
-  const operationToken = beginForegroundOperation(`正在归类 ${uniqueIds.length} 个素材…`, { key: `folder-add:${libraryPath}:${folderId}` });
+  if (move && sourceFolderId && sourceFolderId === folderId) {
+    toast('素材已经在这个文件夹中', 3000);
+    return true;
+  }
+  // Dragging out of "全部/未分类" has no source folder to leave, so an
+  // ⌥-drop there degrades to a plain add, mirroring Eagle.
+  const delta = folderMoveDelta(move ? sourceFolderId : null, folderId);
+  const moving = delta.remove.length > 0;
+  const verb = moving ? '移动' : '归类';
+  const operationToken = beginForegroundOperation(`正在${verb} ${uniqueIds.length} 个素材…`, { key: `folder-${moving ? 'move' : 'add'}:${libraryPath}:${folderId}` });
   if (!operationToken) return true;
-  setSyncStatus(`正在归类 ${uniqueIds.length} 个素材…`);
+  setSyncStatus(`正在${verb} ${uniqueIds.length} 个素材…`);
   try {
     const results = await settleWithConcurrency(uniqueIds, id => withTimeout(
       window.eagleMV.mutateSet({
         id,
         field: 'folders',
-        add: [folderId],
+        ...delta,
         libraryPath
       }),
       15000,
@@ -3485,13 +3506,13 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
     ));
     const failed = results.filter(result => !result.ok);
     const succeeded = results.length - failed.length;
-    if (!succeeded) throw failed[0]?.error || new Error('没有素材完成归类');
-    toast(`已加入“${folderName || '目标文件夹'}”${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+    if (!succeeded) throw failed[0]?.error || new Error(`没有素材完成${verb}`);
+    toast(`${moving ? '已移动到' : '已加入'}“${folderName || '目标文件夹'}”${failed.length ? ` · ${failed.length} 个失败` : ''}`);
     if (failed.length) console.warn('Some dragged items could not be assigned:', failed.map(result => result.error?.message));
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
   } catch (error) {
-    toast(`归类失败：${error.message}`, 4600);
+    toast(`${verb}失败：${error.message}`, 4600);
     return true;
   } finally {
     setSyncStatus('所有窗口已同步');
@@ -3603,6 +3624,144 @@ function restorePanelSizes() {
       if (Number.isFinite(value)) document.documentElement.style.setProperty(`--${kind}-width`, `${Math.round(value)}px`);
     } catch {}
   }
+}
+
+function cancelMarquee({ restoreSelection = false } = {}) {
+  const session = activeMarquee;
+  if (!session) return;
+  activeMarquee = null;
+  if (session.rafId) cancelAnimationFrame(session.rafId);
+  clearTimeout(session.inspectorTimer);
+  session.rectEl?.remove();
+  session.scroller.classList.remove('marquee-active');
+  try { session.scroller.releasePointerCapture(session.pointerId); } catch {}
+  if (!session.started) return;
+  if (restoreSelection) {
+    state.selected = new Set(session.base);
+    state.selectedFolderCard = session.baseFolderCard;
+    updateCardSelectionStyles();
+  }
+  renderInspector();
+}
+
+function bindMarqueeSelection(paneId, scroller) {
+  const contentPoint = event => {
+    const box = scroller.getBoundingClientRect();
+    return {
+      x: event.clientX - box.left + scroller.scrollLeft,
+      y: event.clientY - box.top + scroller.scrollTop
+    };
+  };
+  // Card rectangles are read per frame instead of cached: lazy-load refreshes
+  // replace the grid DOM mid-drag and stale rectangles would select blindly.
+  const cardRects = () => {
+    const cards = [];
+    for (const card of scroller.querySelectorAll('#itemGrid .item-card')) {
+      cards.push({
+        id: card.dataset.id,
+        left: card.offsetLeft,
+        top: card.offsetTop,
+        right: card.offsetLeft + card.offsetWidth,
+        bottom: card.offsetTop + card.offsetHeight
+      });
+    }
+    return cards;
+  };
+  const applyGeometry = session => {
+    const point = contentPoint(session.lastEvent);
+    const rect = marqueeClampRect(
+      marqueeNormalizeRect(session.origin.x, session.origin.y, point.x, point.y),
+      scroller.scrollWidth,
+      scroller.scrollHeight
+    );
+    session.rectEl.style.left = `${rect.left}px`;
+    session.rectEl.style.top = `${rect.top}px`;
+    session.rectEl.style.width = `${rect.right - rect.left}px`;
+    session.rectEl.style.height = `${rect.bottom - rect.top}px`;
+    const next = marqueeCombineSelection(session.base, marqueeHitIds(rect, cardRects()), session.additive);
+    if (marqueeSameSelection(next, state.selected)) return;
+    state.selected = next;
+    state.selectedFolderCard = null;
+    updateCardSelectionStyles();
+    if (!session.inspectorTimer) {
+      session.inspectorTimer = setTimeout(() => {
+        session.inspectorTimer = null;
+        if (activeMarquee === session) renderInspector();
+      }, 150);
+    }
+  };
+  const autoScrollTick = () => {
+    const session = activeMarquee;
+    if (!session || session.scroller !== scroller || !session.started) return;
+    const box = scroller.getBoundingClientRect();
+    const speed = marqueeAutoScrollSpeed(session.lastEvent.clientY, box.top, box.bottom);
+    if (speed) {
+      const before = scroller.scrollTop;
+      scroller.scrollTop = before + speed;
+      if (scroller.scrollTop !== before) applyGeometry(session);
+    }
+    session.rafId = speed ? requestAnimationFrame(autoScrollTick) : 0;
+  };
+  scroller.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    if (activeMarquee) cancelMarquee();
+    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a')) return;
+    const box = scroller.getBoundingClientRect();
+    if (event.clientX - box.left >= scroller.clientWidth || event.clientY - box.top >= scroller.clientHeight) return;
+    if (!confirmDiscardChanges()) return;
+    activeMarquee = {
+      paneId,
+      scroller,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      origin: contentPoint(event),
+      base: new Set(state.selected),
+      baseFolderCard: state.selectedFolderCard,
+      additive: event.metaKey || event.ctrlKey || event.shiftKey,
+      started: false,
+      rectEl: null,
+      rafId: 0,
+      inspectorTimer: null,
+      lastEvent: event
+    };
+    try { scroller.setPointerCapture(event.pointerId); } catch {}
+    event.preventDefault();
+  });
+  scroller.addEventListener('pointermove', event => {
+    const session = activeMarquee;
+    if (!session || session.scroller !== scroller || event.pointerId !== session.pointerId) return;
+    session.lastEvent = event;
+    if (!session.started) {
+      if (!marqueeExceedsThreshold(event.clientX - session.startClientX, event.clientY - session.startClientY)) return;
+      session.started = true;
+      session.rectEl = document.createElement('div');
+      session.rectEl.className = 'marquee-rect';
+      scroller.appendChild(session.rectEl);
+      scroller.classList.add('marquee-active');
+    }
+    applyGeometry(session);
+    const box = scroller.getBoundingClientRect();
+    if (!session.rafId && marqueeAutoScrollSpeed(event.clientY, box.top, box.bottom)) {
+      session.rafId = requestAnimationFrame(autoScrollTick);
+    }
+  });
+  const finishMarquee = event => {
+    const session = activeMarquee;
+    if (!session || session.scroller !== scroller || event.pointerId !== session.pointerId) return;
+    const wasClick = !session.started && event.type === 'pointerup';
+    const additive = session.additive;
+    cancelMarquee();
+    // Eagle clears the selection on a plain blank click; modifier clicks keep it.
+    if (wasClick && !additive && (state.selected.size || state.selectedFolderCard)) {
+      state.selected.clear();
+      state.selectedFolderCard = null;
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+  };
+  scroller.addEventListener('pointerup', finishMarquee);
+  scroller.addEventListener('pointercancel', finishMarquee);
 }
 
 function bindPaneEvents(paneId) {
@@ -3765,7 +3924,7 @@ function bindPaneEvents(paneId) {
     if (!folder || !isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
+    event.dataTransfer.dropEffect = event.altKey ? 'move' : 'copy';
     folder.classList.add('drop-target');
   });
   itemGrid.addEventListener('dragleave', event => {
@@ -3791,9 +3950,12 @@ function bindPaneEvents(paneId) {
     }
     const target = findFolder(state.library?.folders, folder.dataset.openFolder);
     const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath));
+    const move = event.altKey;
+    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId }));
   });
   const scroller = query('#gridScroller');
+  bindMarqueeSelection(paneId, scroller);
   scroller.addEventListener('contextmenu', event => {
     if (event.target.closest('.item-card, .folder-card')) return;
     event.preventDefault();
@@ -4280,6 +4442,7 @@ function bindEvents() {
     const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
     const previewOpen = !$('#previewModal').classList.contains('hidden');
     if (event.key === 'Escape') {
+      if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }
       if (!$('#folderDialog').classList.contains('hidden')) { event.preventDefault(); closeFolderDialog(); return; }
       if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
       if (!$('#duplicateDialog').classList.contains('hidden')) { event.preventDefault(); closeDuplicateDialog('cancel'); return; }
