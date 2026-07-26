@@ -2194,12 +2194,29 @@ function renderPreviewZoom() {
 
 function setPreviewZoom(mode, scale = null) {
   const nextScale = scale === null ? (mode === 'fit' ? 1 : mode === 'actual' ? 1 : state.previewZoom.scale) : scale;
-  state.previewZoom = { ...state.previewZoom, mode, scale: Math.max(.25, Math.min(6, nextScale)), x: 0, y: 0, dragging: false };
+  // Continued zooming keeps the current pan; fit/actual recenter the image.
+  const keepPan = mode === 'zoom';
+  state.previewZoom = {
+    ...state.previewZoom,
+    mode,
+    scale: Math.max(.25, Math.min(6, nextScale)),
+    x: keepPan ? state.previewZoom.x : 0,
+    y: keepPan ? state.previewZoom.y : 0,
+    dragging: false
+  };
   renderPreviewZoom();
 }
 
-function changePreviewZoom(delta) {
-  const next = Math.max(.25, Math.min(6, state.previewZoom.scale + delta));
+function changePreviewZoom(delta, anchor = null) {
+  const previous = state.previewZoom.scale;
+  const next = Math.max(.25, Math.min(6, previous + delta));
+  if (anchor && next !== previous) {
+    // Keep the image point under the cursor fixed: x' = a − (k'/k)·(a − x),
+    // with the anchor measured from the container centre.
+    const ratio = next / previous;
+    state.previewZoom.x = anchor.x - ratio * (anchor.x - state.previewZoom.x);
+    state.previewZoom.y = anchor.y - ratio * (anchor.y - state.previewZoom.y);
+  }
   setPreviewZoom('zoom', next);
 }
 
@@ -4113,7 +4130,9 @@ function bindEvents() {
   $('#modalMedia').addEventListener('wheel', event => {
     if (!previewImage()) return;
     event.preventDefault();
-    changePreviewZoom(event.deltaY < 0 ? .15 : -.15);
+    const box = event.currentTarget.getBoundingClientRect();
+    const anchor = { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
+    changePreviewZoom(event.deltaY < 0 ? .15 : -.15, anchor);
   }, { passive: false });
   $('#modalMedia').addEventListener('pointerdown', event => {
     const image = previewImage();
