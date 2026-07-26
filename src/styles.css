@@ -1703,6 +1703,34 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 .modal-nav:disabled { opacity: .18; cursor: default; }
 .modal-nav.prev { left: 20px; }.modal-nav.next { right: 20px; }
 .modal-caption { position: absolute; bottom: 24px; max-width: min(40vw, calc(100vw - 460px)); overflow: hidden; color: #d6dce5; text-overflow: ellipsis; white-space: nowrap; }
+/* Rating lives with the caption at the foot of the preview. */
+.modal-rating {
+  position: absolute;
+  z-index: 3;
+  right: 24px;
+  bottom: 20px;
+  display: flex;
+  gap: 2px;
+  opacity: .72;
+  transition: opacity .18s ease;
+}
+.modal-rating:hover { opacity: 1; }
+.modal-star {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #5d5f66;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.modal-star.filled { color: #ffce69; }
+.modal-star:hover { background: rgba(255, 255, 255, .08); color: #ffce69; }
 /* Slideshow controls sit opposite the close button and fade back while a show
    is running, so they stop competing with the picture. */
 .slideshow-controls {
@@ -2034,7 +2062,18 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .slideshow-button { width: 44px; height: 44px; font-size: 15px; }
   .slideshow-interval { height: 38px; }
   /* The gesture surface is the whole modal, so these need to opt back in. */
-  .slideshow-controls { touch-action: auto; }
+  .slideshow-controls, .modal-rating { touch-action: auto; }
+  /* Touch has no number keys, so the stars are the only way to rate here —
+     centred above the caption, at a size a thumb can actually hit. */
+  .modal-rating {
+    right: auto;
+    bottom: calc(46px + env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    gap: 4px;
+    opacity: 1;
+  }
+  .modal-star { width: 40px; height: 40px; font-size: 21px; }
   /* The desktop cap is `min(40vw, 100vw - 460px)`, which goes negative below a
      460px viewport and collapses the caption to nothing. Phones get the width
      they have, above the home indicator. */

@@ -51,8 +51,8 @@ test('the interval is remembered and the controls stay tappable', () => {
   assert.ok(renderer.includes("[...$('#slideshowInterval').options].some(option => Number(option.value) === interval)"),
     'a stored value must still be one of the offered intervals');
   // The modal captures pointers for swipe/pinch; the controls have to opt out.
-  assert.ok(renderer.includes("if (event.target.closest('#slideshowControls')) return;"));
-  assert.ok(styles.includes('.slideshow-controls { touch-action: auto; }'));
+  assert.ok(renderer.includes("if (event.target.closest('#slideshowControls, #modalRating')) return;"));
+  assert.ok(styles.includes('.slideshow-controls, .modal-rating { touch-action: auto; }'));
   assert.match(styles, /@media \(pointer: coarse\)[\s\S]*?\.slideshow-button \{ width: 44px; height: 44px;/);
 });
 

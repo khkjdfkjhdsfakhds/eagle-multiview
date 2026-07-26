@@ -2596,9 +2596,15 @@ async function setSelectionRating(payload) {
       return result;
     }, 'Eagle 评分请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成评分');
-    pane.selected = new Set(outcome.failed);
+    // Rating never removes anything from the view, so the selection survives —
+    // Eagle keeps it too, and dropping it after every keystroke made rating a
+    // run of items needlessly awkward. Failures stay selected on their own.
+    pane.selected = new Set(outcome.failed.length
+      ? outcome.failed
+      : ids.filter(id => pane.items.some(item => item.id === id)));
     if (state.activePaneId === paneId) renderInspector();
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (state.previewId) updatePreviewChrome(itemById(state.previewId) || { id: state.previewId, name: '', ext: '' });
     toast(outcome.failed.length
       ? `已为 ${outcome.succeeded.length} 个素材设置评分 · ${outcome.failed.length} 个失败并保持选中`
       : `已设置为 ${rating ? `${rating} 星` : '未评分'}`, outcome.failed.length ? 4200 : 2400);
@@ -2767,8 +2773,28 @@ function updatePreviewChrome(item) {
     ? `${position} · ${fileName}`
     : position;
   caption.title = fileName;
+  renderPreviewRating(item);
   $('#prevPreview').disabled = index <= 0;
   $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
+}
+
+// Rating without leaving the preview, the way Eagle's viewer does it. Touch
+// has no number keys, and closing the preview just to rate is the kind of
+// round trip that makes a phone tiring to use.
+function renderPreviewRating(item) {
+  const row = $('#modalRating');
+  if (!row) return;
+  const rating = Math.max(0, Math.min(5, Number(item?.star) || 0));
+  row.dataset.rating = String(rating);
+  row.innerHTML = [1, 2, 3, 4, 5].map(value =>
+    `<button type="button" class="modal-star${value <= rating ? ' filled' : ''}" data-preview-rating="${value}" aria-label="${value} 星" title="${value} 星（按 ${value}）">★</button>`
+  ).join('');
+}
+
+function ratePreviewItem(rating) {
+  if (!state.previewId) return false;
+  setSelectionRating({ ids: [state.previewId], rating });
+  return true;
 }
 
 function renderTextPreview(session) {
@@ -5057,7 +5083,13 @@ function bindEvents() {
         id, field: 'tags', add: tags, libraryPath
       }), 'Eagle 批量标签请求超时');
       if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
-      pane.selected = new Set(outcome.failed);
+      // Adding a tag keeps the selection, the way removing one already does
+      // (removeTagFromSelection passes keepSelection) — the items are all
+      // still on screen, and losing them after one tag makes the second tag a
+      // re-selection chore.
+      pane.selected = new Set(outcome.failed.length
+        ? outcome.failed
+        : ids.filter(id => pane.items.some(item => item.id === id)));
       $('#batchTagInput').value = '';
       setTagValues('batch', [], false);
       if (state.activePaneId === paneId) renderInspector();
@@ -5101,6 +5133,14 @@ function bindEvents() {
     if (slideshowPlaying()) scheduleSlideshowStep();
   });
   $('#slideshowControls').addEventListener('click', event => event.stopPropagation());
+  $('#modalRating').addEventListener('click', event => {
+    event.stopPropagation();
+    const star = event.target.closest('[data-preview-rating]');
+    if (!star) return;
+    const value = Number(star.dataset.previewRating);
+    // Clicking the star that is already lit clears the rating, as Eagle does.
+    ratePreviewItem(value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value);
+  });
   // The zoom toolbar is gone by user request; the wheel still zooms at the
   // cursor and double-click toggles 适应/100% like Eagle's preview.
   $('#modalMedia').addEventListener('dblclick', event => {
@@ -5157,8 +5197,8 @@ function bindEvents() {
     const image = previewImage();
     if (!image) return;
     // The modal owns the gesture surface, but capturing the pointer here would
-    // steal the tap from the slideshow controls sitting on top of it.
-    if (event.target.closest('#slideshowControls')) return;
+    // steal the tap from the controls sitting on top of it.
+    if (event.target.closest('#slideshowControls, #modalRating')) return;
     if (event.pointerType === 'touch') {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -5413,9 +5453,13 @@ function bindEvents() {
     }
     if (previewOpen && !editable && event.key === 'ArrowLeft') { event.preventDefault(); movePreview(-1); }
     if (previewOpen && !editable && event.key === 'ArrowRight') { event.preventDefault(); movePreview(1); }
-    if (!editable && !previewOpen && !primaryKey && !event.altKey && !event.shiftKey && /^[0-5]$/.test(event.key) && state.selected.size) {
+    if (!editable && !primaryKey && !event.altKey && !event.shiftKey && /^[0-5]$/.test(event.key) && (previewOpen || state.selected.size)) {
       event.preventDefault();
-      setSelectionRating({ ids: [...state.selected], rating: Number(event.key) });
+      // While previewing, the number keys rate what is on screen; the grid
+      // selection is not necessarily the same item (a touch tap previews
+      // without selecting).
+      if (previewOpen) ratePreviewItem(Number(event.key));
+      else setSelectionRating({ ids: [...state.selected], rating: Number(event.key) });
       return;
     }
     if (deleteKey && !editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && state.selected.size) setTrash([...state.selected], true);
