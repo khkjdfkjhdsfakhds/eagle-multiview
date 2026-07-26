@@ -108,7 +108,12 @@ test('capability tables agree between preload and the shim', () => {
   const shimCapabilities = extract(shim);
   assert.deepEqual(shimCapabilities.map(match => match[1]).sort(), preloadCapabilities.map(match => match[1]).sort());
   assert.ok(preloadCapabilities.every(match => match[2] === 'true'), '桌面版能力应全为 true');
-  assert.ok(shimCapabilities.every(match => match[2] === 'false'), 'web 版能力应全为 false');
+  // importLocal is true on the web too: imports go through the /upload
+  // pipeline (file picker, drops, pastes) instead of host paths.
+  const webTrueAllowed = new Set(['importLocal']);
+  for (const [, name, value] of shimCapabilities) {
+    assert.equal(value === 'true', webTrueAllowed.has(name), `web 能力 ${name} 期望 ${webTrueAllowed.has(name) ? 'true' : 'false'}`);
+  }
   assert.ok(preloadCapabilities.length >= 10);
 });
 

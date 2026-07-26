@@ -278,3 +278,100 @@ test('web server refuses to start without an access key', async () => {
   await server.stop();
   fs.rmSync(srcDir, { recursive: true, force: true });
 });
+
+test('sessions derive from the key: they survive restarts and die on key reset', async () => {
+  const srcDir = makeFixtureDir();
+  const makeServer = () => createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    loginFailureDelayMs: 0
+  });
+  const first = makeServer();
+  const { port } = await first.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  assert.match(String(login.headers['set-cookie'][0]), /Max-Age=31536000/, 'one login lasts a year');
+  assert.equal((await request(port, { path: '/', headers: { Cookie: cookie } })).status, 200);
+  await first.stop();
+
+  // A brand-new server instance (an app restart) accepts the same cookie.
+  const second = makeServer();
+  const { port: port2 } = await second.start(0, '127.0.0.1');
+  assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 200, 'cookie survives restart');
+  second.setAccessKey('QQQQ-WWWW-EEEE-RRRR');
+  assert.equal((await request(port2, { path: '/', headers: { Cookie: cookie } })).status, 302, 'key reset kills the cookie');
+  await second.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+});
+
+test('requireKey:false serves everything without a login', async () => {
+  const srcDir = makeFixtureDir();
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => ({ ok: true }),
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    requireKey: false,
+    loginFailureDelayMs: 0
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  assert.equal((await request(port, { path: '/' })).status, 200, 'index without cookie');
+  assert.equal((await request(port, { path: '/styles.css' })).status, 200);
+  const rpc = await request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ method: 'x', args: [] }));
+  assert.equal(rpc.status, 200);
+  const loginPage = await request(port, { path: '/login' });
+  assert.equal(loginPage.status, 302, 'login page redirects straight in');
+  server.setRequireKey(true);
+  assert.equal((await request(port, { path: '/' })).status, 302, 'flipping the switch locks it again');
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+});
+
+test('uploads stream to staging, run the import pipeline, and sanitize names', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-'));
+  const imports = [];
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths, folderId, libraryPath }) => {
+      imports.push({ content: fs.readFileSync(paths[0], 'utf8'), base: path.basename(paths[0]), folderId, libraryPath });
+      return { count: 1, ready: 1, ids: ['NEW1'], rejected: [] };
+    },
+    uploadDir,
+    loginFailureDelayMs: 0
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const authed = { Cookie: cookie };
+
+  assert.equal((await request(port, { path: '/upload?name=a.png', method: 'POST' }, 'x')).status, 401, 'auth required');
+
+  const upload = await request(port, {
+    path: `/upload?${new URLSearchParams({ name: '../../evil.png', folderId: 'F1', libraryPath: '/tmp/lib.library' })}`,
+    method: 'POST',
+    headers: authed
+  }, 'PNGDATA');
+  const body = JSON.parse(upload.body.toString());
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.result.ids, ['NEW1']);
+  assert.equal(imports[0].content, 'PNGDATA');
+  assert.equal(imports[0].base, 'evil.png', 'path traversal stripped to a basename');
+  assert.equal(imports[0].folderId, 'F1');
+  assert.equal(imports[0].libraryPath, '/tmp/lib.library');
+
+  const noName = await request(port, { path: '/upload?name=..%2F..%2F', method: 'POST', headers: authed }, 'x');
+  assert.equal(noName.status, 400, 'unusable names are rejected');
+
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});

@@ -3046,6 +3046,9 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
     contextMenuRow({ icon: 'path', label: '新建文件…', submenu: newFileSubmenuMarkup(folderId, paneId) }),
     contextMenuRow({ icon: 'smart', label: '新建智能文件夹…', action: 'create-smart-folder', payload: { paneId } }),
     '<div class="context-menu-separator"></div>',
+    // Phones have no menu bar and no right-click: this row is the touch
+    // entry point for imports (desktop keeps it too — same pipeline).
+    ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', shortcut: '⌘ ⇧ O', action: 'import', disabled: !state.connected || state.importing })] : []),
     contextMenuRow({ icon: 'window', label: '新建窗口', shortcut: '⌘ ⌥ N', action: 'new-window' })
   ].join('');
 }
@@ -4374,12 +4377,15 @@ function bindPaneEvents(paneId) {
       clearDragUI();
       return;
     }
-    const paths = [...event.dataTransfer.files].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
-    if (!paths.length) {
+    const droppedFiles = [...event.dataTransfer.files];
+    const paths = droppedFiles.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    // Web: no host paths exist — hand the File objects to the shim uploader.
+    const importable = paths.length ? paths : (window.eagleMV.platform === 'web' ? droppedFiles : []);
+    if (!importable.length) {
       clearDragUI();
       return;
     }
-    scheduleDropTask(() => importFiles(paths, 'drop'));
+    scheduleDropTask(() => importFiles(importable, 'drop'));
   });
 }
 
@@ -4805,7 +4811,16 @@ function bindEvents() {
     const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
     if (editable || blockingSurfaceOpen() || !$('#previewModal').classList.contains('hidden')) return;
     if (!hasCapability('importLocal')) return;
-    const paths = [...(event.clipboardData?.files || [])].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    const clipboardFiles = [...(event.clipboardData?.files || [])];
+    const paths = clipboardFiles.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    if (window.eagleMV.platform === 'web') {
+      // The web client can only upload files present in the browser paste
+      // event; the host-clipboard fallback is meaningless remotely.
+      if (!clipboardFiles.length) return;
+      event.preventDefault();
+      importFiles(clipboardFiles, 'paste-files');
+      return;
+    }
     event.preventDefault();
     importFiles(paths.length ? paths : null, paths.length ? 'paste-files' : 'clipboard');
   });
@@ -4998,6 +5013,7 @@ function renderWebAccessStatus(status) {
   $('#webAccessPort').value = String(status.port || 41600);
   $('#webAccessKey').textContent = status.key || '启用后自动生成';
   $('#webAccessCopyKey').disabled = !status.key;
+  $('#webAccessNoKey').checked = status.requireKey === false;
   const addresses = $('#webAccessAddresses');
   if (status.running && status.addresses?.length) {
     addresses.innerHTML = status.addresses.map(entry => `
@@ -5038,7 +5054,8 @@ function bindWebAccessDialog() {
     try {
       const status = await window.eagleMV.setWebAccess({
         enabled: $('#webAccessEnabled').checked,
-        port: Number($('#webAccessPort').value) || 41600
+        port: Number($('#webAccessPort').value) || 41600,
+        requireKey: !$('#webAccessNoKey').checked
       });
       renderWebAccessStatus(status);
       if (status?.error) toast(`Web 服务启动失败：${status.error}`, 4600);

@@ -125,6 +125,56 @@
   const unsupported = message => ({ ok: false, message });
   let dragToken = 0;
 
+  // --- uploads --------------------------------------------------------------
+  function pickBrowserFiles() {
+    return new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      const finish = files => {
+        input.remove();
+        resolve(files);
+      };
+      input.addEventListener('change', () => finish([...input.files]));
+      input.addEventListener('cancel', () => finish([]));
+      input.click();
+    });
+  }
+
+  async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
+    const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [] };
+    for (const file of files) {
+      try {
+        const query = new URLSearchParams({ name: file.name || '未命名文件' });
+        if (folderId) query.set('folderId', folderId);
+        if (libraryPath) query.set('libraryPath', libraryPath);
+        const response = await fetch(`/upload?${query}`, {
+          method: 'POST',
+          headers: { 'x-eaglemv-client': String(clientId) },
+          body: file
+        });
+        if (response.status === 401) {
+          location.replace('/login');
+          throw new Error('登录已过期');
+        }
+        const body = await response.json().catch(() => null);
+        if (body?.ok) {
+          outcome.count += body.result.count || 0;
+          outcome.ready += body.result.ready || 0;
+          outcome.ids.push(...(body.result.ids || []));
+          outcome.rejected.push(...(body.result.rejected || []));
+        } else {
+          outcome.rejected.push({ path: file.name, message: body?.message || '上传失败' });
+        }
+      } catch (error) {
+        outcome.rejected.push({ path: file.name, message: error?.message || '上传失败' });
+      }
+    }
+    return outcome;
+  }
+
   window.eagleMV = {
     platform: 'web',
     capabilities: {
@@ -136,7 +186,7 @@
       openOther: false,
       share: false,
       export: false,
-      importLocal: false,
+      importLocal: true,
       customThumbnail: false,
       copyPath: false,
       uiZoom: false,
@@ -192,7 +242,17 @@
     createDocument: data => invoke('document:create', [data]),
     mutateFolder: data => invoke('folder:mutate', [data]),
     markFolderUsed: data => send('folder:used', [data]),
-    importItems: async () => ({ canceled: true, ...unsupported('网页版暂不支持导入，请在桌面版导入') }),
+    importItems: async (data = {}) => {
+      // Dropped/pasted browser File objects arrive via `paths`; without them
+      // a picker opens, then everything streams through POST /upload into the
+      // host's shared import pipeline.
+      let files = Array.isArray(data.paths) && data.paths.length && typeof data.paths[0] !== 'string'
+        ? data.paths
+        : null;
+      if (!files) files = await pickBrowserFiles();
+      if (!files.length) return { canceled: true };
+      return uploadBrowserFiles(files, data);
+    },
     importClipboard: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     pathForFile: () => null,
     showInFinder: async () => false,

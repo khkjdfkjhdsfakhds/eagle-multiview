@@ -219,7 +219,7 @@ function webAccessFile() {
 
 async function loadWebAccessState() {
   if (webAccessState) return webAccessState;
-  webAccessState = { version: 1, enabled: false, port: 41600, key: null };
+  webAccessState = { version: 1, enabled: false, port: 41600, key: null, requireKey: true };
   try {
     const parsed = JSON.parse(await fsp.readFile(webAccessFile(), 'utf8'));
     if (parsed?.version === 1) {
@@ -227,6 +227,7 @@ async function loadWebAccessState() {
       const port = Number(parsed.port);
       if (Number.isInteger(port) && port >= 1024 && port <= 65535) webAccessState.port = port;
       if (typeof parsed.key === 'string' && parsed.key) webAccessState.key = parsed.key;
+      if (parsed.requireKey === false) webAccessState.requireKey = false;
     }
   } catch (error) {
     if (error.code !== 'ENOENT') logFault('web', `无法读取 Web 访问设置：${error.message}`, error);
@@ -272,6 +273,7 @@ async function webAccessStatus() {
     enabled: state.enabled,
     port: state.port,
     key: state.key,
+    requireKey: state.requireKey !== false,
     running: Boolean(webServer?.listening),
     clientCount: webServer?.clientCount || 0,
     addresses: listWebAddresses(state.port),
@@ -293,6 +295,9 @@ async function applyWebAccess() {
     invoke: invokeWebRPC,
     resolveMediaPath: resolveMediaPathForWeb,
     accessKey: state.key,
+    requireKey: state.requireKey !== false,
+    uploadImport: importPaths,
+    uploadDir: path.join(app.getPath('userData'), 'temp', 'web-uploads'),
     onClientGone: id => hub.removeWatcher(id),
     logError: (message, detail) => logFault('web', message, detail)
   });
@@ -1208,8 +1213,9 @@ function setupIPC() {
     const port = Number(payload.port ?? state.port);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('端口无效，应为 1024–65535');
     const enabled = Boolean(payload.enabled);
+    const requireKey = payload.requireKey === undefined ? state.requireKey !== false : Boolean(payload.requireKey);
     if (enabled && !state.key) state.key = generateAccessKey();
-    await saveWebAccessState({ ...state, enabled, port });
+    await saveWebAccessState({ ...state, enabled, port, requireKey });
     await applyWebAccess();
     return webAccessStatus();
   });
