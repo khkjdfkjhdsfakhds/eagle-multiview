@@ -10,7 +10,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, querySpec => {
   // Query structure, defaults, and filter detection all derive from the
   // declarative field table in query-spec.js.
-  const { createQuery, filtersActive, filterCount } = querySpec;
+  const { createQuery, filtersActive, filterCount, normalizeRange } = querySpec;
 
   function cloneQuery(source) {
     return createQuery(source);
@@ -90,5 +90,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags, appendableTailCount };
+  return { createQuery, cloneQuery, filtersActive, filterCount, normalizeRange, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags, appendableTailCount };
 });

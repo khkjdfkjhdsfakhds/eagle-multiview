@@ -37,6 +37,30 @@
     });
   }
 
+  // Range fields (file size, added date) are one query key holding {min, max}
+  // rather than two keys, so the filter badge counts a range as one filter
+  // and clearing either end leaves the other standing.
+  function normalizeRange(value) {
+    const min = Number(value?.min);
+    const max = Number(value?.max);
+    const range = {
+      min: Number.isFinite(min) && min > 0 ? min : null,
+      max: Number.isFinite(max) && max > 0 ? max : null
+    };
+    return range.min === null && range.max === null ? null : range;
+  }
+
+  function rangeActive(value) {
+    return Boolean(value && (value.min !== null || value.max !== null));
+  }
+
+  function inRange(candidate, range) {
+    const value = Number(candidate) || 0;
+    if (range.min !== null && value < range.min) return false;
+    if (range.max !== null && value > range.max) return false;
+    return true;
+  }
+
   // One row per query field; everything else derives from this table:
   // pane defaults/clone (createQuery), filter badge state (filtersActive/
   // filterCount), client-side matching (matchesConstraints), the
@@ -154,6 +178,34 @@
       normalize: value => String(value ?? ''),
       isActive: Boolean,
       match: (item, value) => matchesColor(item, value)
+    },
+    // /api/v2/item/get ignores every range parameter we probed (sizeMin,
+    // minSize, size:{min}, widthMin, btimeMin, startTime…), so these run on
+    // the client scan pipeline like the colour filter does. Bytes and
+    // millisecond timestamps; the panel converts from MB and dates.
+    {
+      key: 'size',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => inRange(item.size, value)
+    },
+    {
+      key: 'added',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => inRange(item.btime, value)
+    },
+    {
+      key: 'pixels',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => inRange((Number(item.width) || 0) * (Number(item.height) || 0), value)
     }
   ];
 
@@ -219,6 +271,9 @@
     needsClientScan,
     itemQueryBody,
     parseHexColor,
-    matchesColor
+    matchesColor,
+    normalizeRange,
+    rangeActive,
+    inRange
   };
 });

@@ -24,7 +24,10 @@ test('createQuery keeps the historical shape and defaults', () => {
     annotation: '',
     url: '',
     shape: '',
-    color: ''
+    color: '',
+    size: null,
+    added: null,
+    pixels: null
   });
   const normalized = createQuery({ tags: ['a', 'a', '', 'b'], rating: '3', search: 42, folderId: '' });
   assert.deepEqual(normalized.tags, ['a', 'b']);
@@ -138,4 +141,67 @@ test('every spec row is fully declared', () => {
     assert.ok(entry.match || entry.applyBody, `${entry.key} 既无 match 也无 applyBody`);
     if (entry.clientOnly) assert.equal(entry.applyBody, undefined, `${entry.key} 是 clientOnly 却声明了 applyBody`);
   }
+});
+
+test('range filters store one {min, max} key so the badge counts them once', () => {
+  const query = createQuery({ size: { min: 5 * 1024 * 1024 } });
+  assert.deepEqual(query.size, { min: 5 * 1024 * 1024, max: null });
+  assert.equal(filterCount(query), 1, 'a half-open range is one filter, not two');
+  assert.equal(filterCount(createQuery({ size: { min: 1, max: 2 } })), 1);
+  // Empty ends collapse the whole range away, so clearing both inputs clears
+  // the filter rather than leaving {min: null, max: null} behind.
+  assert.equal(createQuery({ size: { min: null, max: null } }).size, null);
+  assert.equal(createQuery({ size: { min: 'x', max: '' } }).size, null);
+  assert.equal(filtersActive(createQuery({ size: null })), false);
+});
+
+test('size / pixels / added match the right field on each item', () => {
+  const item = { id: 'a', size: 10 * 1024 * 1024, width: 4000, height: 2000, btime: 2000 };
+  const matches = query => matchesConstraints(item, createQuery(query));
+  assert.equal(matches({ size: { min: 5 * 1024 * 1024 } }), true);
+  assert.equal(matches({ size: { min: 20 * 1024 * 1024 } }), false);
+  assert.equal(matches({ size: { max: 5 * 1024 * 1024 } }), false);
+  assert.equal(matches({ size: { min: 1, max: 20 * 1024 * 1024 } }), true);
+  // 4000x2000 = 8 megapixels
+  assert.equal(matches({ pixels: { min: 7e6 } }), true);
+  assert.equal(matches({ pixels: { min: 9e6 } }), false);
+  assert.equal(matches({ pixels: { max: 9e6 } }), true);
+  assert.equal(matches({ added: { min: 1000, max: 3000 } }), true);
+  assert.equal(matches({ added: { min: 3000 } }), false);
+  assert.equal(matches({ added: { max: 1000 } }), false);
+  // Items missing the field count as zero rather than dropping out silently.
+  assert.equal(matchesConstraints({ id: 'b' }, createQuery({ size: { max: 10 } })), true);
+  assert.equal(matchesConstraints({ id: 'b' }, createQuery({ size: { min: 10 } })), false);
+});
+
+test('ranges are client-only: the Eagle API ignores every range parameter', () => {
+  for (const key of ['size', 'pixels', 'added']) {
+    const query = createQuery({ [key]: { min: 1 } });
+    assert.equal(needsClientScan(query), true, `${key} must route through the scan pipeline`);
+    assert.equal(clientConstrained(query), true);
+    // Nothing range-shaped may leak into the server body.
+    assert.deepEqual(itemQueryBody(query), {});
+  }
+});
+
+test('the filter panel and the spec table stay in step', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+  const renderer = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  const indexHTML = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+  // Two inputs per range key, each declaring which end it drives.
+  for (const [key, min, max] of [['size', '#sizeMinFilter', '#sizeMaxFilter'],
+                                 ['pixels', '#pixelsMinFilter', '#pixelsMaxFilter'],
+                                 ['added', '#addedFromFilter', '#addedToFilter']]) {
+    assert.ok(renderer.includes(`{ key: '${key}', part: 'min', selector: '${min}'`), `${key} min binding`);
+    assert.ok(renderer.includes(`{ key: '${key}', part: 'max', selector: '${max}'`), `${key} max binding`);
+    assert.ok(indexHTML.includes(`id="${min.slice(1)}"`), `${min} input`);
+    assert.ok(indexHTML.includes(`id="${max.slice(1)}"`), `${max} input`);
+  }
+  // A part-binding merges into the existing range instead of replacing it.
+  assert.ok(renderer.includes('? normalizeQueryRange({ ...pane.query[binding.key], [binding.part]: parsed })'));
+  // Dates are parsed in local time and the end of the range covers its day.
+  assert.ok(renderer.includes("const date = new Date(`${value}T00:00:00`);"));
+  assert.ok(renderer.includes('return end ? date.getTime() + 86399999 : date.getTime();'));
 });

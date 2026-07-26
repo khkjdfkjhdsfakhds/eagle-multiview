@@ -65,6 +65,27 @@
             <label>颜色
               <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
             </label>
+            <label>文件大小（MB）
+              <div class="filter-range">
+                <input id="sizeMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小文件大小（MB）">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="sizeMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大文件大小（MB）">
+              </div>
+            </label>
+            <label>分辨率（百万像素）
+              <div class="filter-range">
+                <input id="pixelsMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小百万像素">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="pixelsMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大百万像素">
+              </div>
+            </label>
+            <label>添加日期
+              <div class="filter-range">
+                <input id="addedFromFilter" type="date" autocomplete="off" aria-label="添加日期起">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="addedToFilter" type="date" autocomplete="off" aria-label="添加日期止">
+              </div>
+            </label>
             <label>备注包含
               <input id="annotationFilter" placeholder="筛选备注" autocomplete="off">
             </label>

@@ -50,6 +50,7 @@ const {
   filtersActive: queryFiltersActive,
   filterCount: queryFilterCount,
   selectRange,
+  normalizeRange: normalizeQueryRange,
   effectiveSortDir,
   compareBySort: compareItemsBySort,
   sharedTags: computeSharedTags,
@@ -841,6 +842,32 @@ function renderColorFilter() {
   }).join('');
 }
 
+// Range filters are stored as one {min, max} query key but edited through two
+// inputs, so a binding names which end it drives and how the panel's unit maps
+// to the stored one (MB and megapixels to raw counts, dates to timestamps).
+const MEGABYTE = 1024 * 1024;
+const MEGAPIXEL = 1e6;
+const scaledRange = factor => ({
+  parse: value => (value === '' ? null : Number(value) * factor),
+  toInput: value => (Number.isFinite(value) ? String(Math.round(value / factor * 100) / 100) : '')
+});
+// <input type="date"> speaks YYYY-MM-DD in local time; the end of the range is
+// inclusive of its whole day.
+const dateRange = end => ({
+  parse: value => {
+    if (!value) return null;
+    const date = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return null;
+    return end ? date.getTime() + 86399999 : date.getTime();
+  },
+  toInput: value => {
+    if (!Number.isFinite(value)) return '';
+    const date = new Date(value);
+    const pad = number => String(number).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+});
+
 // Simple-value filter inputs bind declaratively; tags (chip editor) and
 // color (swatch row) keep their bespoke widgets.
 const filterInputBindings = [
@@ -849,14 +876,26 @@ const filterInputBindings = [
   { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
   { key: 'shape', selector: '#shapeFilter', event: 'change' },
   { key: 'annotation', selector: '#annotationFilter', event: 'input' },
-  { key: 'url', selector: '#urlFilter', event: 'input' }
+  { key: 'url', selector: '#urlFilter', event: 'input' },
+  { key: 'size', part: 'min', selector: '#sizeMinFilter', event: 'input', ...scaledRange(MEGABYTE) },
+  { key: 'size', part: 'max', selector: '#sizeMaxFilter', event: 'input', ...scaledRange(MEGABYTE) },
+  { key: 'pixels', part: 'min', selector: '#pixelsMinFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
+  { key: 'pixels', part: 'max', selector: '#pixelsMaxFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
+  { key: 'added', part: 'min', selector: '#addedFromFilter', event: 'change', ...dateRange(false) },
+  { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) }
 ];
+
+function filterBindingValue(query, binding) {
+  return binding.part ? query[binding.key]?.[binding.part] ?? null : query[binding.key];
+}
 
 function renderQueryControls() {
   const query = state.query;
   for (const binding of filterInputBindings) {
     const input = $(binding.selector);
-    if (input) input.value = binding.toInput ? binding.toInput(query[binding.key]) : String(query[binding.key] ?? '');
+    if (!input) continue;
+    const value = filterBindingValue(query, binding);
+    input.value = binding.toInput ? binding.toInput(value) : String(value ?? '');
   }
   renderColorFilter();
   renderTagEditor('filter');
@@ -4772,7 +4811,10 @@ function bindEvents() {
       const paneId = state.activePaneId;
       const pane = paneById(paneId);
       if (!pane) return;
-      pane.query[binding.key] = binding.parse ? binding.parse(event.target.value) : event.target.value;
+      const parsed = binding.parse ? binding.parse(event.target.value) : event.target.value;
+      pane.query[binding.key] = binding.part
+        ? normalizeQueryRange({ ...pane.query[binding.key], [binding.part]: parsed })
+        : parsed;
       renderFilterState();
       schedulePaneFilterRefresh(paneId);
     });

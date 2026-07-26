@@ -480,6 +480,9 @@ select:hover { border-color: rgba(247, 248, 248, .14); }
   overflow: auto;
 }
 .filter-popover-heading { display: flex; align-items: center; justify-content: space-between; color: #e9eaed; font-size: 12px; }
+.filter-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; }
+.filter-range-dash { color: var(--muted-2); }
+.filter-range input { min-width: 0; }
 .filter-popover label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
 .filter-popover select, .filter-popover input { width: 100%; }
 .filter-popover input {
