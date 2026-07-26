@@ -23,7 +23,7 @@ test('preload exposes openExternal over IPC', () => {
 });
 
 test('main process only opens real web URLs', () => {
-  const start = main.indexOf("ipcMain.handle('shell:open-external'");
+  const start = main.indexOf("handleRPC('shell:open-external'");
   assert.ok(start >= 0);
   const handler = main.slice(start, main.indexOf('\n  });', start));
   assert.ok(handler.includes('/^https?:\\/\\//i.test(url)'));

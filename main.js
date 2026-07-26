@@ -539,8 +539,41 @@ async function installProtocol() {
   });
 }
 
+// Every renderer-facing operation registers here once and is served over both
+// transports: ipcMain for Electron windows and POST /rpc for web clients.
+// Channels in HOST_ONLY_CHANNELS depend on host dialogs, the host clipboard,
+// the shell, or window chrome; the web shim implements them locally or hides
+// the entry points via its capabilities table, and the web RPC rejects them.
+const HOST_ONLY_CHANNELS = new Set([
+  'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard',
+  'item:show-in-finder', 'item:open-default', 'items:export', 'items:open-other',
+  'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
+  'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
+  'window:focus', 'window:is-fullscreen', 'window:confirm-close', 'window:cancel-close',
+  'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key'
+]);
+const rpcRegistry = new Map();
+
+function handleRPC(channel, handler) {
+  rpcRegistry.set(channel, handler);
+  handleRPC(channel, handler);
+}
+
+function onRPC(channel, handler) {
+  rpcRegistry.set(channel, handler);
+  onRPC(channel, handler);
+}
+
+async function invokeWebRPC(method, args, sender) {
+  const handler = rpcRegistry.get(method);
+  if (!handler || HOST_ONLY_CHANNELS.has(method)) {
+    throw new Error(`此操作仅桌面版支持（${method}）`);
+  }
+  return handler({ sender }, ...(Array.isArray(args) ? args : []));
+}
+
 function setupIPC() {
-  ipcMain.on('log:renderer-error', (event, entry) => {
+  onRPC('log:renderer-error', (event, entry) => {
     getErrorLog().write({
       level: entry?.level === 'warn' ? 'warn' : 'error',
       source: `renderer#${event.sender.id}`,
@@ -548,14 +581,14 @@ function setupIPC() {
       detail: entry?.detail
     });
   });
-  ipcMain.handle('hub:connect', async () => {
+  handleRPC('hub:connect', async () => {
     const result = await hub.connect();
     await hydrateSupplementalItems(result.library?.path);
     duplicateIndex.warm(result.library?.path).catch(() => {});
     return result;
   });
-  ipcMain.handle('hub:identity', event => event.sender.id);
-  ipcMain.handle('library:history', async () => {
+  handleRPC('hub:identity', event => event.sender.id);
+  handleRPC('library:history', async () => {
     const paths = await client.listLibraryHistory();
     return paths.map(libraryPath => ({
       path: libraryPath,
@@ -563,7 +596,7 @@ function setupIPC() {
       exists: fs.existsSync(libraryPath)
     }));
   });
-  ipcMain.handle('library:switch', async (_event, payload = {}) => {
+  handleRPC('library:switch', async (_event, payload = {}) => {
     const libraryPath = EagleClient.normalizeLibraryPath(payload.libraryPath);
     if (!libraryPath) throw new Error('缺少资料库路径');
     if (EagleClient.normalizeLibraryPath(hub.library?.path) === libraryPath) return { switched: false, library: hub.library };
@@ -577,9 +610,9 @@ function setupIPC() {
     const result = await hub.connect();
     return { switched: true, library: result.library };
   });
-  ipcMain.handle('hub:query', (_event, query) => hub.query(query));
-  ipcMain.handle('hub:recent-folders', () => client.listRecentFolders());
-  ipcMain.handle('hub:trash-items', async (_event, { libraryPath, ...query }) => {
+  handleRPC('hub:query', (_event, query) => hub.query(query));
+  handleRPC('hub:recent-folders', () => client.listRecentFolders());
+  handleRPC('hub:trash-items', async (_event, { libraryPath, ...query }) => {
     try {
       const filtered = filterTrashItems(await readTrashItems(libraryPath), query);
       const offset = Math.max(0, Number(query.offset) || 0);
@@ -597,7 +630,7 @@ function setupIPC() {
       };
     }
   });
-  ipcMain.handle('hub:get-item', (_event, id) => client.getItem(id));
+  handleRPC('hub:get-item', (_event, id) => client.getItem(id));
   const refreshItemAfterCommentMutation = async (event, payload, operation, reason) => {
     const { id, libraryPath } = payload || {};
     if (!id) throw new Error('缺少素材 ID');
@@ -610,19 +643,19 @@ function setupIPC() {
     broadcast('hub:query-invalidated', { reason, id });
     return result;
   };
-  ipcMain.handle('item:comments', async (_event, { id, libraryPath }) => {
+  handleRPC('item:comments', async (_event, { id, libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     return client.getComments(id);
   });
-  ipcMain.handle('item:add-comment', (event, payload) => {
+  handleRPC('item:add-comment', (event, payload) => {
     const { id, libraryPath, ...comment } = payload || {};
     return refreshItemAfterCommentMutation(event, { id, libraryPath }, itemId => client.addComment(itemId, comment), 'comment-add');
   });
-  ipcMain.handle('item:update-comment', (event, payload) =>
+  handleRPC('item:update-comment', (event, payload) =>
     refreshItemAfterCommentMutation(event, payload, (id) => client.updateComment(id, payload.commentId, payload.patch || {}), 'comment-update'));
-  ipcMain.handle('item:remove-comment', (event, payload) =>
+  handleRPC('item:remove-comment', (event, payload) =>
     refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove'));
-  ipcMain.handle('item:set-custom-thumbnail', async (event, payload) => {
+  handleRPC('item:set-custom-thumbnail', async (event, payload) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const { id, libraryPath } = payload || {};
     if (!id) throw new Error('缺少素材 ID');
@@ -647,8 +680,8 @@ function setupIPC() {
     broadcast('hub:query-invalidated', { reason: 'custom-thumbnail', id });
     return { canceled: false, result, item };
   });
-  ipcMain.handle('hub:tags', () => client.listTags());
-  ipcMain.handle('hub:tag-groups', () => client.listTagGroups());
+  handleRPC('hub:tags', () => client.listTags());
+  handleRPC('hub:tag-groups', () => client.listTagGroups());
   const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
     await hub.ensureLibraryPath(libraryPath);
     const result = await operation();
@@ -660,14 +693,14 @@ function setupIPC() {
     broadcast('hub:query-invalidated', { reason });
     return result;
   };
-  ipcMain.handle('smart-folder:create', (event, { libraryPath, ...payload }) =>
+  handleRPC('smart-folder:create', (event, { libraryPath, ...payload }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.createSmartFolder(payload), 'smart-folder-create'));
-  ipcMain.handle('smart-folder:update', (event, { libraryPath, id, patch }) =>
+  handleRPC('smart-folder:update', (event, { libraryPath, id, patch }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.updateSmartFolder(id, patch), 'smart-folder-update'));
-  ipcMain.handle('smart-folder:remove', (event, { libraryPath, id }) =>
+  handleRPC('smart-folder:remove', (event, { libraryPath, id }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
-  ipcMain.handle('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
-  ipcMain.handle('tag-colors:set', (_event, { libraryPath, tag, color }) => setTagColor(libraryPath, tag, color));
+  handleRPC('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
+  handleRPC('tag-colors:set', (_event, { libraryPath, tag, color }) => setTagColor(libraryPath, tag, color));
   const mutateTagData = async (event, libraryPath, operation, reason) => {
     await hub.ensureLibraryPath(libraryPath);
     const result = await operation();
@@ -675,51 +708,51 @@ function setupIPC() {
     broadcast('hub:query-invalidated', { reason });
     return result;
   };
-  ipcMain.handle('tag:rename', (event, { libraryPath, originalName, name }) =>
+  handleRPC('tag:rename', (event, { libraryPath, originalName, name }) =>
     mutateTagData(event, libraryPath, () => client.renameTag(originalName, name), 'tag-rename'));
-  ipcMain.handle('tag:merge', (event, { libraryPath, source, target }) =>
+  handleRPC('tag:merge', (event, { libraryPath, source, target }) =>
     mutateTagData(event, libraryPath, () => client.mergeTag(source, target), 'tag-merge'));
-  ipcMain.handle('tag-group:create', (event, { libraryPath, name }) =>
+  handleRPC('tag-group:create', (event, { libraryPath, name }) =>
     mutateTagData(event, libraryPath, () => client.createTagGroup(name), 'tag-group-create'));
-  ipcMain.handle('tag-group:update', (event, { libraryPath, id, patch }) =>
+  handleRPC('tag-group:update', (event, { libraryPath, id, patch }) =>
     mutateTagData(event, libraryPath, () => client.updateTagGroup(id, patch), 'tag-group-update'));
-  ipcMain.handle('tag-group:remove', (event, { libraryPath, id }) =>
+  handleRPC('tag-group:remove', (event, { libraryPath, id }) =>
     mutateTagData(event, libraryPath, () => client.removeTagGroup(id), 'tag-group-remove'));
-  ipcMain.handle('tag-group:add-tags', (event, { libraryPath, groupId, tags }) =>
+  handleRPC('tag-group:add-tags', (event, { libraryPath, groupId, tags }) =>
     mutateTagData(event, libraryPath, () => client.addTagsToGroup(groupId, tags), 'tag-group-add-tags'));
-  ipcMain.handle('tag-group:remove-tags', (event, { libraryPath, groupId, tags }) =>
+  handleRPC('tag-group:remove-tags', (event, { libraryPath, groupId, tags }) =>
     mutateTagData(event, libraryPath, () => client.removeTagsFromGroup(groupId, tags), 'tag-group-remove-tags'));
-  ipcMain.handle('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
-  ipcMain.handle('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
-  ipcMain.handle('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
-  ipcMain.on('folder:used', (event, payload = {}) => {
+  handleRPC('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
+  handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  onRPC('folder:used', (event, payload = {}) => {
     broadcast('folder:used', {
       folderId: payload.folderId || null,
       libraryPath: payload.libraryPath || null,
       origin: event.sender.id
     });
   });
-  ipcMain.handle('hub:watch-items', (event, ids) => {
+  handleRPC('hub:watch-items', (event, ids) => {
     hub.setWatchedIds(event.sender.id, ids);
     return true;
   });
-  ipcMain.handle('window:new', (_event, initialState = null) => {
+  handleRPC('window:new', (_event, initialState = null) => {
     createWindow(initialState);
     return true;
   });
-  ipcMain.handle('window:initial-state', event => {
+  handleRPC('window:initial-state', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     const initialState = window?.__initialState || null;
     if (window) window.__initialState = null;
     return initialState;
   });
-  ipcMain.handle('window:focus', event => {
+  handleRPC('window:focus', event => {
     return focusBrowserWindow(BrowserWindow.fromWebContents(event.sender));
   });
-  ipcMain.handle('window:is-fullscreen', event => {
+  handleRPC('window:is-fullscreen', event => {
     return Boolean(BrowserWindow.fromWebContents(event.sender)?.isFullScreen());
   });
-  ipcMain.on('window:confirm-close', event => {
+  onRPC('window:confirm-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window || window.isDestroyed()) return;
     window.__closePromptPending = false;
@@ -727,12 +760,12 @@ function setupIPC() {
     window.close();
     if (quitting) setImmediate(() => app.quit());
   });
-  ipcMain.on('window:cancel-close', event => {
+  onRPC('window:cancel-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (window && !window.isDestroyed()) window.__closePromptPending = false;
     quitting = false;
   });
-  ipcMain.handle('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
+  handleRPC('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
     const requestedName = validateNewItemName(name);
     const libraryKey = path.resolve(libraryPath);
     return enqueueCreation(`folder:${libraryKey}:${parent || 'root'}`, async () => {
@@ -750,7 +783,7 @@ function setupIPC() {
       };
     });
   });
-  ipcMain.handle('document:create', (event, payload = {}) => {
+  handleRPC('document:create', (event, payload = {}) => {
     const type = normalizeNewFileType(payload.type);
     const requestedName = validateNewItemName(payload.name, { extension: type });
     const folderId = payload.folderId || null;
@@ -825,7 +858,7 @@ function setupIPC() {
       }
     });
   });
-  ipcMain.handle('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null }) => {
+  handleRPC('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     let filePaths = paths;
     if (!filePaths?.length) {
@@ -877,22 +910,22 @@ function setupIPC() {
       setTimeout(() => focusBrowserWindow(parent), 350);
     }
   });
-  ipcMain.handle('items:import-clipboard', (_event, data) => importClipboard(data));
-  ipcMain.handle('item:show-in-finder', async (_event, id) => {
+  handleRPC('items:import-clipboard', (_event, data) => importClipboard(data));
+  handleRPC('item:show-in-finder', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return false;
     shell.showItemInFolder(filePath);
     return true;
   });
-  ipcMain.handle('item:file-path', async (_event, id) => {
+  handleRPC('item:file-path', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     return filePath || null;
   });
-  ipcMain.handle('item:file-url', async (_event, id) => {
+  handleRPC('item:file-url', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     return filePath ? pathToFileURL(filePath).toString() : null;
   });
-  ipcMain.handle('item:metadata', async (_event, id) => {
+  handleRPC('item:metadata', async (_event, id) => {
     const { item, filePath } = await itemFilePath(id);
     if (!filePath) return { itemId: id, metadata: null, error: '找不到素材原文件' };
     const cacheKey = `${id}:${item.modificationTime || item.size || 0}`;
@@ -906,13 +939,13 @@ function setupIPC() {
       return { itemId: id, metadata: null, error: error.message || '读取元数据失败' };
     }
   });
-  ipcMain.handle('item:open-default', async (_event, id) => {
+  handleRPC('item:open-default', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return { ok: false, message: '找不到素材原文件' };
     const message = await shell.openPath(filePath);
     return message ? { ok: false, message } : { ok: true };
   });
-  ipcMain.handle('items:export', async (event, { ids, libraryPath }) => {
+  handleRPC('items:export', async (event, { ids, libraryPath }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const destination = await dialog.showOpenDialog(parent, {
       title: '导出素材到文件夹',
@@ -934,7 +967,7 @@ function setupIPC() {
       requested: resolved.length
     };
   });
-  ipcMain.handle('items:open-other', async (event, { ids }) => {
+  handleRPC('items:open-other', async (event, { ids }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const chooser = await dialog.showOpenDialog(parent, {
       title: '选择打开素材的应用',
@@ -954,7 +987,7 @@ function setupIPC() {
     });
     return { canceled: false, count: files.length, missing: resolved.length - files.length };
   });
-  ipcMain.handle('items:share', async (event, { ids }) => {
+  handleRPC('items:share', async (event, { ids }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const resolved = await resolveItemFiles(ids);
     const files = resolved.map(entry => entry.filePath).filter(Boolean);
@@ -963,7 +996,7 @@ function setupIPC() {
     new ShareMenu({ filePaths: files }).popup({ window: parent });
     return { ok: true, count: files.length, missing: resolved.length - files.length };
   });
-  ipcMain.handle('items:duplicate', async (event, { ids, folderId, libraryPath, preserveFolders = false }) => {
+  handleRPC('items:duplicate', async (event, { ids, folderId, libraryPath, preserveFolders = false }) => {
     const resolved = await resolveItemFiles(ids);
     const paths = resolved.map(entry => entry.filePath).filter(Boolean);
     if (!paths.length) return { count: 0, missing: resolved.length };
@@ -989,19 +1022,19 @@ function setupIPC() {
     }
     return { ...imported, missing: resolved.length - paths.length };
   });
-  ipcMain.handle('clipboard:write-files', (_event, ids) => copyItemFiles(ids));
-  ipcMain.handle('clipboard:write-text', (_event, value) => {
+  handleRPC('clipboard:write-files', (_event, ids) => copyItemFiles(ids));
+  handleRPC('clipboard:write-text', (_event, value) => {
     clipboard.writeText(String(value || ''));
     return true;
   });
-  ipcMain.handle('shell:open-external', async (_event, value) => {
+  handleRPC('shell:open-external', async (_event, value) => {
     const url = String(value || '').trim();
     // Only real web URLs may leave the app; file:, smb: etc. stay blocked.
     if (!/^https?:\/\//i.test(url)) throw new Error('只支持打开 http/https 网址');
     await shell.openExternal(url);
     return true;
   });
-  ipcMain.on('item:start-drag', (event, data) => {
+  onRPC('item:start-drag', (event, data) => {
     const payload = Array.isArray(data) ? { ids: data } : (data || {});
     const uniqueIds = [...new Set(payload.ids || [])];
     // Resolve from the in-memory item cache synchronously. Calling startDrag
@@ -1043,23 +1076,23 @@ function setupIPC() {
       finishDrag(token);
     }, 30000));
   });
-  ipcMain.on('item:cancel-drag', (_event, token) => finishDrag(token));
-  ipcMain.handle('pins:get', async (_event, { libraryPath }) => {
+  onRPC('item:cancel-drag', (_event, token) => finishDrag(token));
+  handleRPC('pins:get', async (_event, { libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     return getPinStore().get(libraryPath);
   });
-  ipcMain.handle('pins:set', async (_event, { libraryPath, folderId, ids, pinned }) => {
+  handleRPC('pins:set', async (_event, { libraryPath, folderId, ids, pinned }) => {
     await hub.ensureLibraryPath(libraryPath);
     const pins = await getPinStore().set(libraryPath, folderId, ids, pinned);
     broadcast('pins:changed', { libraryPath, pins });
     return pins;
   });
-  ipcMain.handle('text:read', async (_event, { id, libraryPath }) => {
+  handleRPC('text:read', async (_event, { id, libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     const { item, filePath } = await itemFilePath(id);
     return readText({ item, filePath, libraryPath });
   });
-  ipcMain.handle('text:save', async (_event, { id, libraryPath, content, base, force }) => {
+  handleRPC('text:save', async (_event, { id, libraryPath, content, base, force }) => {
     await hub.ensureLibraryPath(libraryPath);
     const { item, filePath } = await itemFilePath(id);
     const result = await saveText({

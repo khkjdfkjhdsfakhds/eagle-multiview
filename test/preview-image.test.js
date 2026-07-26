@@ -57,7 +57,7 @@ test('picks the largest candidate among several previews', async t => {
   assert.equal(await findPreviewImagePath(dir, 'design.psd'), path.join(dir, 'design_large.png'));
 });
 
-test('renderer routes PSD/TIFF/HEIC and camera RAW previews through eaglemv://preview', () => {
+test('renderer routes PSD/TIFF/HEIC and camera RAW previews through the preview media kind', () => {
   const listStart = rendererSource.indexOf('const previewStandInExtensions');
   assert.ok(listStart >= 0);
   const list = rendererSource.slice(listStart, rendererSource.indexOf(');', listStart));
@@ -65,7 +65,7 @@ test('renderer routes PSD/TIFF/HEIC and camera RAW previews through eaglemv://pr
     assert.ok(list.includes(`'${ext}'`), `previewStandInExtensions 缺少 ${ext}`);
   }
   assert.ok(rendererSource.includes('previewStandInExtensions.has(ext)'));
-  assert.ok(rendererSource.includes('eaglemv://preview/${encodeURIComponent(item.id)}'));
+  assert.ok(rendererSource.includes("mediaURL('preview', item.id)"));
 });
 
 test('main resolves preview media with a thumbnail fallback', () => {

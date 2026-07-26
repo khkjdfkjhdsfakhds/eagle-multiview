@@ -61,7 +61,7 @@ test('waitForLibrary gives up after the timeout instead of hanging', async () =>
 
 test('the switch IPC waits for the load and reconnects the hub', () => {
   const main = read('main.js');
-  const start = main.indexOf("ipcMain.handle('library:switch'");
+  const start = main.indexOf("handleRPC('library:switch'");
   assert.ok(start >= 0);
   const handler = main.slice(start, start + 900);
   assert.ok(handler.includes('client.switchLibrary(libraryPath)'));
@@ -70,7 +70,7 @@ test('the switch IPC waits for the load and reconnects the hub', () => {
   // Switching to the already-open library must not reload anything; both
   // sides compare normalized so trailing-slash history entries still match.
   assert.ok(handler.includes('EagleClient.normalizeLibraryPath(hub.library?.path) === libraryPath'));
-  assert.ok(main.includes("ipcMain.handle('library:history'"));
+  assert.ok(main.includes("handleRPC('library:history'"));
 });
 
 test('the sidebar switcher guards edits, marks the current library, and closes like other popovers', () => {

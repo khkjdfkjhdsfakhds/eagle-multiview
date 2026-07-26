@@ -62,6 +62,13 @@ window.addEventListener('storage', event => {
   if (event.key === window.EagleMVSortMemory.STORAGE_KEY) sortMemory.invalidate();
 });
 const { createOperationTracker } = window.EagleMVOperationState;
+// Single choke point for media addresses: the Electron preload mints
+// eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
+const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id);
+// Host-bound entry points (Finder, native drag, host dialogs…) check this
+// table; the web shim serves the same keys with false so they hide cleanly.
+const caps = window.eagleMV.capabilities || {};
+const hasCapability = key => caps[key] !== false;
 const newFileTypes = Object.freeze({
   txt: { label: 'TXT', defaultName: '未命名文本' },
   md: { label: 'Markdown', defaultName: '未命名文档' },
@@ -1159,7 +1166,7 @@ function folderCardMarkup(folder) {
       <span class="folder-sheet folder-sheet-back" aria-hidden="true"></span>
       <span class="folder-sheet folder-sheet-middle" aria-hidden="true"></span>
       <div class="folder-cover">
-        ${folder.covers?.length ? `<img loading="lazy" src="eaglemv://folder/${encodeURIComponent(folder.id)}" alt="">` : ''}
+        ${folder.covers?.length ? `<img loading="lazy" src="${mediaURL('folder', folder.id)}" alt="">` : ''}
       </div>
     </div>
     <div class="folder-name" title="${escapeHTML(folder.name)}">${folderColorDot(folder, 'inline')}${escapeHTML(folder.name)}${folderLockBadge(folder)}</div>
@@ -1370,8 +1377,8 @@ function renderGrid({ preserveScroll = true } = {}) {
 function itemCardMarkup(item) {
   const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
   const isGif = ext === 'gif';
-  const thumbURL = `eaglemv://thumb/${encodeURIComponent(item.id)}`;
-  const originalURL = `eaglemv://original/${encodeURIComponent(item.id)}`;
+  const thumbURL = mediaURL('thumb', item.id);
+  const originalURL = mediaURL('original', item.id);
   const aspect = itemThumbnailAspect(item);
   return `
     <article class="item-card ${state.selected.has(item.id) ? 'selected' : ''} ${itemIsPinned(item) ? 'pinned' : ''}" data-id="${escapeHTML(item.id)}" draggable="true" tabindex="0" style="--item-aspect: ${aspect.toFixed(4)}">
@@ -1806,7 +1813,7 @@ function renderInspector() {
   $('#itemURL').value = item.url || '';
   updateURLActions();
   resizeAnnotation();
-  $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
+  $('#previewBox').innerHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
   renderItemPalette(item);
   $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span><span><em>修改日期</em>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
   loadGenerationMetadata(item);
@@ -2415,7 +2422,7 @@ function removeTagFromSelection(tag) {
 }
 
 function mediaMarkup(item) {
-  const url = `eaglemv://original/${encodeURIComponent(item.id)}`;
+  const url = mediaURL('original', item.id);
   const ext = String(item.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay></video>`;
   if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return `<audio src="${url}" controls autoplay></audio>`;
@@ -2426,8 +2433,8 @@ function mediaMarkup(item) {
   // Chromium cannot decode these originals (PSD/TIFF/HEIC and camera RAW);
   // Eagle's generated preview image in the .info folder stands in at full
   // resolution, with the thumbnail as fallback.
-  if (previewStandInExtensions.has(ext)) return `<img src="eaglemv://preview/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">`;
-  return `<div class="unsupported-preview"><img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⇧Enter 使用默认应用打开</span></p></div>`;
+  if (previewStandInExtensions.has(ext)) return `<img src="${mediaURL('preview', item.id)}" alt="${escapeHTML(item.name)}">`;
+  return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览<br><span>按 ⇧Enter 使用默认应用打开</span></p></div>`;
 }
 
 function previewImage() { return $('#modalMedia img.preview-image'); }
@@ -2571,7 +2578,7 @@ async function openPreview(id, { forceReload = false } = {}) {
   } catch (error) {
     if (token !== state.previewToken) return false;
     state.textSession = null;
-    $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt=""><p>无法读取 TXT<br><span>${escapeHTML(error.message)} · 可按 ⇧Enter 用默认应用打开</span></p></div>`;
+    $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt=""><p>无法读取 TXT<br><span>${escapeHTML(error.message)} · 可按 ⇧Enter 用默认应用打开</span></p></div>`;
     return false;
   }
 }

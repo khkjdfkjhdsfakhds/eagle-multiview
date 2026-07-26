@@ -10,6 +10,24 @@ function on(channel, callback) {
 
 contextBridge.exposeInMainWorld('eagleMV', {
   platform: process.platform,
+  // What this client can do locally. The web shim serves the same surface
+  // with the host-bound entries set to false so the renderer hides them.
+  capabilities: {
+    nativeDrag: true,
+    hostDialogs: true,
+    clipboardFiles: true,
+    finder: true,
+    openDefault: true,
+    openOther: true,
+    share: true,
+    export: true,
+    importLocal: true,
+    customThumbnail: true,
+    copyPath: true,
+    uiZoom: true,
+    webAccess: true
+  },
+  mediaURL: (kind, id) => `eaglemv://${kind}/${encodeURIComponent(String(id))}`,
   connect: () => ipcRenderer.invoke('hub:connect'),
   getLibraryHistory: () => ipcRenderer.invoke('library:history'),
   switchLibrary: data => ipcRenderer.invoke('library:switch', data),
@@ -86,6 +104,10 @@ contextBridge.exposeInMainWorld('eagleMV', {
   removeTagGroup: data => ipcRenderer.invoke('tag-group:remove', data),
   addTagsToGroup: data => ipcRenderer.invoke('tag-group:add-tags', data),
   removeTagsFromGroup: data => ipcRenderer.invoke('tag-group:remove-tags', data),
+  getWebAccess: () => ipcRenderer.invoke('web-access:get'),
+  setWebAccess: data => ipcRenderer.invoke('web-access:set', data),
+  resetWebAccessKey: () => ipcRenderer.invoke('web-access:reset-key'),
+  onWebAccessRequest: callback => on('command:web-access', callback),
   onImportRequest: callback => on('command:import', callback),
   onCreateFolderRequest: callback => on('command:create-folder', callback),
   onCreateDocumentRequest: callback => on('command:create-document', callback),

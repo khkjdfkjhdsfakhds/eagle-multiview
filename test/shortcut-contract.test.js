@@ -46,7 +46,7 @@ test('new-file entry points share one API-backed workflow and confirmed format r
   assert.ok(preload.includes("createDocument: data => ipcRenderer.invoke('document:create', data)"));
   assert.ok(preload.includes("onCreateFolderRequest: callback => on('command:create-folder', callback)"));
   assert.ok(preload.includes("onCreateDocumentRequest: callback => on('command:create-document', callback)"));
-  assert.ok(main.includes("ipcMain.handle('document:create'"));
+  assert.ok(main.includes("handleRPC('document:create'"));
   assert.ok(main.includes("path.join(app.getPath('userData'), 'temp', 'new-files')"));
   assert.ok(main.includes('const ready = await waitForImportedFile(id, libraryPath)'));
   assert.ok(main.includes('if (!ready.fileURL) throw new Error'));
@@ -70,8 +70,8 @@ test('folder and document creation use default names directly without a naming d
   assert.equal(documentHandler.includes('requestCreationName'), false);
   assert.equal(documentHandler.includes('requestNameDialog'), false);
 
-  const mainFolderStart = main.indexOf("ipcMain.handle('folder:create'");
-  const mainFolderEnd = main.indexOf("ipcMain.handle('document:create'", mainFolderStart);
+  const mainFolderStart = main.indexOf("handleRPC('folder:create'");
+  const mainFolderEnd = main.indexOf("handleRPC('document:create'", mainFolderStart);
   const mainFolderHandler = main.slice(mainFolderStart, mainFolderEnd);
   assert.ok(mainFolderHandler.includes("name = '未命名文件夹'"));
   assert.ok(mainFolderHandler.includes('nextAvailableName(requestedName, siblingFolders(folders, parent))'));
@@ -174,7 +174,7 @@ test('last-used folder state is promoted and broadcast to every window', () => {
   assert.ok(renderer.includes('window.eagleMV.onFolderUsed(payload =>'));
   assert.ok(preload.includes("markFolderUsed: data => ipcRenderer.send('folder:used', data)"));
   assert.ok(preload.includes("onFolderUsed: callback => on('folder:used', callback)"));
-  assert.ok(main.includes("ipcMain.on('folder:used'"));
+  assert.ok(main.includes("onRPC('folder:used'"));
   assert.ok(main.includes("broadcast('folder:used'"));
 });
 
@@ -185,7 +185,7 @@ test('bulk file actions resolve missing items independently with bounded concurr
   const helper = source.slice(helperStart, helperEnd);
   assert.ok(helperStart >= 0);
   assert.ok(helper.includes('settleWithConcurrency(uniqueIds, itemFilePath, 8)'));
-  for (const handler of ['copyItemFiles', "ipcMain.handle('items:export'", "ipcMain.handle('items:open-other'", "ipcMain.handle('items:share'", "ipcMain.handle('items:duplicate'"]) {
+  for (const handler of ['copyItemFiles', "handleRPC('items:export'", "handleRPC('items:open-other'", "handleRPC('items:share'", "handleRPC('items:duplicate'"]) {
     const start = source.indexOf(handler);
     assert.ok(start >= 0, `${handler} exists`);
     assert.ok(source.slice(start, start + 1400).includes('resolveItemFiles(ids)'), `${handler} tolerates per-item resolution failures`);
