@@ -2525,17 +2525,24 @@ function removeTagFromSelection(tag) {
   });
 }
 
-// The address the preview shows for an image, or null when the item is not
-// displayed as an <img> (video/audio/PDF/unsupported). Shared by the preview
-// markup and the neighbour prefetch so they can never drift apart.
-function previewImageURL(item) {
+// What the preview shows for an image, or null when the item is not rendered
+// as an <img> (video/audio/PDF/unsupported). Shared by the preview markup and
+// the neighbour prefetch so they can never drift apart. `kind` matters to the
+// prefetch: only 'original' streams the bytes item.size measures.
+function previewImageSource(item) {
   const ext = String(item?.ext || '').toLowerCase();
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) return mediaURL('original', item.id);
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp'].includes(ext)) {
+    return { kind: 'original', url: mediaURL('original', item.id) };
+  }
   // Chromium cannot decode these originals (PSD/TIFF/HEIC and camera RAW);
   // Eagle's generated preview image in the .info folder stands in at full
   // resolution, with the thumbnail as fallback.
-  if (previewStandInExtensions.has(ext)) return mediaURL('preview', item.id);
+  if (previewStandInExtensions.has(ext)) return { kind: 'preview', url: mediaURL('preview', item.id) };
   return null;
+}
+
+function previewImageURL(item) {
+  return previewImageSource(item)?.url || null;
 }
 
 function mediaMarkup(item) {
@@ -2564,12 +2571,15 @@ function prefetchPreviewImage(item) {
   // Metered or explicitly data-saving connections should not pay for images
   // the user may never swipe to.
   if (navigator.connection?.saveData) return;
-  if (Number(item.size) > PREFETCH_MAX_BYTES) return;
-  const url = previewImageURL(item);
-  if (!url) return;
+  const source = previewImageSource(item);
+  if (!source) return;
+  // item.size measures the original file, which is what /media/original
+  // streams — but a stand-in preview serves Eagle's small generated image no
+  // matter how heavy the original is, so a 780 MB PSD is still worth warming.
+  if (source.kind === 'original' && Number(item.size) > PREFETCH_MAX_BYTES) return;
   const image = new Image();
   image.decoding = 'async';
-  image.src = url;
+  image.src = source.url;
   previewPrefetch.set(item.id, image);
   while (previewPrefetch.size > PREFETCH_RING) {
     previewPrefetch.delete(previewPrefetch.keys().next().value);
