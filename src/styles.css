@@ -1306,6 +1306,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .multi-selection p { color: #86878d; line-height: 1.55; }
 .multi-selection > button { width: 100%; margin-top: 8px; }
 .shared-tag-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.inspector-field.url-field { display: flex; gap: 4px; align-items: center; }
+.inspector-field.url-field input { flex: 1 1 auto; min-width: 0; }
+.url-actions { display: flex; gap: 3px; flex: 0 0 auto; }
 .multi-selection select { width: 100%; color: var(--text-soft); }
 
 .statusbar {

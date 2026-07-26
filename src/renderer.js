@@ -1451,6 +1451,14 @@ function renderSharedTags() {
   }).join('');
 }
 
+function updateURLActions() {
+  const url = String($('#itemURL')?.value || '').trim();
+  const openButton = $('#openURLButton');
+  const copyButton = $('#copyURLButton');
+  if (openButton) openButton.disabled = !/^https?:\/\//i.test(url);
+  if (copyButton) copyButton.disabled = !url;
+}
+
 function renderInspector() {
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
@@ -1505,6 +1513,7 @@ function renderInspector() {
   syncRatingPlaceholder();
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
+  updateURLActions();
   resizeAnnotation();
   $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
   renderItemPalette(item);
@@ -3978,6 +3987,22 @@ function bindEvents() {
     $(selector).addEventListener('input', markDirty);
     $(selector).addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   }
+  $('#itemURL').addEventListener('input', updateURLActions);
+  $('#openURLButton').addEventListener('click', async () => {
+    const url = $('#itemURL').value.trim();
+    if (!/^https?:\/\//i.test(url)) { toast('只支持打开 http/https 网址', 3200); return; }
+    try {
+      await window.eagleMV.openExternal(url);
+    } catch (error) {
+      toast(`打开来源失败：${error.message}`, 4000);
+    }
+  });
+  $('#copyURLButton').addEventListener('click', async () => {
+    const url = $('#itemURL').value.trim();
+    if (!url) return;
+    await window.eagleMV.copyText(url);
+    toast('已复制来源网址', 2000);
+  });
   $('#itemRating').addEventListener('change', () => {
     syncRatingPlaceholder();
     markDirty();

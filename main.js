@@ -965,6 +965,13 @@ function setupIPC() {
     clipboard.writeText(String(value || ''));
     return true;
   });
+  ipcMain.handle('shell:open-external', async (_event, value) => {
+    const url = String(value || '').trim();
+    // Only real web URLs may leave the app; file:, smb: etc. stay blocked.
+    if (!/^https?:\/\//i.test(url)) throw new Error('只支持打开 http/https 网址');
+    await shell.openExternal(url);
+    return true;
+  });
   ipcMain.on('item:start-drag', (event, data) => {
     const payload = Array.isArray(data) ? { ids: data } : (data || {});
     const uniqueIds = [...new Set(payload.ids || [])];

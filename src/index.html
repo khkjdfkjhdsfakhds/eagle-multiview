@@ -156,8 +156,12 @@
           <div class="inspector-field">
             <textarea id="itemAnnotation" aria-label="备注" placeholder="添加注释" rows="1"></textarea>
           </div>
-          <div class="inspector-field">
+          <div class="inspector-field url-field">
             <input id="itemURL" aria-label="来源" placeholder="http://" autocomplete="off">
+            <div class="url-actions">
+              <button id="openURLButton" type="button" class="small-action" title="在浏览器中打开来源网址" disabled>打开</button>
+              <button id="copyURLButton" type="button" class="small-action" title="复制来源网址" disabled>复制</button>
+            </div>
           </div>
         </section>
         <section id="itemCommentsSection" class="inspector-section comments-section">
