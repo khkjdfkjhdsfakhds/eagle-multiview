@@ -81,7 +81,7 @@ test('pane markup offers rating/type options and a direction toggle', () => {
 test('pane state tracks sortDir and syncs it across layouts', () => {
   assert.ok(renderer.includes("sortDir: 'auto',"));
   assert.ok(renderer.includes("sortDir: source.sortDir || 'auto',"));
-  assert.match(renderer, /'sort', 'sortDir', 'viewMode', 'viewTitle'/);
+  assert.match(renderer, /'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle'/);
   assert.ok(renderer.includes('function renderSortControls()'));
   assert.ok(renderer.includes('function commitSortChange()'), 'persist-and-rerender lives in one helper');
 });
@@ -106,4 +106,36 @@ test('changing the sort resets direction and starts the backfill', () => {
   assert.ok(handler.includes("state.sortDir = 'auto';"));
   assert.ok(handler.includes('commitSortChange();'));
   assert.ok(handler.includes("state.sort !== 'default' && state.hasMore"));
+});
+
+test('随机 shuffles stably and reshuffles on demand', () => {
+  const { randomRank } = require('../src/pane-state');
+  const pool = Array.from({ length: 40 }, (_, index) => ({ id: `id-${index}` }));
+  const order = seed => [...pool].sort((a, b) => compareBySort('random', 'auto', a, b, { seed })).map(item => item.id);
+
+  // Stable: the grid re-sorts on every lazy page, so the same seed must give
+  // the same order or the view would reshuffle under the reader.
+  assert.deepEqual(order('seed-a'), order('seed-a'));
+  assert.notDeepEqual(order('seed-a'), order('seed-b'), 'a new seed deals a new order');
+  assert.notDeepEqual(order('seed-a'), pool.map(item => item.id), 'and it is not the input order');
+
+  // Direction is meaningless for a shuffle; the button reshuffles instead.
+  assert.deepEqual(order('seed-a'), [...pool].sort((a, b) => compareBySort('random', 'desc', a, b, { seed: 'seed-a' })).map(i => i.id));
+  // A comparator that is not a total order would make sort() unstable.
+  assert.equal(compareBySort('random', 'auto', pool[0], pool[0], { seed: 's' }), 0);
+  assert.equal(
+    Math.sign(compareBySort('random', 'auto', pool[1], pool[2], { seed: 's' })),
+    -Math.sign(compareBySort('random', 'auto', pool[2], pool[1], { seed: 's' }))
+  );
+  // Ranks spread out rather than colliding into a few buckets.
+  assert.ok(new Set(pool.map(item => randomRank('seed-a', item.id))).size >= 39);
+});
+
+test('the shuffle is wired to the pane and the direction button', () => {
+  assert.ok(renderer.includes('<option value="random">随机</option>'));
+  assert.ok(renderer.includes('function nextRandomSeed()'));
+  assert.ok(renderer.includes("randomSeed: source.randomSeed || nextRandomSeed(),"));
+  assert.ok(renderer.includes("if (state.sort === 'random') state.randomSeed = nextRandomSeed();"), '选中随机时重新洗牌');
+  assert.ok(renderer.includes("dirButton.textContent = '⟳';"), '方向钮在随机时变成重新洗牌');
+  assert.ok(renderer.includes("compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed })"));
 });

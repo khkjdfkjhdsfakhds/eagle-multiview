@@ -70,8 +70,10 @@ test('the view chokepoint restores memory and sort changes persist through one h
   const commitStart = renderer.indexOf('function commitSortChange()');
   const commitFn = renderer.slice(commitStart, renderer.indexOf('\n}', commitStart));
   assert.ok(commitFn.includes('sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now())'));
-  assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 2,
-    'both the sort select and the direction toggle go through the helper');
+  // The sort select, the direction toggle, and the toggle's reshuffle branch
+  // when the sort is 随机 — every path that changes the order.
+  assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 3,
+    'every sort change goes through the helper');
 });
 
 test('the parsed store is cached and can be invalidated by other windows', () => {

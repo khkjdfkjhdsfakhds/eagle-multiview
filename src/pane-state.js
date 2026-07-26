@@ -45,6 +45,21 @@
   };
   const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
 
+  // Eagle's 随机 sort. A shuffle has to be stable: the grid re-renders on every
+  // lazy page and re-sorts each time, so drawing fresh randomness per compare
+  // would reorder the view under the reader (and break the comparator's
+  // transitivity). Ranking by a hash of (seed, id) is deterministic until the
+  // seed changes, which is what "shuffle again" does.
+  function randomRank(seed, id) {
+    let hash = 0x811c9dc5;
+    const source = `${seed ?? ''}:${id ?? ''}`;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash;
+  }
+
   function defaultSortDir(sort) {
     return defaultSortDirections[sort] || 'asc';
   }
@@ -53,7 +68,14 @@
     return sortDir === 'asc' || sortDir === 'desc' ? sortDir : defaultSortDir(sort);
   }
 
-  function compareBySort(sort, sortDir, a, b) {
+  function compareBySort(sort, sortDir, a, b, options = {}) {
+    if (sort === 'random') {
+      // Direction is meaningless for a shuffle; reversing it would just be
+      // another arbitrary order, so the direction button reshuffles instead.
+      const left = randomRank(options.seed, a?.id);
+      const right = randomRank(options.seed, b?.id);
+      return left === right ? 0 : (left < right ? -1 : 1);
+    }
     const base = sortComparators[sort];
     if (!base) return 0;
     const result = base(a, b);
@@ -90,5 +112,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, normalizeRange, selectRange, defaultSortDir, effectiveSortDir, compareBySort, sharedTags, appendableTailCount };
+  return { createQuery, cloneQuery, filtersActive, filterCount, normalizeRange, selectRange, defaultSortDir, effectiveSortDir, compareBySort, randomRank, sharedTags, appendableTailCount };
 });

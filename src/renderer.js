@@ -155,9 +155,17 @@ const state = {
   restoreScroll: null
 };
 
+// Each shuffle needs an order that survives re-renders and lazy pages but
+// differs from the last one; a counter behind the clock gives both.
+let randomSeedCounter = 0;
+function nextRandomSeed() {
+  randomSeedCounter += 1;
+  return `${Date.now().toString(36)}-${randomSeedCounter}`;
+}
+
 const paneStateKeys = [
   'items', 'total', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
-  'sort', 'sortDir', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query',
+  'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query',
   'viewMemory', 'restoreScroll'
 ];
 // Eagle offers four grid layouts; 'justified' is our default, as it is there.
@@ -186,6 +194,7 @@ function createPaneState(id, source = state) {
     selectedBase: source.selectedBase || null,
     sort: source.sort || 'default',
     sortDir: source.sortDir || 'auto',
+    randomSeed: source.randomSeed || nextRandomSeed(),
     viewMode: paneViewModes.has(storedPaneViewModes()[id]) ? storedPaneViewModes()[id] : (source.viewMode || 'justified'),
     sortCapNoticeKey: '',
     viewTitle: source.viewTitle || '资料库',
@@ -488,6 +497,7 @@ function paneMarkup(id, index) {
           <option value="resolution">分辨率</option>
           <option value="rating">评分</option>
           <option value="type">文件类型</option>
+          <option value="random">随机</option>
         </select>
         <button id="sortDirButton" class="sort-dir-button" title="切换排序方向" aria-label="切换排序方向">↓</button>
       </div>
@@ -660,7 +670,7 @@ function compareItemsForView(a, b) {
     if (!left && right) return 1;
     if (left !== right) return right - left;
   }
-  return compareItemsBySort(state.sort, state.sortDir, a, b);
+  return compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed });
 }
 
 function sortedItems() {
@@ -706,6 +716,13 @@ function renderSortControls() {
   if (select) select.value = state.sort || 'default';
   const dirButton = $('#sortDirButton');
   if (!dirButton) return;
+  // A shuffle has no direction, so the same button reshuffles instead.
+  if (state.sort === 'random') {
+    dirButton.disabled = false;
+    dirButton.textContent = '⟳';
+    dirButton.title = '重新随机排列';
+    return;
+  }
   const sortable = Boolean(state.sort) && state.sort !== 'default';
   const dir = effectiveSortDir(state.sort, state.sortDir);
   dirButton.disabled = !sortable;
@@ -4516,6 +4533,13 @@ function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
       return;
     }
     if (!pull || event.touches.length !== 1) return;
+    // A long-press has already opened a menu under this finger; dragging on
+    // should not also arm a refresh behind it.
+    if (touchLongPressActive) {
+      if (pull.offset) resetPull();
+      pull = null;
+      return;
+    }
     const delta = event.touches[0].clientY - pull.startY;
     // Scrolling up, or a list that scrolled away from the top mid-gesture,
     // hands the gesture back to the scroller instead of fighting it.
@@ -4597,12 +4621,20 @@ function bindPaneEvents(paneId) {
     activatePane(paneId);
     state.sort = event.target.value;
     state.sortDir = 'auto';
+    // Picking 随机 deals a new order; re-picking it from the dropdown fires no
+    // change event, which is why the direction button doubles as reshuffle.
+    if (state.sort === 'random') state.randomSeed = nextRandomSeed();
     commitSortChange();
     if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#sortDirButton').addEventListener('click', () => {
     activatePane(paneId);
     if (!state.sort || state.sort === 'default') return;
+    if (state.sort === 'random') {
+      state.randomSeed = nextRandomSeed();
+      commitSortChange();
+      return;
+    }
     state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
     commitSortChange();
   });

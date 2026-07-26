@@ -10,7 +10,7 @@ const cssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'
 
 test('each pane owns a four-way view mode with per-slot persistence', () => {
   // viewMode rides the pane proxy like sort does.
-  assert.match(rendererSource, /'sortDir', 'viewMode', 'viewTitle'/);
+  assert.match(rendererSource, /'sortDir', 'randomSeed', 'viewMode', 'viewTitle'/);
   assert.ok(rendererSource.includes("const paneViewModes = new Set(['justified', 'grid', 'waterfall', 'list'])"));
   // The toolbar renders one button per mode inside every pane.
   for (const mode of ['justified', 'grid', 'waterfall', 'list']) {
