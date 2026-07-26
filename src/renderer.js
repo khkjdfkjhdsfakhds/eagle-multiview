@@ -239,8 +239,53 @@ let activeMarquee = null;
 // Touch long-press bookkeeping: while the finger is still down the browser
 // may fire its own contextmenu, and right after lift-off it fires a synthetic
 // click — both must be swallowed without eating the user's next real tap.
-let suppressGridClickUntil = 0;
+let suppressTouchClickUntil = 0;
 let touchLongPressActive = false;
+const TOUCH_LONG_PRESS_MS = 480;
+const TOUCH_LONG_PRESS_SLOP = 12;
+
+// Shared touch long-press: the grid and the folder tree both need "hold to
+// get the menu" with the same timing, the same movement budget, and the same
+// suppression of the synthetic click and native contextmenu that follow.
+// Returns { cancel } so a caller can abandon the press (a second finger, a
+// gesture taking over).
+function bindTouchLongPress(element, { selector, onLongPress }) {
+  let press = null;
+  const cancel = () => {
+    if (press) clearTimeout(press.timer);
+    press = null;
+  };
+  element.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch') return;
+    const target = selector ? event.target.closest(selector) : element;
+    if (!target) return;
+    cancel();
+    const point = { x: event.clientX, y: event.clientY };
+    press = {
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: setTimeout(() => {
+        press = null;
+        touchLongPressActive = true;
+        onLongPress(target, point);
+      }, TOUCH_LONG_PRESS_MS)
+    };
+  });
+  element.addEventListener('pointermove', event => {
+    if (press && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > TOUCH_LONG_PRESS_SLOP) cancel();
+  });
+  const settle = () => {
+    cancel();
+    if (!touchLongPressActive) return;
+    touchLongPressActive = false;
+    // Swallow only the synthetic click that follows this lift-off; a window
+    // measured from the press instead would eat the user's next real tap.
+    suppressTouchClickUntil = Date.now() + 400;
+  };
+  element.addEventListener('pointerup', settle);
+  element.addEventListener('pointercancel', settle);
+  return { cancel };
+}
 
 function triggerTouchLongPress(card, paneId, point) {
   navigator.vibrate?.(10);
@@ -3327,6 +3372,23 @@ function showContextMenu(event, data) {
   showContextMenuAt(event.clientX, event.clientY, data);
 }
 
+// Shared by the sidebar's right-click and its touch long-press.
+function openSidebarContextMenu(target, point) {
+  const smartRow = target.closest?.('[data-smart-folder-id]');
+  if (smartRow) {
+    showContextMenuAt(point.x, point.y, { kind: 'smart-folder', smartFolderId: smartRow.dataset.smartFolderId });
+    return;
+  }
+  const targetFolderId = target.closest?.('[data-folder-id]')?.dataset.folderId || null;
+  showContextMenuAt(point.x, point.y, {
+    kind: 'sidebar',
+    ids: [],
+    paneId: state.activePaneId,
+    targetFolderId,
+    siblingParentId: siblingParentId(targetFolderId)
+  });
+}
+
 async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
@@ -4215,14 +4277,14 @@ function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
       pinch = null;
       applyThumbnailSize(currentThumbnailSize());
       badge.classList.add('hidden');
-      suppressGridClickUntil = Date.now() + 400;
+      suppressTouchClickUntil = Date.now() + 400;
     }
     if (!pull) return;
     const { armed, offset } = pull;
     pull = null;
     // A pull is not a tap: keep it from reaching the blank-space handler that
     // clears a touch multi-selection.
-    if (offset > 4) suppressGridClickUntil = Date.now() + 400;
+    if (offset > 4) suppressTouchClickUntil = Date.now() + 400;
     if (!armed) {
       resetPull();
       return;
@@ -4294,7 +4356,7 @@ function bindPaneEvents(paneId) {
   });
   query('#itemGrid').addEventListener('click', event => {
     activatePane(paneId);
-    if (Date.now() < suppressGridClickUntil) return;
+    if (Date.now() < suppressTouchClickUntil) return;
     const tagAction = event.target.closest('[data-tag-action]');
     if (tagAction) {
       executeTagManagerAction(tagAction.dataset.tagAction, {
@@ -4327,7 +4389,7 @@ function bindPaneEvents(paneId) {
   // exits touch multi-select — the marquee's click-to-clear path is disabled
   // for touch pointers, and #itemGrid does not cover the trailing space.
   query('#gridScroller').addEventListener('click', event => {
-    if (!isTouchEvent(event) || Date.now() < suppressGridClickUntil) return;
+    if (!isTouchEvent(event) || Date.now() < suppressTouchClickUntil) return;
     if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a, [data-tag-action]')) return;
     if (!(state.selected.size || state.selectedFolderCard)) return;
     clearSelection();
@@ -4335,40 +4397,13 @@ function bindPaneEvents(paneId) {
   // Long-press: first use selects (entering multi-select), later ones open
   // the context menu. The browser's synthetic contextmenu/click that follow
   // a touch long-press are suppressed via the shared timestamp.
-  let longPress = null;
-  const cancelLongPress = () => {
-    if (longPress) clearTimeout(longPress.timer);
-    longPress = null;
-  };
-  query('#itemGrid').addEventListener('pointerdown', event => {
-    if (event.pointerType !== 'touch') return;
-    const card = event.target.closest('.item-card, .folder-card');
-    if (!card) return;
-    cancelLongPress();
-    longPress = {
-      startX: event.clientX,
-      startY: event.clientY,
-      timer: setTimeout(() => {
-        longPress = null;
-        touchLongPressActive = true;
-        if (!activatePane(paneId)) return;
-        triggerTouchLongPress(card, paneId, { x: event.clientX, y: event.clientY });
-      }, 480)
-    };
-  });
-  query('#itemGrid').addEventListener('pointermove', event => {
-    if (longPress && Math.hypot(event.clientX - longPress.startX, event.clientY - longPress.startY) > 12) cancelLongPress();
-  });
-  const settleLongPress = () => {
-    cancelLongPress();
-    if (touchLongPressActive) {
-      touchLongPressActive = false;
-      // Swallow only the synthetic click that follows this lift-off.
-      suppressGridClickUntil = Date.now() + 400;
+  const { cancel: cancelLongPress } = bindTouchLongPress(query('#itemGrid'), {
+    selector: '.item-card, .folder-card',
+    onLongPress: (card, point) => {
+      if (!activatePane(paneId)) return;
+      triggerTouchLongPress(card, paneId, point);
     }
-  };
-  query('#itemGrid').addEventListener('pointerup', settleLongPress);
-  query('#itemGrid').addEventListener('pointercancel', settleLongPress);
+  });
   query('#itemGrid').addEventListener('change', async event => {
     if (!activatePane(paneId)) return;
     const select = event.target.closest('[data-tag-add-group]');
@@ -4399,7 +4434,7 @@ function bindPaneEvents(paneId) {
   query('#itemGrid').addEventListener('contextmenu', event => {
     // Touch long-press menus are driven by triggerTouchLongPress; swallow the
     // browser's own long-press contextmenu so it cannot double-open.
-    if (touchLongPressActive || Date.now() < suppressGridClickUntil) {
+    if (touchLongPressActive || Date.now() < suppressTouchClickUntil) {
       event.preventDefault();
       return;
     }
@@ -4749,27 +4784,29 @@ function bindEvents() {
   });
   $('#sizeSlider').addEventListener('input', event => applyThumbnailSize(event.target.value));
   $('#folderTree').addEventListener('click', event => {
+    // A long-press just opened the menu; its synthetic click must not also
+    // navigate away from the folder the user was acting on.
+    if (Date.now() < suppressTouchClickUntil) return;
     const toggle = event.target.closest('[data-toggle-folder]');
     if (toggle) { event.stopPropagation(); toggleFolder(toggle.dataset.toggleFolder); return; }
     const row = event.target.closest('.folder-row');
     if (row) navigate(descriptorFromTarget(row));
   });
   $('.sidebar').addEventListener('contextmenu', event => {
-    const folderRow = event.target.closest('[data-folder-id]');
-    const smartRow = event.target.closest('[data-smart-folder-id]');
     event.preventDefault();
-    if (smartRow) {
-      showContextMenu(event, { kind: 'smart-folder', smartFolderId: smartRow.dataset.smartFolderId });
-      return;
+    // Touch long-press menus are driven by bindTouchLongPress; swallow the
+    // browser's own long-press contextmenu so it cannot double-open.
+    if (touchLongPressActive || Date.now() < suppressTouchClickUntil) return;
+    openSidebarContextMenu(event.target, { x: event.clientX, y: event.clientY });
+  });
+  // Touch has no right-click: without this, phones and tablets cannot reach
+  // rename / new subfolder / delete at all — a tap just navigates.
+  bindTouchLongPress($('.sidebar'), {
+    selector: '.folder-row, #folderTree',
+    onLongPress: (target, point) => {
+      navigator.vibrate?.(10);
+      openSidebarContextMenu(target, point);
     }
-    const targetFolderId = folderRow?.dataset.folderId || null;
-    showContextMenu(event, {
-      kind: 'sidebar',
-      ids: [],
-      paneId: state.activePaneId,
-      targetFolderId,
-      siblingParentId: siblingParentId(targetFolderId)
-    });
   });
   $('#contextMenu').addEventListener('click', event => {
     const row = event.target.closest('[data-context-action]');

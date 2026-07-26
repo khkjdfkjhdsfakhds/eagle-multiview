@@ -68,7 +68,7 @@ test('the grid binds pull-to-refresh and pinch resize to native touch events', (
   assert.ok(renderer.includes("scroller.addEventListener('touchmove'"), 'touch events, not pointer events');
   assert.ok(renderer.includes('{ passive: false }'), 'touchmove can preventDefault');
   assert.ok(renderer.includes("refresh({ reset: true, preserveScroll: false, paneId })"), 'an armed pull reloads from the top');
-  assert.ok(renderer.includes('suppressGridClickUntil = Date.now() + 400;'), 'a pull is not a blank-space tap');
+  assert.ok(renderer.includes('suppressTouchClickUntil = Date.now() + 400;'), 'a pull is not a blank-space tap');
   assert.ok(styles.includes('.grid-scroller { touch-action: pan-y; }'), 'pinch-zoom belongs to the grid, scrolling stays native');
   assert.ok(styles.includes('.pull-refresh {'));
   assert.ok(styles.includes('.pinch-badge {'));

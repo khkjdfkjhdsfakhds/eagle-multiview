@@ -1656,6 +1656,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .selection-bar-action:active { background: #3a3b40; }
 .selection-bar-clear { border-color: var(--accent-line); background: var(--accent-soft); color: #a8c9f5; }
+/* The toast normally sits just above the status bar; the strip takes that
+   space, so lift it clear instead of letting them overlap. */
+body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)); }
 /* Non-compact windows keep the real inspector, so the strip stays away. */
 @media (min-width: 901px) { .selection-bar { display: none; } }
 
@@ -1958,12 +1961,27 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 @media (pointer: coarse) {
   /* Our long-press owns the gesture: block iOS image callouts and text
-     selection flashes inside the grid. */
-  .item-grid, .item-grid img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+     selection flashes inside the grid and the folder tree. */
+  .item-grid, .item-grid img, .folder-tree { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   /* Vertical scrolling stays native; pinch-zoom and double-tap zoom belong to
      the grid's own thumbnail-resize gesture (Safari ignores user-scalable=no,
      so touch-action is the only reliable way to claim them). */
   .grid-scroller { touch-action: pan-y; }
+  /* The disclosure arrow is a 12x20 target — missing it navigates into the
+     folder instead of expanding it. Widen the hit area without moving the
+     arrow or changing the row's layout. */
+  .folder-toggle { position: relative; }
+  .folder-toggle:not(.spacer)::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 40px;
+    height: 40px;
+    transform: translate(-50%, -50%);
+    content: "";
+  }
+  /* Menu rows sized for a fingertip rather than a cursor. */
+  .context-menu-row { min-height: 38px; }
 }
 
 /* Web access QR panels */

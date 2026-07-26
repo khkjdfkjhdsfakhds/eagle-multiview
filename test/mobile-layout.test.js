@@ -28,9 +28,9 @@ test('compact layout turns the side panels into drawers', () => {
 test('touch pointers tap to preview, long-press to select, and never marquee', () => {
   assert.ok(renderer.includes("if (event.pointerType === 'touch') return;"), 'marquee skips touch pointers');
   assert.ok(renderer.includes('function triggerTouchLongPress(card, paneId, point)'));
-  assert.ok(renderer.includes('suppressGridClickUntil = Date.now() + 400;'), 'suppression starts at lift-off');
-  assert.ok(renderer.includes('touchLongPressActive || Date.now() < suppressGridClickUntil'), 'native contextmenu swallowed while finger is down');
-  assert.ok(renderer.includes('if (Date.now() < suppressGridClickUntil) return;'), 'click after long-press is swallowed');
+  assert.ok(renderer.includes('suppressTouchClickUntil = Date.now() + 400;'), 'suppression starts at lift-off');
+  assert.ok(renderer.includes('touchLongPressActive || Date.now() < suppressTouchClickUntil'), 'native contextmenu swallowed while finger is down');
+  assert.ok(renderer.includes('if (Date.now() < suppressTouchClickUntil) return;'), 'click after long-press is swallowed');
   const clickHandler = renderer.slice(
     renderer.indexOf("query('#itemGrid').addEventListener('click'"),
     renderer.indexOf("query('#itemGrid').addEventListener('change'")
@@ -66,6 +66,32 @@ test('a compact selection shows the bottom strip and a single way to clear', () 
   assert.ok(renderer.includes("$('#clearSelectionButton').addEventListener('click', clearSelection);"));
   assert.ok(renderer.includes("$('#selectionBarClear').addEventListener('click', clearSelection);"));
   assert.ok(renderer.includes('    clearSelection();\n  });'), 'the blank-space tap routes through it too');
+});
+
+test('touch reaches folder actions and the arrows are big enough to hit', () => {
+  // One long-press implementation, shared by the grid and the folder tree.
+  assert.ok(renderer.includes('function bindTouchLongPress(element, { selector, onLongPress }) {'));
+  assert.ok(renderer.includes('const TOUCH_LONG_PRESS_MS = 480;'));
+  assert.ok(renderer.includes('const TOUCH_LONG_PRESS_SLOP = 12;'));
+  assert.ok(renderer.includes("bindTouchLongPress(query('#itemGrid'), {"), 'the grid uses it');
+  assert.ok(renderer.includes("bindTouchLongPress($('.sidebar'), {"), 'so does the sidebar');
+  // Right-click and long-press open the same menu.
+  assert.ok(renderer.includes('function openSidebarContextMenu(target, point) {'));
+  assert.strictEqual((renderer.match(/openSidebarContextMenu\(/g) || []).length, 3);
+  // The long-press must not also navigate via the synthetic click.
+  const treeClick = renderer.slice(
+    renderer.indexOf("$('#folderTree').addEventListener('click'"),
+    renderer.indexOf("$('.sidebar').addEventListener('contextmenu'")
+  );
+  assert.ok(treeClick.includes('if (Date.now() < suppressTouchClickUntil) return;'));
+  // A 12x20 arrow is not a touch target.
+  assert.ok(styles.includes('.folder-toggle:not(.spacer)::after'));
+  assert.match(styles, /\.folder-toggle:not\(\.spacer\)::after \{[^}]*width: 40px/);
+  assert.ok(styles.includes('.context-menu-row { min-height: 38px; }'));
+});
+
+test('the toast clears the selection strip instead of overlapping it', () => {
+  assert.ok(styles.includes('body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)); }'));
 });
 
 test('preview modal supports two-finger pinch zoom', () => {
