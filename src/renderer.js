@@ -71,7 +71,7 @@ const newFileTypes = Object.freeze({
 
 const paneScopedSelectors = new Set([
   '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect', '#sortDirButton',
-  '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay'
+  '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay'
 ]);
 const $ = selector => {
   if (typeof state !== 'undefined' && state.panes?.length && paneScopedSelectors.has(selector)) {
@@ -100,6 +100,7 @@ const state = {
   query: createQuery(),
   sort: 'default',
   sortDir: 'auto',
+  viewMode: 'justified',
   viewTitle: '资料库',
   refreshTimer: null,
   toastTimer: null,
@@ -142,8 +143,17 @@ const state = {
 
 const paneStateKeys = [
   'items', 'total', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
-  'sort', 'sortDir', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query'
+  'sort', 'sortDir', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query'
 ];
+const paneViewModes = new Set(['justified', 'waterfall', 'list']);
+function storedPaneViewModes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('eaglemv.paneViewModes') || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 function createPaneState(id, source = state) {
   return {
     id,
@@ -160,6 +170,7 @@ function createPaneState(id, source = state) {
     selectedBase: source.selectedBase || null,
     sort: source.sort || 'default',
     sortDir: source.sortDir || 'auto',
+    viewMode: paneViewModes.has(storedPaneViewModes()[id]) ? storedPaneViewModes()[id] : (source.viewMode || 'justified'),
     sortCapNoticeKey: '',
     viewTitle: source.viewTitle || '资料库',
     currentView: { ...(source.currentView || { kind: 'root' }) },
@@ -290,6 +301,9 @@ function uiIcon(name, className = 'tree-icon-svg') {
     random: '<path d="M4 5h2.2c2.9 0 3.4 5 6.2 5h3.6"></path><path d="m13.5 7.3 2.5 2.7-2.5 2.7"></path><path d="M4 15h2.2c1.2 0 2-1 2.7-2.1M13.5 12.7 16 15.4 13.5 18"></path>',
     trash: '<path d="M4.5 6.5h11l-.6 10.5H5.1L4.5 6.5Z"></path><path d="M3.5 6.5h13M7.3 6.5V4h5.4v2.5M8 9.2v5.2M12 9.2v5.2"></path>',
     smart: '<path d="m10 2 1.35 4.15L15.5 7.5l-4.15 1.35L10 13l-1.35-4.15L4.5 7.5l4.15-1.35L10 2Z"></path><path d="m15.7 12 .65 2 2 .65-2 .65-.65 2-.65-2-2-.65 2-.65.65-2Z"></path>',
+    layoutJustified: '<rect x="3" y="3.5" width="8" height="5.5" rx="1.2"></rect><rect x="12.5" y="3.5" width="4.5" height="5.5" rx="1.2"></rect><rect x="3" y="11" width="4.5" height="5.5" rx="1.2"></rect><rect x="9" y="11" width="8" height="5.5" rx="1.2"></rect>',
+    layoutWaterfall: '<rect x="3" y="3" width="6" height="7.5" rx="1.2"></rect><rect x="3" y="12.5" width="6" height="4.5" rx="1.2"></rect><rect x="11" y="3" width="6" height="4.5" rx="1.2"></rect><rect x="11" y="9.5" width="6" height="7.5" rx="1.2"></rect>',
+    layoutList: '<rect x="3" y="3.5" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 5.2H17"></path><rect x="3" y="8.2" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 10H17"></path><rect x="3" y="13" width="3.5" height="3.5" rx="1"></rect><path d="M8.5 14.8H17"></path>',
     chevronDown: '<path d="m5.5 7.5 4.5 5 4.5-5"></path>',
     chevronRight: '<path d="m7.5 5.5 5 4.5-5 4.5"></path>',
     pin: '<path d="m7 3 6 6-1.9 1.9 3.3 3.3-1.2 1.2-3.3-3.3L8 14 6 12l1.9-1.9-3.3-3.3L7 3Z"></path><path d="m6.8 13.2-3.3 3.3"></path>',
@@ -366,6 +380,11 @@ function paneMarkup(id, index) {
         <span id="resultCount" class="muted">正在连接…</span>
       </div>
       <div class="sort-controls">
+        <div id="viewModeGroup" class="view-mode-group" role="group" aria-label="当前栏布局">
+          <button class="view-mode-button" data-view-mode="justified" title="自适应布局" aria-label="自适应布局">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
+          <button class="view-mode-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
+          <button class="view-mode-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
+        </div>
         <select id="sortSelect" class="sort-select" aria-label="当前栏排序">
           <option value="default">Eagle 顺序</option>
           <option value="name">名称</option>
@@ -557,7 +576,33 @@ function firstSelectedInViewOrder() {
   return first;
 }
 
+function renderViewModeControls() {
+  const group = $('#viewModeGroup');
+  if (!group) return;
+  for (const button of group.querySelectorAll('[data-view-mode]')) {
+    button.classList.toggle('active', button.dataset.viewMode === (state.viewMode || 'justified'));
+  }
+}
+
+// Layout choice is remembered per pane slot so a restart or layout switch
+// restores each column's own view (Eagle keeps this per window).
+function setPaneViewMode(mode, paneId = state.activePaneId) {
+  if (!paneViewModes.has(mode)) return;
+  const pane = paneById(paneId);
+  if (!pane || pane.viewMode === mode) return;
+  pane.viewMode = mode;
+  const stored = storedPaneViewModes();
+  if (mode === 'justified') delete stored[paneId];
+  else stored[paneId] = mode;
+  try { localStorage.setItem('eaglemv.paneViewModes', JSON.stringify(stored)); } catch {}
+  withActivePane(paneId, () => {
+    renderViewModeControls();
+    renderGrid({ preserveScroll: true });
+  });
+}
+
 function renderSortControls() {
+  renderViewModeControls();
   const select = $('#sortSelect');
   if (select) select.value = state.sort || 'default';
   const dirButton = $('#sortDirButton');
@@ -1228,8 +1273,9 @@ function renderGrid({ preserveScroll = true } = {}) {
       <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
     </article>`;
   }).join('');
+  const viewModeClass = state.viewMode === 'waterfall' ? ' waterfall' : state.viewMode === 'list' ? ' list' : '';
   const itemSection = items.length
-    ? `${folders.length ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>` : ''}<div class="asset-grid">${itemCards}</div>`
+    ? `${folders.length ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>` : ''}<div class="asset-grid${viewModeClass}">${itemCards}</div>`
     : '';
   $('#itemGrid').innerHTML = `${folderSection}${itemSection}`;
   const root = paneRoot();
@@ -3816,6 +3862,12 @@ function bindPaneEvents(paneId) {
     if (!state.sort || state.sort === 'default') return;
     state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
     commitSortChange();
+  });
+  query('#viewModeGroup').addEventListener('click', event => {
+    const button = event.target.closest('[data-view-mode]');
+    if (!button) return;
+    activatePane(paneId);
+    setPaneViewMode(button.dataset.viewMode, paneId);
   });
   query('#itemGrid').addEventListener('click', event => {
     activatePane(paneId);

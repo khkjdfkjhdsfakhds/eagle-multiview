@@ -36,6 +36,6 @@ test('asset previews use their own aspect-ratio flow instead of the folder grid'
   assert.doesNotMatch(thumbnailRule, /aspect-ratio:\s*1\s*\/\s*1/);
   assert.match(renderer, /function itemThumbnailAspect\(item\)/);
   assert.match(renderer, /class="folder-grid"/);
-  assert.match(renderer, /class="asset-grid"/);
+  assert.match(renderer, /class="asset-grid\$\{viewModeClass\}"/);
   assert.match(renderer, /style="--item-aspect: \$\{aspect\.toFixed\(4\)\}"/);
 });

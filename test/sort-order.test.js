@@ -68,7 +68,7 @@ test('pane markup offers rating/type options and a direction toggle', () => {
 test('pane state tracks sortDir and syncs it across layouts', () => {
   assert.ok(renderer.includes("sortDir: 'auto',"));
   assert.ok(renderer.includes("sortDir: source.sortDir || 'auto',"));
-  assert.match(renderer, /'sort', 'sortDir', 'viewTitle'/);
+  assert.match(renderer, /'sort', 'sortDir', 'viewMode', 'viewTitle'/);
   assert.ok(renderer.includes('function renderSortControls()'));
   assert.ok(renderer.includes('function commitSortChange()'), 'persist-and-rerender lives in one helper');
 });

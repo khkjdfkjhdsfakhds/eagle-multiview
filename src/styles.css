@@ -895,6 +895,27 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .sort-dir-button:hover:not(:disabled) { border-color: var(--line); background-color: rgba(255, 255, 255, .025); color: #c8c9ce; }
 .sort-dir-button:disabled { opacity: .35; cursor: default; }
+.view-mode-group {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, .075);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.view-mode-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #86878d;
+  cursor: pointer;
+}
+.view-mode-button + .view-mode-button { border-left: 1px solid rgba(255, 255, 255, .06); }
+.view-mode-button:hover { background: rgba(255, 255, 255, .04); color: #c8c9ce; }
+.view-mode-button.active { background: rgba(0, 114, 239, .16); color: #6db2ff; }
+.view-mode-svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 .grid-scroller {
   position: relative;
   min-height: 0;
@@ -938,7 +959,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   align-items: flex-start;
   gap: 12px;
 }
-.asset-grid::after {
+.asset-grid:not(.waterfall):not(.list)::after {
   content: "";
   flex: 999 1 calc(var(--thumb) * 2);
 }
@@ -1168,6 +1189,48 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .card-name { margin: 8px 4px 2px; overflow: hidden; color: #dadadf; font-size: 11px; font-weight: 530; text-overflow: ellipsis; white-space: nowrap; }
 .card-meta { margin: 0 4px 4px; color: #737479; font-size: 9px; }
+/* 瀑布流：CSS 多栏，卡片保持各自纵横比自然堆叠。 */
+.asset-grid.waterfall {
+  display: block;
+  columns: var(--thumb) auto;
+  column-gap: 12px;
+}
+.asset-grid.waterfall .item-card {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
+  break-inside: avoid;
+}
+/* 列表：小缩略图 + 名称 + 元信息按行排列。 */
+.asset-grid.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.asset-grid.list .item-card {
+  /* The justified flex-basis would become the row height in this column
+     flex container, blowing the rows apart. */
+  flex: none;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 4px 8px;
+}
+.asset-grid.list .item-card:hover { transform: none; }
+.asset-grid.list .thumb-wrap {
+  width: 42px;
+  height: 42px;
+  aspect-ratio: auto;
+  border-radius: 7px;
+  box-shadow: none;
+}
+.asset-grid.list .thumb-wrap img { object-fit: cover; }
+.asset-grid.list .card-name { margin: 0; font-size: 12px; }
+.asset-grid.list .card-meta { margin: 0; font-size: 10px; white-space: nowrap; }
+.asset-grid.list .card-stars,
+.asset-grid.list .format-badge,
+.asset-grid.list .pin-badge { display: none; }
 .empty-state { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; padding: 30px; color: var(--muted); text-align: center; }
 .empty-state h2 { margin: 16px 0 4px; color: #d3dae4; font-size: 16px; font-weight: 620; }
 .empty-state p { margin: 0; color: #737479; }
