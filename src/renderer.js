@@ -1181,8 +1181,10 @@ const isTouchEvent = event => event.pointerType === 'touch' ||
 // Thumbnail size has three drivers (slider, two-finger pinch, restore on
 // launch) that must agree; they all go through here.
 const gestures = window.EagleMVGridGestures;
+// Read from the variable in effect, not the slider: compact layouts set a
+// smaller base size in CSS, and a pinch has to start from what is on screen.
 function currentThumbnailSize() {
-  const value = Number($('#sizeSlider')?.value);
+  const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--thumb'));
   return Number.isFinite(value) && value > 0 ? value : gestures.THUMB_DEFAULT;
 }
 function applyThumbnailSize(size, { persist = true } = {}) {
@@ -1203,6 +1205,8 @@ function renderPanels() {
   document.body.classList.toggle('inspector-hidden', !compact && !state.inspectorVisible);
   $('#toggleSidebarButton').classList.toggle('active', compact ? state.openDrawer === 'sidebar' : state.sidebarVisible);
   $('#toggleInspectorButton').classList.toggle('active', compact ? state.openDrawer === 'inspector' : state.inspectorVisible);
+  // The full placeholder is cut off in a phone-width search box.
+  $('#searchInput').placeholder = compact ? '搜索…' : '搜索名称、标签、备注…';
   // Rotating into or out of compact mode changes whether the selection strip
   // belongs on screen at all.
   renderSelectionBar();
@@ -2714,12 +2718,15 @@ function updatePreviewChrome(item) {
   const items = sortedItems();
   const index = items.findIndex(candidate => candidate.id === item.id);
   const position = index >= 0 ? `${index + 1} / ${state.total || items.length}` : '';
-  // Only the counter stays visible: AI-generated prompt file names flood the
-  // bottom bar and collide with the zoom toolbar. The full name lives in the
-  // hover tooltip (and, as always, in the inspector).
+  const fileName = `${item.name}.${item.ext}`;
+  // On a pointer, only the counter stays visible: AI-generated prompt file
+  // names flood the bottom bar. Touch has no hover, so the name would be
+  // unreachable there — it goes inline instead, clipped to one line.
   const caption = $('#modalCaption');
-  caption.textContent = position;
-  caption.title = `${item.name}.${item.ext}`;
+  caption.textContent = window.matchMedia('(pointer: coarse)').matches && position
+    ? `${position} · ${fileName}`
+    : position;
+  caption.title = fileName;
   $('#prevPreview').disabled = index <= 0;
   $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
 }

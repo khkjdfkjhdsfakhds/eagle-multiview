@@ -94,6 +94,23 @@ test('the toast clears the selection strip instead of overlapping it', () => {
   assert.ok(styles.includes('body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)); }'));
 });
 
+test('narrow screens get chrome that fits them', () => {
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {'), styles.indexOf('@media (max-width: 600px) {'));
+  // A 286px popover anchored two thirds across the toolbar runs off a phone.
+  assert.match(compact, /\.filter-popover \{[^}]*position: fixed/);
+  assert.match(compact, /\.filter-popover \{[^}]*left: 8px/);
+  assert.ok(compact.includes('.pane-badge { display: none; }'), 'one pane down here, so no "栏 N"');
+  assert.ok(compact.includes(':root { --thumb: 132px; }'), 'a smaller base size fits more per row');
+  assert.ok(compact.includes('body.selection-bar-open .inspector'), 'the drawer clears the strip too');
+  // The desktop caption cap goes negative below 460px and collapses to zero.
+  const coarse = styles.slice(styles.indexOf('@media (pointer: coarse) {\n  .modal-close'));
+  assert.match(coarse, /\.modal-caption \{[^}]*max-width: none/);
+  assert.ok(renderer.includes("$('#searchInput').placeholder = compact ? '搜索…'"));
+  // Pinch has to start from the size actually in effect, not the slider's.
+  assert.ok(renderer.includes("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--thumb'))"));
+  assert.ok(renderer.includes("window.matchMedia('(pointer: coarse)').matches && position"), 'touch has no hover for the file name');
+});
+
 test('preview modal supports two-finger pinch zoom', () => {
   assert.ok(renderer.includes('const previewPointers = new Map();'));
   assert.ok(renderer.includes('pinchBase = { ...pinchGeometry()'));

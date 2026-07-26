@@ -1941,6 +1941,26 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .toolbar #newWindowButton span,
   .toolbar .toolbar-control-divider { display: none; }
   .toolbar .new-create-button span:not(.new-button-chevron) { display: none; }
+  /* One pane at a time down here, so the "栏 N" badge is noise. */
+  .pane-badge { display: none; }
+  /* The filter popover is 286px anchored to a button two thirds across the
+     toolbar — on a phone that runs straight off the right edge. Turn it into
+     a bottom sheet so every control stays reachable. */
+  .filter-popover {
+    position: fixed;
+    top: auto;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: 8px;
+    width: auto;
+    max-height: min(72vh, calc(100vh - 130px));
+  }
+  /* The selection strip overlays the drawer's last rows. */
+  body.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  /* Phones fit ~2 justified columns at the desktop default and occasionally
+     one, which turns a single card into half a screen. A smaller base size
+     keeps a steadier rhythm; pinch still overrides it (inline style wins). */
+  :root { --thumb: 132px; }
 }
 @media (max-width: 600px) {
   /* Force a single column of panes; extra panes stack vertically instead of
@@ -1958,6 +1978,16 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .modal-close { width: 44px; height: 44px; font-size: 26px; }
   .modal-nav { width: 44px; height: 64px; font-size: 30px; }
   .modal-media { touch-action: none; }
+  /* The desktop cap is `min(40vw, 100vw - 460px)`, which goes negative below a
+     460px viewport and collapses the caption to nothing. Phones get the width
+     they have, above the home indicator. */
+  .modal-caption {
+    right: 60px;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    left: 60px;
+    max-width: none;
+    text-align: center;
+  }
 }
 @media (pointer: coarse) {
   /* Our long-press owns the gesture: block iOS image callouts and text
