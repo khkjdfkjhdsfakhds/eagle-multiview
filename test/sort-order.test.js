@@ -70,15 +70,20 @@ test('pane state tracks sortDir and syncs it across layouts', () => {
   assert.ok(renderer.includes("sortDir: source.sortDir || 'auto',"));
   assert.match(renderer, /'sort', 'sortDir', 'viewTitle'/);
   assert.ok(renderer.includes('function renderSortControls()'));
+  assert.ok(renderer.includes('function commitSortChange()'), 'persist-and-rerender lives in one helper');
 });
 
 test('non-default sorts backfill the whole folder up to the cap', () => {
   assert.ok(renderer.includes('const SORT_FETCH_CAP = 3000;'));
   const start = renderer.indexOf('const sortBackfillActive');
   assert.ok(start >= 0);
-  const block = renderer.slice(start, start + 600);
+  const block = renderer.slice(start, start + 1000);
   assert.ok(block.includes('state.items.length < SORT_FETCH_CAP'));
-  assert.ok(block.includes('pane.sortCapNotified = true;'), 'cap toast must fire only once per pane');
+  // Backfill pages render quietly; the grid rebuilds once when it settles.
+  assert.ok(block.includes('quiet: nextQuiet'));
+  assert.ok(block.includes('if (quiet) renderGrid({ preserveScroll: true });'));
+  // The cap notice keys off (view, sort) so no reset bookkeeping is needed.
+  assert.ok(block.includes('pane.sortCapNoticeKey !== capKey'));
 });
 
 test('changing the sort resets direction and starts the backfill', () => {
@@ -86,6 +91,6 @@ test('changing the sort resets direction and starts the backfill', () => {
   assert.ok(start >= 0);
   const handler = renderer.slice(start, renderer.indexOf('\n  });', start));
   assert.ok(handler.includes("state.sortDir = 'auto';"));
-  assert.ok(handler.includes('pane.sortCapNotified = false;'));
+  assert.ok(handler.includes('commitSortChange();'));
   assert.ok(handler.includes("state.sort !== 'default' && state.hasMore"));
 });

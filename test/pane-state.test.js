@@ -299,7 +299,7 @@ test('slow bulk mutations remain bound to the pane that started them', () => {
     const end = Math.min(...candidates);
     const handler = source.slice(start, end);
     assert.ok(handler.includes('paneId'), `${functionName} captures a pane id`);
-    assert.ok(handler.includes('pane.selected = new Set(outcome.failed);'), `${functionName} restores failures in its source pane`);
+    assert.ok(handler.includes('pane.selected = new Set(outcome.failed'), `${functionName} restores failures in its source pane`);
     assert.ok(handler.includes('paneId }'), `${functionName} refreshes its source pane`);
   }
 });

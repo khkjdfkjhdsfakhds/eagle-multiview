@@ -27,6 +27,10 @@ const {
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
+// Another MultiView window may update the shared sort preferences.
+window.addEventListener('storage', event => {
+  if (event.key === window.EagleMVSortMemory.STORAGE_KEY) sortMemory.invalidate();
+});
 const { createOperationTracker } = window.EagleMVOperationState;
 const newFileTypes = Object.freeze({
   txt: { label: 'TXT', defaultName: '未命名文本' },
@@ -127,7 +131,7 @@ function createPaneState(id, source = state) {
     selectedBase: source.selectedBase || null,
     sort: source.sort || 'default',
     sortDir: source.sortDir || 'auto',
-    sortCapNotified: false,
+    sortCapNoticeKey: '',
     viewTitle: source.viewTitle || '资料库',
     currentView: { ...(source.currentView || { kind: 'root' }) },
     history: [...(source.history || [])],
@@ -497,19 +501,27 @@ const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'av
 function isImageItem(item) { return imageExtensions.has(String(item?.ext || '').toLowerCase()); }
 function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase(); }
 
+function compareItemsForView(a, b) {
+  if (state.currentView.kind === 'folder') {
+    const left = pinTimestamp(a);
+    const right = pinTimestamp(b);
+    if (left && !right) return -1;
+    if (!left && right) return 1;
+    if (left !== right) return right - left;
+  }
+  return compareItemsBySort(state.sort, state.sortDir, a, b);
+}
+
 function sortedItems() {
-  const items = [...state.items];
-  items.sort((a, b) => {
-    if (state.currentView.kind === 'folder') {
-      const left = pinTimestamp(a);
-      const right = pinTimestamp(b);
-      if (left && !right) return -1;
-      if (!left && right) return 1;
-      if (left !== right) return right - left;
-    }
-    return compareItemsBySort(state.sort, state.sortDir, a, b);
-  });
-  return items;
+  return [...state.items].sort(compareItemsForView);
+}
+
+function firstSelectedInViewOrder() {
+  let first = null;
+  for (const item of state.items) {
+    if (state.selected.has(item.id) && (!first || compareItemsForView(item, first) < 0)) first = item;
+  }
+  return first;
 }
 
 function renderSortControls() {
@@ -524,6 +536,13 @@ function renderSortControls() {
   dirButton.title = sortable
     ? `切换排序方向（当前${dir === 'asc' ? '升序' : '降序'}）`
     : 'Eagle 顺序不支持切换方向';
+}
+
+// Persist the active pane's sort choice for its current view, then re-render.
+function commitSortChange() {
+  sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
+  renderSortControls();
+  renderGrid({ preserveScroll: true });
 }
 
 function pinTimestamp(item) {
@@ -623,10 +642,20 @@ function renderFilterState() {
   $('#filterCount').classList.toggle('hidden', !count);
 }
 
+// Eagle's named preset palette — single source for folder color dots and the
+// color filter swatches.
+const eagleNamedFolderColors = Object.freeze({
+  red: '#e5484d', orange: '#f76b15', yellow: '#ffc53d', green: '#46a758',
+  aqua: '#00a2c7', blue: '#0090ff', purple: '#8e4ec6', pink: '#d6409f', gray: '#8d8d8d'
+});
+const eagleColorLabels = Object.freeze({
+  red: '红', orange: '橙', yellow: '黄', green: '绿', aqua: '青',
+  blue: '蓝', purple: '紫', pink: '粉', gray: '灰'
+});
 const colorFilterChoices = Object.freeze([
-  ['', '全部颜色'], ['#e5484d', '红'], ['#f76b15', '橙'], ['#ffc53d', '黄'], ['#46a758', '绿'],
-  ['#00a2c7', '青'], ['#0090ff', '蓝'], ['#8e4ec6', '紫'], ['#d6409f', '粉'],
-  ['#8d8d8d', '灰'], ['#1a1a1a', '黑'], ['#f2f2f2', '白']
+  ['', '全部颜色'],
+  ...Object.entries(eagleNamedFolderColors).map(([name, hex]) => [hex, eagleColorLabels[name] || name]),
+  ['#1a1a1a', '黑'], ['#f2f2f2', '白']
 ]);
 
 function renderColorFilter() {
@@ -668,15 +697,17 @@ function normalizeTags(tags) {
   return [...new Set((tags || []).map(tag => String(tag).trim()).filter(Boolean))];
 }
 
+function tagChipHTML(tag, { removeAttr = 'data-remove-tag', removeLabel = `移除 ${tag}`, disabled = false } = {}) {
+  const color = state.tagColors[tag];
+  return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" ${removeAttr}="${escapeHTML(tag)}" aria-label="${escapeHTML(removeLabel)}"${disabled ? ' disabled' : ''}>×</button></span>`;
+}
+
 function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
   if (!chips) return;
-  chips.innerHTML = tagValues(kind).map(tag => {
-    const color = state.tagColors[tag];
-    const disabled = kind === 'item' && state.inspectorSaving ? ' disabled' : '';
-    return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-tag="${escapeHTML(tag)}" aria-label="移除 ${escapeHTML(tag)}"${disabled}>×</button></span>`;
-  }).join('');
+  const disabled = kind === 'item' && state.inspectorSaving;
+  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag, { disabled })).join('');
   const input = $(config.input);
   if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
 }
@@ -978,7 +1009,7 @@ function folderCardMarkup(folder) {
         ${folder.covers?.length ? `<img loading="lazy" src="eaglemv://folder/${encodeURIComponent(folder.id)}" alt="">` : ''}
       </div>
     </div>
-    <div class="folder-name" title="${escapeHTML(folder.name)}">${escapeHTML(folder.name)}</div>
+    <div class="folder-name" title="${escapeHTML(folder.name)}">${folderColorDot(folder, 'inline')}${escapeHTML(folder.name)}${folderLockBadge(folder)}</div>
     <div class="folder-meta">${directCount.toLocaleString()} 个文件${childCount ? ` · ${childCount.toLocaleString()} 个子文件夹` : ''}</div>
   </article>`;
 }
@@ -1216,12 +1247,8 @@ function reconcileLocalFolderCount(folderId, total) {
 }
 
 // Eagle stores folder colors either as a hex string or one of its named
-// presets; unset folders have no color field at all.
-const eagleNamedFolderColors = Object.freeze({
-  red: '#e5484d', orange: '#f76b15', yellow: '#ffc53d', green: '#46a758',
-  aqua: '#00a2c7', blue: '#0090ff', purple: '#8e4ec6', pink: '#d6409f', gray: '#8d8d8d'
-});
-
+// presets (eagleNamedFolderColors, declared with the filter choices); unset
+// folders have no color field at all.
 function folderColorValue(folder) {
   const raw = String(folder?.color || '').trim();
   if (!raw) return '';
@@ -1229,9 +1256,9 @@ function folderColorValue(folder) {
   return eagleNamedFolderColors[raw.toLowerCase()] || '';
 }
 
-function folderColorDot(folder) {
+function folderColorDot(folder, variant = '') {
   const color = folderColorValue(folder);
-  return color ? `<span class="folder-color-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : '';
+  return color ? `<span class="folder-color-dot${variant ? ` ${variant}` : ''}" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : '';
 }
 
 function folderLockBadge(folder) {
@@ -1320,7 +1347,7 @@ function attachFolderDragTargets() {
   }
 }
 
-async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId } = {}) {
+async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false } = {}) {
   const pane = paneById(paneId);
   if (!pane || (pane.loading && !reset)) return;
   const refreshToken = ++pane.refreshToken;
@@ -1360,12 +1387,19 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       state.estimatedTotal = Boolean(page.estimated);
       state.nextOffset = page.nextOffset ?? (offset + (page.data || []).length);
       state.hasMore = Boolean(page.hasMore ?? (state.nextOffset < state.total));
-      state.items = reset ? (page.data || []) : [...state.items, ...(page.data || []).filter(next => !state.items.some(item => item.id === next.id))];
+      if (reset) {
+        state.items = page.data || [];
+      } else {
+        const knownIds = new Set(state.items.map(item => item.id));
+        state.items = [...state.items, ...(page.data || []).filter(next => !knownIds.has(next.id))];
+      }
       if (currentView.kind === 'folder') reconcileLocalFolderCount(currentView.id, state.total);
       renderResultCount();
       $('#viewTitle').textContent = state.viewTitle;
       renderLocation();
-      renderGrid({ preserveScroll: preserveScroll && reset });
+      // Quiet pages belong to a sort backfill: skip the grid rebuild per page
+      // and render once when the backfill settles (in the finally block).
+      if (!quiet) renderGrid({ preserveScroll: preserveScroll && reset });
       if (reset && selectedId) {
         const selectedAfter = itemById(selectedId);
         if (!selectedAfter) {
@@ -1433,11 +1467,23 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         const scroller = $('#gridScroller');
         const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
         const sortBackfillActive = state.sort !== 'default' && state.hasMore;
-        if (needsViewportFill || (sortBackfillActive && state.items.length < SORT_FETCH_CAP)) {
-          setTimeout(() => refresh({ reset: false, preserveScroll: true, paneId }), 0);
-        } else if (sortBackfillActive && state.items.length >= SORT_FETCH_CAP && !pane.sortCapNotified) {
-          pane.sortCapNotified = true;
-          toast(`素材较多，当前排序先基于前 ${state.items.length} 个素材，继续滚动会继续载入`, 4200);
+        const continueBackfill = sortBackfillActive && state.items.length < SORT_FETCH_CAP;
+        if (needsViewportFill || continueBackfill) {
+          // Backfill pages render nothing until the last one; viewport fill
+          // must keep rendering so scrollHeight grows.
+          const nextQuiet = continueBackfill && !needsViewportFill;
+          setTimeout(() => refresh({ reset: false, preserveScroll: true, paneId, quiet: nextQuiet }), 0);
+        } else {
+          if (quiet) renderGrid({ preserveScroll: true });
+          if (sortBackfillActive && state.items.length >= SORT_FETCH_CAP) {
+            // One notice per (view, sort) episode — the key derives staleness
+            // away instead of resetting a flag from every sort/navigation site.
+            const capKey = `${descriptorKey(state.currentView)}|${state.sort}`;
+            if (pane.sortCapNoticeKey !== capKey) {
+              pane.sortCapNoticeKey = capKey;
+              toast(`素材较多，当前排序先基于前 ${state.items.length} 个素材，继续滚动会继续载入`, 4200);
+            }
+          }
         }
       });
     }
@@ -1485,13 +1531,13 @@ function renderSharedTags() {
   const section = $('#sharedTagsSection');
   const chips = $('#sharedTagChips');
   if (!section || !chips) return;
-  const selectedItems = [...state.selected].map(id => itemById(id)).filter(Boolean);
+  const selectedItems = state.items.filter(item => state.selected.has(item.id));
   const tags = computeSharedTags(selectedItems);
   section.classList.toggle('hidden', !tags.length);
-  chips.innerHTML = tags.map(tag => {
-    const color = state.tagColors[tag];
-    return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-shared-tag="${escapeHTML(tag)}" aria-label="从所选素材移除 ${escapeHTML(tag)}">×</button></span>`;
-  }).join('');
+  chips.innerHTML = tags.map(tag => tagChipHTML(tag, {
+    removeAttr: 'data-remove-shared-tag',
+    removeLabel: `从所选素材移除 ${tag}`
+  })).join('');
 }
 
 function updateURLActions() {
@@ -2027,7 +2073,7 @@ async function setTrash(ids, deleted) {
   if (choice === 'delete') return applyTrash(ids, true, paneId);
 }
 
-async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId) {
+async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null } = {}) {
   if (!ids?.length || !state.connected) return false;
   const pane = paneById(paneId);
   if (!pane) return false;
@@ -2040,12 +2086,12 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
       id, field, ...delta, libraryPath
     }), 'Eagle 批量修改请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
-    pane.selected = new Set(outcome.failed);
+    pane.selected = new Set(outcome.failed.length || !keepSelection ? outcome.failed : ids);
     if (state.activePaneId === paneId) renderInspector();
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length
       ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
-      : '操作已同步到所有窗口', outcome.failed.length ? 4200 : 2400);
+      : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
     return true;
   } catch (error) {
     toast(`操作失败：${error.message}`, 4000);
@@ -2156,32 +2202,14 @@ async function setSelectionRating(payload) {
   }
 }
 
-async function removeTagFromSelection(tag) {
-  const paneId = state.activePaneId;
-  const pane = paneById(paneId);
-  const ids = [...(pane?.selected || [])];
-  if (!ids.length || !tag || !state.connected) return;
-  const libraryPath = state.library?.path;
-  const operationToken = beginForegroundOperation('正在移除标签…', { key: `shared-tag-remove:${paneId}` });
-  if (!operationToken) return;
-  setSyncStatus('正在移除标签…');
-  try {
-    const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
-      id, field: 'tags', remove: [tag], libraryPath
-    }), 'Eagle 批量标签请求超时');
-    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
-    pane.selected = new Set(outcome.failed.length ? outcome.failed : ids);
-    if (state.activePaneId === paneId) renderInspector();
-    await refresh({ reset: true, preserveScroll: true, paneId });
-    toast(outcome.failed.length
-      ? `已从 ${outcome.succeeded.length} 个素材移除「${tag}」 · ${outcome.failed.length} 个失败并保持选中`
-      : `已从 ${outcome.succeeded.length} 个素材移除「${tag}」`, outcome.failed.length ? 4200 : 2400);
-  } catch (error) {
-    toast(`移除标签失败：${error.message}`, 4000);
-  } finally {
-    setSyncStatus('所有窗口已同步');
-    endForegroundOperation(operationToken);
-  }
+function removeTagFromSelection(tag) {
+  if (!tag) return false;
+  // Keeps the multi-selection on success so several shared tags can be
+  // removed in a row; everything else rides the shared batch pipeline.
+  return mutateSelectionSet([...state.selected], 'tags', { remove: [tag] }, '正在移除标签…', state.activePaneId, {
+    keepSelection: true,
+    successMessage: `已从所选素材移除「${tag}」`
+  });
 }
 
 function mediaMarkup(item) {
@@ -2253,9 +2281,9 @@ function setupPreviewMedia() {
   const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
   if (pdfEmbed) {
     const token = state.previewToken;
-    window.eagleMV.filePath(pdfEmbed.dataset.pdfItem).then(filePath => {
-      if (!filePath || token !== state.previewToken || !pdfEmbed.isConnected) return;
-      pdfEmbed.src = 'file://' + filePath.split('/').map(encodeURIComponent).join('/');
+    window.eagleMV.fileURL(pdfEmbed.dataset.pdfItem).then(fileURL => {
+      if (!fileURL || token !== state.previewToken || !pdfEmbed.isConnected) return;
+      pdfEmbed.src = fileURL;
     }).catch(() => {});
   }
   renderPreviewZoom();
@@ -2476,6 +2504,13 @@ function applyView(view) {
   } else {
     state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类', untagged: '未加标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资料库';
   }
+  // Eagle remembers the sort per folder. Restoring here — the one place the
+  // current view is assigned — covers every navigation path, including the
+  // startup root view and library switches.
+  const remembered = sortMemory.recall(state.library?.path, descriptorKey(view));
+  state.sort = remembered?.sort || 'default';
+  state.sortDir = remembered?.sortDir || 'auto';
+  renderSortControls();
 }
 
 function navigate(view, { record = true, refreshView = true, skipDiscard = false } = {}) {
@@ -2499,16 +2534,6 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.historyIndex = 0;
   }
   applyView(view);
-  if (changed) {
-    // Eagle remembers the sort per folder: entering a view restores its
-    // saved order, unlisted views fall back to Eagle order.
-    const remembered = sortMemory.recall(state.library?.path, descriptorKey(view));
-    state.sort = remembered?.sort || 'default';
-    state.sortDir = remembered?.sortDir || 'auto';
-    const pane = activePane();
-    if (pane) pane.sortCapNotified = false;
-    renderSortControls();
-  }
   if (view.kind === 'folder') revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
   closePreview({ commitSelection: false, skipDiscard: true });
@@ -3598,20 +3623,14 @@ function bindPaneEvents(paneId) {
     activatePane(paneId);
     state.sort = event.target.value;
     state.sortDir = 'auto';
-    const pane = paneById(paneId);
-    if (pane) pane.sortCapNotified = false;
-    sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
-    renderSortControls();
-    renderGrid({ preserveScroll: true });
+    commitSortChange();
     if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#sortDirButton').addEventListener('click', () => {
     activatePane(paneId);
     if (!state.sort || state.sort === 'default') return;
     state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
-    sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
-    renderSortControls();
-    renderGrid({ preserveScroll: true });
+    commitSortChange();
   });
   query('#itemGrid').addEventListener('click', event => {
     activatePane(paneId);
@@ -4092,10 +4111,10 @@ function bindEvents() {
   }
   $('#itemURL').addEventListener('input', updateURLActions);
   $('#openURLButton').addEventListener('click', async () => {
-    const url = $('#itemURL').value.trim();
-    if (!/^https?:\/\//i.test(url)) { toast('只支持打开 http/https 网址', 3200); return; }
+    // The button is disabled for non-http values and main re-checks the
+    // scheme, so no third validation here.
     try {
-      await window.eagleMV.openExternal(url);
+      await window.eagleMV.openExternal($('#itemURL').value.trim());
     } catch (error) {
       toast(`打开来源失败：${error.message}`, 4000);
     }
@@ -4332,12 +4351,9 @@ function bindEvents() {
       createFolder(parentId, Boolean(parentId), state.activePaneId).catch(error => toast(`创建失败：${error.message}`, 4000));
       return;
     }
-    if (!editable && !previewOpen && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'r') {
-      event.preventDefault();
-      requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
-      return;
-    }
-    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'F2' && state.selected.size === 1) {
+    if (!editable && !previewOpen && !event.shiftKey && !event.altKey &&
+        ((primaryKey && event.key.toLowerCase() === 'r') ||
+         (!primaryKey && event.key === 'F2' && state.selected.size === 1))) {
       event.preventDefault();
       requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
       return;
@@ -4362,7 +4378,7 @@ function bindEvents() {
       else closePreview();
     } else if (!editable && event.code === 'Space' && state.selected.size) {
       event.preventDefault();
-      const first = sortedItems().find(item => state.selected.has(item.id));
+      const first = firstSelectedInViewOrder();
       if (first) openPreview(first.id);
     }
     if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o' && (state.previewId || state.selected.size === 1)) {

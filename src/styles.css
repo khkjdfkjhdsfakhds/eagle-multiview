@@ -564,6 +564,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   border-radius: 50%;
   border: 1px solid #232428;
 }
+.folder-color-dot.inline { position: static; display: inline-block; margin-right: 5px; vertical-align: baseline; }
 .folder-lock { display: inline-flex; flex: 0 0 auto; margin-left: 3px; color: #86878d; }
 .folder-lock-svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 .tree-icon-svg { width: 16px; height: 16px; }

@@ -39,13 +39,15 @@ test('the media protocol rewrites headers with MIME, CORS and ranges', () => {
   assert.ok(handler.includes('status: response.status'));
 });
 
-test('PDF previews resolve a direct file:// URL instead of the custom protocol', () => {
+test('PDF previews resolve a main-minted file URL instead of the custom protocol', () => {
   assert.ok(renderer.includes('data-pdf-item="${escapeHTML(item.id)}"'));
   assert.ok(!renderer.includes('<embed src="${url}" type="application/pdf"'), 'embed must not point at eaglemv://');
   const start = renderer.indexOf('function setupPreviewMedia()');
   const fn = renderer.slice(start, renderer.indexOf('\n}', start));
   assert.ok(fn.includes("embed[data-pdf-item]"));
-  assert.ok(fn.includes('window.eagleMV.filePath(pdfEmbed.dataset.pdfItem)'));
-  assert.ok(fn.includes("'file://' + filePath.split('/').map(encodeURIComponent).join('/')"));
+  assert.ok(fn.includes('window.eagleMV.fileURL(pdfEmbed.dataset.pdfItem)'));
   assert.ok(fn.includes('token !== state.previewToken'), 'stale preview loads must not attach');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const handler = main.slice(main.indexOf("ipcMain.handle('item:file-url'"), main.indexOf('\n  });', main.indexOf("ipcMain.handle('item:file-url'")));
+  assert.ok(handler.includes('pathToFileURL(filePath).toString()'), 'URL minting stays in the main process');
 });

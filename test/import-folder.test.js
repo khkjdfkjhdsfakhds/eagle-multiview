@@ -65,7 +65,7 @@ test('deep nesting stops at the depth limit', async t => {
   for (let level = 1; level <= 6; level += 1) shallow = path.join(shallow, `level${level}`);
   await fs.writeFile(path.join(shallow, 'ok.png'), 'x');
 
-  const { files, truncated } = await collectDirectoryFiles(path.join(root, 'drop'), () => 2000);
+  const { files, truncated } = await collectDirectoryFiles(path.join(root, 'drop'), 2000);
   assert.equal(truncated, false);
   assert.deepEqual(files.map(p => path.basename(p)), ['ok.png']);
 });
@@ -80,7 +80,7 @@ test('a folder with too many files is truncated and reported', async t => {
   }
 
   const budget = 10;
-  const { files, truncated } = await collectDirectoryFiles(dropped, () => budget);
+  const { files, truncated } = await collectDirectoryFiles(dropped, budget);
   assert.equal(truncated, true);
   assert.equal(files.length, budget);
 

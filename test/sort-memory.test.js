@@ -60,12 +60,31 @@ test('oldest views are pruned past the per-library cap', () => {
   assert.equal(Object.keys(storage.dump()['/A.library']).length, MAX_VIEWS_PER_LIBRARY);
 });
 
-test('renderer restores memory on navigation and records sort changes', () => {
+test('the view chokepoint restores memory and sort changes persist through one helper', () => {
   assert.ok(html.includes('<script src="sort-memory.js"></script>'));
-  const navigateStart = renderer.indexOf('function navigate(view');
-  const navigateFn = renderer.slice(navigateStart, navigateStart + 1800);
-  assert.ok(navigateFn.includes('sortMemory.recall(state.library?.path, descriptorKey(view))'));
-  assert.ok(navigateFn.includes("state.sort = remembered?.sort || 'default';"));
-  assert.equal((renderer.match(/sortMemory\.remember\(state\.library\?\.path, descriptorKey\(state\.currentView\), state\.sort, state\.sortDir, Date\.now\(\)\)/g) || []).length, 2,
-    'both the sort select and the direction toggle must persist');
+  const applyStart = renderer.indexOf('function applyView(view)');
+  const applyFn = renderer.slice(applyStart, renderer.indexOf('\n}', applyStart));
+  assert.ok(applyFn.includes('sortMemory.recall(state.library?.path, descriptorKey(view))'),
+    'restore must live in applyView so every navigation path gets it');
+  assert.ok(applyFn.includes("state.sort = remembered?.sort || 'default';"));
+  const commitStart = renderer.indexOf('function commitSortChange()');
+  const commitFn = renderer.slice(commitStart, renderer.indexOf('\n}', commitStart));
+  assert.ok(commitFn.includes('sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now())'));
+  assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 2,
+    'both the sort select and the direction toggle go through the helper');
+});
+
+test('the parsed store is cached and can be invalidated by other windows', () => {
+  const storage = fakeStorage();
+  let reads = 0;
+  const counting = { getItem: key => { reads += 1; return storage.getItem(key); }, setItem: storage.setItem };
+  const memory = createSortMemory(counting);
+  memory.remember('/A.library', 'folder:F1', 'name', 'desc', 1);
+  memory.recall('/A.library', 'folder:F1');
+  memory.recall('/A.library', 'folder:F1');
+  assert.equal(reads, 1, 'recall must reuse the cached parse');
+  memory.invalidate();
+  memory.recall('/A.library', 'folder:F1');
+  assert.equal(reads, 2, 'invalidate must force a fresh read');
+  assert.ok(renderer.includes("window.addEventListener('storage'"), 'cross-window updates must invalidate the cache');
 });

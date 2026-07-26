@@ -58,6 +58,29 @@ test('color queries scan server pages and filter client-side', async () => {
   assert.deepEqual(calls, [0, 1000], 'must keep scanning until the folder is exhausted');
 });
 
+test('color filtering inside a smart folder resolves its member ids first', () => {
+  // Regression: the first cut skipped smartFolderItemIds, so the constraint
+  // check rejected every item and smart-folder color filters returned zero.
+  const client = new EagleClient();
+  const calls = [];
+  client.request = async (url, options) => {
+    calls.push(url.split('?')[0]);
+    if (url.startsWith('/api/v2/smartFolder/getItems')) return { data: [{ id: 'R1' }, { id: 'G1' }], total: 2 };
+    return {
+      data: [
+        { id: 'R1', palettes: [{ color: [225, 70, 75] }] },
+        { id: 'G1', palettes: [{ color: [128, 128, 128] }] },
+        { id: 'R9', palettes: [{ color: [225, 70, 75] }] }
+      ],
+      total: 3
+    };
+  };
+  return client.queryItems({ smartFolderId: 'SF1', color: '#e5484d', offset: 0, limit: 160 }).then(result => {
+    assert.deepEqual(result.data.map(item => item.id), ['R1'], 'members outside the smart folder must stay excluded');
+    assert.ok(calls.includes('/api/v2/smartFolder/getItems'));
+  });
+});
+
 test('query state counts the color filter and the UI can clear it', () => {
   assert.equal(filterCount(createQuery({ color: '#e5484d' })), 1);
   assert.equal(filtersActive(createQuery({ color: '#e5484d' })), true);

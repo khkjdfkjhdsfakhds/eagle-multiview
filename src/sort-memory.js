@@ -12,20 +12,31 @@
   // its own storage (never in the Eagle library), keyed by library path and
   // view descriptor; default-sorted views are dropped to keep the map small.
   function createSortMemory(storage) {
+    // recall runs on every navigation; cache the parsed store and let other
+    // windows invalidate it through the storage event.
+    let cache = null;
+
     function read() {
+      if (cache) return cache;
       try {
         const raw = storage.getItem(STORAGE_KEY);
         const data = raw ? JSON.parse(raw) : null;
-        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+        cache = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
       } catch {
-        return {};
+        cache = {};
       }
+      return cache;
     }
 
     function write(data) {
+      cache = data;
       try {
         storage.setItem(STORAGE_KEY, JSON.stringify(data));
       } catch {}
+    }
+
+    function invalidate() {
+      cache = null;
     }
 
     function recall(libraryPath, viewKey) {
@@ -54,7 +65,7 @@
       write(data);
     }
 
-    return { recall, remember };
+    return { recall, remember, invalidate };
   }
 
   return { createSortMemory, STORAGE_KEY, MAX_VIEWS_PER_LIBRARY };

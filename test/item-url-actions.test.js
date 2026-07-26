@@ -44,8 +44,8 @@ test('buttons follow the current URL value and disable when unusable', () => {
 
 test('open goes through the gate and copy reuses the clipboard bridge', () => {
   const open = renderer.slice(renderer.indexOf("$('#openURLButton').addEventListener"), renderer.indexOf('\n  });', renderer.indexOf("$('#openURLButton').addEventListener")));
-  assert.ok(open.includes('window.eagleMV.openExternal(url)'));
-  assert.ok(open.includes("toast('只支持打开 http/https 网址'"));
+  assert.ok(open.includes('window.eagleMV.openExternal('));
+  assert.ok(open.includes('toast(`打开来源失败：${error.message}`'), 'main-process gate errors surface as a toast');
   const copy = renderer.slice(renderer.indexOf("$('#copyURLButton').addEventListener"), renderer.indexOf('\n  });', renderer.indexOf("$('#copyURLButton').addEventListener")));
   assert.ok(copy.includes('window.eagleMV.copyText(url)'));
 });

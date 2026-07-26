@@ -810,6 +810,10 @@ function setupIPC() {
     const { filePath } = await itemFilePath(id);
     return filePath || null;
   });
+  ipcMain.handle('item:file-url', async (_event, id) => {
+    const { filePath } = await itemFilePath(id);
+    return filePath ? pathToFileURL(filePath).toString() : null;
+  });
   ipcMain.handle('item:metadata', async (_event, id) => {
     const { item, filePath } = await itemFilePath(id);
     if (!filePath) return { itemId: id, metadata: null, error: '找不到素材原文件' };

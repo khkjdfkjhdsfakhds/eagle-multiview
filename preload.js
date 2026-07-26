@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   pathForFile: file => webUtils.getPathForFile(file),
   showInFinder: id => ipcRenderer.invoke('item:show-in-finder', id),
   filePath: id => ipcRenderer.invoke('item:file-path', id),
+  fileURL: id => ipcRenderer.invoke('item:file-url', id),
   readMetadata: id => ipcRenderer.invoke('item:metadata', id),
   openDefault: id => ipcRenderer.invoke('item:open-default', id),
   exportFiles: data => ipcRenderer.invoke('items:export', data),

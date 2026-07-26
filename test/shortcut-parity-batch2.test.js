@@ -33,9 +33,14 @@ test('space toggles media playback in the preview and still closes stills', () =
 });
 
 test('space opens the first selected item even for multi-selections', () => {
-  const index = keydown.indexOf('sortedItems().find(item => state.selected.has(item.id))');
+  const index = keydown.indexOf('firstSelectedInViewOrder()');
   assert.ok(index >= 0);
   const condition = keydown.slice(keydown.lastIndexOf('else if (', index), index);
   assert.ok(condition.includes('state.selected.size)'), 'must fire for any non-empty selection');
   assert.ok(!condition.includes('state.selected.size === 1'));
+  // The helper scans once with the shared view comparator instead of sorting.
+  const helperStart = renderer.indexOf('function firstSelectedInViewOrder()');
+  const helper = renderer.slice(helperStart, renderer.indexOf('\n}', helperStart));
+  assert.ok(helper.includes('compareItemsForView(item, first) < 0'));
+  assert.ok(!helper.includes('sortedItems()'));
 });

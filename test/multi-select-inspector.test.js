@@ -47,19 +47,17 @@ test('shared tag chips carry colors and a per-tag remove action', () => {
   assert.ok(start >= 0);
   const fn = renderer.slice(start, renderer.indexOf('\n}', start));
   assert.ok(fn.includes('computeSharedTags(selectedItems)'));
-  assert.ok(fn.includes('state.tagColors[tag]'));
+  assert.ok(fn.includes('state.items.filter(item => state.selected.has(item.id))'), 'one pass, no per-id linear lookups');
   assert.ok(fn.includes('data-remove-shared-tag'));
+  assert.ok(fn.includes('tagChipHTML(tag'), 'chip markup is shared with the tag editors');
 });
 
-test('removing a shared tag goes through the conflict-safe batch pipeline', () => {
-  const start = renderer.indexOf('async function removeTagFromSelection(tag)');
+test('removing a shared tag rides the shared batch pipeline and keeps the selection', () => {
+  const start = renderer.indexOf('function removeTagFromSelection(tag)');
   assert.ok(start >= 0);
   const fn = renderer.slice(start, renderer.indexOf('\n}', start));
-  assert.ok(fn.includes("field: 'tags', remove: [tag], libraryPath"));
-  assert.ok(fn.includes('runItemBatch(ids'));
-  assert.ok(fn.includes('beginForegroundOperation'));
-  assert.ok(fn.includes('renderInspector()'));
-  assert.ok(fn.includes('refresh({ reset: true, preserveScroll: true, paneId })'));
+  assert.ok(fn.includes("mutateSelectionSet([...state.selected], 'tags', { remove: [tag] }"));
+  assert.ok(fn.includes('keepSelection: true'));
 });
 
 test('batch rating change sets the selection rating then clears the select', () => {
