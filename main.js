@@ -15,6 +15,7 @@ const { createImportService } = require('./lib/import-service');
 const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 const { readMetadata } = require('./lib/metadata-reader');
 const { mimeForPath } = require('./lib/media-mime');
+const { findPreviewImagePath } = require('./lib/preview-image');
 const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
@@ -334,6 +335,18 @@ async function resolveMediaURL(kind, id) {
       if (filePath) thumbnailCache.set(id, filePath);
     }
     return filePath && fs.existsSync(filePath) ? pathToFileURL(filePath).toString() : null;
+  }
+  if (kind === 'preview') {
+    // High-res stand-in for originals Chromium cannot decode (PSD/TIFF/HEIC):
+    // Eagle keeps a generated preview image next to the original in .info.
+    try {
+      const { filePath } = await itemFilePath(id);
+      if (filePath) {
+        const previewPath = await findPreviewImagePath(path.dirname(filePath), path.basename(filePath));
+        if (previewPath) return pathToFileURL(previewPath).toString();
+      }
+    } catch {}
+    return resolveMediaURL('thumb', id);
   }
   const item = hub.itemCache.get(id) || await client.getItem(id);
   const library = hub.library || await client.libraryInfo();
