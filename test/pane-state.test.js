@@ -98,6 +98,25 @@ test('inspector saves use an immutable source pane snapshot and a single conflic
   assert.ok(handler.includes('setInspectorSaving(false)'));
 });
 
+test('inspector metadata auto-saves after a quiet edit and on field exit', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.equal(source.includes('id="saveButton"'), false);
+  const markStart = source.indexOf('function markDirty()');
+  const markEnd = source.indexOf('\nfunction collectPatch', markStart);
+  const markHandler = source.slice(markStart, markEnd);
+  assert.ok(markHandler.includes('queueInspectorAutoSave()'));
+  const queueStart = source.indexOf('function queueInspectorAutoSave');
+  const queueEnd = source.indexOf('\nfunction collectPatch', queueStart);
+  const queueHandler = source.slice(queueStart, queueEnd);
+  assert.ok(queueHandler.includes('setTimeout'));
+  assert.ok(queueHandler.includes('saveInspector()'));
+  const bindStart = source.indexOf('function bindEvents()');
+  const bindEnd = source.indexOf('\nfunction bindHubEvents()', bindStart);
+  const bindings = source.slice(bindStart, bindEnd);
+  assert.ok(bindings.includes("queueInspectorAutoSave({ immediate: true })"));
+  assert.equal(bindings.includes("$('#saveButton')"), false);
+});
+
 test('window close waits for an inspector save instead of abandoning an in-flight write', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('window.eagleMV.onRequestClose');
@@ -105,11 +124,13 @@ test('window close waits for an inspector save instead of abandoning an in-fligh
   const handler = source.slice(start, end);
   const pendingWrites = handler.indexOf('blockingForegroundOperations()');
   const savingGuard = handler.indexOf('state.inspectorSaving');
-  const unsavedCheck = handler.indexOf('const hasUnsaved');
+  const unsavedCheck = handler.indexOf('const hasUnsavedText');
   assert.ok(pendingWrites >= 0);
   assert.ok(savingGuard > pendingWrites);
   assert.ok(savingGuard < unsavedCheck);
   assert.ok(handler.includes('window.eagleMV.cancelClose();'));
+  assert.ok(handler.includes('if (state.inspectorDirty)'));
+  assert.ok(handler.includes('if (!await saveInspector()) return;'));
 });
 
 test('high-risk writes register and release a close-blocking foreground operation', () => {

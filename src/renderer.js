@@ -59,6 +59,7 @@ const state = {
   selectedBase: null,
   inspectorDirty: false,
   inspectorSaving: false,
+  inspectorAutoSaveTimer: null,
   query: createQuery(),
   sort: 'default',
   viewTitle: '资料库',
@@ -466,7 +467,6 @@ function setConnection(connected, message) {
     $(selector).disabled = !connected;
   }
   $('#pinButton').disabled = !connected || state.currentView.kind !== 'folder' || state.selected.size !== 1;
-  $('#saveButton').disabled = state.inspectorSaving || !connected || !state.inspectorDirty;
 }
 
 function formatBytes(bytes) {
@@ -564,22 +564,26 @@ function markFolderUsed(folderId, libraryPath = state.library?.path) {
 }
 
 function confirmDiscardChanges({ includeText = true } = {}) {
-  if (state.inspectorSaving) {
-    toast('正在保存素材信息，请稍候', 2400);
-    return false;
-  }
   if (state.textSaving) {
     toast('正在保存 TXT，请稍候', 2400);
     return false;
   }
   const textDirty = includeText && state.textSession?.dirty;
-  if (!state.inspectorDirty && !textDirty) return true;
-  const subjects = [state.inspectorDirty && '素材信息', textDirty && 'TXT 内容'].filter(Boolean).join('和');
-  const discard = confirm(`${subjects}有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。`);
-  if (discard) {
+  // Inspector metadata follows Eagle's edit-and-leave flow. The save routine
+  // captures the selected pane and patch before its first await, so a
+  // navigation can safely continue while that write finishes in background.
+  if (state.inspectorDirty && !state.connected) {
+    if (!confirm('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
     state.inspectorDirty = false;
-    if (state.textSession) state.textSession.dirty = false;
+    clearInspectorAutoSave();
+  } else if (state.inspectorDirty && !state.inspectorSaving) saveInspector();
+  if (!textDirty) return true;
+  if (state.inspectorSaving) {
+    toast('正在保存素材信息，请稍候再离开 TXT 编辑', 2400);
+    return false;
   }
+  const discard = confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
+  if (discard && state.textSession) state.textSession.dirty = false;
   return discard;
 }
 
@@ -627,11 +631,14 @@ function normalizeTags(tags) {
 function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
+  if (!chips) return;
   chips.innerHTML = tagValues(kind).map(tag => {
     const color = state.tagColors[tag];
     const disabled = kind === 'item' && state.inspectorSaving ? ' disabled' : '';
     return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" data-remove-tag="${escapeHTML(tag)}" aria-label="移除 ${escapeHTML(tag)}"${disabled}>×</button></span>`;
   }).join('');
+  const input = $(config.input);
+  if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
 }
 
 function setTagValues(kind, tags, changed = true) {
@@ -654,6 +661,7 @@ function commitTagInput(kind) {
   if (!pending.length) return false;
   setTagValues(kind, [...tagValues(kind), ...pending]);
   input.value = '';
+  renderTagSuggestionPopover(kind, { open: true });
   return true;
 }
 
@@ -665,8 +673,81 @@ const schedulePaneFilterRefresh = debounceByKey(paneId => {
   if (paneById(paneId)) refresh({ reset: true, preserveScroll: false, paneId });
 }, 240);
 
+function tagSuggestionRecords(kind) {
+  const input = $(tagEditors[kind].input);
+  const needle = input?.value.trim().toLocaleLowerCase() || '';
+  const selected = new Set(tagValues(kind));
+  return state.availableTags
+    .map(tag => {
+      const name = tagName(tag);
+      return { name, count: Number(tag?.imageCount || 0), color: state.tagColors[name] || '' };
+    })
+    .filter(tag => tag.name && !selected.has(tag.name) && (!needle || tag.name.toLocaleLowerCase().includes(needle)))
+    .slice(0, 120);
+}
+
+function ensureTagSuggestionPopover(kind) {
+  const input = $(tagEditors[kind].input);
+  const editor = input?.closest('.tag-editor');
+  if (!editor) return null;
+  let popover = editor.querySelector('.tag-suggestion-popover');
+  if (!popover) {
+    popover = document.createElement('div');
+    popover.className = 'tag-suggestion-popover hidden';
+    popover.setAttribute('role', 'listbox');
+    editor.appendChild(popover);
+  }
+  return popover;
+}
+
+function closeTagSuggestions(kind) {
+  const input = $(tagEditors[kind].input);
+  const popover = ensureTagSuggestionPopover(kind);
+  if (!popover) return;
+  popover.classList.add('hidden');
+  popover.dataset.activeIndex = '-1';
+  input?.setAttribute('aria-expanded', 'false');
+}
+
+function renderTagSuggestionPopover(kind, { open = false } = {}) {
+  const input = $(tagEditors[kind].input);
+  const popover = ensureTagSuggestionPopover(kind);
+  if (!input || !popover) return;
+  const records = tagSuggestionRecords(kind);
+  const shouldOpen = open && document.activeElement === input && records.length > 0;
+  const previousIndex = Number(popover.dataset.activeIndex || -1);
+  const activeIndex = shouldOpen && previousIndex >= 0 && previousIndex < records.length ? previousIndex : -1;
+  popover.dataset.activeIndex = String(activeIndex);
+  popover.innerHTML = records.map((record, index) => `<button type="button" class="tag-suggestion" role="option" aria-selected="${index === activeIndex}" data-tag-suggestion="${escapeHTML(record.name)}">
+    <span class="tag-suggestion-leading"${record.color ? ` style="--tag-color:${escapeHTML(record.color)}"` : ''}></span>
+    <span class="tag-suggestion-name" title="${escapeHTML(record.name)}">${escapeHTML(record.name)}</span>
+    <span class="tag-suggestion-count">${record.count.toLocaleString()}</span>
+  </button>`).join('');
+  popover.classList.toggle('hidden', !shouldOpen);
+  input.setAttribute('aria-expanded', String(shouldOpen));
+}
+
+function openTagSuggestions(kind) {
+  const input = $(tagEditors[kind].input);
+  if (!input) return;
+  renderTagSuggestionPopover(kind, { open: true });
+}
+
+function chooseTagSuggestion(kind, name) {
+  const input = $(tagEditors[kind].input);
+  if (!name || !input) return;
+  setTagValues(kind, [...tagValues(kind), name]);
+  input.value = '';
+  renderTagSuggestionPopover(kind, { open: true });
+  input.focus();
+}
+
 function renderTagSuggestions() {
   $('#tagSuggestions').innerHTML = state.availableTags.slice(0, 1000).map(tag => `<option value="${escapeHTML(tag.name || tag)}"></option>`).join('');
+  for (const kind of Object.keys(tagEditors)) {
+    const input = $(tagEditors[kind].input);
+    if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
+  }
 }
 
 function renderTagColors() {
@@ -999,7 +1080,13 @@ function renderGrid({ preserveScroll = true } = {}) {
   // shared footer; background pane renders must not replace its statistics.
   const updateSharedFooter = paneRoot()?.classList.contains('active') ?? true;
   if (state.currentView.kind === 'tags') {
-    $('#emptyState').classList.add('hidden');
+    // The tag manager is a content view, not an empty-materials result. Keep
+    // the generic overlay physically out of the layout as well as hidden by
+    // class: this prevents any later result refresh from painting the
+    // material-empty state over the tag rows.
+    const emptyState = $('#emptyState');
+    emptyState.classList.add('hidden');
+    emptyState.style.display = 'none';
     $('#itemGrid').innerHTML = tagManagerMarkup();
     scroller.scrollTop = preserveScroll ? scrollTop : 0;
     if (updateSharedFooter) updateScrollUI();
@@ -1008,6 +1095,7 @@ function renderGrid({ preserveScroll = true } = {}) {
   const items = sortedItems();
   const folders = visibleChildFolders();
   const emptyState = $('#emptyState');
+  emptyState.style.display = '';
   emptyState.querySelector('h2').textContent = state.errorMessage ? '当前栏读取失败' : '这里还没有素材';
   emptyState.querySelector('p').textContent = state.errorMessage || '可以调整筛选条件，或将文件导入当前文件夹。';
   $('#emptyRetryButton').classList.toggle('hidden', !state.errorMessage);
@@ -1269,7 +1357,13 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       const paneIsActive = state.activePaneId === paneId;
       withActivePane(paneId, () => {
         $('#loadIndicator').classList.add('hidden');
-        $('#emptyState').classList.toggle('hidden', state.items.length > 0 || visibleChildFolders().length > 0);
+        if (state.currentView.kind !== 'tags') {
+          $('#emptyState').classList.toggle('hidden', state.items.length > 0 || visibleChildFolders().length > 0);
+        } else {
+          const emptyState = $('#emptyState');
+          emptyState.classList.add('hidden');
+          emptyState.style.display = 'none';
+        }
         if (paneIsActive) updateScrollUI();
         const scroller = $('#gridScroller');
         if (state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80) {
@@ -1313,6 +1407,7 @@ function renderInspector() {
     $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
     state.selectedBase = null;
     state.inspectorDirty = false;
+    clearInspectorAutoSave();
     state.commentsToken += 1;
     state.comments = [];
     $('#itemComments').innerHTML = '<span class="muted">选择单个素材查看评论</span>';
@@ -1337,11 +1432,13 @@ function renderInspector() {
     }
     state.selectedBase = null;
     state.inspectorDirty = false;
+    clearInspectorAutoSave();
     return;
   }
   const id = [...state.selected][0];
   const item = itemById(id);
   if (!item) return;
+  if (state.selectedBase?.id !== id) clearInspectorAutoSave();
   state.selectedBase = structuredClone(item);
   state.inspectorDirty = false;
   $('#staleBanner').classList.add('hidden');
@@ -1352,7 +1449,6 @@ function renderInspector() {
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
   resizeAnnotation();
-  $('#saveButton').disabled = true;
   $('#previewBox').innerHTML = `<img src="eaglemv://thumb/${encodeURIComponent(item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
   $('#itemMeta').innerHTML = `<span>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span>${formatBytes(item.size)}</span><span>${item.width || 0} × ${item.height || 0}</span><span>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
   loadGenerationMetadata(item);
@@ -1579,8 +1675,27 @@ async function loadGenerationMetadata(item) {
 function markDirty() {
   if (state.inspectorSaving) return;
   state.inspectorDirty = Object.keys(collectPatch()).length > 0;
-  $('#saveButton').disabled = !state.inspectorDirty || !state.connected;
+  if (state.inspectorDirty) queueInspectorAutoSave();
+  else clearInspectorAutoSave();
   if (!state.inspectorDirty && !$('#staleBanner').classList.contains('hidden')) renderInspector();
+}
+
+function clearInspectorAutoSave() {
+  if (state.inspectorAutoSaveTimer) clearTimeout(state.inspectorAutoSaveTimer);
+  state.inspectorAutoSaveTimer = null;
+}
+
+function queueInspectorAutoSave({ immediate = false } = {}) {
+  clearInspectorAutoSave();
+  if (!state.inspectorDirty || !state.connected || state.inspectorSaving) return;
+  if (immediate) {
+    saveInspector();
+    return;
+  }
+  state.inspectorAutoSaveTimer = setTimeout(() => {
+    state.inspectorAutoSaveTimer = null;
+    if (state.inspectorDirty && !state.inspectorSaving) saveInspector();
+  }, 420);
 }
 
 function collectPatch() {
@@ -1612,8 +1727,6 @@ function setInspectorSaving(saving) {
   for (const button of document.querySelectorAll('#itemTagChips [data-remove-tag]')) button.disabled = state.inspectorSaving;
   $('#paneLayoutButton').disabled = state.inspectorSaving;
   for (const option of $('#paneLayoutPopover').querySelectorAll('[data-layout]')) option.disabled = state.inspectorSaving;
-  $('#saveButton').textContent = state.inspectorSaving ? '正在保存…' : '保存修改';
-  $('#saveButton').disabled = state.inspectorSaving || !state.connected || !state.inspectorDirty;
   $('#inspectorContent').classList.toggle('saving', state.inspectorSaving);
 }
 
@@ -1625,9 +1738,10 @@ async function saveInspector(force = false) {
   const patch = collectPatch();
   if (!id || !Object.keys(patch).length) {
     state.inspectorDirty = false;
-    $('#saveButton').disabled = true;
+    clearInspectorAutoSave();
     return true;
   }
+  clearInspectorAutoSave();
   const base = structuredClone(pane.selectedBase || {});
   const libraryPath = state.library?.path;
   let overwrite = Boolean(force);
@@ -2341,15 +2455,52 @@ function bindTagEditor(kind) {
   const config = tagEditors[kind];
   const input = $(config.input);
   const chips = $(config.chips);
+  const editor = input.closest('.tag-editor');
+  const popover = ensureTagSuggestionPopover(kind);
+  input.setAttribute('aria-haspopup', 'listbox');
+  input.setAttribute('aria-expanded', 'false');
   input.addEventListener('keydown', event => {
-    if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
+    const suggestions = tagSuggestionRecords(kind);
+    const activeIndex = Number(popover?.dataset.activeIndex || -1);
+    if (event.key === 'ArrowDown' && suggestions.length) {
+      event.preventDefault();
+      openTagSuggestions(kind);
+      const next = activeIndex < suggestions.length - 1 ? activeIndex + 1 : 0;
+      if (popover) {
+        popover.dataset.activeIndex = String(next);
+        renderTagSuggestionPopover(kind, { open: true });
+        popover.querySelector(`[data-tag-suggestion="${CSS.escape(suggestions[next].name)}"]`)?.scrollIntoView({ block: 'nearest' });
+      }
+    } else if (event.key === 'ArrowUp' && suggestions.length) {
+      event.preventDefault();
+      openTagSuggestions(kind);
+      const next = activeIndex > 0 ? activeIndex - 1 : suggestions.length - 1;
+      if (popover) {
+        popover.dataset.activeIndex = String(next);
+        renderTagSuggestionPopover(kind, { open: true });
+        popover.querySelector(`[data-tag-suggestion="${CSS.escape(suggestions[next].name)}"]`)?.scrollIntoView({ block: 'nearest' });
+      }
+    } else if (event.key === 'Escape') {
+      closeTagSuggestions(kind);
+    } else if (event.key === 'Enter' && activeIndex >= 0 && suggestions[activeIndex]) {
+      event.preventDefault();
+      chooseTagSuggestion(kind, suggestions[activeIndex].name);
+    } else if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
       event.preventDefault();
       commitTagInput(kind);
     } else if (event.key === 'Backspace' && !input.value && tagValues(kind).length) {
       removeTag(kind, tagValues(kind).at(-1));
     }
   });
-  input.addEventListener('blur', () => commitTagInput(kind));
+  input.addEventListener('focus', () => openTagSuggestions(kind));
+  input.addEventListener('input', () => renderTagSuggestionPopover(kind, { open: true }));
+  input.addEventListener('blur', () => {
+    commitTagInput(kind);
+    if (kind === 'item') queueInspectorAutoSave({ immediate: true });
+    setTimeout(() => {
+      if (document.activeElement !== input && !popover?.contains(document.activeElement)) closeTagSuggestions(kind);
+    }, 0);
+  });
   input.addEventListener('paste', event => {
     const text = event.clipboardData?.getData('text') || '';
     if (!/[,，\n]/.test(text)) return;
@@ -2360,7 +2511,13 @@ function bindTagEditor(kind) {
     const button = event.target.closest('[data-remove-tag]');
     if (button) removeTag(kind, button.dataset.removeTag);
   });
-  input.closest('.tag-editor').addEventListener('click', event => {
+  popover?.addEventListener('pointerdown', event => {
+    const suggestion = event.target.closest('[data-tag-suggestion]');
+    if (!suggestion) return;
+    event.preventDefault();
+    chooseTagSuggestion(kind, suggestion.dataset.tagSuggestion);
+  });
+  editor.addEventListener('click', event => {
     if (event.target === event.currentTarget) input.focus();
   });
 }
@@ -3719,10 +3876,17 @@ function bindEvents() {
   document.addEventListener('click', event => {
     if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton')) hideContextMenu();
   });
-  for (const selector of ['#itemName', '#itemURL']) $(selector).addEventListener('input', markDirty);
-  $('#itemRating').addEventListener('change', () => { syncRatingPlaceholder(); markDirty(); });
+  for (const selector of ['#itemName', '#itemURL']) {
+    $(selector).addEventListener('input', markDirty);
+    $(selector).addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
+  }
+  $('#itemRating').addEventListener('change', () => {
+    syncRatingPlaceholder();
+    markDirty();
+    queueInspectorAutoSave({ immediate: true });
+  });
   $('#itemAnnotation').addEventListener('input', () => { resizeAnnotation(); markDirty(); });
-  $('#saveButton').addEventListener('click', () => saveInspector());
+  $('#itemAnnotation').addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   $('#pinButton').addEventListener('click', () => {
     const item = itemById([...state.selected][0]);
     if (item) setPinned([item.id], !itemIsPinned(item));
@@ -3992,7 +4156,7 @@ function bindHubEvents() {
     if (!result?.ok) toast(`拖动失败：${result?.message || '无法导出素材文件'}`, 4000);
     else if (result.missing) toast(`已拖动 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
   });
-  window.eagleMV.onRequestClose(() => {
+  window.eagleMV.onRequestClose(async () => {
     const pendingOperations = blockingForegroundOperations();
     if (state.inspectorSaving || state.textSaving || pendingOperations.length) {
       window.eagleMV.cancelClose();
@@ -4004,8 +4168,14 @@ function bindHubEvents() {
       toast(`${message}，完成后才能关闭窗口`, 3600);
       return;
     }
-    const hasUnsaved = state.inspectorDirty || state.textSession?.dirty;
-    if (hasUnsaved && !confirm('当前窗口有尚未保存的素材信息或 TXT 内容。\n\n按“确定”放弃修改并关闭窗口；按“取消”继续编辑。')) {
+    // Metadata is auto-saved on input/blur. A close request is the final
+    // flush for a very recent edit instead of a discard prompt.
+    if (state.inspectorDirty) {
+      window.eagleMV.cancelClose();
+      if (!await saveInspector()) return;
+    }
+    const hasUnsavedText = Boolean(state.textSession?.dirty);
+    if (hasUnsavedText && !confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并关闭窗口；按“取消”继续编辑。')) {
       window.eagleMV.cancelClose();
       return;
     }
