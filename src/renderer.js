@@ -2481,7 +2481,12 @@ function updatePreviewChrome(item) {
   const items = sortedItems();
   const index = items.findIndex(candidate => candidate.id === item.id);
   const position = index >= 0 ? `${index + 1} / ${state.total || items.length}` : '';
-  $('#modalCaption').textContent = `${position}${position ? ' · ' : ''}${item.name}.${item.ext}`;
+  // Only the counter stays visible: AI-generated prompt file names flood the
+  // bottom bar and collide with the zoom toolbar. The full name lives in the
+  // hover tooltip (and, as always, in the inspector).
+  const caption = $('#modalCaption');
+  caption.textContent = position;
+  caption.title = `${item.name}.${item.ext}`;
   $('#prevPreview').disabled = index <= 0;
   $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
 }
