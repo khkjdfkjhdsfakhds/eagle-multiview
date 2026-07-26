@@ -554,6 +554,18 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .folder-icon.special { color: #b7b8bd; }
 .folder-icon.smart { color: #c4c5ca; }
+.folder-icon { position: relative; }
+.folder-color-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid #232428;
+}
+.folder-lock { display: inline-flex; flex: 0 0 auto; margin-left: 3px; color: #86878d; }
+.folder-lock-svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 .tree-icon-svg { width: 16px; height: 16px; }
 .tree-image-icon { width: 16px; height: 16px; opacity: .66; }
 .folder-row:hover .tree-image-icon, .folder-row.active .tree-image-icon { opacity: .9; }

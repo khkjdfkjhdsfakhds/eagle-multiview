@@ -271,7 +271,8 @@ function uiIcon(name, className = 'tree-icon-svg') {
     window: '<rect x="3" y="4" width="14" height="12" rx="1.8"></rect><path d="M3 7h14M6 5.5h.1M8.5 5.5h.1"></path>',
     export: '<path d="M10 3v9M6.5 6.5 10 3l3.5 3.5M4 12.5V17h12v-4.5"></path>',
     import: '<path d="M10 3v9M6.5 8.5 10 12l3.5-3.5M4 13v3.2h12V13"></path>',
-    refresh: '<path d="M16.2 8.2A6.5 6.5 0 1 0 16.5 12M16.2 4.7v3.8h-3.8"></path>'
+    refresh: '<path d="M16.2 8.2A6.5 6.5 0 1 0 16.5 12M16.2 4.7v3.8h-3.8"></path>',
+    lock: '<rect x="5" y="9" width="10" height="7.5" rx="1.6"></rect><path d="M7 9V6.8a3 3 0 0 1 6 0V9"></path>'
   };
   return `<svg class="${className}" viewBox="0 0 20 20" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -1195,6 +1196,29 @@ function reconcileLocalFolderCount(folderId, total) {
   return true;
 }
 
+// Eagle stores folder colors either as a hex string or one of its named
+// presets; unset folders have no color field at all.
+const eagleNamedFolderColors = Object.freeze({
+  red: '#e5484d', orange: '#f76b15', yellow: '#ffc53d', green: '#46a758',
+  aqua: '#00a2c7', blue: '#0090ff', purple: '#8e4ec6', pink: '#d6409f', gray: '#8d8d8d'
+});
+
+function folderColorValue(folder) {
+  const raw = String(folder?.color || '').trim();
+  if (!raw) return '';
+  if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+  return eagleNamedFolderColors[raw.toLowerCase()] || '';
+}
+
+function folderColorDot(folder) {
+  const color = folderColorValue(folder);
+  return color ? `<span class="folder-color-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : '';
+}
+
+function folderLockBadge(folder) {
+  return folder?.password ? `<span class="folder-lock" title="加密文件夹">${uiIcon('lock', 'folder-lock-svg')}</span>` : '';
+}
+
 function renderFolderTree() {
   if (!state.library) return;
   const tree = $('#folderTree');
@@ -1205,7 +1229,7 @@ function renderFolderTree() {
     return `<div class="folder-node">
       <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
-        <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>
+        <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
         ${Number.isFinite(count) ? `<span class="folder-count">${count}</span>` : ''}
       </button>
       ${children.length && expanded ? `<div class="folder-children">${folderHTML(children)}</div>` : ''}
@@ -1228,7 +1252,7 @@ function renderFolderTree() {
     ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
     : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
-      <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${Number.isFinite(folder.descendantImageCount) ? `<span class="folder-count">${folder.descendantImageCount}</span>` : ''}</button>`).join('');
+      <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${Number.isFinite(folder.descendantImageCount) ? `<span class="folder-count">${folder.descendantImageCount}</span>` : ''}</button>`).join('');
   tree.innerHTML = `
     <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
     <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
@@ -2408,6 +2432,13 @@ function applyView(view) {
 function navigate(view, { record = true, refreshView = true, skipDiscard = false } = {}) {
   if (!state.library) return;
   view = normalizeView(view);
+  if (view.kind === 'folder') {
+    const target = findFolder(state.library?.folders, view.id);
+    if (target?.password) {
+      toast('该文件夹已加密，MultiView 无法解锁（Eagle API 限制）', 3600);
+      return false;
+    }
+  }
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
   if (record && changed) {
