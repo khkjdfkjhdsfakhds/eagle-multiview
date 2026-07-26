@@ -54,14 +54,22 @@ test('new-file entry points share one API-backed workflow and confirmed format r
   assert.ok(main.includes('await importPaths({'));
 });
 
-test('folder and document creation use default names directly without a naming dialog', () => {
+test('a new folder is named before it exists; documents still use a default name', () => {
+  // Eagle enters an uncommitted naming state and cancelling leaves no folder
+  // behind (observed on 4.0 and recorded in PROJECT_CONTEXT). Creating first
+  // and renaming later diverges from that — and Eagle's API has no
+  // delete-folder endpoint, so every mis-click was permanent.
   const folderStart = renderer.indexOf('async function createFolder');
   const folderEnd = renderer.indexOf('\nasync function revealCreatedDocument', folderStart);
   const folderHandler = renderer.slice(folderStart, folderEnd);
-  assert.ok(folderHandler.includes("name: '未命名文件夹'"));
+  assert.ok(folderHandler.includes('const name = await requestNameDialog({'));
+  assert.ok(folderHandler.includes('if (name === null) return false;'), 'cancel creates nothing');
+  assert.ok(folderHandler.indexOf('requestNameDialog') < folderHandler.indexOf('window.eagleMV.createFolder'),
+    'the prompt comes before the API call');
+  assert.ok(folderHandler.includes("createFolder({ name: name.trim() || '未命名文件夹'"), 'an empty name still gets the default');
+  assert.ok(folderHandler.indexOf('requestNameDialog') < folderHandler.indexOf('beginForegroundOperation'),
+    'the app is not held busy while waiting for input');
   assert.ok(folderHandler.includes('revealCreatedFolder({ paneId, viewKey, libraryPath, parentId'));
-  assert.equal(folderHandler.includes('requestNameDialog'), false);
-  assert.equal(folderHandler.includes('requestFolderName'), false);
 
   const documentStart = renderer.indexOf('async function createNewDocument');
   const documentEnd = renderer.indexOf('\nasync function renameItem', documentStart);

@@ -2184,6 +2184,37 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   /* Menu rows sized for a fingertip rather than a cursor. */
   .context-menu-row { min-height: 38px; }
 }
+/* Context menus become bottom sheets on narrow screens: a 294px panel whose
+   submenus fly out another 270px cannot fit a phone at all — measured at
+   390px, an open submenu started 253px past the right edge. As a sheet the
+   menu spans the viewport and submenus open inline underneath their row. */
+@media (max-width: 900px) {
+  .context-menu.context-menu-sheet {
+    top: auto;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: 8px;
+    width: auto;
+    max-height: min(76vh, calc(100vh - 120px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* The row is a four-column grid; a static submenu would land in one 21px
+     cell. Give it its own full-width line under the label. */
+  .context-menu-sheet .context-menu-row.has-submenu { grid-template-columns: 21px minmax(0, 1fr) auto 12px; }
+  .context-menu-sheet .context-submenu {
+    position: static;
+    grid-column: 1 / -1;
+    width: auto;
+    max-height: 46vh;
+    margin: 3px 0 6px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  /* Hover is meaningless here; only the explicit toggle opens a submenu. */
+  .context-menu-sheet .context-menu-row:hover > .context-submenu { display: none; }
+  .context-menu-sheet .context-menu-row.submenu-open > .context-submenu { display: block; }
+}
 
 /* Web access QR panels */
 .web-access-address-group { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }

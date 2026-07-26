@@ -158,3 +158,19 @@ test('touch can reach the workspace menu and 全选', () => {
   assert.ok(shortcut, 'the ⌘A binding still exists');
   assert.ok(renderer.includes('      selectAllItems();\n    }'), '⌘A routes through the same function');
 });
+
+test('context menus become bottom sheets on narrow screens', () => {
+  // Measured at 390px before this: an open submenu started 253px past the
+  // right edge, so 添加标签 / 移动到文件夹 / 设置评分 were all unreachable.
+  assert.ok(renderer.includes('const sheet = isCompactLayout();'));
+  assert.ok(renderer.includes("menu.classList.toggle('context-menu-sheet', sheet);"));
+  assert.ok(renderer.includes("menu.style.left = '';"), 'the sheet drops the cursor anchoring');
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  .context-menu.context-menu-sheet'));
+  assert.match(compact, /\.context-menu\.context-menu-sheet \{[^}]*overflow-y: auto/);
+  assert.match(compact, /\.context-menu-sheet \.context-submenu \{[^}]*position: static/);
+  assert.match(compact, /\.context-menu-sheet \.context-submenu \{[^}]*grid-column: 1 \/ -1/);
+  // Hover cannot close an inline submenu, so the row toggles instead.
+  assert.ok(renderer.includes("if (isCompactLayout() && !event.target.closest('.context-submenu')) {"));
+  assert.ok(renderer.includes("submenu.classList.toggle('submenu-open');"));
+  assert.ok(compact.includes('.context-menu-sheet .context-menu-row:hover > .context-submenu { display: none; }'));
+});

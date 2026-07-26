@@ -3589,6 +3589,18 @@ function showContextMenuAt(x, y, data) {
   const menu = $('#contextMenu');
   menu.innerHTML = contextMenuMarkup(state.contextMenu);
   menu.classList.remove('hidden');
+  // Narrow screens get a bottom sheet instead of a cursor-anchored panel: the
+  // menu is 294px wide and its submenus fly out another 270px, which on a
+  // phone lands entirely off the right edge. As a sheet it spans the viewport
+  // and the submenus open inline (see the compact rules in styles.css).
+  const sheet = isCompactLayout();
+  menu.classList.toggle('context-menu-sheet', sheet);
+  menu.scrollTop = 0;
+  if (sheet) {
+    menu.style.left = '';
+    menu.style.top = '';
+    return;
+  }
   menu.style.left = `${Math.max(8, x)}px`;
   menu.style.top = `${Math.max(8, y)}px`;
   requestAnimationFrame(() => {
@@ -3758,6 +3770,18 @@ async function createFolder(parentId = null, subfolder = false, paneId = state.a
     toast(`${foregroundOperationSummary()}，完成后再新建文件夹`, 3200);
     return false;
   }
+  if (!paneById(paneId)) return false;
+  // Ask before creating. Eagle names a new folder at creation time; we used to
+  // create 未命名文件夹 outright and leave renaming to the user, so every
+  // mis-click left a stray empty folder behind — and Eagle's API has no
+  // delete-folder endpoint to take it back. Cancelling here creates nothing.
+  const name = await requestNameDialog({
+    title: subfolder ? '新建子文件夹' : '新建文件夹',
+    initialValue: '未命名文件夹',
+    submitLabel: '创建',
+    placeholder: '未命名文件夹'
+  });
+  if (name === null) return false;
   const sourcePane = paneById(paneId);
   if (!sourcePane) return false;
   const libraryPath = state.library?.path;
@@ -3765,7 +3789,7 @@ async function createFolder(parentId = null, subfolder = false, paneId = state.a
   const operationToken = beginForegroundOperation(subfolder ? '正在创建子文件夹…' : '正在创建文件夹…', { key: `create-folder:${libraryPath}:${parentId || 'root'}` });
   if (!operationToken) return false;
   try {
-    const result = await window.eagleMV.createFolder({ name: '未命名文件夹', parent: parentId, libraryPath });
+    const result = await window.eagleMV.createFolder({ name: name.trim() || '未命名文件夹', parent: parentId, libraryPath });
     if (!result?.id) throw new Error('Eagle 没有返回新文件夹');
     const revealed = await revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id: result.id });
     if (!revealed && state.library?.path === libraryPath) {
@@ -5077,7 +5101,17 @@ function bindEvents() {
     if (!row) {
       const submenu = event.target.closest('.has-submenu');
       if (submenu) {
-        submenu.classList.add('submenu-open');
+        // Inline submenus need a way back: on a sheet the row toggles, unless
+        // the tap landed inside the open submenu itself. Hover still drives
+        // this on a pointer, where closing is just moving away.
+        if (isCompactLayout() && !event.target.closest('.context-submenu')) {
+          submenu.classList.toggle('submenu-open');
+          if (submenu.classList.contains('submenu-open')) {
+            requestAnimationFrame(() => submenu.scrollIntoView({ block: 'nearest' }));
+          }
+        } else {
+          submenu.classList.add('submenu-open');
+        }
         submenu.querySelector('.context-picker-search')?.focus();
       }
       return;
