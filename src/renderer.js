@@ -3038,11 +3038,16 @@ async function movePreview(delta, { fromSlideshow = false } = {}) {
     index = items.findIndex(item => item.id === state.previewId);
     next = items[index + delta];
   }
+  const before = state.previewId;
   if (next) await openPreview(next.id);
   // Stepping by hand during a slideshow restarts the dwell, so the picture you
   // just asked for gets its full turn rather than a leftover sliver of one.
   if (!fromSlideshow && slideshowPlaying()) scheduleSlideshowStep();
-  return Boolean(next);
+  // Report whether the preview actually moved, not merely whether a neighbour
+  // existed: openPreview can be refused (an unsaved TXT prompts first), and a
+  // slideshow that treated that as success would reopen the same prompt every
+  // few seconds.
+  return Boolean(next) && state.previewId !== before;
 }
 
 // --- Preview view options --------------------------------------------------

@@ -33,6 +33,15 @@ test('a running show cannot outlive its preview', () => {
   assert.ok(renderer.includes('else stopSlideshow();'), 'running out of items ends the show');
 });
 
+test('a refused preview ends the show instead of reprompting forever', () => {
+  // openPreview can be refused — an unsaved TXT asks first. Reporting "moved"
+  // on a refusal would make the slideshow reopen that confirm every few
+  // seconds, so movePreview reports whether the preview actually changed.
+  assert.ok(renderer.includes('return Boolean(next) && state.previewId !== before;'));
+  assert.ok(renderer.includes('  const before = state.previewId;\n  if (next) await openPreview(next.id);'));
+  assert.ok(renderer.includes('    if (advanced && state.previewId) scheduleSlideshowStep();\n    else stopSlideshow();'));
+});
+
 test('the end of the list wraps instead of stalling', () => {
   const advance = renderer.slice(renderer.indexOf('async function advanceSlideshow()'), renderer.indexOf('function toggleSlideshow()'));
   assert.ok(advance.includes('if (items.length < 2 || items[0].id === before) return false;'), 'a one-item view has nowhere to wrap to');
