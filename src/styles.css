@@ -141,6 +141,95 @@ button:disabled { cursor: default; }
   background: #1f2024;
 }
 .sidebar-app-title .app-mark { width: 34px; height: 34px; flex-basis: 34px; border-radius: 9px; }
+.library-switch-button {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.library-switch-button:hover { background: rgba(255, 255, 255, .05); }
+.library-switch-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  align-self: center;
+  margin-bottom: 2px;
+  fill: none;
+  stroke: #85868c;
+  stroke-width: 1.8;
+}
+.library-popover {
+  /* Fixed so the sidebar's overflow:auto cannot clip it; placed from the
+     button's rect when opened. */
+  position: fixed;
+  z-index: 70;
+  width: min(340px, calc(100vw - 40px));
+  padding: 9px;
+  border: 1px solid rgba(247, 248, 248, .13);
+  border-radius: 12px;
+  background: rgba(38, 39, 43, .98);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, .48);
+  -webkit-app-region: no-drag;
+}
+.library-popover-title {
+  padding: 2px 6px 8px;
+  color: #85868c;
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: .04em;
+}
+.library-list { display: grid; gap: 2px; max-height: 320px; overflow: auto; }
+.library-row {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  padding: 6px 26px 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.library-row:hover:not(:disabled) { background: rgba(255, 255, 255, .06); }
+.library-row.current { background: rgba(0, 114, 239, .12); }
+.library-row:disabled { opacity: .45; cursor: default; }
+.library-row-name {
+  overflow: hidden;
+  color: #dadadf;
+  font-size: 12px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-row-path {
+  overflow: hidden;
+  color: #737479;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.library-row-check {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  transform: translateY(-50%);
+  color: #6db2ff;
+  font-size: 12px;
+}
 .app-title-copy { min-width: 0; max-width: calc(100% - 42px); display: grid; gap: 2px; align-self: end; }
 .app-title-copy > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 640; }
 .sidebar-library-label { color: #85868c; font-size: 10px; font-weight: 500; line-height: 1.1; }

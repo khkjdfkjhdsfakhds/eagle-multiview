@@ -555,6 +555,28 @@ function setupIPC() {
     return result;
   });
   ipcMain.handle('hub:identity', event => event.sender.id);
+  ipcMain.handle('library:history', async () => {
+    const paths = await client.listLibraryHistory();
+    return paths.map(libraryPath => ({
+      path: libraryPath,
+      name: path.basename(libraryPath).replace(/\.library$/i, ''),
+      exists: fs.existsSync(libraryPath)
+    }));
+  });
+  ipcMain.handle('library:switch', async (_event, payload = {}) => {
+    const libraryPath = EagleClient.normalizeLibraryPath(payload.libraryPath);
+    if (!libraryPath) throw new Error('缺少资料库路径');
+    if (EagleClient.normalizeLibraryPath(hub.library?.path) === libraryPath) return { switched: false, library: hub.library };
+    await client.switchLibrary(libraryPath);
+    if (!await client.waitForLibrary(libraryPath)) {
+      throw new Error('Eagle 未能在预期时间内完成切换，请稍后重试');
+    }
+    // connect() sees the path change and emits library-changed, which the hub
+    // listener broadcasts to every window and uses to refresh caches and
+    // supplemental items — the same flow as an Eagle-side switch.
+    const result = await hub.connect();
+    return { switched: true, library: result.library };
+  });
   ipcMain.handle('hub:query', (_event, query) => hub.query(query));
   ipcMain.handle('hub:recent-folders', () => client.listRecentFolders());
   ipcMain.handle('hub:trash-items', async (_event, { libraryPath, ...query }) => {

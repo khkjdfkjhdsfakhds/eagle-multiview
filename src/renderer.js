@@ -1006,6 +1006,73 @@ function clearFilters() {
   refresh({ reset: true, preserveScroll: false, paneId: state.activePaneId });
 }
 
+function libraryDisplayName(libraryPath) {
+  return String(libraryPath || '').split('/').filter(Boolean).pop()?.replace(/\.library$/i, '') || '资料库';
+}
+
+function renderLibraryList(entries) {
+  const box = $('#libraryList');
+  const known = [...entries];
+  // Eagle's history may omit the currently open library; keep it visible.
+  if (state.library?.path && !known.some(entry => entry.path === state.library.path)) {
+    known.unshift({ path: state.library.path, name: state.library.name || libraryDisplayName(state.library.path), exists: true });
+  }
+  if (!known.length) {
+    box.innerHTML = '<span class="muted">Eagle 没有返回资料库历史</span>';
+    return;
+  }
+  box.innerHTML = known.map(entry => {
+    const current = state.library?.path === entry.path;
+    return `<button type="button" class="library-row${current ? ' current' : ''}" data-library-path="${escapeHTML(entry.path)}" data-library-name="${escapeHTML(entry.name)}" title="${escapeHTML(entry.path)}"${entry.exists ? '' : ' disabled'}>
+      <span class="library-row-name">${escapeHTML(entry.name)}${entry.exists ? '' : '（找不到文件）'}</span>
+      <span class="library-row-path">&lrm;${escapeHTML(entry.path)}&lrm;</span>
+      ${current ? '<span class="library-row-check" aria-label="当前资料库">✓</span>' : ''}
+    </button>`;
+  }).join('');
+}
+
+async function openLibraryPopover() {
+  const popover = $('#libraryPopover');
+  const anchor = $('#libraryButton').getBoundingClientRect();
+  popover.style.top = `${Math.round(anchor.bottom + 6)}px`;
+  popover.style.left = `${Math.round(Math.max(10, anchor.left))}px`;
+  popover.classList.remove('hidden');
+  $('#libraryButton').setAttribute('aria-expanded', 'true');
+  $('#libraryList').innerHTML = '<span class="muted">正在读取资料库列表…</span>';
+  try {
+    renderLibraryList(await window.eagleMV.getLibraryHistory());
+  } catch (error) {
+    $('#libraryList').innerHTML = `<span class="muted">读取失败：${escapeHTML(error.message)}</span>`;
+  }
+}
+
+function closeLibraryPopover() {
+  $('#libraryPopover').classList.add('hidden');
+  $('#libraryButton').setAttribute('aria-expanded', 'false');
+}
+
+async function switchToLibrary(libraryPath, name) {
+  closeLibraryPopover();
+  if (state.library?.path === libraryPath) {
+    toast('已经是当前资料库', 2200);
+    return;
+  }
+  if (!state.connected) {
+    toast('Eagle 未连接，暂时无法切换资料库', 3200);
+    return;
+  }
+  if (!confirmDiscardChanges()) return;
+  try {
+    // Success feedback arrives through the library-changed broadcast
+    // ("Eagle 已切换资料库，所有窗口已跟随"), same as an Eagle-side switch.
+    await runForegroundOperation(`正在切换到「${name}」…`, { key: 'library-switch' }, async () => {
+      await window.eagleMV.switchLibrary({ libraryPath });
+    });
+  } catch (error) {
+    toast(`切换资料库失败：${error.message}`, 4600);
+  }
+}
+
 function normalizeExtension(value) {
   return String(value || '').trim().toLowerCase().replace(/^\.+/, '');
 }
@@ -4197,6 +4264,17 @@ function bindEvents() {
       $('#paneLayoutPopover').classList.add('hidden');
       $('#paneLayoutButton').setAttribute('aria-expanded', 'false');
     }
+    if (!event.target.closest('#libraryButton, #libraryPopover')) closeLibraryPopover();
+  });
+  $('#libraryButton').addEventListener('click', event => {
+    event.stopPropagation();
+    if ($('#libraryPopover').classList.contains('hidden')) openLibraryPopover();
+    else closeLibraryPopover();
+  });
+  $('#libraryList').addEventListener('click', event => {
+    const row = event.target.closest('[data-library-path]');
+    if (!row || row.disabled) return;
+    switchToLibrary(row.dataset.libraryPath, row.dataset.libraryName);
   });
   $('#paneLayoutButton').addEventListener('click', event => {
     event.stopPropagation();

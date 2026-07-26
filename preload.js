@@ -11,6 +11,8 @@ function on(channel, callback) {
 contextBridge.exposeInMainWorld('eagleMV', {
   platform: process.platform,
   connect: () => ipcRenderer.invoke('hub:connect'),
+  getLibraryHistory: () => ipcRenderer.invoke('library:history'),
+  switchLibrary: data => ipcRenderer.invoke('library:switch', data),
   identity: () => ipcRenderer.invoke('hub:identity'),
   query: query => ipcRenderer.invoke('hub:query', query),
   getRecentFolders: () => ipcRenderer.invoke('hub:recent-folders'),

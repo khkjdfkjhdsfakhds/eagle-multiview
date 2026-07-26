@@ -15,11 +15,18 @@
   <main class="workspace">
     <aside class="sidebar">
       <div class="sidebar-app-title app-title">
-        <span class="app-mark"><img src="brand-icon.png" alt=""></span>
-        <span class="app-title-copy">
-          <span id="windowTitle">Eagle MultiView</span>
-          <span class="sidebar-library-label">资源库</span>
-        </span>
+        <button id="libraryButton" class="library-switch-button" title="切换资料库" aria-haspopup="true" aria-expanded="false">
+          <span class="app-mark"><img src="brand-icon.png" alt=""></span>
+          <span class="app-title-copy">
+            <span id="windowTitle">Eagle MultiView</span>
+            <span class="sidebar-library-label">资源库</span>
+          </span>
+          <svg class="library-switch-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
+        </button>
+        <div id="libraryPopover" class="library-popover hidden" role="menu" aria-label="切换资料库">
+          <div class="library-popover-title">切换资料库</div>
+          <div id="libraryList" class="library-list"><span class="muted">正在读取资料库列表…</span></div>
+        </div>
       </div>
       <nav id="folderTree" class="folder-tree"></nav>
     </aside>
