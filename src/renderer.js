@@ -137,6 +137,7 @@ const state = {
   batchTags: [],
   copiedTags: [],
   contextMenu: null,
+  openDrawer: null,
   folderDialogResolve: null,
   trashDialogResolve: null,
   duplicateDialogResolve: null,
@@ -234,6 +235,34 @@ let librarySyncRunning = false;
 let pendingLibraryChange = null;
 let visibleItemWatchQueued = false;
 let activeMarquee = null;
+// Touch long-press bookkeeping: while the finger is still down the browser
+// may fire its own contextmenu, and right after lift-off it fires a synthetic
+// click — both must be swallowed without eating the user's next real tap.
+let suppressGridClickUntil = 0;
+let touchLongPressActive = false;
+
+function triggerTouchLongPress(card, paneId, point) {
+  navigator.vibrate?.(10);
+  if (card.classList.contains('folder-card')) {
+    if (!selectFolderCard(card.dataset.openFolder)) return;
+    showContextMenuAt(point.x, point.y, { kind: 'folder', ids: [], folderId: card.dataset.openFolder, paneId });
+    return;
+  }
+  const id = card.dataset.id;
+  if (!state.selected.size) {
+    if (selectItem(id)) toast('已选中，轻点其它素材可多选', 2400);
+    return;
+  }
+  if (!state.selected.has(id) && !selectItem(id, true)) return;
+  const selectedItems = [...state.selected].map(itemById).filter(Boolean);
+  showContextMenuAt(point.x, point.y, {
+    ids: [...state.selected],
+    folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
+    allPinned: selectedItems.length > 0 && selectedItems.every(itemIsPinned),
+    allDeleted: selectedItems.length > 0 && selectedItems.every(item => item.isDeleted),
+    tags: state.availableTags
+  });
+}
 
 function setUIZoom(factor, { persist = true, announce = false } = {}) {
   const next = Math.max(UI_ZOOM_MIN, Math.min(UI_ZOOM_MAX, Math.round(Number(factor) * 10) / 10));
@@ -1089,16 +1118,38 @@ function normalizeExtension(value) {
   return String(value || '').trim().toLowerCase().replace(/^\.+/, '');
 }
 
+// Below 900px the sidebar and inspector become overlay drawers (one open at
+// a time) instead of grid columns; the same toolbar buttons drive both modes.
+const compactLayoutQuery = window.matchMedia('(max-width: 900px)');
+const isCompactLayout = () => compactLayoutQuery.matches;
+const isTouchEvent = event => event.pointerType === 'touch' ||
+  (event.pointerType === undefined && window.matchMedia('(pointer: coarse)').matches);
+
 function renderPanels() {
-  document.body.classList.toggle('sidebar-hidden', !state.sidebarVisible);
-  document.body.classList.toggle('inspector-hidden', !state.inspectorVisible);
-  $('#toggleSidebarButton').classList.toggle('active', state.sidebarVisible);
-  $('#toggleInspectorButton').classList.toggle('active', state.inspectorVisible);
+  const compact = isCompactLayout();
+  document.body.classList.toggle('compact-layout', compact);
+  document.body.classList.toggle('drawer-sidebar', compact && state.openDrawer === 'sidebar');
+  document.body.classList.toggle('drawer-inspector', compact && state.openDrawer === 'inspector');
+  document.body.classList.toggle('sidebar-hidden', !compact && !state.sidebarVisible);
+  document.body.classList.toggle('inspector-hidden', !compact && !state.inspectorVisible);
+  $('#toggleSidebarButton').classList.toggle('active', compact ? state.openDrawer === 'sidebar' : state.sidebarVisible);
+  $('#toggleInspectorButton').classList.toggle('active', compact ? state.openDrawer === 'inspector' : state.inspectorVisible);
+}
+
+function closeDrawers() {
+  if (!state.openDrawer) return;
+  state.openDrawer = null;
+  renderPanels();
 }
 
 function togglePanel(panel) {
-  if (panel === 'sidebar') state.sidebarVisible = !state.sidebarVisible;
-  if (panel === 'inspector') state.inspectorVisible = !state.inspectorVisible;
+  if (isCompactLayout()) {
+    state.openDrawer = state.openDrawer === panel ? null : panel;
+  } else if (panel === 'sidebar') {
+    state.sidebarVisible = !state.sidebarVisible;
+  } else if (panel === 'inspector') {
+    state.inspectorVisible = !state.inspectorVisible;
+  }
   renderPanels();
 }
 
@@ -2656,11 +2707,17 @@ function closePreview({ commitSelection = true, skipDiscard = false } = {}) {
   state.textSession = null;
   $('#previewModal').classList.add('hidden');
   $('#modalMedia').innerHTML = '';
-  if (commitSelection && finalId && itemById(finalId)) {
-    state.selectedFolderCard = null;
-    state.selected = new Set([finalId]);
-    updateCardSelectionStyles();
-    renderInspector();
+  if (finalId && itemById(finalId)) {
+    // Collapse the selection onto the final preview item only when the
+    // preview was entered with a selection. A touch tap previews without
+    // selecting; committing here would turn the next tap into toggle-select
+    // instead of another preview.
+    if (commitSelection && state.selected.size) {
+      state.selectedFolderCard = null;
+      state.selected = new Set([finalId]);
+      updateCardSelectionStyles();
+      renderInspector();
+    }
     requestAnimationFrame(() => {
       const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(finalId)}"]`);
       card?.focus({ preventScroll: true });
@@ -2782,6 +2839,8 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   renderFolderTree();
   renderLocation();
   if (refreshView) refresh({ reset: true, preserveScroll: false });
+  // Picking a destination from the drawer should reveal the result.
+  if (isCompactLayout()) closeDrawers();
   return true;
 }
 
@@ -3904,6 +3963,9 @@ function bindMarqueeSelection(paneId, scroller) {
   };
   scroller.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
+    // Touch pointers scroll and tap; rubber-band selection is mouse/pen only
+    // (preventDefault here would kill native touch scrolling entirely).
+    if (event.pointerType === 'touch') return;
     if (activeMarquee) cancelMarquee();
     if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a')) return;
     const box = scroller.getBoundingClientRect();
@@ -4019,6 +4081,7 @@ function bindPaneEvents(paneId) {
   });
   query('#itemGrid').addEventListener('click', event => {
     activatePane(paneId);
+    if (Date.now() < suppressGridClickUntil) return;
     const tagAction = event.target.closest('[data-tag-action]');
     if (tagAction) {
       executeTagManagerAction(tagAction.dataset.tagAction, {
@@ -4027,11 +4090,75 @@ function bindPaneEvents(paneId) {
       }).catch(error => toast(`标签操作失败：${error.message}`, 4200));
       return;
     }
+    const touch = isTouchEvent(event);
     const folder = event.target.closest('.folder-card');
-    if (folder) { selectFolderCard(folder.dataset.openFolder); return; }
+    if (folder) {
+      // Touch: a tap enters the folder directly (no double-tap on phones).
+      if (touch && !state.selected.size) { navigate({ kind: 'folder', id: folder.dataset.openFolder }); return; }
+      selectFolderCard(folder.dataset.openFolder);
+      return;
+    }
     const card = event.target.closest('.item-card');
-    if (card) selectItem(card.dataset.id, event.metaKey || event.ctrlKey, event.shiftKey);
+    if (card) {
+      if (touch) {
+        // Touch: tap previews; with a selection active it toggles instead.
+        if (state.selected.size) selectItem(card.dataset.id, true);
+        else openPreview(card.dataset.id);
+        return;
+      }
+      selectItem(card.dataset.id, event.metaKey || event.ctrlKey, event.shiftKey);
+      return;
+    }
   });
+  // Tap on empty space (grid gaps and the blank area below the last row)
+  // exits touch multi-select — the marquee's click-to-clear path is disabled
+  // for touch pointers, and #itemGrid does not cover the trailing space.
+  query('#gridScroller').addEventListener('click', event => {
+    if (!isTouchEvent(event) || Date.now() < suppressGridClickUntil) return;
+    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a, [data-tag-action]')) return;
+    if (!(state.selected.size || state.selectedFolderCard) || !confirmDiscardChanges()) return;
+    state.selected.clear();
+    state.selectedFolderCard = null;
+    updateCardSelectionStyles();
+    renderInspector();
+  });
+  // Long-press: first use selects (entering multi-select), later ones open
+  // the context menu. The browser's synthetic contextmenu/click that follow
+  // a touch long-press are suppressed via the shared timestamp.
+  let longPress = null;
+  const cancelLongPress = () => {
+    if (longPress) clearTimeout(longPress.timer);
+    longPress = null;
+  };
+  query('#itemGrid').addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch') return;
+    const card = event.target.closest('.item-card, .folder-card');
+    if (!card) return;
+    cancelLongPress();
+    longPress = {
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: setTimeout(() => {
+        longPress = null;
+        touchLongPressActive = true;
+        if (!activatePane(paneId)) return;
+        triggerTouchLongPress(card, paneId, { x: event.clientX, y: event.clientY });
+      }, 480)
+    };
+  });
+  query('#itemGrid').addEventListener('pointermove', event => {
+    if (longPress && Math.hypot(event.clientX - longPress.startX, event.clientY - longPress.startY) > 12) cancelLongPress();
+  });
+  const settleLongPress = () => {
+    cancelLongPress();
+    if (touchLongPressActive) {
+      touchLongPressActive = false;
+      // Swallow only the synthetic click that follows this lift-off.
+      suppressGridClickUntil = Date.now() + 400;
+    }
+  };
+  query('#itemGrid').addEventListener('pointerup', settleLongPress);
+  query('#itemGrid').addEventListener('pointercancel', settleLongPress);
   query('#itemGrid').addEventListener('change', async event => {
     if (!activatePane(paneId)) return;
     const select = event.target.closest('[data-tag-add-group]');
@@ -4060,6 +4187,12 @@ function bindPaneEvents(paneId) {
     if (card) openPreview(card.dataset.id);
   });
   query('#itemGrid').addEventListener('contextmenu', event => {
+    // Touch long-press menus are driven by triggerTouchLongPress; swallow the
+    // browser's own long-press contextmenu so it cannot double-open.
+    if (touchLongPressActive || Date.now() < suppressGridClickUntil) {
+      event.preventDefault();
+      return;
+    }
     if (!activatePane(paneId)) {
       event.preventDefault();
       return;
@@ -4272,6 +4405,18 @@ function bindEvents() {
   $('#newWindowButton').addEventListener('click', () => window.eagleMV.newWindow().catch(error => toast(`无法新建窗口：${error.message}`, 4000)));
   $('#toggleSidebarButton').addEventListener('click', () => togglePanel('sidebar'));
   $('#toggleInspectorButton').addEventListener('click', () => togglePanel('inspector'));
+  $('#drawerBackdrop').addEventListener('click', closeDrawers);
+  // Touch has no Esc: the multi-select panel needs an explicit way out.
+  $('#clearSelectionButton').addEventListener('click', () => {
+    if (!confirmDiscardChanges()) return;
+    state.selected.clear();
+    state.selectedFolderCard = null;
+    updateCardSelectionStyles();
+    renderInspector();
+    if (isCompactLayout()) closeDrawers();
+  });
+  // Rotating a tablet between drawer and column modes re-renders the panels.
+  compactLayoutQuery.addEventListener?.('change', () => renderPanels());
   $('#generationMetadata').addEventListener('click', async event => {
     const button = event.target.closest('[data-metadata-copy]');
     if (!button) return;
@@ -4590,9 +4735,31 @@ function bindEvents() {
     const anchor = { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
     changePreviewZoom(event.deltaY < 0 ? .15 : -.15, anchor);
   }, { passive: false });
+  // Preview pointers: one finger/mouse pans a zoomed image, two fingers pinch
+  // to zoom around their midpoint (works from fit mode too).
+  const previewPointers = new Map();
+  let pinchBase = null;
+  const pinchGeometry = () => {
+    const [first, second] = [...previewPointers.values()];
+    return {
+      distance: Math.hypot(second.x - first.x, second.y - first.y),
+      centerX: (first.x + second.x) / 2,
+      centerY: (first.y + second.y) / 2
+    };
+  };
   $('#modalMedia').addEventListener('pointerdown', event => {
     const image = previewImage();
-    if (!image || state.previewZoom.mode === 'fit' || event.button !== 0) return;
+    if (!image) return;
+    if (event.pointerType === 'touch') {
+      previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      if (previewPointers.size === 2) {
+        state.previewZoom.dragging = false;
+        pinchBase = { ...pinchGeometry(), scale: state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale };
+        return;
+      }
+    }
+    if (state.previewZoom.mode === 'fit' || event.button !== 0) return;
     state.previewZoom.dragging = true;
     state.previewZoom.startX = event.clientX;
     state.previewZoom.startY = event.clientY;
@@ -4602,17 +4769,33 @@ function bindEvents() {
     renderPreviewZoom();
   });
   $('#modalMedia').addEventListener('pointermove', event => {
+    if (previewPointers.has(event.pointerId)) {
+      previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (previewPointers.size === 2 && pinchBase) {
+        const current = pinchGeometry();
+        if (pinchBase.distance > 0 && current.distance > 0) {
+          const box = event.currentTarget.getBoundingClientRect();
+          const anchor = { x: current.centerX - box.left - box.width / 2, y: current.centerY - box.top - box.height / 2 };
+          const targetScale = Math.max(.25, Math.min(6, pinchBase.scale * (current.distance / pinchBase.distance)));
+          changePreviewZoom(targetScale - (state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale), anchor);
+        }
+        return;
+      }
+    }
     if (!state.previewZoom.dragging) return;
     state.previewZoom.x = state.previewZoom.originX + event.clientX - state.previewZoom.startX;
     state.previewZoom.y = state.previewZoom.originY + event.clientY - state.previewZoom.startY;
     renderPreviewZoom();
   });
-  $('#modalMedia').addEventListener('pointerup', event => {
+  const releasePreviewPointer = event => {
+    if (previewPointers.delete(event.pointerId) && previewPointers.size < 2) pinchBase = null;
     if (!state.previewZoom.dragging) return;
     state.previewZoom.dragging = false;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     renderPreviewZoom();
-  });
+  };
+  $('#modalMedia').addEventListener('pointerup', releasePreviewPointer);
+  $('#modalMedia').addEventListener('pointercancel', releasePreviewPointer);
 
   document.addEventListener('paste', event => {
     if (Date.now() < state.suppressPasteUntil) {

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' eaglemv: data:; media-src 'self' eaglemv:; style-src 'self' 'unsafe-inline'; script-src 'self'">
   <title>Eagle MultiView</title>
   <link rel="stylesheet" href="styles.css">
@@ -135,6 +135,7 @@
     <div id="sidebarResizer" class="workspace-resizer workspace-resizer-sidebar" data-resizer="sidebar" role="separator" aria-orientation="vertical" aria-label="调整文件夹栏宽度"></div>
     <div id="inspectorResizer" class="workspace-resizer workspace-resizer-inspector" data-resizer="inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度"></div>
 
+    <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
     <aside class="inspector">
       <div id="noSelection" class="inspector-empty">
         <div class="inspector-placeholder"><img src="brand-icon.png" alt=""></div>
@@ -222,6 +223,7 @@
         </label>
         <button id="batchTagButton" class="primary-button">添加标签</button>
         <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
+        <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
       </div>
     </aside>
   </main>
