@@ -4220,6 +4220,11 @@ function bindEvents() {
       requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
       return;
     }
+    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'F2' && state.selected.size === 1) {
+      event.preventDefault();
+      requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
+      return;
+    }
     if (primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') { event.preventDefault(); $('#searchInput').focus(); }
     if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'l') { event.preventDefault(); togglePanel('sidebar'); }
     if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); togglePanel('inspector'); }
@@ -4231,8 +4236,18 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); navigate({ kind: 'folder', id: state.selectedFolderCard }); }
     else if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
-    if (!editable && event.code === 'Space' && previewOpen) { event.preventDefault(); closePreview(); }
-    else if (!editable && event.code === 'Space' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
+    if (!editable && event.code === 'Space' && previewOpen) {
+      event.preventDefault();
+      // Eagle: space toggles playback while a video/audio preview is open;
+      // for stills it keeps closing the preview.
+      const media = $('#modalMedia video, #modalMedia audio');
+      if (media) media.paused ? media.play().catch(() => {}) : media.pause();
+      else closePreview();
+    } else if (!editable && event.code === 'Space' && state.selected.size) {
+      event.preventDefault();
+      const first = sortedItems().find(item => state.selected.has(item.id));
+      if (first) openPreview(first.id);
+    }
     if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o' && (state.previewId || state.selected.size === 1)) {
       event.preventDefault();
       openSelectionInNewWindow([state.previewId || [...state.selected][0]]);
