@@ -122,6 +122,34 @@ test('inspector metadata auto-saves after a quiet edit and on field exit', () =>
   assert.equal(bindings.includes("$('#saveButton')"), false);
 });
 
+test('inspector auto-save stays behind the live editor and queues in-flight typing', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const savingStart = source.indexOf('function setInspectorSaving(');
+  const savingEnd = source.indexOf('\nasync function saveInspector', savingStart);
+  const savingHandler = source.slice(savingStart, savingEnd);
+  assert.equal(savingHandler.includes('control.disabled'), false);
+  assert.equal(savingHandler.includes('#itemAnnotation'), false);
+
+  const saveStart = source.indexOf('async function saveInspector(');
+  const saveEnd = source.indexOf('\nasync function setPinned', saveStart);
+  const saveHandler = source.slice(saveStart, saveEnd);
+  const successStart = saveHandler.indexOf('const contextStillActive');
+  const successEnd = saveHandler.indexOf("toast('修改已同步到所有窗口')", successStart);
+  const successHandler = saveHandler.slice(successStart, successEnd);
+  assert.ok(successStart >= 0);
+  assert.ok(successHandler.includes('pane.selectedBase = structuredClone(result.item)'));
+  assert.ok(successHandler.includes('state.inspectorDirty = Object.keys(collectPatch()).length > 0'));
+  assert.equal(successHandler.includes('renderInspector()'), false);
+  assert.ok(saveHandler.includes('if (queueFollowUp) queueInspectorAutoSave()'));
+
+  const scheduleStart = source.indexOf('const scheduleChangedInspectorRender');
+  const scheduleEnd = source.indexOf('\nfunction queueChangedInspectorRender', scheduleStart);
+  const scheduleHandler = source.slice(scheduleStart, scheduleEnd);
+  assert.ok(scheduleHandler.includes('state.inspectorSaving'));
+  assert.ok(scheduleHandler.includes('state.inspectorEditing'));
+  assert.ok(scheduleHandler.indexOf('return;') < scheduleHandler.indexOf('renderInspector();'));
+});
+
 test('window close waits for an inspector save instead of abandoning an in-flight write', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('window.eagleMV.onRequestClose');

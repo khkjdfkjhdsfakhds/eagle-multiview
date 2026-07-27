@@ -105,6 +105,7 @@ const state = {
   selectedBase: null,
   inspectorDirty: false,
   inspectorSaving: false,
+  inspectorEditing: false,
   inspectorAutoSaveTimer: null,
   query: createQuery(),
   sort: 'default',
@@ -367,6 +368,12 @@ function withActivePane(id, callback) {
   state.activePaneId = id;
   try { return callback(); } finally { state.activePaneId = previous; }
 }
+function isEditableElement(target = document.activeElement) {
+  return Boolean(target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
+}
+function isInspectorEditor(target = document.activeElement) {
+  return Boolean(target?.closest?.('#inspectorContent input, #inspectorContent textarea, #inspectorContent select'));
+}
 function paneRoot(id = state.activePaneId) {
   return document.querySelector(`.content-pane[data-pane-id="${CSS.escape(id)}"]`);
 }
@@ -458,8 +465,12 @@ const schedulePaneGridRender = debounceByKey(paneId => {
 const scheduleChangedInspectorRender = debounce(() => {
   const external = pendingInspectorExternalChange;
   pendingInspectorExternalChange = false;
-  if (state.inspectorDirty && external) $('#staleBanner').classList.remove('hidden');
-  else renderInspector();
+  const editing = state.inspectorEditing || isInspectorEditor();
+  if (state.inspectorDirty || state.inspectorSaving || editing) {
+    if (external) $('#staleBanner').classList.remove('hidden');
+    return;
+  }
+  renderInspector();
 }, 24);
 
 function queueChangedInspectorRender(external) {
@@ -960,8 +971,7 @@ function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
   if (!chips) return;
-  const disabled = kind === 'item' && state.inspectorSaving;
-  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag, { disabled })).join('');
+  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag)).join('');
   const input = $(config.input);
   if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
 }
@@ -2027,6 +2037,7 @@ function renderInspector() {
     $('#batchRating').value = '';
     state.selectedBase = null;
     state.inspectorDirty = false;
+    state.inspectorEditing = false;
     clearInspectorAutoSave();
     state.commentsToken += 1;
     state.comments = [];
@@ -2052,13 +2063,17 @@ function renderInspector() {
     }
     state.selectedBase = null;
     state.inspectorDirty = false;
+    state.inspectorEditing = false;
     clearInspectorAutoSave();
     return;
   }
   const id = [...state.selected][0];
   const item = itemById(id);
   if (!item) return;
-  if (state.selectedBase?.id !== id) clearInspectorAutoSave();
+  if (state.selectedBase?.id !== id) {
+    clearInspectorAutoSave();
+    state.inspectorEditing = false;
+  }
   state.selectedBase = structuredClone(item);
   state.inspectorDirty = false;
   $('#staleBanner').classList.add('hidden');
@@ -2295,7 +2310,6 @@ async function loadGenerationMetadata(item) {
 }
 
 function markDirty() {
-  if (state.inspectorSaving) return;
   state.inspectorDirty = Object.keys(collectPatch()).length > 0;
   if (state.inspectorDirty) queueInspectorAutoSave();
   else clearInspectorAutoSave();
@@ -2342,11 +2356,10 @@ function collectPatch() {
 
 function setInspectorSaving(saving) {
   state.inspectorSaving = Boolean(saving);
-  for (const selector of ['#itemName', '#itemTagInput', '#itemRating', '#itemAnnotation', '#itemURL']) {
-    const control = $(selector);
-    if (control) control.disabled = state.inspectorSaving;
-  }
-  for (const button of document.querySelectorAll('#itemTagChips [data-remove-tag]')) button.disabled = state.inspectorSaving;
+  // Auto-save must stay invisible to the editor. Disabling a focused control
+  // makes Chromium blur it immediately, and the next Backspace then falls
+  // through to the workspace trash shortcut. Keep the live form editable;
+  // saveInspector owns an immutable patch and queues anything typed in-flight.
   $('#paneLayoutButton').disabled = state.inspectorSaving;
   for (const option of $('#paneLayoutPopover').querySelectorAll('[data-layout]')) option.disabled = state.inspectorSaving;
   $('#inspectorContent').classList.toggle('saving', state.inspectorSaving);
@@ -2369,6 +2382,7 @@ async function saveInspector(force = false) {
   let overwrite = Boolean(force);
   const operationToken = beginForegroundOperation('正在安全保存素材信息…', { key: 'inspector-save' });
   if (!operationToken) return false;
+  let queueFollowUp = false;
   setInspectorSaving(true);
   setSyncStatus('正在安全保存…');
   try {
@@ -2393,10 +2407,15 @@ async function saveInspector(force = false) {
       }
       const index = pane.items.findIndex(item => item.id === id);
       if (index >= 0) pane.items[index] = result.item;
-      state.inspectorDirty = false;
-      if (state.activePaneId === paneId) {
+      const contextStillActive = state.activePaneId === paneId
+        && pane.selected.size === 1
+        && pane.selected.has(id)
+        && state.library?.path === libraryPath;
+      if (contextStillActive) {
+        pane.selectedBase = structuredClone(result.item);
+        state.inspectorDirty = Object.keys(collectPatch()).length > 0;
+        queueFollowUp = state.inspectorDirty;
         renderGrid();
-        renderInspector();
       } else {
         schedulePaneGridRender(paneId);
       }
@@ -2408,6 +2427,7 @@ async function saveInspector(force = false) {
     return false;
   } finally {
     setInspectorSaving(false);
+    if (queueFollowUp) queueInspectorAutoSave();
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
@@ -3998,7 +4018,7 @@ async function renameSelection() {
 }
 
 function requestRenameSelection() {
-  const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  const editable = isEditableElement();
   const previewOpen = !$('#previewModal').classList.contains('hidden');
   if (editable || previewOpen) return Promise.resolve(false);
   return renameSelection();
@@ -5482,7 +5502,7 @@ function bindEvents() {
       event.preventDefault();
       return;
     }
-    const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    const editable = isEditableElement(event.target) || isEditableElement() || state.inspectorEditing;
     if (editable || blockingSurfaceOpen() || !$('#previewModal').classList.contains('hidden')) return;
     if (!hasCapability('importLocal')) return;
     const clipboardFiles = [...(event.clipboardData?.files || [])];
@@ -5499,8 +5519,19 @@ function bindEvents() {
     importFiles(paths.length ? paths : null, paths.length ? 'paste-files' : 'clipboard');
   });
 
+  document.addEventListener('focusin', event => {
+    if (isInspectorEditor(event.target)) state.inspectorEditing = true;
+    else if (!event.target.closest?.('#inspectorContent')) state.inspectorEditing = false;
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!event.target.closest?.('#inspectorContent')) state.inspectorEditing = false;
+  }, true);
+
   document.addEventListener('keydown', event => {
-    const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    // event.target is the most reliable source; activeElement is retained for
+    // synthetic/app-menu events. inspectorEditing is a final safety net if a
+    // browser or future render unexpectedly blurs the editor between keys.
+    const editable = isEditableElement(event.target) || isEditableElement() || state.inspectorEditing;
     const previewOpen = !$('#previewModal').classList.contains('hidden');
     if (event.key === 'Escape') {
       if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }

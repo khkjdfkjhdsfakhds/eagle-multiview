@@ -205,3 +205,9 @@ test('a narrow client says when the host is gone', () => {
   assert.ok(compact.includes('body.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }'));
   assert.ok(styles.includes('.offline-banner { display: none; }'), 'wide windows keep the status bar and skip the banner');
 });
+
+test('primary workspace surfaces scroll vertically only', () => {
+  assert.match(styles, /\.grid-scroller\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+  assert.match(styles, /\.sidebar\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+  assert.match(styles, /\.inspector\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+});

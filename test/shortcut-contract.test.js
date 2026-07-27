@@ -174,6 +174,18 @@ test('remove, trash, preview and paste shortcuts cannot fall through to the wron
   assert.ok(renderer.includes('if (Date.now() < state.suppressPasteUntil)'));
 });
 
+test('inspector editing remains a hard stop for the Backspace trash shortcut', () => {
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownEnd = renderer.indexOf('\n  });\n}', keydownStart);
+  const handler = renderer.slice(keydownStart, keydownEnd);
+  const editableGuard = handler.indexOf('isEditableElement(event.target) || isEditableElement() || state.inspectorEditing');
+  const plainDelete = handler.lastIndexOf('deleteKey && !editable && !previewOpen && !primaryKey');
+  assert.ok(editableGuard >= 0);
+  assert.ok(plainDelete > editableGuard);
+  assert.ok(renderer.includes("document.addEventListener('focusin'"));
+  assert.ok(renderer.includes("document.addEventListener('pointerdown'"));
+});
+
 test('last-used folder state is promoted and broadcast to every window', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
