@@ -1359,24 +1359,26 @@ function focusSelectedCard() {
   return selectedFolder || selectedItem || root?.querySelector('#itemGrid .folder-card, #itemGrid .item-card');
 }
 
+function directionalCard(cards, current, key) {
+  if (!current) return null;
+  const origin = current.getBoundingClientRect();
+  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
+  const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
+  return cards.filter(card => card !== current).map(card => {
+    const box = card.getBoundingClientRect();
+    const primary = horizontal ? box.left - origin.left : box.top - origin.top;
+    const secondary = horizontal ? Math.abs(box.top - origin.top) : Math.abs(box.left - origin.left);
+    return { card, primary, secondary };
+  }).filter(candidate => Math.sign(candidate.primary) === direction)
+    .sort((a, b) => (Math.abs(a.primary) + a.secondary * 2) - (Math.abs(b.primary) + b.secondary * 2))[0]?.card || null;
+}
+
 function moveCardFocus(key) {
   const cards = [...(paneRoot()?.querySelectorAll('#itemGrid .folder-card, #itemGrid .item-card') || [])];
   if (!cards.length) return;
   const current = focusSelectedCard();
   let next = current || cards[0];
-  if (current) {
-    const origin = current.getBoundingClientRect();
-    const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
-    const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
-    const candidates = cards.filter(card => card !== current).map(card => {
-      const box = card.getBoundingClientRect();
-      const primary = horizontal ? box.left - origin.left : box.top - origin.top;
-      const secondary = horizontal ? Math.abs(box.top - origin.top) : Math.abs(box.left - origin.left);
-      return { card, primary, secondary };
-    }).filter(candidate => Math.sign(candidate.primary) === direction)
-      .sort((a, b) => (Math.abs(a.primary) + a.secondary * 2) - (Math.abs(b.primary) + b.secondary * 2));
-    next = candidates[0]?.card || current;
-  }
+  if (current) next = directionalCard(cards, current, key) || current;
   if (next.classList.contains('folder-card')) selectFolderCard(next.dataset.openFolder);
   else selectItem(next.dataset.id);
   requestAnimationFrame(() => {
@@ -3080,6 +3082,25 @@ async function movePreview(delta, { fromSlideshow = false } = {}) {
   // slideshow that treated that as success would reopen the same prompt every
   // few seconds.
   return Boolean(next) && state.previewId !== before;
+}
+
+function previewDirectionalItemId(key) {
+  const root = paneRoot();
+  const current = root?.querySelector(`#itemGrid .item-card[data-id="${CSS.escape(state.previewId)}"]`);
+  const cards = [...(root?.querySelectorAll('#itemGrid .item-card') || [])];
+  return directionalCard(cards, current, key)?.dataset.id || null;
+}
+
+async function movePreviewVertically(key) {
+  let nextId = previewDirectionalItemId(key);
+  if (!nextId && key === 'ArrowDown' && state.hasMore) {
+    await refresh({ reset: false, preserveScroll: true });
+    nextId = previewDirectionalItemId(key);
+  }
+  const before = state.previewId;
+  if (nextId) await openPreview(nextId);
+  if (slideshowPlaying()) scheduleSlideshowStep();
+  return Boolean(nextId) && state.previewId !== before;
 }
 
 // --- Preview view options --------------------------------------------------
@@ -5704,8 +5725,14 @@ function bindEvents() {
       event.preventDefault();
       saveInspector();
     }
-    if (previewOpen && !editable && event.key === 'ArrowLeft') { event.preventDefault(); movePreview(-1); }
-    if (previewOpen && !editable && event.key === 'ArrowRight') { event.preventDefault(); movePreview(1); }
+    if (previewOpen && !editable && !primaryKey && !event.shiftKey && !event.altKey &&
+        ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault();
+      if (event.key === 'ArrowLeft') movePreview(-1);
+      else if (event.key === 'ArrowRight') movePreview(1);
+      else movePreviewVertically(event.key);
+      return;
+    }
     if (!editable && !primaryKey && !event.altKey && !event.shiftKey && /^[0-5]$/.test(event.key) && (previewOpen || state.selected.size)) {
       event.preventDefault();
       // While previewing, the number keys rate what is on screen; the grid
