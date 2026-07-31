@@ -15,7 +15,7 @@ const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 // slider vanished at ordinary zoom levels. It must only disappear in the
 // phone/tablet drawer layout, never because the window was zoomed.
 
-test('the size slider only hides in the compact drawer layout', () => {
+test('the size slider stays available in every layout', () => {
   const tabletStart = styles.indexOf('@media (max-width: 1120px)');
   const drawerStart = styles.indexOf('@media (max-width: 900px)', tabletStart);
   assert.ok(tabletStart >= 0 && drawerStart > tabletStart, 'the <=1120px media block still exists before the drawer block');
@@ -24,7 +24,9 @@ test('the size slider only hides in the compact drawer layout', () => {
   assert.ok(!tabletBlock.includes('.toolbar-control-divider'), 'the divider must stay visible with the slider');
 
   const drawerBlock = styles.slice(drawerStart, styles.indexOf('@media (max-width: 600px)', drawerStart));
-  assert.ok(drawerBlock.includes('.toolbar .size-control'), 'the compact drawer layout still hides the slider');
+  assert.ok(!drawerBlock.includes('.toolbar .size-control'), 'the compact drawer layout no longer hides the slider');
+  assert.ok(!drawerBlock.includes('.toolbar .toolbar-control-divider'), 'the divider stays with the slider on compact layouts');
+  assert.ok(drawerBlock.includes('.toolbar .pane-layout-control'), 'the pane-layout switch stays touch-only');
 });
 
 test('the workspace resizer stays above the toolbar so the whole line is draggable', () => {

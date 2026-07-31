@@ -149,6 +149,11 @@ button:disabled { cursor: default; }
   justify-content: center;
   gap: 9px;
 }
+/* Wrapped to two rows: the cluster drops down as a unit and hugs the left
+   edge of its row, so the buttons, divider and slider read left-to-right and
+   nothing floats right-aligned on the second row. */
+.toolbar.wrapped .toolbar-cluster { flex: 0 0 auto; }
+.toolbar.wrapped .toolbar-center { justify-content: flex-start; }
 .toolbar-control-divider { flex: 0 0 auto; width: 1px; height: 20px; background: rgba(247, 248, 248, .1); }
 .sidebar-app-title {
   position: sticky;
@@ -2156,10 +2161,14 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   /* The selection strip covers the status bar; give the last row room to
      scroll clear of it. */
   body.selection-bar-open .grid-scroller { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
-  .toolbar .size-control,
+  /* The thumbnail slider and its divider are intentionally kept in the
+     compact layout too: with the new toolbar-cluster structure they ride on
+     the second row as one unit and fit phone widths without clipping. The
+     pane-layout switch and the new-window text stay hidden on touch (layout
+     switching lives in the long-press menu and the grid pinch still resizes
+     thumbnails). */
   .toolbar .pane-layout-control,
-  .toolbar #newWindowButton span,
-  .toolbar .toolbar-control-divider { display: none; }
+  .toolbar #newWindowButton span { display: none; }
   .toolbar .new-create-button span:not(.new-button-chevron) { display: none; }
   /* One pane at a time down here, so the "栏 N" badge is noise. */
   .pane-badge { display: none; }

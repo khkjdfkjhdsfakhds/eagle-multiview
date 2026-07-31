@@ -1292,6 +1292,9 @@ function renderPanels() {
   // Rotating into or out of compact mode changes whether the selection strip
   // belongs on screen at all.
   renderSelectionBar();
+  // Hiding/showing a panel resizes the content column and can unwrap the
+  // toolbar; keep the centered-button-group wrap state in sync.
+  updateToolbarWrapState();
 }
 
 function closeDrawers() {
@@ -4357,6 +4360,29 @@ async function handlePaneItemDrop(context) {
   return true;
 }
 
+// The toolbar's centered button group spans the whole gap between the left
+// controls and the slider on one row. When the toolbar wraps to two rows the
+// whole cluster (buttons + divider + slider) drops down as a unit, and it
+// then hugs its own content on the left of the second row instead of still
+// spanning the full width (which would leave a lone right-aligned slider).
+function updateToolbarWrapState() {
+  const toolbar = $('.toolbar');
+  const search = $('.search-box');
+  const cluster = $('.toolbar-cluster');
+  if (!toolbar || !search || !cluster) return;
+  const searchTop = Math.round(search.getBoundingClientRect().top);
+  const clusterTop = Math.round(cluster.getBoundingClientRect().top);
+  toolbar.classList.toggle('wrapped', clusterTop > searchTop);
+}
+
+function bindToolbarWrapState() {
+  // Window resizes cover zoom changes and breakpoint switches; panel drags
+  // and panel visibility toggles call updateToolbarWrapState() directly in
+  // their own handlers, so the class can never go stale.
+  updateToolbarWrapState();
+  window.addEventListener('resize', updateToolbarWrapState);
+}
+
 function bindWorkspaceResizers() {
   const root = document.documentElement;
   const workspace = $('.workspace');
@@ -4384,6 +4410,7 @@ function bindWorkspaceResizers() {
         // floors with an item selected).
         const next = Math.max(kind === 'sidebar' ? 115 : 125, Math.min(max, startValue + delta));
         root.style.setProperty(property, `${Math.round(next)}px`);
+        updateToolbarWrapState();
       };
       const end = () => {
         handle.classList.remove('dragging');
@@ -5016,6 +5043,7 @@ function bindPaneEvents(paneId) {
 
 function bindEvents() {
   bindWorkspaceResizers();
+  bindToolbarWrapState();
   document.addEventListener('dragend', clearDragUI, true);
   document.addEventListener('drop', () => setTimeout(clearDragUI, 0), true);
   $('#newButton').addEventListener('click', event => {

@@ -56,7 +56,8 @@ test('a compact selection shows the bottom strip and a single way to clear', () 
   assert.ok(renderer.includes('function renderSelectionBar()'));
   assert.ok(renderer.includes('const visible = isCompactLayout() && count > 0;'), 'the strip is compact-only');
   assert.ok(renderer.includes('function renderInspector() {\n  renderSelectionBar();'), 'every selection change repaints it');
-  assert.ok(renderer.includes('  renderSelectionBar();\n}'), 'so does rotating in or out of compact mode');
+  assert.ok(renderer.includes('  renderSelectionBar();'), 'so does rotating in or out of compact mode');
+  assert.ok(renderer.includes('  updateToolbarWrapState();\n}'), 'panel visibility changes resync the toolbar wrap state');
   assert.ok(renderer.includes("$('#selectionBarDetails').addEventListener('click', () => {\n    state.openDrawer = 'inspector';"));
   assert.ok(styles.includes('body.selection-bar-open .grid-scroller'), 'the grid clears the strip');
   assert.ok(styles.includes('@media (min-width: 901px) { .selection-bar { display: none; } }'));
