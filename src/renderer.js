@@ -4374,8 +4374,12 @@ function bindWorkspaceResizers() {
         const other = kind === 'sidebar'
           ? parseFloat(getComputedStyle(root).getPropertyValue('--inspector-width')) || 304
           : parseFloat(getComputedStyle(root).getPropertyValue('--sidebar-width')) || 234;
-        const max = Math.max(kind === 'sidebar' ? 170 : 240, rect.width - other - 340);
-        const next = Math.max(kind === 'sidebar' ? 150 : 220, Math.min(max, startValue + delta));
+        // The middle content column's grid minimum is 400px on wide windows
+        // and 360px in the narrow (<=1120px) layout; keep the drag clamp in
+        // step with the grid so an expanded panel never pushes it into overflow.
+        const contentMin = rect.width <= 1120 ? 360 : 400;
+        const max = Math.max(kind === 'sidebar' ? 170 : 240, rect.width - other - contentMin);
+        const next = Math.max(150, Math.min(max, startValue + delta));
         root.style.setProperty(property, `${Math.round(next)}px`);
       };
       const end = () => {

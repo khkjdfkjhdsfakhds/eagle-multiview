@@ -568,7 +568,7 @@ select:hover { border-color: rgba(247, 248, 248, .14); }
 .workspace-resizer {
   --resizer-width: 9px;
   position: absolute;
-  z-index: 8;
+  z-index: 20;
   top: 0;
   bottom: 0;
   width: var(--resizer-width);
@@ -2046,8 +2046,6 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   body.sidebar-hidden .workspace { grid-template-columns: 0 minmax(360px, 1fr) var(--inspector-width); }
   body.inspector-hidden .workspace { grid-template-columns: var(--sidebar-width) minmax(360px, 1fr) 0; }
   body.sidebar-hidden.inspector-hidden .workspace { grid-template-columns: 0 minmax(360px, 1fr) 0; }
-  .size-control { display: none; }
-  .toolbar-control-divider { display: none; }
   .search-box { width: min(350px, 34vw); }
   .titlebar { padding-left: 96px; }
   .new-window-button > span:not(.new-button-chevron) { display: none; }
