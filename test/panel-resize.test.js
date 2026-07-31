@@ -60,6 +60,19 @@ test('the toolbar stays one row whenever the middle column has room', () => {
   assert.ok(styles.includes('flex-wrap: wrap;'), 'the toolbar still wraps when space genuinely runs out');
 });
 
+test('the toolbar center block is a unit that wraps whole and centers the buttons', () => {
+  const indexHTML = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+  const cluster = indexHTML.slice(indexHTML.indexOf('class="toolbar-cluster"'), indexHTML.indexOf('</section>', indexHTML.indexOf('class="toolbar-cluster"')));
+  assert.ok(cluster.includes('toolbar-center'), 'the cluster wraps the centered button group');
+  assert.ok(cluster.includes('toolbar-control-divider'), 'the divider travels with the cluster');
+  assert.ok(cluster.includes('size-control'), 'the slider travels with the cluster so it never drops to a row alone');
+  assert.ok(!indexHTML.includes('class="toolbar-spacer"'), 'the old push-right spacer is gone');
+  const clusterRule = ruleBlock(styles, '.toolbar .toolbar-cluster {');
+  const centerRule = ruleBlock(styles, '.toolbar .toolbar-center {');
+  assert.ok(clusterRule.includes('flex: 1 1 auto;'), 'the cluster spans the space between the left and right zones');
+  assert.ok(centerRule.includes('justify-content: center;'), 'the button group centers within that space');
+});
+
 test('narrow inspectors shrink inputs and ellipsize action buttons', () => {
   const inputRule = ruleBlock(styles, '.inspector input, .inspector textarea { width: 100%;');
   assert.ok(inputRule.includes('min-width: 0;'), 'inspector inputs may shrink below their intrinsic width');

@@ -127,8 +127,29 @@ button:disabled { cursor: default; }
 .app-mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .title-actions { z-index: 2; margin-left: auto; display: flex; align-items: center; gap: 9px; }
 .toolbar-title-actions { flex: 0 0 auto; margin-left: 0; }
-.toolbar-view-controls { display: flex; align-items: center; gap: 9px; }
-.toolbar-control-divider { width: 1px; height: 20px; background: rgba(247, 248, 248, .1); }
+.toolbar .toolbar-cluster {
+  /* One flex item wrapping the centered button group, the divider and the
+     thumbnail slider, so they wrap to the second row as a unit instead of
+     the slider dropping down alone. On its row it spans from the left
+     controls to the right edge; inside it the button group centers and the
+     slider pins to the right. */
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.toolbar .toolbar-center {
+  /* The pane layout / panel toggles / new / new-window buttons, centered
+     between the left controls and the right zone at every window width. */
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+.toolbar-control-divider { flex: 0 0 auto; width: 1px; height: 20px; background: rgba(247, 248, 248, .1); }
 .sidebar-app-title {
   position: sticky;
   z-index: 4;
@@ -537,7 +558,7 @@ select:hover { border-color: rgba(247, 248, 248, .14); }
 .tag-manager-group-select { max-width: 108px; height: 25px; padding: 0 4px; border: 1px solid var(--line); border-radius: 5px; background: #202126; color: #999da5; font-size: 9px; }
 .tag-manager-empty { padding: 72px 20px; color: var(--muted); text-align: center; }
 .toolbar-spacer, .status-spacer { flex: 1; }
-.size-control { display: flex; align-items: center; gap: 5px; color: #77787d; font-size: 10px; }
+.size-control { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; color: #77787d; font-size: 10px; }
 .size-control input { width: 80px; accent-color: var(--accent); }
 .primary-button, .secondary-button, .danger-button {
   height: 32px;
