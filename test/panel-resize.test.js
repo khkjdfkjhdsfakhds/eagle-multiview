@@ -35,9 +35,34 @@ test('the workspace resizer stays above the toolbar so the whole line is draggab
   assert.ok(resizerZ > toolbarZ, `resizer z-index (${resizerZ}) must exceed toolbar z-index (${toolbarZ})`);
 });
 
-test('both panels compress to 150px and the drag clamp matches the grid minimum', () => {
+test('both panels compress further and the drag clamp matches the grid minimum', () => {
   const resizerCode = renderer.slice(renderer.indexOf('function bindWorkspaceResizers()'), renderer.indexOf('function restorePanelSizes()'));
   assert.ok(resizerCode.includes("const contentMin = rect.width <= 1120 ? 360 : 400;"), 'the drag clamp tracks the middle column grid minimum');
-  assert.ok(resizerCode.includes('const next = Math.max(150, Math.min(max, startValue + delta));'), 'both panels share the 150px floor');
+  assert.ok(resizerCode.includes("Math.max(kind === 'sidebar' ? 115 : 125"), 'sidebar floor 115px, inspector floor 125px');
   assert.ok(!resizerCode.includes(': 220'), 'the old 220px inspector floor is gone');
+});
+
+function ruleBlock(source, opener) {
+  const start = source.indexOf(opener);
+  assert.ok(start >= 0, `找不到规则 ${opener}`);
+  const end = source.indexOf('}', start);
+  assert.ok(end > start, `规则未闭合 ${opener}`);
+  return source.slice(start, end + 1);
+}
+
+test('the toolbar stays one row whenever the middle column has room', () => {
+  // The search box must be able to shrink below the placeholder's intrinsic
+  // width, or the toolbar wraps to two rows even when the middle column is
+  // ample (the exact bug reported at 1280px/1.4x zoom with 150px panels).
+  const toolbarSearch = ruleBlock(styles, '.toolbar .search-box {');
+  assert.ok(toolbarSearch.includes('flex: 1 1 150px;'), 'search box uses a small shrinkable flex basis');
+  assert.ok(toolbarSearch.includes('min-width: 0;'), 'search box may shrink below its placeholder width');
+  assert.ok(styles.includes('flex-wrap: wrap;'), 'the toolbar still wraps when space genuinely runs out');
+});
+
+test('narrow inspectors shrink inputs and ellipsize action buttons', () => {
+  const inputRule = ruleBlock(styles, '.inspector input, .inspector textarea { width: 100%;');
+  assert.ok(inputRule.includes('min-width: 0;'), 'inspector inputs may shrink below their intrinsic width');
+  const buttonRule = ruleBlock(styles, '.inspector-actions button {');
+  assert.ok(buttonRule.includes('text-overflow: ellipsis;'), 'action button labels ellipsize instead of overflowing');
 });

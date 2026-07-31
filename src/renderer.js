@@ -4379,7 +4379,10 @@ function bindWorkspaceResizers() {
         // step with the grid so an expanded panel never pushes it into overflow.
         const contentMin = rect.width <= 1120 ? 360 : 400;
         const max = Math.max(kind === 'sidebar' ? 170 : 240, rect.width - other - contentMin);
-        const next = Math.max(150, Math.min(max, startValue + delta));
+        // Sidebar keeps its folder labels readable down to 115px; the
+        // inspector stays overflow-free down to 125px (verified at both
+        // floors with an item selected).
+        const next = Math.max(kind === 'sidebar' ? 115 : 125, Math.min(max, startValue + delta));
         root.style.setProperty(property, `${Math.round(next)}px`);
       };
       const end = () => {
