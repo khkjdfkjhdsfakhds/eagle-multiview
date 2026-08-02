@@ -295,6 +295,11 @@ body.no-traffic-lights .app-title-copy > span:first-child { font-size: 11px; }
 .panel-button .ui-icon, .panel-button .eagle-ui-icon { width: 14px; height: 14px; opacity: .72; }
 .panel-button:hover { background: rgba(255, 255, 255, .05); }
 .panel-button.active { color: #dadadf; background: rgba(255, 255, 255, .075); }
+.new-window-control {
+  height: 34px;
+  display: flex;
+  align-items: stretch;
+}
 .new-window-button {
   height: 34px;
   display: flex;
@@ -314,6 +319,36 @@ body.no-traffic-lights .app-title-copy > span:first-child { font-size: 11px; }
   color: white;
 }
 .new-window-button .ui-icon { width: 15px; height: 15px; }
+.new-window-main { border-radius: 9px 0 0 9px; border-right: 0; }
+.new-window-menu-button {
+  position: relative;
+  width: 27px;
+  min-width: 27px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-left-color: rgba(247, 248, 248, .08);
+  border-radius: 0 9px 9px 0;
+  background: rgba(255, 255, 255, .035);
+  color: #92949a;
+}
+.new-window-menu-button:hover,
+.new-window-menu-button[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, .075);
+  color: white;
+}
+.new-window-control:has(.new-window-main:hover) .new-window-menu-button {
+  border-top-color: var(--line-strong);
+  border-right-color: var(--line-strong);
+  border-bottom-color: var(--line-strong);
+}
+.new-window-menu-chevron { font-size: 12px; line-height: 1; transform: translateY(-1px); }
+.current-eagle-path-button { flex: 0 0 auto; }
+.current-eagle-path-button .ui-icon { stroke-linecap: round; stroke-linejoin: round; }
+.current-eagle-path-button:disabled { opacity: .55; cursor: progress; }
 .new-create-button { padding-right: 7px; }
 .new-button-chevron { margin-left: -2px; color: #898b91; font-size: 10px; transform: translateY(-1px); }
 
@@ -2213,7 +2248,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   .toolbar { flex-wrap: wrap; }
   .toolbar .search-box { min-width: 0; flex: 1 1 160px; }
   .toolbar .search-box kbd { display: none; }
-  .toolbar #newWindowButton { display: none; }
+  .toolbar .new-window-control { display: none; }
 }
 /* Bigger touch targets for the preview modal on coarse pointers. */
 @media (pointer: coarse) {

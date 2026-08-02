@@ -150,9 +150,18 @@
               <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14"></path></svg>
               <span>新建</span><span class="new-button-chevron" aria-hidden="true">⌄</span>
             </button>
-            <button id="newWindowButton" class="icon-button new-window-button" title="新建窗口（⌘⌥N）">
-              <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="5.5" width="10.5" height="10.5" rx="2"></rect><path d="M7 5.5V4.8C7 3.8 7.8 3 8.8 3H15c1.1 0 2 .9 2 2v6.2c0 1-.8 1.8-1.8 1.8h-1.7"></path><path d="M8.25 8.5v4.5M6 10.75h4.5"></path></svg>
-              <span>新窗口</span>
+            <div class="new-window-control">
+              <button id="newWindowButton" class="icon-button new-window-button new-window-main" title="在当前 MultiView 路径新建窗口（默认，⌘⌥N）">
+                <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="5.5" width="10.5" height="10.5" rx="2"></rect><path d="M7 5.5V4.8C7 3.8 7.8 3 8.8 3H15c1.1 0 2 .9 2 2v6.2c0 1-.8 1.8-1.8 1.8h-1.7"></path><path d="M8.25 8.5v4.5M6 10.75h4.5"></path></svg>
+                <span>新窗口</span>
+              </button>
+              <button id="newWindowMenuButton" class="icon-button new-window-menu-button" title="选择新窗口位置" aria-label="选择新窗口位置" aria-haspopup="menu" aria-expanded="false">
+                <span class="new-window-menu-chevron" aria-hidden="true">⌄</span>
+              </button>
+            </div>
+            <button id="currentEaglePathButton" class="icon-button new-window-button current-eagle-path-button" title="跳转到当前 Eagle 路径" aria-label="跳转到当前 Eagle 路径">
+              <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.8 6.4h5l1.6 1.8h7.8v7.4c0 .9-.7 1.6-1.6 1.6H4.4c-.9 0-1.6-.7-1.6-1.6z"></path><path d="M12.4 3.2 16 6.8l-3.6 3.6M15.7 6.8H9.8"></path></svg>
+              <span>Eagle 路径</span>
             </button>
           </div>
         </div>
@@ -375,6 +384,8 @@
   <script src="sort-memory.js"></script>
   <script src="smart-folder.js"></script>
   <script src="operation-state.js"></script>
+  <script src="window-target.js"></script>
+  <script src="window-actions.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

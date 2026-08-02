@@ -168,6 +168,20 @@ test('recent folders use Eagle recent-folder endpoint', async () => {
   assert.equal(client.calls[0].path, '/api/folder/listRecent');
 });
 
+test('current Eagle folder uses the selected-folder Web API filter', async () => {
+  const client = new RecordingClient();
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: [{ id: 'folder-current', name: 'Current folder' }], total: 1 };
+  };
+
+  assert.deepEqual(await client.selectedFolder(), { id: 'folder-current', name: 'Current folder' });
+  assert.deepEqual(client.calls, [{
+    path: '/api/v2/folder/get',
+    options: { method: 'POST', body: { isSelected: true, limit: 1 } }
+  }]);
+});
+
 test('tag management uses Eagle v2 mutation endpoints', async () => {
   const client = new RecordingClient();
   await client.renameTag('old', 'new');

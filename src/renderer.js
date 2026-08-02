@@ -57,6 +57,8 @@ const {
   appendableTailCount
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
+const { windowStateForView } = window.EagleMVWindowTarget;
+const { createWindowActions } = window.EagleMVWindowActions;
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
 // Another MultiView window may update the shared sort preferences.
 window.addEventListener('storage', event => {
@@ -3520,6 +3522,14 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
   ].join('');
 }
 
+function newWindowMenuMarkup() {
+  return [
+    contextMenuRow({ icon: 'library', label: '新建在根目录', action: 'new-window-root' }),
+    contextMenuRow({ icon: 'folder', label: '新建在当前 Eagle 路径', action: 'new-window-eagle' }),
+    contextMenuRow({ icon: 'window', label: '新建在当前 MultiView 路径（默认）', action: 'new-window-multiview' })
+  ].join('');
+}
+
 function contextFolderEntries(action, query = '') {
   const search = searchFolders(state.library?.folders, query, { excludeId: state.contextMenu?.folderId, limit: 100 });
   const searching = Boolean(String(query || '').trim());
@@ -3568,6 +3578,7 @@ function contextTagPicker(action, placeholder = '搜索标签…') {
 
 function contextMenuMarkup(data) {
   if (data.kind === 'new-menu') return newCreationMenuMarkup(data);
+  if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
   if (data.kind === 'shortcut-folder-picker') {
     return `<div class="context-shortcut-picker">${contextFolderPicker('add-folder')}</div>`;
   }
@@ -3649,7 +3660,59 @@ function hideContextMenu() {
   state.contextMenu = null;
   $('#contextMenu').classList.add('hidden');
   $('#contextMenu').innerHTML = '';
+  $('#contextMenu').setAttribute('aria-label', '素材操作菜单');
   $('#newButton')?.setAttribute('aria-expanded', 'false');
+  $('#newWindowMenuButton')?.setAttribute('aria-expanded', 'false');
+}
+
+const windowActions = createWindowActions({
+  bridge: window.eagleMV,
+  currentView: () => activePane()?.currentView,
+  windowStateForView
+});
+
+function openNewWindowAt(target = 'multiview') {
+  return windowActions.open(target);
+}
+
+function requestDefaultNewWindow() {
+  return openNewWindowAt('multiview').catch(error => toast(`无法新建窗口：${error.message}`, 4000));
+}
+
+async function navigateToCurrentEaglePath() {
+  const button = $('#currentEaglePathButton');
+  const paneId = state.activePaneId;
+  button.disabled = true;
+  let previousQuery = null;
+  try {
+    const initialState = await windowActions.eagleState();
+    const pane = paneById(paneId);
+    if (!pane) return false;
+    previousQuery = cloneQuery(pane.query);
+    const navigated = withActivePane(paneId, () => {
+      state.query = createQuery();
+      const result = navigate(initialState.view);
+      if (!result) state.query = previousQuery;
+      return result;
+    });
+    if (state.activePaneId === paneId) renderQueryControls();
+    return navigated;
+  } catch (error) {
+    if (previousQuery && paneById(paneId)) {
+      paneById(paneId).query = previousQuery;
+      if (state.activePaneId === paneId) renderQueryControls();
+    }
+    toast(`无法跳转到 Eagle 路径：${error.message}`, 4000);
+    return false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function contextMenuAriaLabel(kind) {
+  if (kind === 'new-window-menu') return '新窗口位置';
+  if (kind === 'new-menu') return '新建项目';
+  return '素材操作菜单';
 }
 
 function openSelectionInNewWindow(ids = []) {
@@ -3665,6 +3728,7 @@ function openSelectionInNewWindow(ids = []) {
 function showContextMenuAt(x, y, data) {
   state.contextMenu = { ...data, x, y };
   const menu = $('#contextMenu');
+  menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind));
   menu.innerHTML = contextMenuMarkup(state.contextMenu);
   menu.classList.remove('hidden');
   // Narrow screens get a bottom sheet instead of a cursor-anchored panel: the
@@ -3718,7 +3782,9 @@ async function executeContextAction(action, payload) {
   if (action === 'create-smart-folder') return createSmartFolderFromNewMenu();
   if (action === 'create-folder' || action === 'create-current-folder') return createFolder(payload.parentId || null, Boolean(payload.subfolder || payload.parentId), payload.paneId || data.paneId);
   if (action === 'create-document') return createNewDocument(payload.type, { folderId: payload.folderId || null, paneId: payload.paneId || data.paneId });
-  if (action === 'new-window') return window.eagleMV.newWindow();
+  if (action === 'new-window' || action === 'new-window-multiview') return openNewWindowAt('multiview');
+  if (action === 'new-window-root') return openNewWindowAt('root');
+  if (action === 'new-window-eagle') return openNewWindowAt('eagle');
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
@@ -5061,7 +5127,18 @@ function bindEvents() {
       folderId: folderCreationParentForPane(paneId)
     });
   });
-  $('#newWindowButton').addEventListener('click', () => window.eagleMV.newWindow().catch(error => toast(`无法新建窗口：${error.message}`, 4000)));
+  $('#newWindowButton').addEventListener('click', requestDefaultNewWindow);
+  $('#newWindowMenuButton').addEventListener('click', event => {
+    event.stopPropagation();
+    if (!$('#contextMenu').classList.contains('hidden') && state.contextMenu?.kind === 'new-window-menu') {
+      hideContextMenu();
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.setAttribute('aria-expanded', 'true');
+    showContextMenuAt(rect.right - 294, rect.bottom + 6, { kind: 'new-window-menu' });
+  });
+  $('#currentEaglePathButton').addEventListener('click', navigateToCurrentEaglePath);
   $('#toggleSidebarButton').addEventListener('click', () => togglePanel('sidebar'));
   $('#toggleInspectorButton').addEventListener('click', () => togglePanel('inspector'));
   $('#drawerBackdrop').addEventListener('click', closeDrawers);
@@ -5293,7 +5370,7 @@ function bindEvents() {
     // menu that same long-press just opened. Cards were exempted by selector;
     // the folder tree and the pane heading need the shared timestamp.
     if (Date.now() < suppressTouchClickUntil) return;
-    if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton')) hideContextMenu();
+    if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton') && !event.target.closest('.new-window-control')) hideContextMenu();
   });
   for (const selector of ['#itemName', '#itemURL']) {
     $(selector).addEventListener('input', markDirty);
@@ -5669,7 +5746,7 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'n') {
       event.preventDefault();
-      window.eagleMV.newWindow().catch(error => toast(`无法新建窗口：${error.message}`, 4000));
+      requestDefaultNewWindow();
       return;
     }
     if (!editable && !previewOpen && !primaryKey && event.shiftKey && event.altKey && (event.code === 'KeyN' || event.key.toLowerCase() === 'n')) {
@@ -5957,6 +6034,7 @@ function bindHubEvents() {
   window.eagleMV.onCreateSmartFolderRequest(() => {
     createSmartFolderFromNewMenu().catch(error => toast(`智能文件夹创建失败：${error.message}`, 4200));
   });
+  window.eagleMV.onNewWindowRequest(requestDefaultNewWindow);
   window.eagleMV.onFolderUsed(payload => {
     if (!payload?.folderId || payload.libraryPath !== state.library?.path) return;
     rememberRecentFolderUsage(payload.folderId);

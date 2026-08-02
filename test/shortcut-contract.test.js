@@ -20,12 +20,12 @@ test('new-window and default-app shortcuts match their visible labels', () => {
 test('new-item shortcuts follow Eagle folder creation without reviving the old command-N conflict', () => {
   assert.match(main, /label: '新建文件夹', accelerator: 'Alt\+N'/);
   assert.match(main, /label: '新建 TXT', accelerator: 'Alt\+Shift\+N'/);
-  assert.match(main, /label: '新建资料库窗口', accelerator: 'CmdOrCtrl\+Alt\+N'/);
+  assert.match(main, /label: '新建资料库窗口',[\s\S]{0,80}accelerator: 'CmdOrCtrl\+Alt\+N'/);
   assert.doesNotMatch(main, /label: '新建文件夹', accelerator: 'CmdOrCtrl\+N'/);
   assert.doesNotMatch(main, /label: '新建 TXT', accelerator: 'CmdOrCtrl\+Shift\+N'/);
   assert.doesNotMatch(main, /新建资料库窗口', accelerator: 'CmdOrCtrl\+N'/);
   assert.match(html, /id="newButton"[^>]+title="新建文件夹或文件（⌥N 新建文件夹）"/);
-  assert.match(html, /id="newWindowButton"[^>]+title="新建窗口（⌘⌥N）"/);
+  assert.match(html, /id="newWindowButton"[^>]+title="在当前 MultiView 路径新建窗口（默认，⌘⌥N）"/);
   const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
   const handler = renderer.slice(keydownStart, renderer.indexOf('\n  });\n}', keydownStart));
   assert.ok(handler.includes("primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'n'"));

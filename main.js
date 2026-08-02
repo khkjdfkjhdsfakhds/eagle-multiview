@@ -23,6 +23,8 @@ const { createWebServer, generateAccessKey } = require('./lib/web-server');
 const { qrToSVG } = require('./lib/qr-code');
 const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
+const { resolveEagleWindowState } = require('./lib/window-location');
+const { createWindowRouter } = require('./lib/window-router');
 const {
   normalizeNewFileType,
   validateNewItemName,
@@ -36,6 +38,10 @@ protocol.registerSchemesAsPrivileged([
 
 const client = new EagleClient();
 const hub = new DataHub(client);
+const windowRouter = createWindowRouter({
+  createWindow,
+  resolveEagleWindowState: () => resolveEagleWindowState(client)
+});
 const windows = new Set();
 const thumbnailCache = new Map();
 const metadataCache = new Map();
@@ -381,6 +387,7 @@ function createWindow(initialState = null) {
     }
   });
   windows.add(window);
+  windowRouter.track(window);
   const webContentsId = window.webContents.id;
   window.__allowClose = false;
   window.__closePromptPending = false;
@@ -438,7 +445,11 @@ function setupMenu() {
         },
         { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
         { type: 'separator' },
-        { label: '新建资料库窗口', accelerator: 'CmdOrCtrl+Alt+N', click: () => createWindow() },
+        {
+          label: '新建资料库窗口',
+          accelerator: 'CmdOrCtrl+Alt+N',
+          click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
+        },
         { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
         { type: 'separator' },
         { role: 'close', label: '关闭窗口' }
@@ -861,6 +872,7 @@ function setupIPC() {
     createWindow(initialState);
     return true;
   });
+  handleRPC('window:eagle-state', () => resolveEagleWindowState(client));
   handleRPC('window:initial-state', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     const initialState = window?.__initialState || null;
@@ -1262,7 +1274,9 @@ if (!gotLock) {
     quitting = true;
     webServer?.stop().catch(() => {});
   });
-  app.on('second-instance', () => createWindow());
+  app.on('second-instance', () => {
+    windowRouter.openDefault().catch(error => logFault('window', '无法响应再次启动', error));
+  });
   app.whenReady().then(async () => {
     getErrorLog().write({
       level: 'info',
@@ -1272,12 +1286,14 @@ if (!gotLock) {
     setupMenu();
     setupIPC();
     await installProtocol();
-    createWindow();
+    await windowRouter.openEagle();
     hub.startPolling();
     applyWebAccess().catch(error => logFault('web', `Web 访问初始化失败：${error.message}`, error));
   });
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      windowRouter.openEagle().catch(error => logFault('window', '无法恢复窗口', error));
+    }
   });
   app.on('window-all-closed', () => {
     // Web clients keep the hub alive: with the server up they still need

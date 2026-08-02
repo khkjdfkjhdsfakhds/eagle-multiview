@@ -214,11 +214,16 @@
     mutate: mutation => invoke('hub:mutate', [mutation]),
     mutateSet: mutation => invoke('hub:mutate-set', [mutation]),
     watchItems: ids => invoke('hub:watch-items', [ids]),
-    newWindow: async data => {
+    currentEagleWindowState: () => invoke('window:eagle-state'),
+    prepareNewWindow: () => window.open('about:blank', '_blank'),
+    newWindow: async (data, preparedWindow) => {
       const url = new URL(location.pathname, location.origin);
       if (data) url.hash = `state=${encodeURIComponent(JSON.stringify(data))}`;
-      window.open(url.toString(), '_blank');
-      return true;
+      if (preparedWindow && !preparedWindow.closed) {
+        preparedWindow.location.href = url.toString();
+        return true;
+      }
+      return Boolean(window.open(url.toString(), '_blank'));
     },
     initialWindowState: async () => {
       const match = /(?:^#|&)state=([^&]+)/.exec(location.hash || '');
@@ -341,6 +346,7 @@
     onCreateFolderRequest: callback => on('command:create-folder', callback),
     onCreateDocumentRequest: callback => on('command:create-document', callback),
     onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
+    onNewWindowRequest: callback => on('command:new-window', callback),
     onPinsChanged: callback => on('pins:changed', callback),
     onTagDataChanged: callback => on('tag-data:changed', callback),
     onFolderUsed: callback => on('folder:used', callback),
