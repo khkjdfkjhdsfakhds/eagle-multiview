@@ -72,6 +72,11 @@ const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id);
 // table; the web shim serves the same keys with false so they hide cleanly.
 const caps = window.eagleMV.capabilities || {};
 const hasCapability = key => caps[key] !== false;
+// Width alone cannot identify the touch/web layout: Electron's UI zoom makes
+// an ordinary desktop window report a phone-sized CSS viewport. Keep drawers
+// exclusive to the web client and expose the same distinction to CSS.
+const isWebClient = window.eagleMV.platform === 'web';
+document.body.classList.toggle('web-client', isWebClient);
 const newFileTypes = Object.freeze({
   txt: { label: 'TXT', defaultName: '未命名文本' },
   md: { label: 'Markdown', defaultName: '未命名文档' },
@@ -1255,10 +1260,10 @@ function normalizeExtension(value) {
   return String(value || '').trim().toLowerCase().replace(/^\.+/, '');
 }
 
-// Below 900px the sidebar and inspector become overlay drawers (one open at
-// a time) instead of grid columns; the same toolbar buttons drive both modes.
+// Only the web client turns narrow side panels into overlay drawers. Desktop
+// windows keep their columns even when UI zoom shrinks the CSS viewport.
 const compactLayoutQuery = window.matchMedia('(max-width: 900px)');
-const isCompactLayout = () => compactLayoutQuery.matches;
+const isCompactLayout = () => isWebClient && compactLayoutQuery.matches;
 const isTouchEvent = event => event.pointerType === 'touch' ||
   (event.pointerType === undefined && window.matchMedia('(pointer: coarse)').matches);
 

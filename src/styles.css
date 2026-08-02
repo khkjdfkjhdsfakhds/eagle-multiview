@@ -1760,7 +1760,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
    window has the status bar in plain sight. */
 .offline-banner { display: none; }
 @media (max-width: 900px) {
-  .offline-banner {
+  body.web-client .offline-banner {
     position: fixed;
     z-index: 52;
     top: 0;
@@ -1775,11 +1775,11 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
     font-weight: 560;
     text-align: center;
   }
-  .offline-banner.hidden { display: none !important; }
+  body.web-client .offline-banner.hidden { display: none !important; }
   /* An outage can last a while, so the banner takes its own strip instead of
      sitting on top of the search box. */
-  body.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }
-  .offline-banner { height: calc(24px + max(6px, env(safe-area-inset-top))); }
+  body.web-client.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }
+  body.web-client .offline-banner { height: calc(24px + max(6px, env(safe-area-inset-top))); }
 }
 
 /* Compact-only strip above the status bar: what is selected, and the way out.
@@ -1790,7 +1790,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   right: 0;
   bottom: 0;
   left: 0;
-  display: flex;
+  display: none;
   align-items: center;
   gap: 8px;
   padding: 9px 12px max(9px, env(safe-area-inset-bottom));
@@ -1830,8 +1830,8 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 /* The toast normally sits just above the status bar; the strip takes that
    space, so lift it clear instead of letting them overlap. */
 body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)); }
-/* Non-compact windows keep the real inspector, so the strip stays away. */
-@media (min-width: 901px) { .selection-bar { display: none; } }
+/* Compact web clients opt this strip back in below; desktop windows keep the
+   real inspector even when their zoomed CSS viewport is narrow. */
 
 .status-divider { color: #404146; }
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #74757a; }
@@ -2149,16 +2149,54 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 /* --- Compact layout (phones & small tablets): drawers instead of columns --- */
 .drawer-backdrop { display: none; }
 @media (max-width: 900px) {
-  .workspace,
-  body.sidebar-hidden .workspace,
-  body.inspector-hidden .workspace,
-  body.sidebar-hidden.inspector-hidden .workspace { grid-template-columns: 1fr; }
+  /* Electron can reach a ~613px CSS viewport at the supported 160% UI zoom.
+     Preserve all three desktop regions there, while capping the side tracks
+     just enough to leave the content usable. These effective variables also
+     keep separators, title dragging and resize handles aligned with the grid. */
+  body:not(.web-client) {
+    --desktop-sidebar-track: min(var(--sidebar-width), max(115px, 18vw));
+    --desktop-inspector-track: min(var(--inspector-width), max(125px, 20vw));
+  }
+  body:not(.web-client)::before { left: var(--desktop-sidebar-track); }
+  body:not(.web-client)::after { right: var(--desktop-inspector-track); }
+  body:not(.web-client) .titlebar::before { width: var(--desktop-sidebar-track); }
+  body:not(.web-client) .workspace {
+    grid-template-columns: var(--desktop-sidebar-track) minmax(320px, 1fr) var(--desktop-inspector-track);
+  }
+  body:not(.web-client).sidebar-hidden .workspace {
+    grid-template-columns: 0 minmax(320px, 1fr) var(--desktop-inspector-track);
+  }
+  body:not(.web-client).inspector-hidden .workspace {
+    grid-template-columns: var(--desktop-sidebar-track) minmax(320px, 1fr) 0;
+  }
+  body:not(.web-client).sidebar-hidden.inspector-hidden .workspace { grid-template-columns: 0 minmax(320px, 1fr) 0; }
+  body:not(.web-client) .workspace-resizer-sidebar {
+    left: calc(var(--desktop-sidebar-track) - var(--resizer-width) / 2 + .5px);
+  }
+  body:not(.web-client) .workspace-resizer-inspector {
+    right: calc(var(--desktop-inspector-track) - var(--resizer-width) / 2 + .5px);
+  }
+  /* At the 160% zoom floor the content column is about 373px wide. Keep the
+     complete control set together, but tighten only its expendable spacing
+     and slider track so the wrapped row stays inside that column. */
+  body:not(.web-client) .toolbar .toolbar-cluster { gap: 5px; }
+  body:not(.web-client) .toolbar-title-actions { gap: 5px; }
+  body:not(.web-client) .size-control { gap: 3px; }
+  body:not(.web-client) .size-control input { width: 40px; }
+  /* With the left panel deliberately hidden, the content begins at x=0.
+     Reserve the same title-bar safe area used elsewhere for macOS controls. */
+  body:not(.web-client).sidebar-hidden:not(.no-traffic-lights) .toolbar { padding-left: 96px; }
+
+  body.web-client .workspace,
+  body.web-client.sidebar-hidden .workspace,
+  body.web-client.inspector-hidden .workspace,
+  body.web-client.sidebar-hidden.inspector-hidden .workspace { grid-template-columns: 1fr; }
   /* The desktop grid pins panels to columns 1-3; fixed drawers leave the
      track flow, so the content must claim the single remaining column. */
-  .content-panel { grid-column: 1; }
-  .workspace-resizer { display: none; }
-  .sidebar,
-  .inspector {
+  body.web-client .content-panel { grid-column: 1; }
+  body.web-client .workspace-resizer { display: none; }
+  body.web-client .sidebar,
+  body.web-client .inspector {
     position: fixed;
     top: 0;
     bottom: 0;
@@ -2167,23 +2205,23 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
     transition: transform .22s ease;
     padding-top: max(12px, env(safe-area-inset-top));
   }
-  .sidebar {
+  body.web-client .sidebar {
     left: 0;
     width: min(320px, 86vw);
     transform: translateX(-105%);
     background: #16181d;
     padding-left: max(8px, env(safe-area-inset-left));
   }
-  .inspector {
+  body.web-client .inspector {
     right: 0;
     width: min(360px, 92vw);
     transform: translateX(105%);
     padding-right: max(16px, env(safe-area-inset-right));
   }
-  body.drawer-sidebar .sidebar,
-  body.drawer-inspector .inspector { transform: none; }
-  body.drawer-sidebar .drawer-backdrop,
-  body.drawer-inspector .drawer-backdrop {
+  body.web-client.drawer-sidebar .sidebar,
+  body.web-client.drawer-inspector .inspector { transform: none; }
+  body.web-client.drawer-sidebar .drawer-backdrop,
+  body.web-client.drawer-inspector .drawer-backdrop {
     display: block;
     position: fixed;
     inset: 0;
@@ -2191,22 +2229,23 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
     background: rgba(0, 0, 0, .45);
   }
   /* Web page: no macOS traffic lights, reclaim the title strip. */
-  body.no-traffic-lights .titlebar { height: 0; min-height: 0; }
-  .statusbar { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  body.web-client.no-traffic-lights .titlebar { height: 0; min-height: 0; }
+  body.web-client .statusbar { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  body.web-client .selection-bar { display: flex; }
   /* The selection strip covers the status bar; give the last row room to
      scroll clear of it. */
-  body.selection-bar-open .grid-scroller { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  body.web-client.selection-bar-open .grid-scroller { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
   /* The thumbnail slider and its divider are intentionally kept in the
      compact layout too: with the new toolbar-cluster structure they ride on
      the second row as one unit and fit phone widths without clipping. The
      pane-layout switch and the new-window text stay hidden on touch (layout
      switching lives in the long-press menu and the grid pinch still resizes
      thumbnails). */
-  .toolbar .pane-layout-control,
-  .toolbar #newWindowButton span { display: none; }
-  .toolbar .new-create-button span:not(.new-button-chevron) { display: none; }
+  body.web-client .toolbar .pane-layout-control,
+  body.web-client .toolbar #newWindowButton span { display: none; }
+  body.web-client .toolbar .new-create-button span:not(.new-button-chevron) { display: none; }
   /* One pane at a time down here, so the "栏 N" badge is noise. */
-  .pane-badge { display: none; }
+  body.web-client .pane-badge { display: none; }
   /* A phone-width pane cannot fit navigation + title + layout + sort on one
      line, and the container query drops the layout switch first — but the
      layout choice matters most on the narrowest screen, where 网格 reads far
@@ -2214,14 +2253,14 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
      with no forced basis it only wraps when it actually has to, so a phone in
      landscape still gets a single-row header. Desktop splits keep the
      container-query behaviour, where vertical space is the scarcer resource. */
-  .content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }
-  .content-pane .content-heading .location-block { flex: 1 1 210px; }
-  .content-pane .content-heading .sort-controls { margin-left: auto; }
-  .content-pane .content-heading .breadcrumb { display: flex; }
+  body.web-client .content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }
+  body.web-client .content-pane .content-heading .location-block { flex: 1 1 210px; }
+  body.web-client .content-pane .content-heading .sort-controls { margin-left: auto; }
+  body.web-client .content-pane .content-heading .breadcrumb { display: flex; }
   /* The filter popover is 286px anchored to a button two thirds across the
      toolbar — on a phone that runs straight off the right edge. Turn it into
      a bottom sheet so every control stays reachable. */
-  .filter-popover {
+  body.web-client .filter-popover {
     position: fixed;
     top: auto;
     right: 8px;
@@ -2231,7 +2270,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
     max-height: min(72vh, calc(100vh - 130px));
   }
   /* The selection strip overlays the drawer's last rows. */
-  body.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  body.web-client.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
 }
 @media (max-width: 600px) {
   /* Phones fit ~2 justified columns at the desktop default and occasionally
@@ -2239,16 +2278,16 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
      keeps a steadier rhythm; pinch still overrides it (inline style wins).
      Tablets are wide enough not to need it — measured at 820px, 168px still
      gives ~3.7 cards a row. */
-  :root { --thumb: 132px; }
+  body.web-client { --thumb: 132px; }
   /* Force a single column of panes; extra panes stack vertically instead of
      shredding into unusable slivers. */
-  .pane-layout,
-  .pane-layout[data-layout] { display: grid; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: none; grid-auto-rows: minmax(72vh, auto); }
-  .pane-layout[data-layout] .content-pane { grid-area: auto; }
-  .toolbar { flex-wrap: wrap; }
-  .toolbar .search-box { min-width: 0; flex: 1 1 160px; }
-  .toolbar .search-box kbd { display: none; }
-  .toolbar .new-window-control { display: none; }
+  body.web-client .pane-layout,
+  body.web-client .pane-layout[data-layout] { display: grid; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: none; grid-auto-rows: minmax(72vh, auto); }
+  body.web-client .pane-layout[data-layout] .content-pane { grid-area: auto; }
+  body.web-client .toolbar { flex-wrap: wrap; }
+  body.web-client .toolbar .search-box { min-width: 0; flex: 1 1 160px; }
+  body.web-client .toolbar .search-box kbd { display: none; }
+  body.web-client .toolbar .new-window-control { display: none; }
 }
 /* Bigger touch targets for the preview modal on coarse pointers. */
 @media (pointer: coarse) {
@@ -2310,7 +2349,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
    390px, an open submenu started 253px past the right edge. As a sheet the
    menu spans the viewport and submenus open inline underneath their row. */
 @media (max-width: 900px) {
-  .context-menu.context-menu-sheet {
+  body.web-client .context-menu.context-menu-sheet {
     top: auto;
     right: 8px;
     bottom: max(8px, env(safe-area-inset-bottom));
@@ -2322,8 +2361,8 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   }
   /* The row is a four-column grid; a static submenu would land in one 21px
      cell. Give it its own full-width line under the label. */
-  .context-menu-sheet .context-menu-row.has-submenu { grid-template-columns: 21px minmax(0, 1fr) auto 12px; }
-  .context-menu-sheet .context-submenu {
+  body.web-client .context-menu-sheet .context-menu-row.has-submenu { grid-template-columns: 21px minmax(0, 1fr) auto 12px; }
+  body.web-client .context-menu-sheet .context-submenu {
     position: static;
     grid-column: 1 / -1;
     width: auto;
@@ -2333,8 +2372,8 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
     box-shadow: none;
   }
   /* Hover is meaningless here; only the explicit toggle opens a submenu. */
-  .context-menu-sheet .context-menu-row:hover > .context-submenu { display: none; }
-  .context-menu-sheet .context-menu-row.submenu-open > .context-submenu { display: block; }
+  body.web-client .context-menu-sheet .context-menu-row:hover > .context-submenu { display: none; }
+  body.web-client .context-menu-sheet .context-menu-row.submenu-open > .context-submenu { display: block; }
 }
 
 /* Web access QR panels */

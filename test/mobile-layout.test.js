@@ -16,11 +16,13 @@ test('compact layout turns the side panels into drawers', () => {
   assert.ok(indexHTML.includes('id="drawerBackdrop"'));
   assert.ok(indexHTML.includes('viewport-fit=cover'));
   assert.ok(renderer.includes("window.matchMedia('(max-width: 900px)')"));
+  assert.ok(renderer.includes('const isCompactLayout = () => isWebClient && compactLayoutQuery.matches;'), 'desktop UI zoom must not enable web drawers');
+  assert.ok(renderer.includes("document.body.classList.toggle('web-client', isWebClient);"), 'CSS receives the same host distinction');
   assert.ok(renderer.includes("state.openDrawer = state.openDrawer === panel ? null : panel;"), 'toggle buttons drive drawers in compact mode');
   assert.ok(renderer.includes("$('#drawerBackdrop').addEventListener('click', closeDrawers);"));
   assert.ok(renderer.includes('if (isCompactLayout()) closeDrawers();'), 'navigation closes the drawer');
-  assert.ok(styles.includes('body.drawer-sidebar .sidebar'));
-  assert.ok(styles.includes('body.drawer-inspector .inspector'));
+  assert.ok(styles.includes('body.web-client.drawer-sidebar .sidebar'));
+  assert.ok(styles.includes('body.web-client.drawer-inspector .inspector'));
   assert.ok(styles.includes('@media (max-width: 600px)'));
   assert.ok(styles.includes('grid-auto-rows: minmax(72vh, auto)'), 'panes stack vertically on phones');
 });
@@ -59,8 +61,9 @@ test('a compact selection shows the bottom strip and a single way to clear', () 
   assert.ok(renderer.includes('  renderSelectionBar();'), 'so does rotating in or out of compact mode');
   assert.ok(renderer.includes('  updateToolbarWrapState();\n}'), 'panel visibility changes resync the toolbar wrap state');
   assert.ok(renderer.includes("$('#selectionBarDetails').addEventListener('click', () => {\n    state.openDrawer = 'inspector';"));
-  assert.ok(styles.includes('body.selection-bar-open .grid-scroller'), 'the grid clears the strip');
-  assert.ok(styles.includes('@media (min-width: 901px) { .selection-bar { display: none; } }'));
+  assert.ok(styles.includes('body.web-client.selection-bar-open .grid-scroller'), 'the grid clears the strip');
+  assert.match(styles, /\.selection-bar \{[^}]*display: none;/, 'the strip is hidden by default on desktop');
+  assert.ok(styles.includes('body.web-client .selection-bar { display: flex; }'), 'only a compact web client shows it');
   // Clearing a selection lives in one place, used by the panel button, the
   // strip button and the blank-space tap.
   assert.ok(renderer.includes('function clearSelection() {'));
@@ -105,8 +108,8 @@ test('narrow screens get chrome that fits them', () => {
   // Phone-only: a 768px tablet is wide enough for the desktop default.
   assert.ok(!compact.includes(':root { --thumb: 132px; }'));
   const phone = styles.slice(styles.indexOf('@media (max-width: 600px) {'));
-  assert.ok(phone.slice(0, 700).includes(':root { --thumb: 132px; }'), 'a smaller base size fits more per row');
-  assert.ok(compact.includes('body.selection-bar-open .inspector'), 'the drawer clears the strip too');
+  assert.ok(phone.slice(0, 700).includes('body.web-client { --thumb: 132px; }'), 'a smaller base size fits more per row');
+  assert.ok(compact.includes('body.web-client.selection-bar-open .inspector'), 'the drawer clears the strip too');
   // The desktop caption cap goes negative below 460px and collapses to zero.
   const coarse = styles.slice(styles.indexOf('@media (pointer: coarse) {\n  .modal-close'));
   assert.match(coarse, /\.modal-caption \{[^}]*max-width: none/);
@@ -176,10 +179,10 @@ test('context menus become bottom sheets on narrow screens', () => {
   assert.ok(renderer.includes('const sheet = isCompactLayout();'));
   assert.ok(renderer.includes("menu.classList.toggle('context-menu-sheet', sheet);"));
   assert.ok(renderer.includes("menu.style.left = '';"), 'the sheet drops the cursor anchoring');
-  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  .context-menu.context-menu-sheet'));
-  assert.match(compact, /\.context-menu\.context-menu-sheet \{[^}]*overflow-y: auto/);
-  assert.match(compact, /\.context-menu-sheet \.context-submenu \{[^}]*position: static/);
-  assert.match(compact, /\.context-menu-sheet \.context-submenu \{[^}]*grid-column: 1 \/ -1/);
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  body.web-client .context-menu.context-menu-sheet'));
+  assert.match(compact, /body\.web-client \.context-menu\.context-menu-sheet \{[^}]*overflow-y: auto/);
+  assert.match(compact, /body\.web-client \.context-menu-sheet \.context-submenu \{[^}]*position: static/);
+  assert.match(compact, /body\.web-client \.context-menu-sheet \.context-submenu \{[^}]*grid-column: 1 \/ -1/);
   // Hover cannot close an inline submenu, so the row toggles instead.
   assert.ok(renderer.includes("if (isCompactLayout() && !event.target.closest('.context-submenu')) {"));
   assert.ok(renderer.includes("submenu.classList.toggle('submenu-open');"));
@@ -199,11 +202,11 @@ test('a narrow client says when the host is gone', () => {
   const setConnection = renderer.slice(renderer.indexOf('function setConnection('), renderer.indexOf('function formatBytes('));
   assert.ok(setConnection.includes("$('#offlineBanner')"));
   assert.ok(renderer.includes('window.eagleMV.onStatus(payload => setConnection(payload.connected, payload.message));'));
-  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  .offline-banner'));
-  assert.match(compact, /\.offline-banner \{[^}]*position: fixed/);
+  const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {\n  body.web-client .offline-banner'));
+  assert.match(compact, /body\.web-client \.offline-banner \{[^}]*position: fixed/);
   // It pushes the workspace down instead of covering the search box, because
   // an outage can last a while.
-  assert.ok(compact.includes('body.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }'));
+  assert.ok(compact.includes('body.web-client.host-offline .workspace { top: calc(24px + max(6px, env(safe-area-inset-top))); }'));
   assert.ok(styles.includes('.offline-banner { display: none; }'), 'wide windows keep the status bar and skip the banner');
 });
 
