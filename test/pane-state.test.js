@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createQuery, cloneQuery, filtersActive, filterCount, selectRange } = require('../src/pane-state');
+const { createQuery, cloneQuery, queryWithoutSearch, filtersActive, filterCount, selectRange } = require('../src/pane-state');
 
 test('clones query state without sharing tags between panes', () => {
   const first = createQuery({ search: 'one', tags: ['a', 'a'], shape: 'portrait' });
@@ -36,6 +36,33 @@ test('counts all user-visible filter dimensions', () => {
   assert.equal(filtersActive(query), true);
   assert.equal(filterCount(query), 6);
   assert.equal(filtersActive(createQuery()), false);
+});
+
+test('entering a folder search result clears only the text search', () => {
+  const query = createQuery({
+    search: '人物',
+    searchScope: 'name',
+    tags: ['参考'],
+    ext: 'png',
+    rating: 3,
+    color: '#e5484d'
+  });
+  const next = queryWithoutSearch(query);
+  assert.equal(next.search, '');
+  assert.equal(next.searchScope, 'name');
+  assert.deepEqual(next.tags, ['参考']);
+  assert.equal(next.ext, 'png');
+  assert.equal(next.rating, 3);
+  assert.equal(next.color, '#e5484d');
+  assert.equal(query.search, '人物', 'the current query stays unchanged until navigation succeeds');
+});
+
+test('folder cards share the search-exiting navigation path', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.match(source, /function enterFolderFromGrid\(folderId\)[\s\S]*?navigate\(\{ kind: 'folder', id: folderId \}, \{ exitSearch: true \}\)/);
+  assert.match(source, /if \(touch && !state\.selected\.size\) \{ enterFolderFromGrid\(folder\.dataset\.openFolder\); return; \}/);
+  assert.match(source, /if \(folder\) \{ enterFolderFromGrid\(folder\.dataset\.openFolder\); return; \}/);
+  assert.match(source, /event\.key === 'Enter' && state\.selectedFolderCard\) \{ event\.preventDefault\(\); enterFolderFromGrid\(state\.selectedFolderCard\); \}/);
 });
 
 test('range selection falls back safely when the previous anchor disappeared', () => {

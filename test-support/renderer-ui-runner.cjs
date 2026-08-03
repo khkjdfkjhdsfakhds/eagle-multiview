@@ -37,6 +37,46 @@ async function run() {
 
     await until(() => document.body.classList.contains('offline') === false && document.querySelector('.content-pane'));
 
+    const searchInput = document.querySelector('#searchInput');
+    searchInput.value = 'Locked';
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(360);
+    const lockedFolder = document.querySelector('.folder-card[data-open-folder="locked-folder"]');
+    assert(lockedFolder, 'the encrypted folder should stay reachable in search results');
+    const lockedTouchClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    Object.defineProperty(lockedTouchClick, 'pointerType', { value: 'touch' });
+    lockedFolder.dispatchEvent(lockedTouchClick);
+    await wait(30);
+    assert(searchInput.value === 'Locked', 'blocked folder entry must not clear the text search');
+
+    searchInput.value = 'Multi';
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(360);
+    const searchFolder = document.querySelector('.folder-card[data-open-folder="mv-folder"]');
+    assert(searchFolder, 'the matching folder should stay reachable in search results');
+    const touchClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    Object.defineProperty(touchClick, 'pointerType', { value: 'touch' });
+    const originalConfirm = window.confirm;
+    let discardPrompted = false;
+    window.confirm = () => {
+      discardPrompted = true;
+      return false;
+    };
+    state.textSession = { dirty: true };
+    searchFolder.dispatchEvent(touchClick);
+    await wait(30);
+    assert(discardPrompted, 'dirty TXT entry should request discard confirmation');
+    assert(searchInput.value === 'Multi', 'cancelled folder entry must not clear the text search');
+    assert(document.querySelector('#viewTitle').textContent !== 'MultiView 文件夹', 'cancelled folder entry must keep the current view');
+    state.textSession = null;
+    window.confirm = originalConfirm;
+    const confirmedTouchClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    Object.defineProperty(confirmedTouchClick, 'pointerType', { value: 'touch' });
+    searchFolder.dispatchEvent(confirmedTouchClick);
+    await until(() => document.querySelector('#viewTitle').textContent === 'MultiView 文件夹');
+    assert(searchInput.value === '', 'touch entry should clear the text search');
+    const searchExited = searchInput.value === '';
+
     document.querySelector('#paneLayoutButton').click();
     document.querySelector('[data-layout="vertical2"]').click();
     await until(() => document.querySelectorAll('.content-pane').length === 2);
@@ -79,7 +119,7 @@ async function run() {
     document.querySelector('#currentEaglePathButton').click();
     await until(() => secondPane.querySelector('#breadcrumb').textContent.includes('Eagle 文件夹'));
 
-    return { labels, recent };
+    return { labels, recent, searchExited };
   })()`);
   window.setSize(820, 820);
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -144,6 +184,25 @@ async function run() {
         const toolbarRect = toolbar.getBoundingClientRect();
         const sliderRect = slider.getBoundingClientRect();
         const eagleRect = eagleButton.getBoundingClientRect();
+        for (const heading of document.querySelectorAll('.content-pane .content-heading')) {
+          const headingRect = heading.getBoundingClientRect();
+          if (heading.scrollWidth > heading.clientWidth + 1) {
+            throw new Error('content heading overflows at ${width}px');
+          }
+          const visibleGroups = [...heading.children].filter(visible);
+          for (let leftIndex = 0; leftIndex < visibleGroups.length; leftIndex += 1) {
+            const left = visibleGroups[leftIndex].getBoundingClientRect();
+            if (left.left < headingRect.left - 1 || left.right > headingRect.right + 1) {
+              throw new Error('content heading control leaves its pane at ${width}px');
+            }
+            for (let rightIndex = leftIndex + 1; rightIndex < visibleGroups.length; rightIndex += 1) {
+              const right = visibleGroups[rightIndex].getBoundingClientRect();
+              const overlaps = left.left < right.right - 1 && left.right > right.left + 1 &&
+                left.top < right.bottom - 1 && left.bottom > right.top + 1;
+              if (overlaps) throw new Error('content heading controls overlap at ${width}px');
+            }
+          }
+        }
         if (toolbar.scrollWidth > toolbar.clientWidth + 1) {
           throw new Error('toolbar overflows at ${width}px: ' + JSON.stringify({
             toolbarClient: toolbar.clientWidth,

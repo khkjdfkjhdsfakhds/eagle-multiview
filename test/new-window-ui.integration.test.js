@@ -18,6 +18,7 @@ test('actual Electron renderer drives new-window controls and responsive wrappin
   assert.ok(line, `missing UI result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_UI_RESULT '.length));
   assert.equal(result.labels.length, 3);
+  assert.equal(result.searchExited, true);
   assert.equal(result.recent[1].id, 'eagle-folder');
   assert.notEqual(result.desktopNarrow.sidebarPosition, 'fixed');
   assert.notEqual(result.desktopNarrow.inspectorPosition, 'fixed');

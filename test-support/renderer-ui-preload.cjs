@@ -2,7 +2,8 @@
 
 const folders = [
   { id: 'mv-folder', name: 'MultiView 文件夹', children: [] },
-  { id: 'eagle-folder', name: 'Eagle 文件夹', children: [] }
+  { id: 'eagle-folder', name: 'Eagle 文件夹', children: [] },
+  { id: 'locked-folder', name: 'Locked 文件夹', password: 'test-only', children: [] }
 ];
 
 window.__uiTestCalls = [];

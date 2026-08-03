@@ -47,6 +47,7 @@ const {
 const {
   createQuery,
   cloneQuery,
+  queryWithoutSearch,
   filtersActive: queryFiltersActive,
   filterCount: queryFilterCount,
   selectRange,
@@ -3272,7 +3273,7 @@ function rememberViewPosition() {
   while (memory.size > VIEW_MEMORY_LIMIT) memory.delete(memory.keys().next().value);
 }
 
-function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = false } = {}) {
+function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = false, exitSearch = false } = {}) {
   if (!state.library) return;
   view = normalizeView(view);
   if (view.kind === 'folder') {
@@ -3284,6 +3285,10 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   }
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
+  if (exitSearch && view.kind === 'folder' && state.query.search) {
+    state.query = queryWithoutSearch(state.query);
+    renderQueryControls();
+  }
   if (record && changed) {
     const recorded = recordViewNavigation(state.history, state.historyIndex, state.currentView, view);
     state.history = recorded.history;
@@ -3316,6 +3321,10 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   // Picking a destination from the drawer should reveal the result.
   if (isCompactLayout()) closeDrawers();
   return true;
+}
+
+function enterFolderFromGrid(folderId) {
+  return navigate({ kind: 'folder', id: folderId }, { exitSearch: true });
 }
 
 function navigateHistory(delta) {
@@ -4822,7 +4831,7 @@ function bindPaneEvents(paneId) {
     const folder = event.target.closest('.folder-card');
     if (folder) {
       // Touch: a tap enters the folder directly (no double-tap on phones).
-      if (touch && !state.selected.size) { navigate({ kind: 'folder', id: folder.dataset.openFolder }); return; }
+      if (touch && !state.selected.size) { enterFolderFromGrid(folder.dataset.openFolder); return; }
       selectFolderCard(folder.dataset.openFolder);
       return;
     }
@@ -4880,7 +4889,7 @@ function bindPaneEvents(paneId) {
   query('#itemGrid').addEventListener('dblclick', event => {
     activatePane(paneId);
     const folder = event.target.closest('.folder-card');
-    if (folder) { navigate({ kind: 'folder', id: folder.dataset.openFolder }); return; }
+    if (folder) { enterFolderFromGrid(folder.dataset.openFolder); return; }
     const card = event.target.closest('.item-card');
     if (card) openPreview(card.dataset.id);
   });
@@ -5781,7 +5790,7 @@ function bindEvents() {
       openWithDefault(state.previewId || [...state.selected][0]);
       return;
     }
-    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); navigate({ kind: 'folder', id: state.selectedFolderCard }); }
+    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); enterFolderFromGrid(state.selectedFolderCard); }
     else if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
     if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault();

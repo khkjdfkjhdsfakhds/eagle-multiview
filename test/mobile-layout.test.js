@@ -41,7 +41,8 @@ test('touch pointers tap to preview, long-press to select, and never marquee', (
   assert.ok(renderer.includes("$('#clearSelectionButton').addEventListener('click'"), 'multi-select panel offers an explicit exit for touch');
   assert.ok(clickHandler.includes('openPreview(card.dataset.id)'), 'touch tap opens the preview');
   assert.ok(clickHandler.includes('selectItem(card.dataset.id, true)'), 'tap toggles inside a live selection');
-  assert.ok(clickHandler.includes("navigate({ kind: 'folder', id: folder.dataset.openFolder })"), 'touch tap enters folders directly');
+  assert.ok(clickHandler.includes('enterFolderFromGrid(folder.dataset.openFolder)'), 'touch tap enters folder results through the search-exiting path');
+  assert.ok(renderer.includes("navigate({ kind: 'folder', id: folderId }, { exitSearch: true })"), 'folder-result entry clears the phone search before loading the folder');
 });
 
 test('preview swipes: horizontal switches, downward closes, videos play inline', () => {

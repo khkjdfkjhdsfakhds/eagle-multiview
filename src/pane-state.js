@@ -16,6 +16,10 @@
     return createQuery(source);
   }
 
+  function queryWithoutSearch(source) {
+    return createQuery({ ...source, search: '' });
+  }
+
   // A lazy-load page appends to the end when the already-rendered ids form an
   // exact prefix of the next list; anything else (reorder, shrink, in-place
   // change) needs a full grid rebuild.
@@ -112,5 +116,5 @@
     return next;
   }
 
-  return { createQuery, cloneQuery, filtersActive, filterCount, normalizeRange, selectRange, defaultSortDir, effectiveSortDir, compareBySort, randomRank, sharedTags, appendableTailCount };
+  return { createQuery, cloneQuery, queryWithoutSearch, filtersActive, filterCount, normalizeRange, selectRange, defaultSortDir, effectiveSortDir, compareBySort, randomRank, sharedTags, appendableTailCount };
 });
