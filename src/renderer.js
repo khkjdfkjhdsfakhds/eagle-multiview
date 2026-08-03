@@ -60,6 +60,14 @@ const {
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const { windowStateForView } = window.EagleMVWindowTarget;
 const { createWindowActions } = window.EagleMVWindowActions;
+const {
+  BACK_ACTION,
+  BACK_STATUS,
+  createBackRouter,
+  createHistoryEntry,
+  readHistoryEntry,
+  installBackRouter
+} = window.EagleMVWindowRouter;
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
 // Another MultiView window may update the shared sort preferences.
 window.addEventListener('storage', event => {
@@ -3285,18 +3293,25 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   }
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
-  if (exitSearch && view.kind === 'folder' && state.query.search) {
-    state.query = queryWithoutSearch(state.query);
-    renderQueryControls();
-  }
+  const currentQuery = cloneQuery(state.query);
+  const nextQuery = exitSearch && view.kind === 'folder' && currentQuery.search
+    ? queryWithoutSearch(currentQuery)
+    : currentQuery;
   if (record && changed) {
-    const recorded = recordViewNavigation(state.history, state.historyIndex, state.currentView, view);
+    const recorded = recordViewNavigation(
+      state.history,
+      state.historyIndex,
+      createHistoryEntry(state.currentView, currentQuery),
+      createHistoryEntry(view, nextQuery)
+    );
     state.history = recorded.history;
     state.historyIndex = recorded.historyIndex;
   } else if (record && state.historyIndex < 0) {
-    state.history = [{ ...view }];
+    state.history = [createHistoryEntry(view, nextQuery)];
     state.historyIndex = 0;
   }
+  state.query = nextQuery;
+  renderQueryControls();
   if (changed) rememberViewPosition();
   state.restoreScroll = changed && restoreScroll ? state.viewMemory.get(descriptorKey(view)) || null : null;
   applyView(view);
@@ -3329,10 +3344,96 @@ function enterFolderFromGrid(folderId) {
 
 function navigateHistory(delta) {
   const next = state.historyIndex + delta;
-  if (next < 0 || next >= state.history.length) return;
-  if (!confirmDiscardChanges()) return;
+  if (next < 0 || next >= state.history.length) {
+    return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.HISTORY, reason: 'no-history' };
+  }
+  if (!confirmDiscardChanges()) {
+    return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.HISTORY, reason: 'unsaved-edit' };
+  }
+  const target = readHistoryEntry(state.history[next]);
+  const previousQuery = state.query;
+  state.query = target.hasQuery ? cloneQuery(target.query) : createQuery();
   state.historyIndex = next;
-  navigate(state.history[next], { record: false, skipDiscard: true, restoreScroll: true });
+  if (!navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true })) {
+    state.historyIndex -= delta;
+    state.query = previousQuery;
+    renderQueryControls();
+    return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.HISTORY, reason: 'navigation-refused' };
+  }
+  return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.HISTORY };
+}
+
+function closeTopTransientSurface() {
+  if (activeMarquee?.started) {
+    cancelMarquee({ restoreSelection: true });
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'marquee' };
+  }
+  if (!$('#folderDialog').classList.contains('hidden')) {
+    closeFolderDialog();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'folder-dialog' };
+  }
+  if (!$('#webAccessDialog').classList.contains('hidden')) {
+    closeWebAccessDialog();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'web-access-dialog' };
+  }
+  if (!$('#trashDialog').classList.contains('hidden')) {
+    closeTrashDialog();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'trash-dialog' };
+  }
+  if (!$('#duplicateDialog').classList.contains('hidden')) {
+    closeDuplicateDialog('cancel');
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'duplicate-dialog' };
+  }
+  if (!$('#contextMenu').classList.contains('hidden')) {
+    hideContextMenu();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'context-menu' };
+  }
+  for (const kind of Object.keys(tagEditors)) {
+    const popover = ensureTagSuggestionPopover(kind);
+    if (popover && !popover.classList.contains('hidden')) {
+      closeTagSuggestions(kind);
+      return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'tag-suggestions' };
+    }
+  }
+  if (!$('#tagColorManager').classList.contains('hidden')) {
+    $('#tagColorManager').classList.add('hidden');
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'tag-color-manager' };
+  }
+  if (!$('#filterPopover').classList.contains('hidden')) {
+    $('#filterPopover').classList.add('hidden');
+    renderFilterState();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'filter-popover' };
+  }
+  if (!$('#paneLayoutPopover').classList.contains('hidden')) {
+    $('#paneLayoutPopover').classList.add('hidden');
+    $('#paneLayoutButton').setAttribute('aria-expanded', 'false');
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'pane-layout-popover' };
+  }
+  if (!$('#libraryPopover').classList.contains('hidden')) {
+    closeLibraryPopover();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'library-popover' };
+  }
+  if (state.openDrawer) {
+    closeDrawers();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'drawer' };
+  }
+  return null;
+}
+
+const backActionRouter = createBackRouter({
+  consumeTransient: closeTopTransientSurface,
+  consumePreview: () => {
+    if ($('#previewModal').classList.contains('hidden')) return null;
+    return closePreview()
+      ? { status: BACK_STATUS.HANDLED, action: BACK_ACTION.PREVIEW }
+      : { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.PREVIEW, reason: 'unsaved-edit' };
+  },
+  canNavigateBack: () => state.historyIndex > 0,
+  navigateBack: () => navigateHistory(-1)
+});
+
+function requestBackAction() {
+  return window.EagleMVBack.request();
 }
 
 function parentView() {
@@ -4781,7 +4882,7 @@ function bindPaneEvents(paneId) {
     }
     if (!activatePane(paneId)) stopRejectedActivation(event);
   }, true);
-  query('#backButton').addEventListener('click', () => { activatePane(paneId); navigateHistory(-1); });
+  query('#backButton').addEventListener('click', () => { activatePane(paneId); requestBackAction(); });
   query('#forwardButton').addEventListener('click', () => { activatePane(paneId); navigateHistory(1); });
   query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
   query('#breadcrumb').addEventListener('click', event => {
@@ -5696,6 +5797,16 @@ function bindEvents() {
       }
       return;
     }
+    if (!editable && event.altKey && event.key === 'ArrowLeft') {
+      event.preventDefault();
+      requestBackAction();
+      return;
+    }
+    if (!editable && event.metaKey && event.key === '[') {
+      event.preventDefault();
+      requestBackAction();
+      return;
+    }
     // Do not let global shortcuts act on the obscured workspace. In
     // particular, a second Delete while the trash prompt is open can replace
     // its resolver and leave the first operation waiting forever.
@@ -5837,9 +5948,7 @@ function bindEvents() {
       moveCardFocus(event.key);
     }
     if (!editable && event.altKey && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
-    if (!editable && event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); navigateHistory(-1); }
     if (!editable && event.altKey && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
-    if (!editable && event.metaKey && event.key === '[') { event.preventDefault(); navigateHistory(-1); }
     if (!editable && event.metaKey && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
@@ -6226,6 +6335,7 @@ function applyCapabilityVisibility() {
 }
 
 async function start() {
+  installBackRouter(backActionRouter);
   bindEvents();
   bindHubEvents();
   bindWebAccessDialog();

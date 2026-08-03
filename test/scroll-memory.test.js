@@ -30,7 +30,7 @@ test('navigate remembers the departing view and arms restore for back-style navi
 
 test('back, forward, up, and breadcrumb navigation all restore the scroll position', () => {
   assert.ok(renderer.includes(
-    "navigate(state.history[next], { record: false, skipDiscard: true, restoreScroll: true });"
+    "navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true })"
   ), 'history navigation restores');
   assert.ok(renderer.includes('if (parent) navigate(parent, { restoreScroll: true });'), 'navigateUp restores');
   assert.ok(renderer.includes(
