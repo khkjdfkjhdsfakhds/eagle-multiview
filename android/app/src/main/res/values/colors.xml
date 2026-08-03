@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_blue">#1769E0</color>
+    <color name="surface_background">#F4F5F7</color>
+    <color name="toolbar_background">#FFFFFF</color>
+    <color name="panel_background">#FFFFFF</color>
+    <color name="panel_border">#D9DDE5</color>
+    <color name="text_primary">#20242B</color>
+    <color name="text_secondary">#626A78</color>
+</resources>

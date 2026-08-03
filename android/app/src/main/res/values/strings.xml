@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Eagle MultiView</string>
+    <string name="host_entry_title">连接 MultiView 主机</string>
+    <string name="host_entry_help">输入 Mac 上 Eagle MultiView 显示的 HTTP 或 HTTPS 地址，应用会在内置 WebView 中打开。</string>
+    <string name="host_url_hint">例如：http://192.168.1.20:41596</string>
+    <string name="paste_host">粘贴</string>
+    <string name="connect_host">打开</string>
+    <string name="clipboard_empty">剪贴板中没有可用的地址</string>
+    <string name="invalid_host_url">请输入合法的 HTTP 或 HTTPS 主机地址</string>
+    <string name="loading_host">正在打开 %1$s</string>
+    <string name="host_load_failed">主机加载失败，请检查地址与网络</string>
+    <string name="webview_description">Eagle MultiView 网页内容</string>
+</resources>
