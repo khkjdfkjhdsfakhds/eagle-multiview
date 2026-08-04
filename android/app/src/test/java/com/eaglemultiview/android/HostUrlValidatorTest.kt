@@ -13,6 +13,18 @@ class HostUrlValidatorTest {
             "http://192.168.1.20:41596/",
             HostUrlValidator.normalize(" 192.168.1.20:41596 "),
         )
+        assertEquals(
+            "http://localhost:41596/",
+            HostUrlValidator.normalize("localhost:41596"),
+        )
+        assertEquals(
+            "http://eagle-host:41596/",
+            HostUrlValidator.normalize("eagle-host:41596"),
+        )
+        assertEquals(
+            "http://example.com:8080/",
+            HostUrlValidator.normalize("example.com:8080"),
+        )
     }
 
     @Test
@@ -30,6 +42,10 @@ class HostUrlValidatorTest {
             (HostUrlValidator.validate("ftp://example.test") as HostInputResult.Invalid).error,
         )
         assertEquals(
+            HostInputError.UNSUPPORTED_SCHEME,
+            (HostUrlValidator.validate("javascript:alert(1)") as HostInputResult.Invalid).error,
+        )
+        assertEquals(
             HostInputError.CREDENTIALS_NOT_ALLOWED,
             (HostUrlValidator.validate("http://user:pass@example.test") as HostInputResult.Invalid).error,
         )
@@ -38,7 +54,6 @@ class HostUrlValidatorTest {
             (HostUrlValidator.validate("http://example.test/?access_key=secret") as HostInputResult.Invalid).error,
         )
         assertNull(HostUrlValidator.normalize("file:///tmp/library"))
-        assertNull(HostUrlValidator.normalize("javascript:alert(1)"))
         assertNull(HostUrlValidator.normalize("not a host"))
     }
 }

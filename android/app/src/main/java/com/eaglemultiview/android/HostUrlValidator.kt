@@ -33,6 +33,9 @@ sealed interface HostInputResult {
 /** Pure JVM URL validation shared by the host entry screen, persistence, and tests. */
 object HostUrlValidator {
     private val schemePrefix = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
+    private val authoritySchemePrefix = Regex("^([A-Za-z][A-Za-z0-9+.-]*):\\/\\/")
+    private val hostWithNumericPort =
+        Regex("^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?:[0-9]+(?:[/?#].*)?$")
     private val explicitWebScheme = Regex("^(?i:https?)://")
     private val allowedSchemes = setOf("http", "https")
 
@@ -43,7 +46,12 @@ object HostUrlValidator {
             return HostInputResult.Invalid(HostInputError.WHITESPACE)
         }
 
-        val declaredScheme = schemePrefix.find(trimmed)?.groupValues?.get(1)?.lowercase(Locale.US)
+        val schemeLikePrefix = schemePrefix.find(trimmed)?.groupValues?.get(1)?.lowercase(Locale.US)
+        val declaredScheme = when {
+            authoritySchemePrefix.containsMatchIn(trimmed) -> schemeLikePrefix
+            schemeLikePrefix != null && !hostWithNumericPort.matches(trimmed) -> schemeLikePrefix
+            else -> null
+        }
         if (declaredScheme != null && declaredScheme !in allowedSchemes) {
             return HostInputResult.Invalid(HostInputError.UNSUPPORTED_SCHEME)
         }
