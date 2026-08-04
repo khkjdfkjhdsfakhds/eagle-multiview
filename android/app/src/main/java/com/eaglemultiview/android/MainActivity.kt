@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private var trustClearInProgress = false
     private var trustedPageReady = false
     private var webViewAvailable = true
+    private var activeHostWebViewClient: HostWebViewClient? = null
     private var backTimeoutRequestId: Long? = null
     private var backTimeoutRunnable: Runnable? = null
 
@@ -216,7 +217,9 @@ class MainActivity : AppCompatActivity() {
         trustedPageReady = false
         webViewAvailable = true
         webView.visibility = View.VISIBLE
-        webView.webViewClient = HostWebViewClient(endpoint)
+        val client = HostWebViewClient(endpoint)
+        activeHostWebViewClient = client
+        webView.webViewClient = client
         webView.loadUrl(endpoint.startUrl)
     }
 
@@ -242,6 +245,7 @@ class MainActivity : AppCompatActivity() {
         invalidateTrustedPage()
         mainFrameFailed = false
         webView.stopLoading()
+        activeHostWebViewClient = null
         webView.webViewClient = WebViewClient()
         webView.loadUrl("about:blank")
         webView.clearHistory()
@@ -418,6 +422,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun replaceWebViewAfterRendererGone(deadWebView: WebView) {
+        activeHostWebViewClient = null
         val parent = deadWebView.parent as? ViewGroup
         val index = parent?.indexOfChild(deadWebView) ?: -1
         val layoutParams = deadWebView.layoutParams
@@ -458,6 +463,7 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacksAndMessages(null)
         webView.stopLoading()
         webView.webChromeClient = null
+        activeHostWebViewClient = null
         webView.webViewClient = WebViewClient()
         webView.destroy()
         super.onDestroy()
@@ -466,7 +472,18 @@ class MainActivity : AppCompatActivity() {
     private inner class HostWebViewClient(
         private val endpoint: HostEndpoint,
     ) : WebViewClient() {
+        private fun isCurrentCallback(view: WebView?): Boolean = webViewAvailable &&
+            HostWebViewCallbackGuard.matches(
+                callbackClient = this,
+                activeClient = activeHostWebViewClient,
+                callbackView = view,
+                currentView = webView,
+                callbackEndpoint = endpoint,
+                activeEndpoint = connectionCoordinator.activeEndpoint,
+            )
+
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (!isCurrentCallback(view)) return true
             if (!request.isForMainFrame) return false
             return when (TrustedNavigationPolicy.classify(endpoint, request.url.toString())) {
                 NavigationTarget.TrustedPage,
@@ -481,6 +498,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            if (!isCurrentCallback(view)) return
             trustedPageReady = false
             backRequestCoordinator.cancelPending()
             cancelBackTimeout(backTimeoutRequestId)
@@ -490,9 +508,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
+            if (!isCurrentCallback(view)) return
             val committedTrustedPage = !mainFrameFailed &&
-                webViewAvailable &&
-                connectionCoordinator.activeEndpoint == endpoint &&
                 connectionCoordinator.pageCommitted(url)
             trustedPageReady = committedTrustedPage
             if (committedTrustedPage) {
@@ -501,6 +518,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
+            if (!isCurrentCallback(view)) return
             if (connectionCoordinator.state is HostConnectionState.Connected ||
                 connectionCoordinator.state is HostConnectionState.LoginRequired
             ) {
@@ -513,6 +531,7 @@ class MainActivity : AppCompatActivity() {
             request: WebResourceRequest,
             errorResponse: android.webkit.WebResourceResponse,
         ) {
+            if (!isCurrentCallback(view)) return
             if (request.isForMainFrame) {
                 invalidateTrustedPage()
                 mainFrameFailed = true
@@ -526,6 +545,7 @@ class MainActivity : AppCompatActivity() {
             request: WebResourceRequest,
             error: WebResourceError,
         ) {
+            if (!isCurrentCallback(view)) return
             if (request.isForMainFrame) {
                 invalidateTrustedPage()
                 mainFrameFailed = true
@@ -541,6 +561,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
             handler.cancel()
+            if (!isCurrentCallback(view)) return
             invalidateTrustedPage()
             mainFrameFailed = true
             connectionCoordinator.fail(ConnectionFailureKind.TLS_ERROR)
@@ -548,6 +569,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            if (!isCurrentCallback(view)) return true
             invalidateTrustedPage()
             mainFrameFailed = true
             replaceWebViewAfterRendererGone(view)

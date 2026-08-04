@@ -9,6 +9,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso.closeSoftKeyboard
+import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.action.ViewActions.replaceText
 import androidx.test.espresso.assertion.ViewAssertions.matches
@@ -73,6 +74,26 @@ class BackNavigationWebViewTest {
 
             dispatchBack()
             waitForActivityDestroyed()
+        }
+    }
+
+    @Test
+    fun systemBackInjectionHonorsTrustedHandledContract() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                htmlResponse(
+                    backContractScript("['handled']") +
+                        "<p id='result'>ready</p><p id='calls'>0</p>",
+                ),
+            )
+            server.start()
+            connect(server.url("/").toString())
+            assertWebText("result", "ready")
+
+            pressBack()
+
+            assertWebText("calls", "1")
+            assertActivityOpen()
         }
     }
 
@@ -148,7 +169,7 @@ class BackNavigationWebViewTest {
                     window.EagleMVBack = { request() {
                       window.calls += 1;
                       document.getElementById('calls').textContent = String(window.calls);
-                      return {status:'exit',handled:false,blocked:false,exit:true};
+                      return {status:'exit',handled:false,blocked:false,exit:true,action:'host'};
                     }};
                     </script>
                     <p id='result'>untrusted</p><p id='calls'>0</p>
@@ -230,7 +251,7 @@ class BackNavigationWebViewTest {
                     window.EagleMVBack = { request() {
                       const deadline = Date.now() + 2200;
                       while (Date.now() < deadline) {}
-                      return {status:'exit',handled:false,blocked:false,exit:true};
+                      return {status:'exit',handled:false,blocked:false,exit:true,action:'host'};
                     }};
                     </script>
                     <p id='result'>ready</p>
@@ -293,7 +314,7 @@ class BackNavigationWebViewTest {
             handled: status === 'handled',
             blocked: status === 'blocked',
             exit: status === 'exit',
-            action: 'request'
+            action: status === 'handled' ? 'transient' : status === 'blocked' ? 'preview' : 'host'
           };
         }};
         </script>

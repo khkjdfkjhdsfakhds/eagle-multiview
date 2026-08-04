@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const {
   createWebServer,
@@ -184,7 +185,24 @@ test('web server: auth, static serving, rpc bridge, media ranges, websocket even
     assert.equal((await request(port, { path: '/rpc', method: 'POST' }, '{}')).status, 401);
     const loginPage = await request(port, { path: '/login' });
     assert.equal(loginPage.status, 200);
-    assert.ok(loginPage.body.toString().includes('访问密钥'));
+    const loginHTML = loginPage.body.toString();
+    assert.ok(loginHTML.includes('访问密钥'));
+    const loginScript = loginHTML.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(loginScript, 'real login page exposes an executable script');
+    const loginWindow = {};
+    vm.runInNewContext(loginScript, {
+      window: loginWindow,
+      document: {
+        getElementById() {
+          return { addEventListener() {} };
+        }
+      }
+    });
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(loginWindow.EagleMVBack.request())),
+      { status: 'exit', handled: false, blocked: false, exit: true, action: 'host' }
+    );
+    assert.equal(Object.getOwnPropertyDescriptor(loginWindow, 'EagleMVBack').writable, false);
 
     const badLogin = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
       JSON.stringify({ key: 'WRONG-KEY' }));

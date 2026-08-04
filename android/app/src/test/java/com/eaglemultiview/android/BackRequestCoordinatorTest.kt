@@ -13,19 +13,19 @@ class BackRequestCoordinatorTest {
         val handledRequest = coordinator.begin(BackPageAvailability.TRUSTED_PAGE).requestId()
         assertEquals(
             BackCommand.Stay(BackStayReason.HANDLED),
-            coordinator.resolve(handledRequest, webResult("handled")),
+            coordinator.resolve(handledRequest, webResult("handled", "transient")),
         )
 
         val blockedRequest = coordinator.begin(BackPageAvailability.TRUSTED_PAGE).requestId()
         assertEquals(
             BackCommand.Stay(BackStayReason.BLOCKED),
-            coordinator.resolve(blockedRequest, webResult("blocked")),
+            coordinator.resolve(blockedRequest, webResult("blocked", "preview")),
         )
 
         val exitRequest = coordinator.begin(BackPageAvailability.TRUSTED_PAGE).requestId()
         assertEquals(
             BackCommand.FinishActivity,
-            coordinator.resolve(exitRequest, webResult("exit")),
+            coordinator.resolve(exitRequest, webResult("exit", "host")),
         )
         assertEquals(
             BackCommand.Stay(BackStayReason.ALREADY_FINISHING),
@@ -44,7 +44,7 @@ class BackRequestCoordinatorTest {
             coordinator.begin(BackPageAvailability.TRUSTED_PAGE),
         )
 
-        coordinator.resolve(first.requestId(), webResult("handled"))
+        coordinator.resolve(first.requestId(), webResult("handled", "history"))
         val next = coordinator.begin(BackPageAvailability.TRUSTED_PAGE)
         assertTrue(next is BackCommand.EvaluateJavascript)
         assertTrue(next.requestId() > first.requestId())
@@ -60,10 +60,10 @@ class BackRequestCoordinatorTest {
             coordinator.timeout(timedOutRequest),
         )
         val currentRequest = coordinator.begin(BackPageAvailability.TRUSTED_PAGE).requestId()
-        assertNull(coordinator.resolve(timedOutRequest, webResult("exit")))
+        assertNull(coordinator.resolve(timedOutRequest, webResult("exit", "host")))
         assertEquals(
             BackCommand.Stay(BackStayReason.HANDLED),
-            coordinator.resolve(currentRequest, webResult("handled")),
+            coordinator.resolve(currentRequest, webResult("handled", "preview")),
         )
     }
 
@@ -112,7 +112,7 @@ class BackRequestCoordinatorTest {
 
         coordinator.cancelPending()
 
-        assertNull(coordinator.resolve(oldRequest, webResult("exit")))
+        assertNull(coordinator.resolve(oldRequest, webResult("exit", "host")))
         assertTrue(
             coordinator.begin(BackPageAvailability.TRUSTED_PAGE) is BackCommand.EvaluateJavascript,
         )
@@ -120,9 +120,13 @@ class BackRequestCoordinatorTest {
 
     @Test
     fun `parser rejects unknown contradictory and non object values`() {
-        assertEquals(WebBackStatus.HANDLED, WebBackResultParser.parse(webResult("handled")))
-        assertEquals(WebBackStatus.BLOCKED, WebBackResultParser.parse(webResult("blocked")))
-        assertEquals(WebBackStatus.EXIT, WebBackResultParser.parse(webResult("exit")))
+        for (action in listOf("transient", "preview", "history")) {
+            assertEquals(WebBackStatus.HANDLED, WebBackResultParser.parse(webResult("handled", action)))
+        }
+        for (action in listOf("preview", "history", "request")) {
+            assertEquals(WebBackStatus.BLOCKED, WebBackResultParser.parse(webResult("blocked", action)))
+        }
+        assertEquals(WebBackStatus.EXIT, WebBackResultParser.parse(webResult("exit", "host")))
 
         assertNull(WebBackResultParser.parse(null))
         assertNull(WebBackResultParser.parse("null"))
@@ -130,16 +134,25 @@ class BackRequestCoordinatorTest {
         assertNull(WebBackResultParser.parse("{\"status\":\"unknown\"}"))
         assertNull(
             WebBackResultParser.parse(
-                """{"status":"exit","handled":true,"blocked":false,"exit":true}""",
+                """{"status":"exit","handled":false,"blocked":false,"exit":true}""",
+            ),
+        )
+        assertNull(WebBackResultParser.parse(webResult("exit", "request")))
+        assertNull(WebBackResultParser.parse(webResult("handled", "host")))
+        assertNull(WebBackResultParser.parse(webResult("blocked", "transient")))
+        assertNull(WebBackResultParser.parse(webResult("blocked", "unknown")))
+        assertNull(
+            WebBackResultParser.parse(
+                """{"status":"exit","handled":true,"blocked":false,"exit":true,"action":"host"}""",
             ),
         )
     }
 
-    private fun webResult(status: String): String {
+    private fun webResult(status: String, action: String): String {
         val handled = status == "handled"
         val blocked = status == "blocked"
         val exit = status == "exit"
-        return """{"status":"$status","handled":$handled,"blocked":$blocked,"exit":$exit,"action":"request"}"""
+        return """{"status":"$status","handled":$handled,"blocked":$blocked,"exit":$exit,"action":"$action"}"""
     }
 
     private fun BackCommand.requestId(): Long =

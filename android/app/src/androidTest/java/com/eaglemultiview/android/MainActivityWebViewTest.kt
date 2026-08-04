@@ -6,6 +6,8 @@ import android.os.SystemClock
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebStorage
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
@@ -207,6 +209,41 @@ class MainActivityWebViewTest {
                 assertWebText("replacement host")
 
                 assertFalse(replacementCookie.get().orEmpty().contains("old_host_session"))
+            }
+        }
+    }
+
+    @Test
+    fun staleClientCallbacksCannotOverwriteTheReplacementHostState() {
+        MockWebServer().use { firstServer ->
+            MockWebServer().use { secondServer ->
+                firstServer.enqueue(htmlResponse("<p id='result'>first host</p>"))
+                secondServer.enqueue(htmlResponse("<p id='result'>replacement host</p>"))
+                firstServer.start()
+                secondServer.start()
+
+                connect(firstServer.url("/").toString())
+                assertWebText("first host")
+
+                val staleClient = AtomicReference<WebViewClient>()
+                scenario.onActivity { activity ->
+                    staleClient.set(activity.findViewById<WebView>(R.id.webView).webViewClient)
+                    activity.findViewById<Button>(R.id.changeHostButton).performClick()
+                }
+                waitForDisplayed(R.id.hostPanel)
+                waitForEnabled(R.id.connectButton)
+                connect(secondServer.url("/").toString())
+                assertWebText("replacement host")
+
+                scenario.onActivity { activity ->
+                    val currentView = activity.findViewById<WebView>(R.id.webView)
+                    val staleUrl = firstServer.url("/stale").toString()
+                    staleClient.get().onPageStarted(currentView, staleUrl, null)
+                    staleClient.get().onPageCommitVisible(currentView, staleUrl)
+                }
+
+                onView(withId(R.id.statusText)).check(matches(withText(R.string.connected_host)))
+                assertWebText("replacement host")
             }
         }
     }

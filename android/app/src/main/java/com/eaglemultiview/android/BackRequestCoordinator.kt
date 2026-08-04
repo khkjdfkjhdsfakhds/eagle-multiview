@@ -99,6 +99,12 @@ class BackRequestCoordinator {
 
 /** Strictly validates the complete status/boolean shape produced by window.EagleMVBack.request(). */
 object WebBackResultParser {
+    private val allowedActions = mapOf(
+        WebBackStatus.HANDLED to setOf("transient", "preview", "history"),
+        WebBackStatus.BLOCKED to setOf("preview", "history", "request"),
+        WebBackStatus.EXIT to setOf("host"),
+    )
+
     fun parse(rawResult: String?): WebBackStatus? {
         if (rawResult.isNullOrBlank() || rawResult == "null") return null
         val result = try {
@@ -107,7 +113,7 @@ object WebBackResultParser {
             return null
         }
 
-        val status = when (result.optString("status", "")) {
+        val status = when (result.strictString("status")) {
             "handled" -> WebBackStatus.HANDLED
             "blocked" -> WebBackStatus.BLOCKED
             "exit" -> WebBackStatus.EXIT
@@ -116,14 +122,21 @@ object WebBackResultParser {
         val handled = result.strictBoolean("handled") ?: return null
         val blocked = result.strictBoolean("blocked") ?: return null
         val exit = result.strictBoolean("exit") ?: return null
+        val action = result.strictString("action") ?: return null
         if (handled != (status == WebBackStatus.HANDLED)) return null
         if (blocked != (status == WebBackStatus.BLOCKED)) return null
         if (exit != (status == WebBackStatus.EXIT)) return null
+        if (action !in allowedActions.getValue(status)) return null
         return status
     }
 
     private fun JSONObject.strictBoolean(key: String): Boolean? {
         if (!has(key)) return null
         return opt(key) as? Boolean
+    }
+
+    private fun JSONObject.strictString(key: String): String? {
+        if (!has(key)) return null
+        return opt(key) as? String
     }
 }
