@@ -4,6 +4,7 @@ enum class ConnectionFailureKind {
     UNREACHABLE,
     HTTP_ERROR,
     TLS_ERROR,
+    RENDERER_CRASHED,
 }
 
 sealed interface HostConnectionState {

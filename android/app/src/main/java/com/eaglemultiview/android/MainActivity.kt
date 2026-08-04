@@ -7,8 +7,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -22,6 +26,8 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.BackEventCompat
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
@@ -42,8 +48,14 @@ class MainActivity : AppCompatActivity() {
     private val connectionCoordinator by lazy {
         HostConnectionCoordinator(SharedPreferencesRecentHostStore(this))
     }
+    private val backRequestCoordinator = BackRequestCoordinator()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var mainFrameFailed = false
     private var trustClearInProgress = false
+    private var trustedPageReady = false
+    private var webViewAvailable = true
+    private var backTimeoutRequestId: Long? = null
+    private var backTimeoutRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +78,7 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         bindHostEntryActions()
         bindBrowserActions()
+        bindSystemBack()
 
         val restoredHost = connectionCoordinator.restore()
         if (restoredHost == null) {
@@ -126,6 +139,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun bindSystemBack() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                dispatchBackCommand(backRequestCoordinator.begin(currentBackAvailability()))
+            }
+
+            // The web client owns its own transient/preview/history state. There is no native
+            // visual state to animate, so predictive-back progress is intentionally not mapped
+            // to a fabricated page transition. The committed gesture still arrives here.
+            override fun handleOnBackStarted(backEvent: BackEventCompat) = Unit
+
+            override fun handleOnBackProgressed(backEvent: BackEventCompat) = Unit
+
+            override fun handleOnBackCancelled() = Unit
+        })
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
@@ -162,6 +192,7 @@ class MainActivity : AppCompatActivity() {
                 clearHostInputError()
                 hostInput.setText(result.endpoint.startUrl)
                 hostInput.setSelection(hostInput.length())
+                invalidateTrustedPage()
                 val clearSiteData = connectionCoordinator.beginConnection(result.endpoint)
                 startEndpoint(result.endpoint, clearSiteData)
             }
@@ -169,6 +200,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startEndpoint(endpoint: HostEndpoint, clearSiteData: Boolean) {
+        invalidateTrustedPage()
         browserContainer.visibility = View.VISIBLE
         hostPanel.visibility = View.GONE
         renderState(HostConnectionState.Connecting(endpoint))
@@ -181,12 +213,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadEndpoint(endpoint: HostEndpoint) {
         mainFrameFailed = false
+        trustedPageReady = false
+        webViewAvailable = true
         webView.visibility = View.VISIBLE
         webView.webViewClient = HostWebViewClient(endpoint)
         webView.loadUrl(endpoint.startUrl)
     }
 
     private fun enterHostEntryAndClearTrust() {
+        invalidateTrustedPage()
         val hadTrustedHost = connectionCoordinator.showHostEntry()
         hostPanel.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
@@ -204,6 +239,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Clears WebView cookies/storage/cache before a different host is trusted. */
     private fun clearWebViewTrust(onComplete: () -> Unit) {
+        invalidateTrustedPage()
         mainFrameFailed = false
         webView.stopLoading()
         webView.webViewClient = WebViewClient()
@@ -219,6 +255,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showHostEntry() {
+        invalidateTrustedPage()
         hostPanel.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
         clearHostInputError()
@@ -285,9 +322,121 @@ class MainActivity : AppCompatActivity() {
                         stateTitle.text = getString(R.string.state_tls_error_title)
                         stateMessage.text = getString(R.string.state_tls_error_message)
                     }
+                    ConnectionFailureKind.RENDERER_CRASHED -> {
+                        statusText.text = getString(R.string.state_renderer_crashed_title)
+                        stateTitle.text = getString(R.string.state_renderer_crashed_title)
+                        stateMessage.text = getString(R.string.state_renderer_crashed_message)
+                    }
                 }
             }
         }
+    }
+
+    private fun currentBackAvailability(): BackPageAvailability = when {
+        hostPanel.visibility == View.VISIBLE || connectionCoordinator.state is HostConnectionState.HostEntry -> {
+            BackPageAvailability.HOST_ENTRY
+        }
+        !webViewAvailable || !trustedPageReady -> BackPageAvailability.UNAVAILABLE
+        else -> BackPageAvailability.TRUSTED_PAGE
+    }
+
+    private fun dispatchBackCommand(command: BackCommand) {
+        when (command) {
+            is BackCommand.EvaluateJavascript -> evaluateWebBack(command.requestId)
+            BackCommand.FinishActivity -> finishActivityOnce()
+            is BackCommand.Stay -> handleBackStay(command.reason)
+        }
+    }
+
+    private fun evaluateWebBack(requestId: Long) {
+        if (!webViewAvailable || !trustedPageReady) {
+            dispatchBackCommand(
+                backRequestCoordinator.evaluationFailed(requestId)
+                    ?: BackCommand.Stay(BackStayReason.UNAVAILABLE),
+            )
+            return
+        }
+
+        scheduleBackTimeout(requestId)
+        try {
+            webView.evaluateJavascript(WEB_BACK_REQUEST_JAVASCRIPT) { rawResult ->
+                cancelBackTimeout(requestId)
+                backRequestCoordinator.resolve(requestId, rawResult)?.let(::dispatchBackCommand)
+            }
+        } catch (_: Throwable) {
+            cancelBackTimeout(requestId)
+            backRequestCoordinator.evaluationFailed(requestId)?.let(::dispatchBackCommand)
+        }
+    }
+
+    private fun scheduleBackTimeout(requestId: Long) {
+        cancelBackTimeout(backTimeoutRequestId)
+        val timeout = Runnable {
+            if (backTimeoutRequestId == requestId) {
+                backTimeoutRequestId = null
+                backTimeoutRunnable = null
+                backRequestCoordinator.timeout(requestId)?.let(::dispatchBackCommand)
+            }
+        }
+        backTimeoutRequestId = requestId
+        backTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, BACK_REQUEST_TIMEOUT_MS)
+    }
+
+    private fun cancelBackTimeout(requestId: Long?) {
+        if (requestId == null || backTimeoutRequestId != requestId) return
+        backTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        backTimeoutRequestId = null
+        backTimeoutRunnable = null
+    }
+
+    private fun handleBackStay(reason: BackStayReason) {
+        when (reason) {
+            BackStayReason.UNAVAILABLE ->
+                Toast.makeText(this, R.string.back_unavailable, Toast.LENGTH_SHORT).show()
+            BackStayReason.TIMEOUT ->
+                Toast.makeText(this, R.string.back_request_timeout, Toast.LENGTH_SHORT).show()
+            BackStayReason.INVALID_RESULT,
+            BackStayReason.EVALUATION_FAILED,
+            -> Toast.makeText(this, R.string.back_request_failed, Toast.LENGTH_SHORT).show()
+            BackStayReason.HANDLED,
+            BackStayReason.BLOCKED,
+            BackStayReason.BUSY,
+            BackStayReason.ALREADY_FINISHING,
+            -> Unit
+        }
+    }
+
+    private fun finishActivityOnce() {
+        if (!isFinishing && !isDestroyed) finish()
+    }
+
+    private fun invalidateTrustedPage() {
+        trustedPageReady = false
+        backRequestCoordinator.cancelPending()
+        cancelBackTimeout(backTimeoutRequestId)
+    }
+
+    private fun replaceWebViewAfterRendererGone(deadWebView: WebView) {
+        val parent = deadWebView.parent as? ViewGroup
+        val index = parent?.indexOfChild(deadWebView) ?: -1
+        val layoutParams = deadWebView.layoutParams
+        if (parent != null && index >= 0) parent.removeViewAt(index)
+        deadWebView.destroy()
+
+        if (parent == null || index < 0) {
+            webViewAvailable = false
+            return
+        }
+
+        webView = WebView(this).apply {
+            id = R.id.webView
+            this.layoutParams = layoutParams
+            contentDescription = getString(R.string.webview_description)
+        }
+        parent.addView(webView, index)
+        webViewAvailable = true
+        configureWebView()
     }
 
     private fun launchExternalBrowser(url: String) {
@@ -305,6 +454,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        invalidateTrustedPage()
+        mainHandler.removeCallbacksAndMessages(null)
         webView.stopLoading()
         webView.webChromeClient = null
         webView.webViewClient = WebViewClient()
@@ -330,13 +481,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            trustedPageReady = false
+            backRequestCoordinator.cancelPending()
+            cancelBackTimeout(backTimeoutRequestId)
             if (TrustedNavigationPolicy.classify(endpoint, url).isTrusted) {
                 statusText.text = getString(R.string.loading_host)
             }
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
-            if (!mainFrameFailed && connectionCoordinator.pageCommitted(url)) {
+            val committedTrustedPage = !mainFrameFailed &&
+                webViewAvailable &&
+                connectionCoordinator.activeEndpoint == endpoint &&
+                connectionCoordinator.pageCommitted(url)
+            trustedPageReady = committedTrustedPage
+            if (committedTrustedPage) {
                 renderState(connectionCoordinator.state)
             }
         }
@@ -355,6 +514,7 @@ class MainActivity : AppCompatActivity() {
             errorResponse: android.webkit.WebResourceResponse,
         ) {
             if (request.isForMainFrame) {
+                invalidateTrustedPage()
                 mainFrameFailed = true
                 connectionCoordinator.fail(ConnectionFailureKind.HTTP_ERROR, errorResponse.statusCode)
                 renderState(connectionCoordinator.state)
@@ -367,6 +527,7 @@ class MainActivity : AppCompatActivity() {
             error: WebResourceError,
         ) {
             if (request.isForMainFrame) {
+                invalidateTrustedPage()
                 mainFrameFailed = true
                 val kind = if (error.errorCode == WebViewClient.ERROR_FAILED_SSL_HANDSHAKE) {
                     ConnectionFailureKind.TLS_ERROR
@@ -380,10 +541,24 @@ class MainActivity : AppCompatActivity() {
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
             handler.cancel()
+            invalidateTrustedPage()
             mainFrameFailed = true
             connectionCoordinator.fail(ConnectionFailureKind.TLS_ERROR)
             renderState(connectionCoordinator.state)
         }
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            invalidateTrustedPage()
+            mainFrameFailed = true
+            replaceWebViewAfterRendererGone(view)
+            connectionCoordinator.fail(ConnectionFailureKind.RENDERER_CRASHED)
+            renderState(connectionCoordinator.state)
+            return true
+        }
+    }
+
+    private companion object {
+        const val BACK_REQUEST_TIMEOUT_MS = 1_500L
     }
 }
 

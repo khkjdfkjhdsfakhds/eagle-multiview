@@ -20,6 +20,7 @@ Run commands from this `android/` directory:
 ```sh
 ./gradlew testDebugUnitTest
 ./gradlew assembleDebug
+./gradlew lintDebug
 ./gradlew connectedDebugAndroidTest
 ```
 
@@ -33,11 +34,13 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `conne
 - The WebView shows distinct native states for connecting, unreachable hosts, HTTP errors, TLS/certificate failures, and expired login sessions. Each recoverable state has retry and/or change-host actions, and failed main-frame loads never leave a blank WebView.
 - JavaScript, DOM storage, first-party cookies, and media playback are enabled for the existing MultiView web client. Third-party cookies, file access, and content access are disabled.
 - The existing Web login page remains responsible for submitting the access key and setting the HttpOnly session cookie. Android does not store or log the access key, session cookie, or full navigated URL.
-- Only same-origin HTTP/HTTPS MultiView navigation stays in the trusted WebView. Other web origins open with the system browser; unsupported schemes are blocked. No JavaScript bridge is exposed.
+- Only same-origin HTTP/HTTPS MultiView navigation stays in the trusted WebView. Other web origins open with the system browser; unsupported schemes are blocked. No page-callable `addJavascriptInterface` bridge is exposed.
+- Android system Back (button, gesture, and the AndroidX predictive-back entry) makes one native-initiated `evaluateJavascript` call to `window.EagleMVBack.request()` only after a trusted same-origin page commits. `handled` and `blocked` stay in the page; only a complete, valid `exit` result finishes the Activity.
+- Back requests are serialized and timed out. Loading, failed, crashed, untrusted, malformed-result, exception, and stale-callback paths remain open in a recoverable native state rather than bypassing the Web return contract. Renderer loss replaces the unusable WebView before retry.
 - Replacing the trusted host clears WebView cookies, storage, cache, form data, and history before the new host is loaded, preventing cross-host session reuse.
 - WebView file/content access is disabled. The manifest requests only network access; it does not request storage or Eagle-library file permissions.
 
-Android Back integration, file import/download, reconnection recovery, and release signing are intentionally left to their later GitHub tickets.
+File import/download, reconnection recovery, and release signing are intentionally left to their later GitHub tickets.
 
 ## Git hygiene
 

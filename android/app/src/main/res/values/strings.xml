@@ -30,7 +30,12 @@
     <string name="state_http_error_message">主机暂时无法提供页面（HTTP %1$d）。请稍后重试。</string>
     <string name="state_tls_error_title">连接证书不可信</string>
     <string name="state_tls_error_message">为保护你的会话，已拒绝这个 TLS/证书连接。请检查主机地址和证书配置。</string>
+    <string name="state_renderer_crashed_title">网页进程已停止</string>
+    <string name="state_renderer_crashed_message">网页渲染进程意外停止。你可以安全重试当前主机，或更换主机。</string>
     <string name="state_login_title">需要重新登录</string>
     <string name="state_login_message">当前主机的登录会话已失效。请在网页中重新输入访问密钥。</string>
+    <string name="back_unavailable">当前页面尚未安全就绪，请重试或更换主机。</string>
+    <string name="back_request_timeout">网页未及时响应返回请求，已保持当前页面。</string>
+    <string name="back_request_failed">网页返回请求无效，已保持当前页面。</string>
     <string name="webview_description">Eagle MultiView 网页内容</string>
 </resources>
