@@ -7,4 +7,5 @@
     <color name="panel_border">#D9DDE5</color>
     <color name="text_primary">#20242B</color>
     <color name="text_secondary">#626A78</color>
+    <color name="auth_banner_background">#FFF3CD</color>
 </resources>

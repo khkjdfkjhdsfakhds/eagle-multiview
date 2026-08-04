@@ -56,6 +56,7 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-intents:3.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-web:3.6.1")
     androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

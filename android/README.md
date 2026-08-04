@@ -28,11 +28,16 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `conne
 ## Current host/WebView contract
 
 - The first screen accepts typing or pasting an HTTP/HTTPS MultiView host URL. Missing schemes are normalized to `http://` for LAN use.
-- JavaScript, DOM storage, cookies, third-party cookies, and media playback are enabled for the existing MultiView web client.
+- Only normalized HTTP/HTTPS origins are accepted. Credentials, query strings, fragments, unsupported schemes, malformed hosts, and invalid ports are rejected with an actionable native error.
+- A host is remembered only after a trusted same-origin page (including the existing `/login` page) commits successfully. A normal restart attempts the last successful host; an error state or the change-host action can replace it.
+- The WebView shows distinct native states for connecting, unreachable hosts, HTTP errors, TLS/certificate failures, and expired login sessions. Each recoverable state has retry and/or change-host actions, and failed main-frame loads never leave a blank WebView.
+- JavaScript, DOM storage, first-party cookies, and media playback are enabled for the existing MultiView web client. Third-party cookies, file access, and content access are disabled.
+- The existing Web login page remains responsible for submitting the access key and setting the HttpOnly session cookie. Android does not store or log the access key, session cookie, or full navigated URL.
+- Only same-origin HTTP/HTTPS MultiView navigation stays in the trusted WebView. Other web origins open with the system browser; unsupported schemes are blocked. No JavaScript bridge is exposed.
+- Replacing the trusted host clears WebView cookies, storage, cache, form data, and history before the new host is loaded, preventing cross-host session reuse.
 - WebView file/content access is disabled. The manifest requests only network access; it does not request storage or Eagle-library file permissions.
-- The scaffold keeps the entered host only in the running Activity. Saved-host reuse, host trust boundaries, external-link dispatch, login/session recovery, and host switching belong to GitHub Issue #7.
 
-Authentication/session hardening, Android Back integration, file import/download, reconnection recovery, and release signing are intentionally left to their later GitHub tickets.
+Android Back integration, file import/download, reconnection recovery, and release signing are intentionally left to their later GitHub tickets.
 
 ## Git hygiene
 
