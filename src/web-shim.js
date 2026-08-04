@@ -69,6 +69,8 @@
   let sessionEverConnected = false;
   let transportGeneration = 0;
   let disposed = false;
+  const activeUploadControllers = new Set();
+  const uploadTimeoutMs = 120000;
 
   function isCurrentTransport(generation) {
     return !disposed && generation === transportGeneration;
@@ -186,6 +188,8 @@
     reconnectTimer = null;
     healthProbe = null;
     healthProbeEpoch += 1;
+    for (const controller of activeUploadControllers) controller.abort();
+    activeUploadControllers.clear();
     const current = socket;
     socket = null;
     if (current) {
@@ -204,11 +208,11 @@
   let dragToken = 0;
 
   // --- uploads --------------------------------------------------------------
-  function pickBrowserFiles() {
+  function pickBrowserFiles({ multiple = true } = {}) {
     return new Promise(resolve => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.multiple = true;
+      input.multiple = multiple;
       input.style.display = 'none';
       document.body.appendChild(input);
       const finish = files => {
@@ -224,20 +228,31 @@
   async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
     const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [] };
     for (const file of files) {
+      if (disposed) break;
+      const controller = new AbortController();
+      let timeoutTimer = null;
+      let timedOut = false;
+      activeUploadControllers.add(controller);
       try {
         const query = new URLSearchParams({ name: file.name || '未命名文件' });
         if (folderId) query.set('folderId', folderId);
         if (libraryPath) query.set('libraryPath', libraryPath);
+        timeoutTimer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, uploadTimeoutMs);
         const response = await fetch(`/upload?${query}`, {
           method: 'POST',
           headers: { 'x-eaglemv-client': String(clientId) },
-          body: file
+          body: file,
+          signal: controller.signal
         });
         if (response.status === 401) {
           location.replace('/login');
-          throw new Error('登录已过期');
+          outcome.rejected.push({ path: file.name, message: '登录已过期' });
+          break;
         }
-        const body = await response.json().catch(() => null);
+        const body = await response.json();
         if (body?.ok) {
           outcome.count += body.result.count || 0;
           outcome.ready += body.result.ready || 0;
@@ -247,7 +262,17 @@
           outcome.rejected.push({ path: file.name, message: body?.message || '上传失败' });
         }
       } catch (error) {
-        outcome.rejected.push({ path: file.name, message: error?.message || '上传失败' });
+        const transportError = error?.name === 'TypeError';
+        const message = timedOut
+          ? '上传超时，结果可能不确定'
+          : (disposed ? '页面已关闭，结果可能不确定' : '连接中断，结果可能不确定');
+        outcome.rejected.push({ path: file.name, message: error?.name === 'AbortError' || transportError || timedOut || disposed
+          ? message
+          : (error?.message || message) });
+        if (timedOut || disposed || error?.name === 'AbortError' || transportError) break;
+      } finally {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        activeUploadControllers.delete(controller);
       }
     }
     return outcome;
@@ -332,7 +357,7 @@
       let files = Array.isArray(data.paths) && data.paths.length && typeof data.paths[0] !== 'string'
         ? data.paths
         : null;
-      if (!files) files = await pickBrowserFiles();
+      if (!files) files = await pickBrowserFiles({ multiple: data.multiple !== false });
       if (!files.length) return { canceled: true };
       return uploadBrowserFiles(files, data);
     },
