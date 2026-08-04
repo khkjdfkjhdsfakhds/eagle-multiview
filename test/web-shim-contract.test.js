@@ -147,3 +147,13 @@ test('renderer guards host-bound entry points behind capabilities', () => {
   }
   assert.ok(renderer.includes("hideWithout('customThumbnail', '#customThumbnailButton')"));
 });
+
+test('websocket recovery probes the read-only session health endpoint without replaying RPC writes', () => {
+  assert.ok(shim.includes("fetch('/health/session', {"));
+  assert.ok(shim.includes("method: 'GET'"));
+  assert.ok(!shim.includes("fetch('/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })"));
+  assert.ok(shim.includes('let reconnectTimer = null;'));
+  assert.ok(shim.includes('let healthProbe = null;'));
+  assert.ok(shim.includes("window.addEventListener('online'"));
+  assert.ok(shim.includes("window.addEventListener('pagehide'"));
+});

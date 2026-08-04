@@ -9,7 +9,10 @@ internal object HostWebViewCallbackGuard {
         currentView: Any?,
         callbackEndpoint: HostEndpoint,
         activeEndpoint: HostEndpoint?,
+        callbackGeneration: Long,
+        activeGeneration: Long?,
     ): Boolean = callbackClient === activeClient &&
         callbackView === currentView &&
-        callbackEndpoint == activeEndpoint
+        callbackEndpoint == activeEndpoint &&
+        callbackGeneration == activeGeneration
 }

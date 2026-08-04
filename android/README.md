@@ -38,9 +38,12 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `conne
 - Android system Back (button, gesture, and the AndroidX predictive-back entry) makes one native-initiated `evaluateJavascript` call to `window.EagleMVBack.request()` only after a trusted same-origin page commits. `handled` and `blocked` stay in the page; only a complete, valid `exit` result finishes the Activity.
 - Back requests are serialized and timed out. Loading, failed, crashed, untrusted, malformed-result, exception, and stale-callback paths remain open in a recoverable native state rather than bypassing the Web return contract. Renderer loss replaces the unusable WebView before retry.
 - Replacing the trusted host clears WebView cookies, storage, cache, form data, and history before the new host is loaded, preventing cross-host session reuse.
+- Startup offline, DNS/service failures, loaded-page disconnects, and network handoffs enter explicit recoverable states. Network return runs one read-only authenticated `/health/session` probe and at most one safe page navigation for that outage; it never replays an RPC or loops reloads.
+- Host generations invalidate stale network, health-probe, and WebView callbacks. Switching hosts or destroying the Activity also cancels pending recovery ownership, while an expired session returns to the existing `/login` flow.
+- The web shim independently reconnects its same-origin `/events` WebSocket with one timer and one health probe, then emits the existing reconnect synchronization signals after a new socket session is established.
 - WebView file/content access is disabled. The manifest requests only network access; it does not request storage or Eagle-library file permissions.
 
-File import/download, reconnection recovery, and release signing are intentionally left to their later GitHub tickets.
+File import/download and release signing are intentionally left to their later GitHub tickets.
 
 ## Git hygiene
 

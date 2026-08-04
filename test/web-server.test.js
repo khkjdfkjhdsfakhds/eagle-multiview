@@ -183,6 +183,14 @@ test('web server: auth, static serving, rpc bridge, media ranges, websocket even
     assert.equal(anonymousHome.headers.location, '/login');
     assert.equal((await request(port, { path: '/styles.css' })).status, 401);
     assert.equal((await request(port, { path: '/rpc', method: 'POST' }, '{}')).status, 401);
+    const anonymousHealth = await request(port, { path: '/health/session' });
+    assert.equal(anonymousHealth.status, 401);
+    assert.deepEqual(JSON.parse(anonymousHealth.body.toString()), {
+      ok: true,
+      online: true,
+      authenticated: false
+    });
+    assert.equal(anonymousHealth.headers['cache-control'], 'no-store');
     const loginPage = await request(port, { path: '/login' });
     assert.equal(loginPage.status, 200);
     const loginHTML = loginPage.body.toString();
@@ -215,6 +223,13 @@ test('web server: auth, static serving, rpc bridge, media ranges, websocket even
     const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
     assert.ok(cookie.startsWith(`${SESSION_COOKIE}=`));
     const authed = { Cookie: cookie };
+    const authenticatedHealth = await request(port, { path: '/health/session', headers: authed });
+    assert.equal(authenticatedHealth.status, 200);
+    assert.deepEqual(JSON.parse(authenticatedHealth.body.toString()), {
+      ok: true,
+      online: true,
+      authenticated: true
+    });
 
     // --- static + injection ---
     const home = await request(port, { path: '/', headers: authed });
@@ -341,6 +356,9 @@ test('requireKey:false serves everything without a login', async () => {
   const { port } = await server.start(0, '127.0.0.1');
   assert.equal((await request(port, { path: '/' })).status, 200, 'index without cookie');
   assert.equal((await request(port, { path: '/styles.css' })).status, 200);
+  const health = await request(port, { path: '/health/session' });
+  assert.equal(health.status, 200, 'health endpoint follows disabled authentication');
+  assert.equal(JSON.parse(health.body).authenticated, true);
   const rpc = await request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'application/json' } },
     JSON.stringify({ method: 'x', args: [] }));
   assert.equal(rpc.status, 200);

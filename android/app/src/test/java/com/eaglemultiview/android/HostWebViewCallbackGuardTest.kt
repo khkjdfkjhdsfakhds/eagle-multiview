@@ -23,6 +23,8 @@ class HostWebViewCallbackGuardTest {
                 currentView,
                 endpoint,
                 endpoint,
+                4L,
+                4L,
             ),
         )
         assertFalse(
@@ -33,6 +35,8 @@ class HostWebViewCallbackGuardTest {
                 currentView,
                 endpoint,
                 endpoint,
+                4L,
+                4L,
             ),
         )
         assertFalse(
@@ -43,6 +47,8 @@ class HostWebViewCallbackGuardTest {
                 currentView,
                 endpoint,
                 endpoint,
+                4L,
+                4L,
             ),
         )
         assertFalse(
@@ -53,6 +59,20 @@ class HostWebViewCallbackGuardTest {
                 currentView,
                 HostEndpoint("https://old.example.test/", "https://old.example.test"),
                 endpoint,
+                4L,
+                4L,
+            ),
+        )
+        assertFalse(
+            HostWebViewCallbackGuard.matches(
+                activeClient,
+                activeClient,
+                currentView,
+                currentView,
+                endpoint,
+                endpoint,
+                3L,
+                4L,
             ),
         )
     }

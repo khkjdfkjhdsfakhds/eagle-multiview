@@ -24,8 +24,10 @@
     <string name="no_browser_found">未找到可打开此外部链接的浏览器</string>
     <string name="state_connecting_title">正在连接</string>
     <string name="state_connecting_message">正在建立到 MultiView 主机的安全会话</string>
+    <string name="state_offline_title">网络连接已中断</string>
+    <string name="state_offline_message">当前设备处于离线状态。网络恢复后会安全检查会话；你也可以重试当前主机或更换主机。</string>
     <string name="state_unreachable_title">无法连接主机</string>
-    <string name="state_unreachable_message">请确认电脑已启动 MultiView，并检查手机与电脑是否在同一网络。</string>
+    <string name="state_unreachable_message">请检查主机地址或 DNS，并确认电脑上的 MultiView 服务正在运行、手机与电脑处于可互通的网络。</string>
     <string name="state_http_error_title">主机返回错误</string>
     <string name="state_http_error_message">主机暂时无法提供页面（HTTP %1$d）。请稍后重试。</string>
     <string name="state_tls_error_title">连接证书不可信</string>

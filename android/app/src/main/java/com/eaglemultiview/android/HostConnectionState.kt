@@ -1,6 +1,7 @@
 package com.eaglemultiview.android
 
 enum class ConnectionFailureKind {
+    OFFLINE,
     UNREACHABLE,
     HTTP_ERROR,
     TLS_ERROR,
@@ -26,7 +27,8 @@ interface RecentHostStore {
 
 /**
  * Owns host trust and connection transitions without depending on WebView callbacks directly.
- * Later Android tickets can add back navigation, offline recovery, and host handoff around this model.
+ * Back handling and generation-scoped recovery are layered around this model without weakening
+ * its same-origin trust and recent-host persistence rules.
  */
 class HostConnectionCoordinator(
     private val recentHostStore: RecentHostStore,

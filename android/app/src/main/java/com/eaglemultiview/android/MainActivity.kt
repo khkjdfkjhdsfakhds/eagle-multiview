@@ -5,6 +5,8 @@ import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -36,6 +38,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hostInput: EditText
     private lateinit var hostErrorText: TextView
     private lateinit var connectButton: Button
+    private lateinit var changeHostButton: Button
+    private lateinit var retryButton: Button
+    private lateinit var stateChangeHostButton: Button
+    private lateinit var authRetryButton: Button
+    private lateinit var authChangeHostButton: Button
     private lateinit var statusText: TextView
     private lateinit var authBanner: LinearLayout
     private lateinit var progressBar: ProgressBar
@@ -49,7 +56,13 @@ class MainActivity : AppCompatActivity() {
         HostConnectionCoordinator(SharedPreferencesRecentHostStore(this))
     }
     private val backRequestCoordinator = BackRequestCoordinator()
+    private val recoveryCoordinator = HostRecoveryCoordinator()
+    private val healthProbeRunner = SessionHealthProbeRunner()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var connectivityManager: ConnectivityManager
+    private var networkCallbackRegistered = false
+    private var networkAvailable = true
+    private var activeHostSession: HostSession? = null
     private var mainFrameFailed = false
     private var trustClearInProgress = false
     private var trustedPageReady = false
@@ -57,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private var activeHostWebViewClient: HostWebViewClient? = null
     private var backTimeoutRequestId: Long? = null
     private var backTimeoutRunnable: Runnable? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +81,11 @@ class MainActivity : AppCompatActivity() {
         hostInput = findViewById(R.id.hostInput)
         hostErrorText = findViewById(R.id.hostErrorText)
         connectButton = findViewById(R.id.connectButton)
+        changeHostButton = findViewById(R.id.changeHostButton)
+        retryButton = findViewById(R.id.retryButton)
+        stateChangeHostButton = findViewById(R.id.stateChangeHostButton)
+        authRetryButton = findViewById(R.id.authRetryButton)
+        authChangeHostButton = findViewById(R.id.authChangeHostButton)
         statusText = findViewById(R.id.statusText)
         authBanner = findViewById(R.id.authBanner)
         progressBar = findViewById(R.id.progressBar)
@@ -80,13 +99,16 @@ class MainActivity : AppCompatActivity() {
         bindHostEntryActions()
         bindBrowserActions()
         bindSystemBack()
+        registerNetworkMonitoring()
 
         val restoredHost = connectionCoordinator.restore()
         if (restoredHost == null) {
             showHostEntry()
         } else {
             hostInput.setText(restoredHost.startUrl)
-            startEndpoint(restoredHost, clearSiteData = false)
+            val session = recoveryCoordinator.activate(restoredHost, networkAvailable)
+            activeHostSession = session
+            startEndpoint(session, clearSiteData = false)
         }
     }
 
@@ -119,23 +141,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bindBrowserActions() {
-        findViewById<Button>(R.id.changeHostButton).setOnClickListener {
+        changeHostButton.setOnClickListener {
             enterHostEntryAndClearTrust()
         }
-        findViewById<Button>(R.id.stateChangeHostButton).setOnClickListener {
+        stateChangeHostButton.setOnClickListener {
             enterHostEntryAndClearTrust()
         }
-        findViewById<Button>(R.id.retryButton).setOnClickListener {
-            connectionCoordinator.retry()?.let { endpoint ->
-                startEndpoint(endpoint, clearSiteData = false)
-            }
+        retryButton.setOnClickListener {
+            requestRecoveryRetry()
         }
-        findViewById<Button>(R.id.authRetryButton).setOnClickListener {
-            connectionCoordinator.retry()?.let { endpoint ->
-                startEndpoint(endpoint, clearSiteData = false)
-            }
+        authRetryButton.setOnClickListener {
+            requestRecoveryRetry()
         }
-        findViewById<Button>(R.id.authChangeHostButton).setOnClickListener {
+        authChangeHostButton.setOnClickListener {
             enterHostEntryAndClearTrust()
         }
     }
@@ -195,46 +213,55 @@ class MainActivity : AppCompatActivity() {
                 hostInput.setSelection(hostInput.length())
                 invalidateTrustedPage()
                 val clearSiteData = connectionCoordinator.beginConnection(result.endpoint)
-                startEndpoint(result.endpoint, clearSiteData)
+                val session = recoveryCoordinator.activate(result.endpoint, networkAvailable)
+                activeHostSession = session
+                startEndpoint(session, clearSiteData)
             }
         }
     }
 
-    private fun startEndpoint(endpoint: HostEndpoint, clearSiteData: Boolean) {
+    private fun startEndpoint(session: HostSession, clearSiteData: Boolean) {
         invalidateTrustedPage()
         browserContainer.visibility = View.VISIBLE
         hostPanel.visibility = View.GONE
-        renderState(HostConnectionState.Connecting(endpoint))
+        renderState(HostConnectionState.Connecting(session.endpoint))
         if (clearSiteData) {
-            clearWebViewTrust { loadEndpoint(endpoint) }
+            clearWebViewTrust {
+                if (recoveryCoordinator.isCurrent(session.generation, session.endpoint)) {
+                    loadEndpoint(session, session.endpoint.startUrl)
+                }
+            }
         } else {
-            loadEndpoint(endpoint)
+            loadEndpoint(session, session.endpoint.startUrl)
         }
     }
 
-    private fun loadEndpoint(endpoint: HostEndpoint) {
+    private fun loadEndpoint(session: HostSession, url: String) {
+        if (!recoveryCoordinator.isCurrent(session.generation, session.endpoint)) return
+        if (!networkAvailable) {
+            handleRecoveryAction(recoveryCoordinator.networkUnavailable(session.generation))
+            return
+        }
         mainFrameFailed = false
         trustedPageReady = false
         webViewAvailable = true
         webView.visibility = View.VISIBLE
-        val client = HostWebViewClient(endpoint)
+        val client = HostWebViewClient(session.endpoint, session.generation)
         activeHostWebViewClient = client
         webView.webViewClient = client
-        webView.loadUrl(endpoint.startUrl)
+        webView.loadUrl(url)
     }
 
     private fun enterHostEntryAndClearTrust() {
         invalidateTrustedPage()
+        recoveryCoordinator.deactivate()
+        activeHostSession = null
         val hadTrustedHost = connectionCoordinator.showHostEntry()
         hostPanel.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
         clearHostInputError()
-        if (hadTrustedHost) {
-            trustClearInProgress = true
-            connectButton.isEnabled = false
+        if (hadTrustedHost && !trustClearInProgress) {
             clearWebViewTrust {
-                trustClearInProgress = false
-                connectButton.isEnabled = true
                 webView.visibility = View.VISIBLE
             }
         }
@@ -243,6 +270,8 @@ class MainActivity : AppCompatActivity() {
     /** Clears WebView cookies/storage/cache before a different host is trusted. */
     private fun clearWebViewTrust(onComplete: () -> Unit) {
         invalidateTrustedPage()
+        trustClearInProgress = true
+        setConnectionControlsEnabled(false)
         mainFrameFailed = false
         webView.stopLoading()
         activeHostWebViewClient = null
@@ -253,9 +282,22 @@ class MainActivity : AppCompatActivity() {
         webView.clearFormData()
         WebStorage.getInstance().deleteAllData()
         CookieManager.getInstance().removeAllCookies {
-            runOnUiThread(onComplete)
+            runOnUiThread {
+                trustClearInProgress = false
+                setConnectionControlsEnabled(true)
+                if (!isDestroyed) onComplete()
+            }
         }
         CookieManager.getInstance().flush()
+    }
+
+    private fun setConnectionControlsEnabled(enabled: Boolean) {
+        connectButton.isEnabled = enabled
+        changeHostButton.isEnabled = enabled
+        retryButton.isEnabled = enabled
+        stateChangeHostButton.isEnabled = enabled
+        authRetryButton.isEnabled = enabled
+        authChangeHostButton.isEnabled = enabled
     }
 
     private fun showHostEntry() {
@@ -289,25 +331,34 @@ class MainActivity : AppCompatActivity() {
                 stateProgress.visibility = View.VISIBLE
                 stateTitle.text = getString(R.string.state_connecting_title)
                 stateMessage.text = getString(R.string.state_connecting_message)
+                retryButton.isEnabled = false
             }
             is HostConnectionState.Connected -> {
                 statusText.text = getString(R.string.connected_host)
                 authBanner.visibility = View.GONE
                 stateOverlay.visibility = View.GONE
                 webView.visibility = View.VISIBLE
+                retryButton.isEnabled = true
             }
             is HostConnectionState.LoginRequired -> {
                 statusText.text = getString(R.string.state_login_title)
                 authBanner.visibility = View.VISIBLE
                 stateOverlay.visibility = View.GONE
                 webView.visibility = View.VISIBLE
+                retryButton.isEnabled = true
             }
             is HostConnectionState.Failed -> {
                 authBanner.visibility = View.GONE
                 stateOverlay.visibility = View.VISIBLE
                 stateProgress.visibility = View.GONE
                 webView.visibility = View.INVISIBLE
+                retryButton.isEnabled = !trustClearInProgress
                 when (state.kind) {
+                    ConnectionFailureKind.OFFLINE -> {
+                        statusText.text = getString(R.string.state_offline_title)
+                        stateTitle.text = getString(R.string.state_offline_title)
+                        stateMessage.text = getString(R.string.state_offline_message)
+                    }
                     ConnectionFailureKind.UNREACHABLE -> {
                         statusText.text = getString(R.string.state_unreachable_title)
                         stateTitle.text = getString(R.string.state_unreachable_title)
@@ -333,6 +384,81 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun requestRecoveryRetry() {
+        val session = activeHostSession ?: return
+        handleRecoveryAction(recoveryCoordinator.manualRetry(session.generation))
+    }
+
+    private fun handleRecoveryAction(action: HostRecoveryAction?) {
+        when (action) {
+            null -> Unit
+            is HostRecoveryAction.Probe -> {
+                connectionCoordinator.retry()
+                renderState(HostConnectionState.Connecting(action.request.endpoint))
+                val cookie = CookieManager.getInstance().getCookie(action.request.endpoint.startUrl)
+                healthProbeRunner.execute(action.request, cookie) callback@ { request, health, httpStatus ->
+                    if (isDestroyed) return@callback
+                    mainHandler.post {
+                        if (!isDestroyed) {
+                            handleRecoveryAction(
+                                recoveryCoordinator.probeCompleted(request, health, httpStatus),
+                            )
+                        }
+                    }
+                }
+            }
+            is HostRecoveryAction.Navigate -> {
+                val session = activeHostSession ?: return
+                if (!recoveryCoordinator.isCurrent(session.generation, session.endpoint)) return
+                connectionCoordinator.retry()
+                renderState(HostConnectionState.Connecting(session.endpoint))
+                loadEndpoint(session, action.url)
+            }
+            is HostRecoveryAction.ShowFailure -> {
+                invalidateTrustedPage()
+                connectionCoordinator.fail(action.kind, action.httpStatus)
+                renderState(connectionCoordinator.state)
+            }
+        }
+    }
+
+    private fun registerNetworkMonitoring() {
+        connectivityManager = getSystemService(ConnectivityManager::class.java)
+        networkAvailable = connectivityManager.activeNetwork != null
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post(::refreshNetworkAvailability)
+            }
+
+            override fun onLost(network: Network) {
+                mainHandler.post(::refreshNetworkAvailability)
+            }
+        }
+        networkCallback = callback
+        try {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+            networkCallbackRegistered = true
+        } catch (_: RuntimeException) {
+            networkCallback = null
+        }
+    }
+
+    private fun refreshNetworkAvailability() {
+        if (isDestroyed) return
+        val available = connectivityManager.activeNetwork != null
+        if (available == networkAvailable) return
+        networkAvailable = available
+        val session = activeHostSession ?: return
+        if (available) {
+            handleRecoveryAction(recoveryCoordinator.networkAvailable(session.generation))
+        } else {
+            invalidateTrustedPage()
+            mainFrameFailed = true
+            webView.stopLoading()
+            handleRecoveryAction(recoveryCoordinator.networkUnavailable(session.generation))
         }
     }
 
@@ -460,6 +586,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         invalidateTrustedPage()
+        recoveryCoordinator.deactivate()
+        activeHostSession = null
+        healthProbeRunner.shutdown()
+        if (networkCallbackRegistered) {
+            networkCallback?.let { callback ->
+                try {
+                    connectivityManager.unregisterNetworkCallback(callback)
+                } catch (_: RuntimeException) {
+                    // The callback is Activity-owned and already invalidated below.
+                }
+            }
+            networkCallbackRegistered = false
+        }
+        networkCallback = null
         mainHandler.removeCallbacksAndMessages(null)
         webView.stopLoading()
         webView.webChromeClient = null
@@ -471,6 +611,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class HostWebViewClient(
         private val endpoint: HostEndpoint,
+        private val generation: Long,
     ) : WebViewClient() {
         private fun isCurrentCallback(view: WebView?): Boolean = webViewAvailable &&
             HostWebViewCallbackGuard.matches(
@@ -480,6 +621,8 @@ class MainActivity : AppCompatActivity() {
                 currentView = webView,
                 callbackEndpoint = endpoint,
                 activeEndpoint = connectionCoordinator.activeEndpoint,
+                callbackGeneration = generation,
+                activeGeneration = activeHostSession?.generation,
             )
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -513,6 +656,7 @@ class MainActivity : AppCompatActivity() {
                 connectionCoordinator.pageCommitted(url)
             trustedPageReady = committedTrustedPage
             if (committedTrustedPage) {
+                recoveryCoordinator.pageCommitted(generation)
                 renderState(connectionCoordinator.state)
             }
         }
@@ -535,8 +679,13 @@ class MainActivity : AppCompatActivity() {
             if (request.isForMainFrame) {
                 invalidateTrustedPage()
                 mainFrameFailed = true
-                connectionCoordinator.fail(ConnectionFailureKind.HTTP_ERROR, errorResponse.statusCode)
-                renderState(connectionCoordinator.state)
+                handleRecoveryAction(
+                    recoveryCoordinator.pageLoadFailed(
+                        generation,
+                        ConnectionFailureKind.HTTP_ERROR,
+                        errorResponse.statusCode,
+                    ),
+                )
             }
         }
 
@@ -549,13 +698,14 @@ class MainActivity : AppCompatActivity() {
             if (request.isForMainFrame) {
                 invalidateTrustedPage()
                 mainFrameFailed = true
-                val kind = if (error.errorCode == WebViewClient.ERROR_FAILED_SSL_HANDSHAKE) {
-                    ConnectionFailureKind.TLS_ERROR
-                } else {
-                    ConnectionFailureKind.UNREACHABLE
+                val kind = when {
+                    !networkAvailable -> ConnectionFailureKind.OFFLINE
+                    error.errorCode == WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> {
+                        ConnectionFailureKind.TLS_ERROR
+                    }
+                    else -> ConnectionFailureKind.UNREACHABLE
                 }
-                connectionCoordinator.fail(kind)
-                renderState(connectionCoordinator.state)
+                handleRecoveryAction(recoveryCoordinator.pageLoadFailed(generation, kind))
             }
         }
 
@@ -564,8 +714,9 @@ class MainActivity : AppCompatActivity() {
             if (!isCurrentCallback(view)) return
             invalidateTrustedPage()
             mainFrameFailed = true
-            connectionCoordinator.fail(ConnectionFailureKind.TLS_ERROR)
-            renderState(connectionCoordinator.state)
+            handleRecoveryAction(
+                recoveryCoordinator.pageLoadFailed(generation, ConnectionFailureKind.TLS_ERROR),
+            )
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -573,8 +724,12 @@ class MainActivity : AppCompatActivity() {
             invalidateTrustedPage()
             mainFrameFailed = true
             replaceWebViewAfterRendererGone(view)
-            connectionCoordinator.fail(ConnectionFailureKind.RENDERER_CRASHED)
-            renderState(connectionCoordinator.state)
+            handleRecoveryAction(
+                recoveryCoordinator.pageLoadFailed(
+                    generation,
+                    ConnectionFailureKind.RENDERER_CRASHED,
+                ),
+            )
             return true
         }
     }

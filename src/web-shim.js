@@ -62,17 +62,35 @@
   }
 
   let socket = null;
+  let reconnectTimer = null;
+  let healthProbe = null;
   let retryDelay = 1000;
   let sessionEverConnected = false;
+  let transportGeneration = 0;
+  let disposed = false;
+
+  function isCurrentTransport(generation) {
+    return !disposed && generation === transportGeneration;
+  }
+
   function connectEvents() {
+    if (disposed || socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN) return;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    const generation = transportGeneration;
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    let candidate;
     try {
-      socket = new WebSocket(`${scheme}://${location.host}/events`);
+      candidate = new WebSocket(`${scheme}://${location.host}/events`);
+      socket = candidate;
     } catch {
-      scheduleReconnect();
+      scheduleReconnect(generation);
       return;
     }
-    socket.onmessage = event => {
+    candidate.onmessage = event => {
+      if (!isCurrentTransport(generation) || socket !== candidate) return;
       let message;
       try {
         message = JSON.parse(event.data);
@@ -98,27 +116,79 @@
       }
       if (message?.channel) emit(message.channel, message.payload);
     };
-    socket.onclose = () => scheduleReconnect();
-    socket.onerror = () => {
+    candidate.onclose = () => {
+      if (!isCurrentTransport(generation) || socket !== candidate) return;
+      socket = null;
+      scheduleReconnect(generation);
+    };
+    candidate.onerror = () => {
+      if (!isCurrentTransport(generation) || socket !== candidate) return;
       try {
-        socket.close();
+        candidate.close();
       } catch {}
     };
   }
-  function scheduleReconnect() {
+
+  function probeSessionHealth(generation) {
+    if (!isCurrentTransport(generation) || healthProbe) return;
+    const request = fetch('/health/session', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin'
+    })
+      .then(response => {
+        if (!isCurrentTransport(generation)) return;
+        if (response.status === 401) location.replace('/login');
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (healthProbe === request) healthProbe = null;
+      });
+    healthProbe = request;
+  }
+
+  function scheduleReconnect(generation = transportGeneration) {
+    if (!isCurrentTransport(generation) || reconnectTimer) return;
     if (sessionEverConnected) {
       emit('hub:status', { connected: false, message: '与 MultiView 主机连接中断，正在重连…' });
     }
-    // A dead session cookie keeps the upgrade at 401 forever — probe once per
-    // attempt and bounce to the login page instead of silently spinning.
-    fetch('/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then(response => {
-        if (response.status === 401) location.replace('/login');
-      })
-      .catch(() => {});
-    setTimeout(connectEvents, retryDelay);
+    // WebSocket upgrade failures do not expose HTTP status to browser code.
+    // Probe a read-only endpoint once per retry window so an expired session
+    // returns to the existing login flow without replaying any prior RPC.
+    probeSessionHealth(generation);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (isCurrentTransport(generation)) connectEvents();
+    }, retryDelay);
     retryDelay = Math.min(retryDelay * 2, 15000);
   }
+
+  window.addEventListener('online', () => {
+    if (disposed) return;
+    retryDelay = 1000;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    connectEvents();
+  });
+  window.addEventListener('pagehide', () => {
+    disposed = true;
+    transportGeneration += 1;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    healthProbe = null;
+    const current = socket;
+    socket = null;
+    if (current) {
+      current.onclose = null;
+      current.onerror = null;
+      current.onmessage = null;
+      try {
+        current.close();
+      } catch {}
+    }
+  });
   connectEvents();
 
   // --- host-only degradations ----------------------------------------------

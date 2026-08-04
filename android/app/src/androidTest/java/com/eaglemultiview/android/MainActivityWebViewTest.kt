@@ -104,14 +104,39 @@ class MainActivityWebViewTest {
     @Test
     fun httpFailureShowsRetryStateAndRetryLoadsPage() {
         MockWebServer().use { server ->
-            server.enqueue(MockResponse().setResponseCode(503))
-            server.enqueue(htmlResponse("<p id='result'>retry succeeded</p>"))
+            val dispatcher = RetryDispatcher()
+            server.dispatcher = dispatcher
             server.start()
 
             connect(server.url("/").toString())
-            onView(withText(R.string.state_http_error_title)).check(matches(isDisplayed()))
+            onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
             onView(withId(R.id.retryButton)).perform(click())
             assertWebText("retry succeeded")
+            assertTrue(dispatcher.healthChecks == 1)
+            assertTrue(dispatcher.pageLoads == 2)
+        }
+    }
+
+    @Test
+    fun failedHealthProbeDoesNotReloadLoopAndAnotherManualRetryCanRecover() {
+        MockWebServer().use { server ->
+            val dispatcher = RetryDispatcher(healthy = false)
+            server.dispatcher = dispatcher
+            server.start()
+
+            connect(server.url("/").toString())
+            onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
+            onView(withId(R.id.retryButton)).perform(click())
+            onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
+            SystemClock.sleep(500)
+            assertTrue(dispatcher.healthChecks == 1)
+            assertTrue(dispatcher.pageLoads == 1)
+
+            dispatcher.healthy = true
+            onView(withId(R.id.retryButton)).perform(click())
+            assertWebText("retry succeeded")
+            assertTrue(dispatcher.healthChecks == 2)
+            assertTrue(dispatcher.pageLoads == 2)
         }
     }
 
@@ -248,6 +273,56 @@ class MainActivityWebViewTest {
         }
     }
 
+    @Test
+    fun delayedRecoveryProbeFromOldHostCannotReloadAfterHostSwitch() {
+        MockWebServer().use { firstServer ->
+            MockWebServer().use { secondServer ->
+                val healthStarted = CountDownLatch(1)
+                val releaseHealth = CountDownLatch(1)
+                var firstPageLoads = 0
+                firstServer.dispatcher = object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                        "/" -> {
+                            firstPageLoads += 1
+                            MockResponse().setResponseCode(503)
+                        }
+                        "/health/session" -> {
+                            healthStarted.countDown()
+                            releaseHealth.await(5, TimeUnit.SECONDS)
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"ok\":true,\"online\":true,\"authenticated\":true}")
+                        }
+                        else -> MockResponse().setResponseCode(404)
+                    }
+                }
+                secondServer.enqueue(htmlResponse("<p id='result'>replacement host</p>"))
+                firstServer.start()
+                secondServer.start()
+
+                try {
+                    connect(firstServer.url("/").toString())
+                    onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
+                    onView(withId(R.id.retryButton)).perform(click())
+                    assertTrue(healthStarted.await(5, TimeUnit.SECONDS))
+
+                    onView(withId(R.id.stateChangeHostButton)).perform(click())
+                    waitForDisplayed(R.id.hostPanel)
+                    waitForEnabled(R.id.connectButton)
+                    connect(secondServer.url("/").toString())
+                    assertWebText("replacement host")
+
+                    releaseHealth.countDown()
+                    SystemClock.sleep(500)
+                    assertWebText("replacement host")
+                    assertTrue(firstPageLoads == 1)
+                } finally {
+                    releaseHealth.countDown()
+                }
+            }
+        }
+    }
+
     private fun connect(host: String) {
         onView(withId(R.id.hostInput)).perform(replaceText(host))
         closeSoftKeyboard()
@@ -347,6 +422,19 @@ class MainActivityWebViewTest {
 
         override fun dispatch(request: RecordedRequest): MockResponse {
             return when {
+                request.path == "/health/session" -> {
+                    val cookie = request.getHeader("Cookie").orEmpty()
+                    if (!revoked && cookie.contains("eaglemv_session=valid")) {
+                        MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"ok\":true,\"online\":true,\"authenticated\":true}")
+                    } else {
+                        MockResponse()
+                            .setResponseCode(401)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"ok\":true,\"online\":true,\"authenticated\":false}")
+                    }
+                }
                 request.path == "/" -> {
                     val cookie = request.getHeader("Cookie").orEmpty()
                     if (!revoked && cookie.contains("eaglemv_session=valid")) {
@@ -369,6 +457,35 @@ class MainActivityWebViewTest {
                     .setBody("{\"ok\":true}")
                 else -> MockResponse().setResponseCode(404)
             }
+        }
+    }
+
+    private inner class RetryDispatcher(
+        @Volatile var healthy: Boolean = true,
+    ) : Dispatcher() {
+        @Volatile var pageLoads = 0
+        @Volatile var healthChecks = 0
+
+        override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+            "/health/session" -> {
+                healthChecks += 1
+                if (healthy) {
+                    MockResponse()
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("{\"ok\":true,\"online\":true,\"authenticated\":true}")
+                } else {
+                    MockResponse().setResponseCode(503)
+                }
+            }
+            "/" -> {
+                pageLoads += 1
+                if (pageLoads == 1) {
+                    MockResponse().setResponseCode(503)
+                } else {
+                    htmlResponse("<p id='result'>retry succeeded</p>")
+                }
+            }
+            else -> MockResponse().setResponseCode(404)
         }
     }
 }
