@@ -23,6 +23,11 @@ data class HostSession(
     val generation: Long,
 )
 
+data class HostNavigationAttempt(
+    val id: Long,
+    val generation: Long,
+)
+
 data class SessionHealthProbe(
     val id: Long,
     val generation: Long,
@@ -52,8 +57,10 @@ sealed interface HostRecoveryAction {
 class HostRecoveryCoordinator {
     private var nextGeneration = 0L
     private var nextProbeId = 0L
+    private var nextNavigationAttemptId = 0L
     private var activeSession: HostSession? = null
     private var activeProbe: SessionHealthProbe? = null
+    private var activeNavigationAttempt: HostNavigationAttempt? = null
     private var networkAvailable: Boolean? = null
     private var outageActive = false
     private var automaticRecoveryAttempted = false
@@ -68,6 +75,7 @@ class HostRecoveryCoordinator {
         val session = HostSession(endpoint, ++nextGeneration)
         activeSession = session
         activeProbe = null
+        activeNavigationAttempt = null
         networkAvailable = availableNetwork
         outageActive = false
         automaticRecoveryAttempted = false
@@ -79,6 +87,7 @@ class HostRecoveryCoordinator {
         nextGeneration += 1
         activeSession = null
         activeProbe = null
+        activeNavigationAttempt = null
         outageActive = false
         automaticRecoveryAttempted = false
         hasPendingNavigation = false
@@ -89,6 +98,16 @@ class HostRecoveryCoordinator {
         return session.generation == generation && (endpoint == null || session.endpoint == endpoint)
     }
 
+    fun beginNavigation(generation: Long): HostNavigationAttempt? {
+        if (!isCurrent(generation)) return null
+        return HostNavigationAttempt(++nextNavigationAttemptId, generation).also {
+            activeNavigationAttempt = it
+        }
+    }
+
+    fun isCurrentNavigation(attempt: HostNavigationAttempt): Boolean =
+        isCurrent(attempt.generation) && activeNavigationAttempt == attempt
+
     fun networkUnavailable(generation: Long): HostRecoveryAction? {
         if (!isCurrent(generation)) return null
         if (networkAvailable != false || !outageActive) {
@@ -97,6 +116,7 @@ class HostRecoveryCoordinator {
         }
         networkAvailable = false
         activeProbe = null
+        activeNavigationAttempt = null
         hasPendingNavigation = false
         return HostRecoveryAction.ShowFailure(ConnectionFailureKind.OFFLINE)
     }
@@ -108,11 +128,13 @@ class HostRecoveryCoordinator {
             return null
         }
         automaticRecoveryAttempted = true
+        activeNavigationAttempt = null
         return beginProbe(RecoveryTrigger.NETWORK_RECOVERY)
     }
 
     fun manualRetry(generation: Long): HostRecoveryAction? {
         if (!isCurrent(generation) || activeProbe != null || hasPendingNavigation) return null
+        activeNavigationAttempt = null
         return beginProbe(RecoveryTrigger.MANUAL_RETRY)
     }
 
@@ -122,8 +144,10 @@ class HostRecoveryCoordinator {
         httpStatus: Int? = null,
     ): HostRecoveryAction? {
         if (!isCurrent(generation)) return null
+        if (activeProbe != null) return null
         outageActive = true
         activeProbe = null
+        activeNavigationAttempt = null
         hasPendingNavigation = false
         return HostRecoveryAction.ShowFailure(kind, httpStatus)
     }
@@ -133,6 +157,7 @@ class HostRecoveryCoordinator {
         outageActive = false
         automaticRecoveryAttempted = false
         activeProbe = null
+        activeNavigationAttempt = null
         hasPendingNavigation = false
     }
 
@@ -161,6 +186,23 @@ class HostRecoveryCoordinator {
                 httpStatus,
             )
         }
+    }
+
+    fun pageLoadFailed(
+        attempt: HostNavigationAttempt,
+        kind: ConnectionFailureKind,
+        httpStatus: Int? = null,
+    ): HostRecoveryAction? {
+        if (!isCurrentNavigation(attempt)) return null
+        return pageLoadFailed(attempt.generation, kind, httpStatus)
+    }
+
+    fun pageCommitted(attempt: HostNavigationAttempt) {
+        if (!isCurrentNavigation(attempt)) return
+        outageActive = false
+        automaticRecoveryAttempted = false
+        activeProbe = null
+        hasPendingNavigation = false
     }
 
     private fun beginProbe(trigger: RecoveryTrigger): HostRecoveryAction.Probe {

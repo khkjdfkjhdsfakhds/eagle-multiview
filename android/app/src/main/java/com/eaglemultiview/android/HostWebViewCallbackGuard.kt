@@ -11,8 +11,11 @@ internal object HostWebViewCallbackGuard {
         activeEndpoint: HostEndpoint?,
         callbackGeneration: Long,
         activeGeneration: Long?,
+        callbackNavigationAttempt: HostNavigationAttempt? = null,
+        activeNavigationAttempt: HostNavigationAttempt? = null,
     ): Boolean = callbackClient === activeClient &&
         callbackView === currentView &&
         callbackEndpoint == activeEndpoint &&
-        callbackGeneration == activeGeneration
+        callbackGeneration == activeGeneration &&
+        callbackNavigationAttempt == activeNavigationAttempt
 }

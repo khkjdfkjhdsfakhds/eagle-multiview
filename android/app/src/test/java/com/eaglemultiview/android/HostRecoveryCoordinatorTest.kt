@@ -128,6 +128,42 @@ class HostRecoveryCoordinatorTest {
     }
 
     @Test
+    fun `error from the failed navigation cannot cancel the newer network recovery probe`() {
+        val coordinator = HostRecoveryCoordinator()
+        val session = coordinator.activate(first)
+        val failedNavigation = coordinator.beginNavigation(session.generation)
+
+        coordinator.networkUnavailable(session.generation)
+        val probe = coordinator.networkAvailable(session.generation).probe()
+
+        assertNull(
+            coordinator.pageLoadFailed(
+                checkNotNull(failedNavigation),
+                ConnectionFailureKind.UNREACHABLE,
+            ),
+        )
+        assertEquals(
+            HostRecoveryAction.Navigate(first.startUrl, RecoveryNavigation.RELOAD_CURRENT),
+            coordinator.probeCompleted(probe, SessionHealth.AUTHENTICATED),
+        )
+    }
+
+    @Test
+    fun `committing a navigation keeps its client current until a newer recovery attempt`() {
+        val coordinator = HostRecoveryCoordinator()
+        val session = coordinator.activate(first)
+        val navigation = checkNotNull(coordinator.beginNavigation(session.generation))
+
+        coordinator.pageCommitted(navigation)
+
+        assertTrue(coordinator.isCurrentNavigation(navigation))
+        assertEquals(
+            HostRecoveryAction.ShowFailure(ConnectionFailureKind.UNREACHABLE),
+            coordinator.pageLoadFailed(navigation, ConnectionFailureKind.UNREACHABLE),
+        )
+    }
+
+    @Test
     fun `deactivation invalidates pending work for activity destroy or host entry`() {
         val coordinator = HostRecoveryCoordinator()
         val session = coordinator.activate(first)

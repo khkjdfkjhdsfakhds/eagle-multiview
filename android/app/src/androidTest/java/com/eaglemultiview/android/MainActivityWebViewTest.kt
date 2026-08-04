@@ -54,6 +54,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
@@ -89,6 +90,108 @@ class MainActivityWebViewTest {
             assertWebText("restored connection")
             onView(withId(R.id.hostPanel)).check(matches(not(isDisplayed())))
             onView(withId(R.id.authBanner)).check(matches(not(isDisplayed())))
+        }
+    }
+
+    @Test
+    fun recreateWhileChoosingAHostDoesNotReconnectThePersistedHost() {
+        MockWebServer().use { server ->
+            val pageLoads = AtomicInteger()
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    return if (request.path == "/") {
+                        pageLoads.incrementAndGet()
+                        htmlResponse("<p id='result'>persisted host</p>")
+                    } else {
+                        MockResponse().setResponseCode(404)
+                    }
+                }
+            }
+            server.start()
+
+            connect(server.url("/").toString())
+            assertWebText("persisted host")
+            onView(withId(R.id.changeHostButton)).perform(click())
+            waitForDisplayed(R.id.hostPanel)
+
+            scenario.recreate()
+
+            waitForDisplayed(R.id.hostPanel)
+            SystemClock.sleep(300)
+            assertTrue(pageLoads.get() == 1)
+        }
+    }
+
+    @Test
+    fun recreateWhileSwitchingHostsContinuesTheNewHostInsteadOfThePersistedHost() {
+        MockWebServer().use { firstServer ->
+            MockWebServer().use { secondServer ->
+                val firstPageLoads = AtomicInteger()
+                val secondPageStarted = CountDownLatch(1)
+                firstServer.dispatcher = object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse {
+                        return if (request.path == "/") {
+                            firstPageLoads.incrementAndGet()
+                            htmlResponse("<p id='result'>persisted host</p>")
+                        } else {
+                            MockResponse().setResponseCode(404)
+                        }
+                    }
+                }
+                secondServer.dispatcher = object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse {
+                        return if (request.path == "/") {
+                            secondPageStarted.countDown()
+                            Thread.sleep(1_000)
+                            htmlResponse("<p id='result'>replacement host</p>")
+                        } else {
+                            MockResponse().setResponseCode(404)
+                        }
+                    }
+                }
+                firstServer.start()
+                secondServer.start()
+
+                connect(firstServer.url("/").toString())
+                assertWebText("persisted host")
+                onView(withId(R.id.changeHostButton)).perform(click())
+                waitForEnabled(R.id.connectButton)
+                connect(secondServer.url("/").toString())
+                assertTrue(secondPageStarted.await(5, TimeUnit.SECONDS))
+
+                scenario.recreate()
+
+                onView(withId(R.id.hostInput)).check(matches(withText(secondServer.url("/").toString())))
+                SystemClock.sleep(300)
+                assertTrue(firstPageLoads.get() == 1)
+            }
+        }
+    }
+
+    @Test
+    fun recreateKeepsFailureVisibleWithoutSilentlyReloading() {
+        MockWebServer().use { server ->
+            val pageLoads = AtomicInteger()
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                    "/" -> {
+                        pageLoads.incrementAndGet()
+                        MockResponse().setResponseCode(503)
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            server.start()
+
+            connect(server.url("/").toString())
+            onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
+
+            scenario.recreate()
+
+            onView(withId(R.id.stateTitle)).check(matches(withText(R.string.state_http_error_title)))
+            onView(withId(R.id.retryButton)).check(matches(isDisplayed()))
+            SystemClock.sleep(300)
+            assertTrue(pageLoads.get() == 1)
         }
     }
 

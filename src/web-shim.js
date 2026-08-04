@@ -64,6 +64,7 @@
   let socket = null;
   let reconnectTimer = null;
   let healthProbe = null;
+  let healthProbeEpoch = 0;
   let retryDelay = 1000;
   let sessionEverConnected = false;
   let transportGeneration = 0;
@@ -98,6 +99,8 @@
         return;
       }
       if (message?.channel === 'web:hello') {
+        healthProbeEpoch += 1;
+        healthProbe = null;
         clientId = message.payload?.clientId || 0;
         resolveHello(clientId);
         retryDelay = 1000;
@@ -131,20 +134,24 @@
 
   function probeSessionHealth(generation) {
     if (!isCurrentTransport(generation) || healthProbe) return;
+    const probe = { generation, epoch: ++healthProbeEpoch };
+    healthProbe = probe;
     const request = fetch('/health/session', {
       method: 'GET',
       cache: 'no-store',
       credentials: 'same-origin'
-    })
+      })
       .then(response => {
-        if (!isCurrentTransport(generation)) return;
+        if (!isCurrentTransport(generation) ||
+            healthProbe !== probe || healthProbeEpoch !== probe.epoch) return;
         if (response.status === 401) location.replace('/login');
       })
       .catch(() => {})
       .finally(() => {
-        if (healthProbe === request) healthProbe = null;
+        if (healthProbe === probe) healthProbe = null;
       });
-    healthProbe = request;
+    // Keep the token in healthProbe; a later hello invalidates this request.
+    void request;
   }
 
   function scheduleReconnect(generation = transportGeneration) {
@@ -178,6 +185,7 @@
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
     healthProbe = null;
+    healthProbeEpoch += 1;
     const current = socket;
     socket = null;
     if (current) {

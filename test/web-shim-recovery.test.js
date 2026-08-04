@@ -161,3 +161,22 @@ test('a health result resolving after pagehide cannot navigate the disposed page
 
   assert.deepEqual(harness.replacements, []);
 });
+
+test('a health 401 from an older reconnect attempt cannot replace a recovered websocket page', async () => {
+  let resolveHealth;
+  const healthResponse = new Promise(resolve => {
+    resolveHealth = resolve;
+  });
+  const harness = createHarness({ healthResponse });
+  harness.sockets[0].hello(41);
+  harness.sockets[0].close();
+
+  const reconnectTimer = harness.timers.find(timer => timer.delay === 1000 && !timer.cleared);
+  reconnectTimer.callback();
+  harness.sockets[1].hello(42);
+
+  resolveHealth({ status: 401, json: async () => ({ ok: true }) });
+  await flushPromises();
+
+  assert.deepEqual(harness.replacements, []);
+});
