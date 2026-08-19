@@ -1,7 +1,7 @@
 {
   "name": "eagle-multiview",
-  "version": "1.5.1",
-  "description": "Safe multi-window companion for Eagle 4",
+  "version": "1.6.0",
+  "description": "Multi-window Eagle client for browsing, organizing, previewing, importing, editing, and synchronizing one library",
   "main": "main.js",
   "author": "Eagle MultiView contributors",
   "license": "MIT",
@@ -9,7 +9,8 @@
     "start": "electron .",
     "test": "node --test",
     "pack:mac": "electron-builder --mac dir --arm64",
-    "dist:mac": "electron-builder --mac dmg --arm64"
+    "dist:mac": "electron-builder --mac dmg --arm64",
+    "dist:win": "electron-builder --win nsis --x64"
   },
   "devDependencies": {
     "electron": "43.2.0",
@@ -26,12 +27,23 @@
       "src/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/copy-image.applescript",
+        "to": "copy-image.applescript"
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
       "target": ["dmg"],
       "artifactName": "Eagle-MultiView-${version}-${arch}.${ext}",
-      "identity": null
+      "identity": "-"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": ["nsis"],
+      "artifactName": "Eagle-MultiView-${version}-Setup.${ext}"
     }
   }
 }

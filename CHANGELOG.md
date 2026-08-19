@@ -2,6 +2,98 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.6.0 - 2026-08-19
+
+### Web access and mobile support
+
+- Added built-in local-network Web access with PWA support, allowing phones, tablets, and remote browsers to browse, search, and manage the Eagle library.
+- Added address QR code generation, one-time or keyless access modes, browser-side file downloads, and direct file uploads.
+- Optimized mobile touch interactions, including pull-to-refresh, pinch-to-resize thumbnails, swipe gestures between previews, long-press context menus, and a bottom selection strip.
+- Added native Android client scaffold with resilient session recovery and system back gesture handling.
+
+### Views, layouts, and pane synchronization
+
+- Added Waterfall and List view modes alongside adaptive grid, with per-pane view mode memory. List view displays tags, ratings, and added date columns.
+- Added synchronized multi-pane mode (Sync Panes) for coordinated scrolling, page navigation, preview switching, and rating across panes.
+- Updated split layout with vector split-view icons, double-click splitter proportion reset, and responsive pane headers.
+- Added top path bar breadcrumb navigation and logical path resolution.
+
+### Search, filters, and sorting
+
+- Added dominant color filtering with client-side palette matching; Option-clicking an inspector palette swatch instantly filters by that color.
+- Added advanced filter criteria for file size, resolution dimensions, and added date ranges.
+- Added field-specific targeted search.
+- Added Random shuffle sort alongside Date Added, Rating, and Extension sort options, with per-folder sort memory.
+
+### Selection and organization
+
+- Added rubber-band marquee selection on empty grid areas with modifier-key unions and edge auto-scrolling.
+- Added Option-drag to move items into folders (removing them from the drag-source folder).
+- Added inspector auto-saving on input pause or blur, Eagle-style tag suggestions popover, and color dots.
+- Added 0-5 number keys for rapid rating (with grid star overlays) and F2 for quick renaming.
+- Added multi-select shared tag removal and batch tag assignment.
+
+### Preview and media
+
+- Added Slideshow presentation mode with configurable interval and seamless wrap-around.
+- Added preview background switching (checkerboard, black, white, none) and one-click grayscale view.
+- Expanded preview support to camera RAW formats (CR2, CR3, NEF, ARW, DNG, ORF, RAF, RW2) and high-res PSD/TIFF/HEIC renderings.
+- Fixed PDF preview plugin integration in Chromium.
+- Aligned preview directional arrow navigation with the geometric layout of the source grid.
+
+### Performance, system, and reliability
+
+- Added library switcher in the sidebar to switch active Eagle libraries.
+- Added grid virtualization using `content-visibility` for smoother rendering of large libraries.
+- Added scroll position memory across parent views and back navigation.
+- Added rolling error logging to disk (`userData/logs/error.log`).
+- Added recursive folder import safeguards skipping hidden files and circular symlinks.
+
+## 1.5.2 - 2026-07-25
+
+### Multi-pane workspace
+
+- Added single, two-pane, three-pane, and four-pane layouts inside each window.
+- Kept folder, search, filter, selection, scroll, preview, and inspector state independent for every pane.
+- Bound delayed imports, bulk writes, inspector saves, TXT saves, pin updates, and refreshes to the pane that started them.
+
+### Creation, organization, and file actions
+
+- Added Eagle-style creation flows for folders, TXT and other supported documents, and smart folders.
+- Added export, duplicate creation, native file copying, Finder dragging, default-app opening, and file-manager reveal actions.
+- Added duplicate detection for imports and safer partial-success handling for bulk folder, tag, rating, trash, restore, export, and duplicate operations.
+- Matched Eagle's folder-removal versus trash behavior when an item belongs to more than one folder.
+
+### Metadata and navigation
+
+- Added local reading for common NovelAI, Stable Diffusion WebUI, ComfyUI, and InvokeAI generation metadata.
+- Expanded folder navigation, smart-folder conversion, history, multi-pane refresh behavior, and keyboard shortcuts.
+- Added `Option-N` for folders, `Option-Shift-N` for TXT documents, and `Command-Option-N` for new windows without intercepting `Command-N`.
+
+### Drag, drop, and asynchronous reliability
+
+- Reworked native and HTML5 drag lifecycles so folder drops release the pointer session before Eagle API writes begin.
+- Preserved source window, source pane, source folder, and library identity across cross-window and cross-pane drops.
+- Added bounded concurrency, per-item timeouts, partial-failure reporting, close blocking for high-risk writes, and stale-response protection.
+- Prevented slow background refreshes or failed pane queries from repainting unrelated panes or disabling the whole application.
+
+### Folder covers and interface
+
+- Matched Eagle's folder-card proportions, stacked sheet spacing, and dark radial cover surface.
+- Fixed portrait folder covers being scaled by width and vertically clipped into a landscape strip.
+- Kept Eagle's single-cover behavior while centering portrait, square, and landscape covers at their original aspect ratio.
+
+### Windows experimental build
+
+- Added a Windows x64 NSIS build and Windows application icon.
+- The unsigned Windows artifact is provided from the current source without Windows hardware/VM GUI validation and without a maintenance commitment.
+
+### Validation
+
+- Added regression coverage for pane isolation, drag/drop lifecycle, asynchronous operations, shortcuts, smart folders, duplicate handling, metadata reading, exporting, new-file creation, Trash scanning, folder covers, and Eagle API behavior.
+- Passed JavaScript syntax checks and the full automated test suite.
+- Verified the signed arm64 installed app with an isolated public test-library copy; Windows runtime behavior remains unverified.
+
 ## 1.5.1 - 2026-07-23
 
 ### Library navigation

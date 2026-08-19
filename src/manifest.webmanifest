@@ -1,0 +1,12 @@
+{
+  "name": "Eagle MultiView",
+  "short_name": "MultiView",
+  "description": "Eagle 资料库的多窗口 Web 客户端",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111317",
+  "theme_color": "#111317",
+  "icons": [
+    { "src": "brand-icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }
+  ]
+}
