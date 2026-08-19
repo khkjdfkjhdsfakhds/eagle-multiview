@@ -81,3 +81,41 @@ test('narrow inspectors shrink inputs and ellipsize action buttons', () => {
   const buttonRule = ruleBlock(styles, '.inspector-actions button {');
   assert.ok(buttonRule.includes('text-overflow: ellipsis;'), 'action button labels ellipsize instead of overflowing');
 });
+
+test('multi-pane layouts provide draggable splitters in #paneLayout with hover and drag styling', () => {
+  assert.ok(styles.includes('.pane-splitter {'), 'pane-splitter class defined in styles');
+  assert.ok(styles.includes('.pane-splitter-vertical {'), 'vertical splitter styles defined');
+  assert.ok(styles.includes('.pane-splitter-horizontal {'), 'horizontal splitter styles defined');
+  assert.ok(styles.includes('cursor: col-resize;'), 'vertical splitter col-resize cursor');
+  assert.ok(styles.includes('cursor: row-resize;'), 'horizontal splitter row-resize cursor');
+  assert.ok(styles.includes('.pane-splitter.dragging::after'), 'dragging feedback style defined');
+  assert.ok(renderer.includes('function getLayoutSplitters('), 'getLayoutSplitters helper defined');
+  assert.ok(renderer.includes('function splitterMarkup('), 'splitterMarkup helper defined');
+  assert.ok(renderer.includes('function bindPaneSplitters('), 'bindPaneSplitters helper defined');
+});
+
+test('pane splitter drag clamps columns at min 180px and rows at min 150px', () => {
+  const splitterCode = renderer.slice(renderer.indexOf('function bindPaneSplitters()'), renderer.indexOf('const scheduleGridResize'));
+  assert.ok(splitterCode.includes('minSize = axis === \'col\' ? 180 : 150'), 'col min 180px, row min 150px clamp rule');
+  assert.ok(splitterCode.includes('calculateSplitRatios('), 'calculates split ratios during drag');
+  assert.ok(splitterCode.includes('applyLayoutSplitRatios('), 'applies split ratios to gridTemplateColumns/Rows');
+});
+
+test('pane resizing triggers scheduleGridResize and ResizeObserver observation', () => {
+  assert.ok(renderer.includes('const scheduleGridResize = debounce('), 'scheduleGridResize debounced helper exists');
+  assert.ok(renderer.includes('updateSplitterPositions()'), 'splitter positions update on layout/resize');
+  assert.ok(renderer.includes('paneLayoutObserver = new ResizeObserver('), 'ResizeObserver observes pane layout');
+});
+
+test('pane splitters bind dblclick to reset the split axis to equal proportions', () => {
+  const splitterCode = renderer.slice(renderer.indexOf('function bindPaneSplitters()'), renderer.indexOf('const scheduleGridResize'));
+  assert.ok(splitterCode.includes("handle.addEventListener('dblclick'"), 'binds dblclick event on splitter handle');
+  assert.ok(splitterCode.includes('resetSplitRatioAxis('), 'calls resetSplitRatioAxis on dblclick');
+  assert.ok(splitterCode.includes('applyLayoutSplitRatios(layoutRoot, state.splitRatios)'), 'applies reset ratios to layout');
+  assert.ok(splitterCode.includes('saveSessionState()'), 'persists reset split ratios');
+
+  const markupCode = renderer.slice(renderer.indexOf('function splitterMarkup('), renderer.indexOf('function applyLayoutSplitRatios('));
+  assert.ok(markupCode.includes('双击恢复等宽'), 'vertical splitter tooltip/label mentions double-click reset');
+  assert.ok(markupCode.includes('双击恢复等高'), 'horizontal splitter tooltip/label mentions double-click reset');
+});
+

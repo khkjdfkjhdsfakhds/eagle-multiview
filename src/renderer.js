@@ -23,12 +23,15 @@
 const {
   findFolder,
   findFolderPath,
+  overlayFolder,
   normalizeView: normalizeFolderView,
   parentView: resolveParentView,
   recordViewNavigation,
   folderMoveDelta,
   searchFolders
 } = window.EagleMVFolderNavigation;
+const { formatEaglePath, resolveEaglePath } = window.EagleMVLogicalPath;
+const { paneLayoutPopoverPosition } = window.EagleMVLayoutPopover;
 const {
   hasType: dragHasType,
   readItemIds,
@@ -55,7 +58,15 @@ const {
   effectiveSortDir,
   compareBySort: compareItemsBySort,
   sharedTags: computeSharedTags,
-  appendableTailCount
+  appendableTailCount,
+  paneLayoutSpecs,
+  coordinatePaneLayout,
+  defaultSplitRatios,
+  resetSplitRatioAxis,
+  findFolderInTree,
+  validateSessionView,
+  createSessionState,
+  calculateSplitRatios
 } = window.EagleMVPanestate;
 const { buildSmartFolderConditions } = window.EagleMVSmartFolder;
 const { windowStateForView } = window.EagleMVWindowTarget;
@@ -96,18 +107,25 @@ const newFileTypes = Object.freeze({
 
 const paneScopedSelectors = new Set([
   '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect', '#sortDirButton',
-  '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay'
+  '#sortSelectButton', '#sortSelectLabel', '#sortPopover', '#sortCascadeDivider', '#sortCascadeItem', '#sortCascadeCheck',
+  '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay', '#pinchBadge',
+  '#previewModal', '#modalMedia', '#closePreview', '#prevPreview', '#nextPreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
+  '#previewBackground', '#previewGrayscale', '#modalRating', '#modalCaption', '#textEditor', '#textStatus', '#reloadTextButton', '#saveTextButton'
 ]);
 const $ = selector => {
-  if (typeof state !== 'undefined' && state.panes?.length && paneScopedSelectors.has(selector)) {
-    const active = CSS.escape(state.activePaneId || state.panes[0].id);
-    return document.querySelector(`.content-pane[data-pane-id="${active}"] ${selector}`) || document.querySelector(selector);
+  if (typeof state !== 'undefined' && state.panes?.length) {
+    const isScoped = paneScopedSelectors.has(selector) || selector.startsWith('#modalMedia') || selector.startsWith('#previewModal');
+    if (isScoped) {
+      const active = CSS.escape(state.activePaneId || state.panes[0].id);
+      return document.querySelector(`.content-pane[data-pane-id="${active}"] ${selector}`) || document.querySelector(selector);
+    }
   }
   return document.querySelector(selector);
 };
 const state = {
   connected: false,
   library: null,
+  operationTracker: createOperationTracker(),
   items: [],
   total: 0,
   estimatedTotal: false,
@@ -117,37 +135,49 @@ const state = {
   pageSize: 160,
   loading: false,
   refreshToken: 0,
+  commentsToken: 0,
+  metadataToken: 0,
   selected: new Set(),
   selectedBase: null,
+  sidebarVisible: true,
+  inspectorVisible: true,
   inspectorDirty: false,
   inspectorSaving: false,
   inspectorEditing: false,
   inspectorAutoSaveTimer: null,
-  query: createQuery(),
   sort: 'default',
   sortDir: 'auto',
+  sortCascade: false,
+  randomSeed: 'seed',
   viewMode: 'justified',
+  sortCapNoticeKey: '',
   viewTitle: '资料库',
-  refreshTimer: null,
-  toastTimer: null,
-  operationTracker: createOperationTracker(),
-  windowId: null,
-  expandedFolders: new Set(),
   currentView: { kind: 'root' },
   history: [],
   historyIndex: -1,
   selectedFolderCard: null,
-  sidebarVisible: true,
-  inspectorVisible: true,
+  dragDepth: 0,
+  draggingItemIds: null,
+  scrollTop: 0,
+  query: createQuery(),
+  localPins: {},
+  expandedFolders: new Set(),
+  availableTags: [],
+  tagGroups: [],
+  recentFolders: [],
+  tagColors: {},
+  viewMemory: new Map(),
+  restoreScroll: null,
+  activePaneId: 'pane-1',
+  splitRatios: null,
+  windowId: null,
   previewId: null,
   previewZoom: { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
-  slideshow: { timer: null, intervalMs: 4000 },
   previewView: { background: 'none', grayscale: false },
+  previewToken: 0,
+  slideshow: { timer: null, intervalMs: 4000 },
   textSession: null,
   textSaving: false,
-  previewToken: 0,
-  metadataToken: 0,
-  commentsToken: 0,
   comments: [],
   availableTags: [],
   tagColors: {},
@@ -171,6 +201,7 @@ const state = {
   viewMemory: new Map(),
   restoreScroll: null
 };
+window.state = state;
 
 // Each shuffle needs an order that survives re-renders and lazy pages but
 // differs from the last one; a counter behind the clock gives both.
@@ -180,10 +211,22 @@ function nextRandomSeed() {
   return `${Date.now().toString(36)}-${randomSeedCounter}`;
 }
 
+let paneIdCounter = 1;
+function nextPaneId() {
+  paneIdCounter += 1;
+  return `pane-${paneIdCounter}`;
+}
+
+function paneCreationOrder(id) {
+  const match = String(id || '').match(/(\d+)$/);
+  return match ? Number(match[1]) : paneIdCounter;
+}
+
 const paneStateKeys = [
-  'items', 'total', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
-  'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query',
-  'viewMemory', 'restoreScroll'
+  'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
+  'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query', 'sortCascade',
+  'viewMemory', 'restoreScroll',
+  'previewId', 'previewZoom', 'previewView', 'previewToken', 'textSession', 'textSaving', 'slideshow'
 ];
 // Eagle offers four grid layouts; 'justified' is our default, as it is there.
 const paneViewModes = new Set(['justified', 'grid', 'waterfall', 'list']);
@@ -195,37 +238,76 @@ function storedPaneViewModes() {
     return {};
   }
 }
-function createPaneState(id, source = state) {
-  return {
+
+function paneTitleForView(view) {
+  if (view?.kind === 'folder') return findFolder(state.library?.folders, view.id)?.name || '文件夹';
+  if (view?.kind === 'smart') return view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
+  return ({
+    root: state.library?.name || '资料库',
+    all: '全部素材',
+    unfiled: '未分类',
+    untagged: '未加标签',
+    recent: '最近使用',
+    random: '随机模式',
+    trash: '回收站',
+    tags: '标签管理'
+  })[view?.kind] || '资料库';
+}
+
+function createPaneState(id, source = state, { inheritCurrentViewOnly = false } = {}) {
+  const currentView = { ...(source.currentView || { kind: 'root' }) };
+  const fresh = Boolean(inheritCurrentViewOnly);
+  const initialItems = fresh ? [] : (source.items ? [...source.items] : []);
+  const pane = {
     id,
-    items: source.items ? [...source.items] : [],
-    total: Number(source.total) || 0,
-    estimatedTotal: Boolean(source.estimatedTotal),
-    offset: Number(source.offset) || 0,
-    nextOffset: Number(source.nextOffset) || 0,
-    hasMore: Boolean(source.hasMore),
+    creationOrder: paneCreationOrder(id),
+    items: initialItems,
+    itemMap: new Map(initialItems.filter(item => item?.id).map(item => [item.id, item])),
+    total: fresh ? 0 : (Number(source.total) || 0),
+    get totalCount() { return this.total; },
+    set totalCount(value) { this.total = Math.max(0, Number(value) || 0); },
+    estimatedTotal: fresh ? false : Boolean(source.estimatedTotal),
+    offset: fresh ? 0 : (Number(source.offset) || 0),
+    nextOffset: fresh ? 0 : (Number(source.nextOffset) || 0),
+    hasMore: fresh ? false : Boolean(source.hasMore),
     loading: false,
     refreshToken: 0,
     errorMessage: '',
-    selected: new Set(source.selected || []),
-    selectedBase: source.selectedBase || null,
-    sort: source.sort || 'default',
+    selected: fresh ? new Set() : new Set(source.selected || []),
+    selectedBase: fresh ? null : (source.selectedBase || null),
+    sort: fresh ? 'default' : (source.sort || 'default'),
     sortDir: source.sortDir || 'auto',
+    sortCascade: fresh ? false : Boolean(source.sortCascade),
     randomSeed: source.randomSeed || nextRandomSeed(),
-    viewMode: paneViewModes.has(storedPaneViewModes()[id]) ? storedPaneViewModes()[id] : (source.viewMode || 'justified'),
+    viewMode: fresh ? 'justified' : (paneViewModes.has(storedPaneViewModes()[id]) ? storedPaneViewModes()[id] : (source.viewMode || 'justified')),
     sortCapNoticeKey: '',
-    viewTitle: source.viewTitle || '资料库',
-    currentView: { ...(source.currentView || { kind: 'root' }) },
-    history: [...(source.history || [])],
-    historyIndex: Number.isInteger(source.historyIndex) ? source.historyIndex : -1,
-    selectedFolderCard: source.selectedFolderCard || null,
+    // The new pane gets a display label derived from the inherited path, not
+    // another pane's mutable presentation state.
+    viewTitle: fresh ? paneTitleForView(currentView) : (source.viewTitle || '资料库'),
+    currentView,
+    history: fresh ? [] : [...(source.history || [])],
+    historyIndex: fresh ? -1 : (Number.isInteger(source.historyIndex) ? source.historyIndex : -1),
+    selectedFolderCard: fresh ? null : (source.selectedFolderCard || null),
     dragDepth: 0,
     draggingItemIds: null,
-    scrollTop: 0,
-    query: cloneQuery(source.query),
+    scrollTop: fresh ? 0 : (Number(source.scrollTop) || 0),
+    query: fresh ? createQuery() : cloneQuery(source.query),
     viewMemory: new Map(source.viewMemory || []),
-    restoreScroll: null
+    restoreScroll: null,
+    previewId: fresh ? null : (source.previewId || null),
+    previewZoom: fresh ? { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 } : (source.previewZoom ? structuredClone(source.previewZoom) : { scale: 1, x: 0, y: 0, mode: 'fit', dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 }),
+    previewView: fresh ? (source.previewView ? { ...source.previewView } : { background: 'none', grayscale: false }) : (source.previewView ? { ...source.previewView } : { background: 'none', grayscale: false }),
+    previewToken: 0,
+    textSession: null,
+    textSaving: false,
+    slideshow: { timer: null, intervalMs: source.slideshow?.intervalMs || 4000 }
   };
+  if (fresh) {
+    pane.sortDir = 'auto';
+    pane.randomSeed = nextRandomSeed();
+    pane.viewMemory = new Map();
+  }
+  return pane;
 }
 state.panes = [createPaneState('pane-1')];
 state.activePaneId = 'pane-1';
@@ -239,20 +321,7 @@ for (const key of paneStateKeys) {
   });
 }
 
-const paneLayouts = {
-  single: 1,
-  vertical2: 2,
-  horizontal2: 2,
-  grid4: 4,
-  leftStack: 3,
-  rightStack: 3,
-  topStack: 3,
-  bottomStack: 3,
-  horizontal3: 3,
-  vertical3: 3,
-  horizontal4: 4,
-  vertical4: 4
-};
+const paneLayouts = paneLayoutSpecs;
 const UI_ZOOM_MIN = 0.8;
 const UI_ZOOM_MAX = 1.6;
 const UI_ZOOM_STEP = 0.1;
@@ -260,9 +329,12 @@ const UI_ZOOM_STEP = 0.1;
 // folders stop auto-fetching here and fall back to scroll-driven loading.
 const SORT_FETCH_CAP = 3000;
 const LIBRARY_SYNC_DEBOUNCE_MS = 320;
+const LIBRARY_MISSING_CONFIRM_TIMEOUT_MS = 1800;
 let librarySyncTimer = null;
 let librarySyncRunning = false;
 let pendingLibraryChange = null;
+let lastAppliedLibraryRevision = -1;
+let newestLibraryRevision = -1;
 let visibleItemWatchQueued = false;
 let activeMarquee = null;
 // Touch long-press bookkeeping: while the finger is still down the browser
@@ -403,11 +475,17 @@ function activatePane(id) {
   // before the active-pane proxy points at another selection. Switching first
   // lets renderInspector clear inspectorDirty and silently loses the draft.
   if (!confirmDiscardChanges({ includeText: false })) return false;
+  const previousPaneId = state.activePaneId;
+  const previousBreadcrumb = paneQuery(previousPaneId, '#breadcrumb');
+  if (previousBreadcrumb?.classList.contains('is-editing')) {
+    withActivePane(previousPaneId, () => cancelBreadcrumbEdit(previousBreadcrumb, previousPaneId));
+  }
   state.activePaneId = id;
   for (const pane of document.querySelectorAll('.content-pane')) pane.classList.toggle('active', pane.dataset.paneId === id);
   renderQueryControls();
   renderFolderTree();
   renderInspector();
+  saveSessionState();
   return true;
 }
 
@@ -496,37 +574,64 @@ function queueChangedInspectorRender(external) {
 
 function paneMarkup(id, index) {
   return `<section class="content-pane${id === state.activePaneId ? ' active' : ''}" data-pane-id="${escapeHTML(id)}" tabindex="0">
-    <div class="pane-badge">栏 ${index + 1}</div>
     <div class="content-heading">
-      <div class="navigation-controls">
-        <button id="backButton" class="nav-button" title="返回（⌥←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-        <button id="forwardButton" class="nav-button" title="前进（⌥→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-        <button id="upButton" class="nav-button up" title="上一级（⌥↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
-      </div>
-      <div class="location-block">
+      <div class="heading-path-row">
         <div id="breadcrumb" class="breadcrumb" aria-label="当前路径"></div>
-        <h1 id="viewTitle">资料库</h1>
-        <span id="resultCount" class="muted">正在连接…</span>
       </div>
-      <div class="sort-controls">
-        <div id="viewModeGroup" class="view-mode-group" role="group" aria-label="当前栏布局">
-          <button class="view-mode-button" data-view-mode="justified" title="自适应布局" aria-label="自适应布局">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
-          <button class="view-mode-button" data-view-mode="grid" title="网格" aria-label="网格">${uiIcon('layoutGrid', 'view-mode-svg')}</button>
-          <button class="view-mode-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
-          <button class="view-mode-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
+      <div class="heading-main-row">
+        <div class="navigation-controls">
+          <button id="backButton" class="nav-button" title="返回（⌥←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="forwardButton" class="nav-button" title="前进（⌥→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="upButton" class="nav-button up" title="上一级（⌥↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
         </div>
-        <select id="sortSelect" class="sort-select" aria-label="当前栏排序">
-          <option value="default">Eagle 顺序</option>
-          <option value="name">名称</option>
-          <option value="added">添加日期</option>
-          <option value="newest">最近修改</option>
-          <option value="size">文件大小</option>
-          <option value="resolution">分辨率</option>
-          <option value="rating">评分</option>
-          <option value="type">文件类型</option>
-          <option value="random">随机</option>
-        </select>
-        <button id="sortDirButton" class="sort-dir-button" title="切换排序方向" aria-label="切换排序方向">↓</button>
+        <div class="location-block">
+          <h1 id="viewTitle">资料库</h1>
+          <span id="resultCount" class="muted">正在连接…</span>
+        </div>
+        <div class="sort-controls">
+          <div id="viewModeGroup" class="view-mode-group" role="group" aria-label="当前栏布局">
+            <button class="view-mode-button" data-view-mode="justified" title="自适应布局" aria-label="自适应布局">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
+            <button class="view-mode-button" data-view-mode="grid" title="网格" aria-label="网格">${uiIcon('layoutGrid', 'view-mode-svg')}</button>
+            <button class="view-mode-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
+            <button class="view-mode-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
+          </div>
+          <div class="sort-select-control">
+            <button id="sortSelectButton" class="sort-select-button" type="button" aria-haspopup="menu" aria-expanded="false" title="当前栏排序">
+              <span id="sortSelectLabel" class="sort-select-label">Eagle 顺序</span>
+              <svg class="sort-select-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
+            </button>
+            <select id="sortSelect" class="sort-select hidden-accessible" aria-label="当前栏排序" tabindex="-1">
+              <option value="default">Eagle 顺序</option>
+              <option value="name">名称</option>
+              <option value="added">添加日期</option>
+              <option value="newest">最近修改</option>
+              <option value="size">文件大小</option>
+              <option value="resolution">分辨率</option>
+              <option value="rating">评分</option>
+              <option value="type">文件类型</option>
+              <option value="random">随机</option>
+            </select>
+            <div id="sortPopover" class="sort-popover hidden" role="menu" aria-label="排序选项">
+              <div class="sort-popover-options">
+                <button type="button" class="sort-popover-option" data-sort="default">Eagle 顺序</button>
+                <button type="button" class="sort-popover-option" data-sort="name">名称</button>
+                <button type="button" class="sort-popover-option" data-sort="added">添加日期</button>
+                <button type="button" class="sort-popover-option" data-sort="newest">最近修改</button>
+                <button type="button" class="sort-popover-option" data-sort="size">文件大小</button>
+                <button type="button" class="sort-popover-option" data-sort="resolution">分辨率</button>
+                <button type="button" class="sort-popover-option" data-sort="rating">评分</button>
+                <button type="button" class="sort-popover-option" data-sort="type">文件类型</button>
+                <button type="button" class="sort-popover-option" data-sort="random">随机</button>
+              </div>
+              <div id="sortCascadeDivider" class="sort-popover-divider"></div>
+              <label id="sortCascadeItem" class="sort-popover-item sort-cascade-item">
+                <input type="checkbox" id="sortCascadeCheck" class="sort-cascade-check">
+                <span>包含子文件夹</span>
+              </label>
+            </div>
+          </div>
+          <button id="sortDirButton" class="sort-dir-button" title="切换排序方向" aria-label="切换排序方向">↓</button>
+        </div>
       </div>
     </div>
     <div id="gridScroller" class="grid-scroller">
@@ -545,6 +650,25 @@ function paneMarkup(id, index) {
     </div>
     <div id="dropOverlay" class="drop-overlay hidden"><div><strong>导入到当前文件夹</strong><span>松开即可导入文件</span></div></div>
     <div id="pinchBadge" class="pinch-badge hidden" aria-hidden="true"></div>
+    <div id="previewModal" class="preview-modal hidden">
+      <div id="slideshowControls" class="slideshow-controls">
+        <button id="slideshowToggle" class="slideshow-button" type="button" title="幻灯片播放（S）" aria-pressed="false" aria-label="幻灯片播放">▶</button>
+        <select id="slideshowInterval" class="slideshow-interval" aria-label="幻灯片间隔">
+          <option value="2000">2 秒</option>
+          <option value="4000">4 秒</option>
+          <option value="6000">6 秒</option>
+          <option value="10000">10 秒</option>
+        </select>
+        <button id="previewBackground" class="slideshow-button preview-view-button" type="button" aria-label="透明区域背景"><span class="preview-bg-chip" aria-hidden="true"></span></button>
+        <button id="previewGrayscale" class="slideshow-button preview-view-button" type="button" title="灰度查看（G）" aria-label="灰度查看" aria-pressed="false">灰</button>
+      </div>
+      <button id="closePreview" class="modal-close" type="button" aria-label="关闭预览">×</button>
+      <button id="prevPreview" class="modal-nav prev" type="button" aria-label="上一个">‹</button>
+      <div id="modalMedia" class="modal-media"></div>
+      <div id="modalRating" class="modal-rating" role="group" aria-label="评分（按 0-5）"></div>
+      <div id="modalCaption" class="modal-caption"></div>
+      <button id="nextPreview" class="modal-nav next" type="button" aria-label="下一个">›</button>
+    </div>
   </section>`;
 }
 
@@ -555,10 +679,315 @@ function savePaneScrollPositions() {
   }
 }
 
-function renderPaneLayout(layout = 'single', { refresh = true } = {}) {
+function getLayoutSplitters(layout) {
+  switch (layout) {
+    case 'vertical2':
+      return [{ axis: 'col', index: 0 }];
+    case 'vertical3':
+      return [{ axis: 'col', index: 0 }, { axis: 'col', index: 1 }];
+    case 'vertical4':
+      return [{ axis: 'col', index: 0 }, { axis: 'col', index: 1 }, { axis: 'col', index: 2 }];
+    case 'horizontal2':
+      return [{ axis: 'row', index: 0 }];
+    case 'horizontal3':
+      return [{ axis: 'row', index: 0 }, { axis: 'row', index: 1 }];
+    case 'horizontal4':
+      return [{ axis: 'row', index: 0 }, { axis: 'row', index: 1 }, { axis: 'row', index: 2 }];
+    case 'grid4':
+      return [{ axis: 'col', index: 0 }, { axis: 'row', index: 0 }];
+    case 'leftStack':
+      return [{ axis: 'col', index: 0 }, { axis: 'row', index: 0, subArea: 'right' }];
+    case 'rightStack':
+      return [{ axis: 'col', index: 0 }, { axis: 'row', index: 0, subArea: 'left' }];
+    case 'topStack':
+      return [{ axis: 'row', index: 0 }, { axis: 'col', index: 0, subArea: 'bottom' }];
+    case 'bottomStack':
+      return [{ axis: 'row', index: 0 }, { axis: 'col', index: 0, subArea: 'top' }];
+    default:
+      return [];
+  }
+}
+
+function splitterMarkup(s) {
+  const isCol = s.axis === 'col';
+  const cls = isCol ? 'pane-splitter-vertical' : 'pane-splitter-horizontal';
+  const orientation = isCol ? 'vertical' : 'horizontal';
+  const label = isCol ? '调整分栏宽度，双击恢复等宽' : '调整分栏高度，双击恢复等高';
+  const subAreaAttr = s.subArea ? ` data-sub-area="${s.subArea}"` : '';
+  return `<div class="pane-splitter ${cls}" data-split-axis="${s.axis}" data-split-index="${s.index}"${subAreaAttr} role="separator" aria-orientation="${orientation}" aria-label="${label}" title="${label}"></div>`;
+}
+
+function applyLayoutSplitRatios(layoutRoot, ratios) {
+  if (!layoutRoot) return;
+  if (ratios?.cols?.length > 1) {
+    layoutRoot.style.gridTemplateColumns = ratios.cols.map(c => `minmax(0, ${c})`).join(' ');
+  } else {
+    layoutRoot.style.gridTemplateColumns = '';
+  }
+  if (ratios?.rows?.length > 1) {
+    layoutRoot.style.gridTemplateRows = ratios.rows.map(r => `minmax(0, ${r})`).join(' ');
+  } else {
+    layoutRoot.style.gridTemplateRows = '';
+  }
+}
+
+function updateSplitterPositions() {
+  const layoutRoot = $('#paneLayout');
+  if (!layoutRoot) return;
+  const layout = layoutRoot.dataset.layout || 'single';
+  const splitters = layoutRoot.querySelectorAll('.pane-splitter');
+  if (!splitters.length) return;
+  const layoutRect = layoutRoot.getBoundingClientRect();
+  if (layoutRect.width === 0 && layoutRect.height === 0) return;
+  const panes = Array.from(layoutRoot.querySelectorAll('.content-pane'));
+  if (!panes.length) return;
+
+  for (const splitter of splitters) {
+    const axis = splitter.dataset.splitAxis;
+    const index = Number(splitter.dataset.splitIndex);
+    const subArea = splitter.dataset.subArea;
+
+    if (axis === 'col') {
+      let leftPane = panes[index];
+      let rightPane = panes[index + 1];
+
+      if (layout === 'leftStack') {
+        leftPane = panes[0];
+        rightPane = panes[1];
+      } else if (layout === 'rightStack') {
+        leftPane = panes[0];
+        rightPane = panes[2];
+      } else if (layout === 'topStack') {
+        leftPane = panes[1];
+        rightPane = panes[2];
+      } else if (layout === 'bottomStack') {
+        leftPane = panes[0];
+        rightPane = panes[1];
+      }
+
+      if (leftPane && rightPane) {
+        const leftRect = leftPane.getBoundingClientRect();
+        const rightRect = rightPane.getBoundingClientRect();
+        const splitX = (leftRect.right + rightRect.left) / 2 - layoutRect.left;
+        splitter.style.left = `${Math.round(splitX)}px`;
+
+        if (subArea === 'bottom') {
+          const topPane = panes[0];
+          const topRect = topPane.getBoundingClientRect();
+          const splitY = (topRect.bottom + leftRect.top) / 2 - layoutRect.top;
+          splitter.style.top = `${Math.round(splitY)}px`;
+          splitter.style.bottom = '0px';
+          splitter.style.height = 'auto';
+        } else if (subArea === 'top') {
+          const bottomPane = panes[2];
+          const bottomRect = bottomPane.getBoundingClientRect();
+          const splitY = (leftRect.bottom + bottomRect.top) / 2 - layoutRect.top;
+          splitter.style.top = '0px';
+          splitter.style.height = `${Math.round(splitY)}px`;
+          splitter.style.bottom = 'auto';
+        } else {
+          splitter.style.top = '0px';
+          splitter.style.bottom = '0px';
+          splitter.style.height = 'auto';
+        }
+      }
+    } else if (axis === 'row') {
+      let topPane = panes[index];
+      let bottomPane = panes[index + 1];
+
+      if (layout === 'grid4') {
+        topPane = panes[0];
+        bottomPane = panes[2];
+      } else if (layout === 'leftStack') {
+        topPane = panes[1];
+        bottomPane = panes[2];
+      } else if (layout === 'rightStack') {
+        topPane = panes[0];
+        bottomPane = panes[1];
+      } else if (layout === 'topStack') {
+        topPane = panes[0];
+        bottomPane = panes[1];
+      } else if (layout === 'bottomStack') {
+        topPane = panes[0];
+        bottomPane = panes[2];
+      }
+
+      if (topPane && bottomPane) {
+        const topRect = topPane.getBoundingClientRect();
+        const bottomRect = bottomPane.getBoundingClientRect();
+        const splitY = (topRect.bottom + bottomRect.top) / 2 - layoutRect.top;
+        splitter.style.top = `${Math.round(splitY)}px`;
+
+        if (subArea === 'right') {
+          const leftPane = panes[0];
+          const leftRect = leftPane.getBoundingClientRect();
+          const splitX = (leftRect.right + topRect.left) / 2 - layoutRect.left;
+          splitter.style.left = `${Math.round(splitX)}px`;
+          splitter.style.right = '0px';
+          splitter.style.width = 'auto';
+        } else if (subArea === 'left') {
+          const rightPane = panes[2];
+          const rightRect = rightPane.getBoundingClientRect();
+          const splitX = (topRect.right + rightRect.left) / 2 - layoutRect.left;
+          splitter.style.left = '0px';
+          splitter.style.width = `${Math.round(splitX)}px`;
+          splitter.style.right = 'auto';
+        } else {
+          splitter.style.left = '0px';
+          splitter.style.right = '0px';
+          splitter.style.width = 'auto';
+        }
+      }
+    }
+  }
+}
+
+function bindPaneSplitters() {
+  const layoutRoot = $('#paneLayout');
+  if (!layoutRoot) return;
+  const splitters = layoutRoot.querySelectorAll('.pane-splitter');
+  for (const handle of splitters) {
+    handle.addEventListener('dblclick', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const axis = handle.dataset.splitAxis;
+      const layout = layoutRoot.dataset.layout || 'single';
+      state.splitRatios = resetSplitRatioAxis(state.splitRatios, layout, axis);
+      applyLayoutSplitRatios(layoutRoot, state.splitRatios);
+      updateSplitterPositions();
+      scheduleGridResize();
+      saveSessionState();
+    });
+
+    handle.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      const axis = handle.dataset.splitAxis;
+      const index = Number(handle.dataset.splitIndex);
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const layoutRect = layoutRoot.getBoundingClientRect();
+      const layout = layoutRoot.dataset.layout || 'single';
+
+      handle.classList.add('dragging');
+      handle.setPointerCapture?.(event.pointerId);
+
+      const computedColStyle = getComputedStyle(layoutRoot).gridTemplateColumns;
+      const computedRowStyle = getComputedStyle(layoutRoot).gridTemplateRows;
+      const currentCols = computedColStyle.split(/\s+/).map(v => parseFloat(v)).filter(Number.isFinite);
+      const currentRows = computedRowStyle.split(/\s+/).map(v => parseFloat(v)).filter(Number.isFinite);
+
+      const startSizes = axis === 'col' ? [...currentCols] : [...currentRows];
+      const totalDimension = axis === 'col' ? layoutRect.width : layoutRect.height;
+      const minSize = axis === 'col' ? 180 : 150;
+
+      const move = moveEvent => {
+        const delta = axis === 'col' ? (moveEvent.clientX - startX) : (moveEvent.clientY - startY);
+        const ratios = calculateSplitRatios(axis, index, startSizes, delta, totalDimension, minSize);
+
+        if (!state.splitRatios) state.splitRatios = defaultSplitRatios(layout);
+        if (axis === 'col') {
+          state.splitRatios.cols = ratios;
+        } else {
+          state.splitRatios.rows = ratios;
+        }
+        applyLayoutSplitRatios(layoutRoot, state.splitRatios);
+        updateSplitterPositions();
+        scheduleGridResize();
+      };
+
+      const end = () => {
+        handle.classList.remove('dragging');
+        handle.releasePointerCapture?.(event.pointerId);
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', end);
+        handle.removeEventListener('pointercancel', end);
+        saveSessionState();
+      };
+
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', end);
+      handle.addEventListener('pointercancel', end);
+    });
+  }
+}
+
+const scheduleGridResize = debounce(() => {
+  updateSplitterPositions();
+  for (const pane of state.panes) {
+    const root = paneRoot(pane.id);
+    if (root) {
+      const breadcrumb = root.querySelector('#breadcrumb');
+      if (breadcrumb) syncBreadcrumbLayout(breadcrumb);
+    }
+  }
+}, 16);
+
+function serializeSessionState() {
+  const layout = $('#paneLayout')?.dataset.layout || 'single';
+  const splitRatios = state.splitRatios || defaultSplitRatios(layout);
+  return createSessionState({
+    layout,
+    splitRatios,
+    activePaneId: state.activePaneId,
+    panes: state.panes
+  });
+}
+
+function saveSessionState() {
+  if (!state.library) return;
+  try {
+    const session = serializeSessionState();
+    localStorage.setItem('eaglemv.sessionState', JSON.stringify(session));
+    localStorage.setItem('eaglemv.paneLayout', session.layout);
+  } catch {}
+}
+
+function restoreSavedSessionPanes() {
+  let session = null;
+  try {
+    session = JSON.parse(localStorage.getItem('eaglemv.sessionState') || 'null');
+  } catch {}
+  if (session && Array.isArray(session.panes) && session.panes.length) {
+    for (let index = 0; index < state.panes.length; index += 1) {
+      const pane = state.panes[index];
+      const saved = session.panes[index] || session.panes.find(p => p.id === pane.id);
+      if (saved) {
+        const view = validateSessionView(saved.view, state.library?.folders, state.library?.smartFolders);
+        pane.sort = saved.sort || 'default';
+        pane.sortDir = saved.sortDir || 'auto';
+        withActivePane(pane.id, () => {
+          applyView(view);
+          if (saved.sort) {
+            pane.sort = saved.sort;
+            pane.sortDir = saved.sortDir || 'auto';
+            renderSortControls();
+          }
+          if ($('#viewTitle')) $('#viewTitle').textContent = pane.viewTitle;
+          renderLocation();
+          if (view.kind === 'folder') revealFolderPath(view.id);
+        });
+      } else {
+        withActivePane(pane.id, () => {
+          applyView({ kind: 'root' });
+          if ($('#viewTitle')) $('#viewTitle').textContent = pane.viewTitle;
+          renderSortControls();
+          renderLocation();
+        });
+      }
+    }
+    if (session.activePaneId && state.panes.some(p => p.id === session.activePaneId)) {
+      activatePane(session.activePaneId);
+    }
+  } else {
+    navigate({ kind: 'root' }, { refreshView: false });
+  }
+  renderFolderTree();
+}
+
+function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = null } = {}) {
   if (!paneLayouts[layout]) layout = 'single';
   const layoutRoot = $('#paneLayout');
-  if (layoutRoot.dataset.layout === layout && layoutRoot.querySelector('.content-pane')) return true;
+  if (layoutRoot.dataset.layout === layout && layoutRoot.querySelector('.content-pane') && !splitRatios) return true;
   if (state.inspectorSaving) {
     toast('正在保存素材信息，请稍候再切换布局', 2800);
     return false;
@@ -569,20 +998,50 @@ function renderPaneLayout(layout = 'single', { refresh = true } = {}) {
   }
   if (!confirmDiscardChanges({ includeText: false })) return false;
   savePaneScrollPositions();
-  const oldPanes = state.panes;
-  const count = paneLayouts[layout];
-  state.panes = Array.from({ length: count }, (_, index) => oldPanes[index] || createPaneState(`pane-${index + 1}`, { currentView: { kind: 'root' }, sort: 'default', sortDir: 'auto', viewTitle: '资料库' }));
-  state.panes.forEach((pane, index) => { pane.id = `pane-${index + 1}`; });
-  if (!paneById(state.activePaneId)) state.activePaneId = state.panes[0].id;
+  const oldLayout = layoutRoot.dataset.layout || 'single';
+  const plan = coordinatePaneLayout({
+    currentLayout: oldLayout,
+    nextLayout: layout,
+    panes: state.panes,
+    activePaneId: state.activePaneId,
+    createPane: ({ source }) => createPaneState(nextPaneId(), source, { inheritCurrentViewOnly: true })
+  });
+  state.panes = plan.panes;
+  state.activePaneId = plan.activePaneId || state.panes[0]?.id;
   layoutRoot.dataset.layout = layout;
-  layoutRoot.innerHTML = state.panes.map((pane, index) => paneMarkup(pane.id, index)).join('');
+  const splitters = getLayoutSplitters(layout);
+  const splittersHTML = splitters.map(s => splitterMarkup(s)).join('');
+  layoutRoot.innerHTML = state.panes.map((pane, index) => paneMarkup(pane.id, index)).join('') + splittersHTML;
+  state.splitRatios = splitRatios || (layout === oldLayout && state.splitRatios ? state.splitRatios : defaultSplitRatios(layout));
+  applyLayoutSplitRatios(layoutRoot, state.splitRatios);
+  bindPaneSplitters();
+  updateSplitterPositions();
   try { localStorage.setItem('eaglemv.paneLayout', layout); } catch {}
+  saveSessionState();
   for (const pane of state.panes) bindPaneEvents(pane.id);
   for (const pane of state.panes) {
     withActivePane(pane.id, () => {
+      $('#viewTitle').textContent = pane.viewTitle;
       renderSortControls();
       renderLocation();
       renderGrid({ preserveScroll: true });
+      if (pane.previewId) {
+        const item = itemById(pane.previewId);
+        if (item) {
+          $('#previewModal')?.classList.remove('hidden');
+          updatePreviewChrome(item);
+          if (String(item.ext || '').toLowerCase() !== 'txt') {
+            const media = $('#modalMedia');
+            if (media) media.innerHTML = mediaMarkup(item);
+            setPreviewZoom(pane.previewZoom?.mode || 'fit');
+            setupPreviewMedia();
+          } else if (pane.textSession) {
+            renderTextPreview(pane.textSession);
+          }
+        }
+      }
+      renderPreviewView();
+      renderSlideshow();
     });
     const scroller = paneQuery(pane.id, '#gridScroller');
     if (scroller) scroller.scrollTop = pane.scrollTop || 0;
@@ -732,8 +1191,8 @@ function renderViewModeControls() {
   }
 }
 
-// Layout choice is remembered per pane slot so a restart or layout switch
-// restores each column's own view (Eagle keeps this per window).
+// Layout choice is remembered per stable pane identity so a layout switch
+// restores each pane's own view after it moves to another visual slot.
 function setPaneViewMode(mode, paneId = state.activePaneId) {
   if (!paneViewModes.has(mode)) return;
   const pane = paneById(paneId);
@@ -749,10 +1208,38 @@ function setPaneViewMode(mode, paneId = state.activePaneId) {
   });
 }
 
+const sortOptionLabels = {
+  default: 'Eagle 顺序',
+  name: '名称',
+  added: '添加日期',
+  newest: '最近修改',
+  size: '文件大小',
+  resolution: '分辨率',
+  rating: '评分',
+  type: '文件类型',
+  random: '随机'
+};
+
 function renderSortControls() {
   renderViewModeControls();
+  const sortKey = state.sort || 'default';
   const select = $('#sortSelect');
-  if (select) select.value = state.sort || 'default';
+  if (select) select.value = sortKey;
+  const label = $('#sortSelectLabel');
+  if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
+  const popover = $('#sortPopover');
+  if (popover) {
+    for (const btn of popover.querySelectorAll('[data-sort]')) {
+      btn.classList.toggle('active', btn.dataset.sort === sortKey);
+    }
+    const isFolder = state.currentView?.kind === 'folder';
+    const divider = $('#sortCascadeDivider');
+    const cascadeItem = $('#sortCascadeItem');
+    if (divider) divider.classList.toggle('hidden', !isFolder);
+    if (cascadeItem) cascadeItem.classList.toggle('hidden', !isFolder);
+    const cascadeCheck = $('#sortCascadeCheck');
+    if (cascadeCheck) cascadeCheck.checked = Boolean(state.sortCascade);
+  }
   const dirButton = $('#sortDirButton');
   if (!dirButton) return;
   // A shuffle has no direction, so the same button reshuffles instead.
@@ -776,6 +1263,7 @@ function commitSortChange() {
   sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
   renderSortControls();
   renderGrid({ preserveScroll: true });
+  saveSessionState();
 }
 
 function pinTimestamp(item) {
@@ -1787,7 +2275,8 @@ function attachFolderDragTargets() {
     row.addEventListener('dragover', event => {
       if (!isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = event.altKey ? 'move' : 'copy';
+      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+      event.dataTransfer.dropEffect = (sourceFolderId || event.altKey) ? 'move' : 'copy';
       row.classList.add('drop-target');
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
@@ -1796,8 +2285,9 @@ function attachFolderDragTargets() {
       const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
       const folderId = row.dataset.folderId;
       const folderName = row.dataset.folderName;
-      const move = event.altKey;
       const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+      const move = Boolean(sourceFolderId || event.altKey);
+      const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
       event.preventDefault();
       event.stopPropagation();
       row.classList.remove('drop-target');
@@ -1806,7 +2296,7 @@ function attachFolderDragTargets() {
         clearDragUI();
         return;
       }
-      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId }));
+      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
     });
   }
 }
@@ -1853,9 +2343,12 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       state.hasMore = Boolean(page.hasMore ?? (state.nextOffset < state.total));
       if (reset) {
         state.items = page.data || [];
+        state.itemMap = new Map((state.items || []).filter(item => item?.id).map(item => [item.id, item]));
       } else {
         const knownIds = new Set(state.items.map(item => item.id));
-        state.items = [...state.items, ...(page.data || []).filter(next => !knownIds.has(next.id))];
+        const additions = (page.data || []).filter(next => !knownIds.has(next.id));
+        state.items = [...state.items, ...additions];
+        for (const item of additions) if (item?.id) state.itemMap?.set(item.id, item);
       }
       if (currentView.kind === 'folder') reconcileLocalFolderCount(currentView.id, state.total);
       renderResultCount();
@@ -2060,14 +2553,14 @@ function renderInspector() {
     state.inspectorDirty = false;
     state.inspectorEditing = false;
     clearInspectorAutoSave();
-    state.commentsToken += 1;
+    state.commentsToken = (Number.isFinite(state.commentsToken) ? state.commentsToken : 0) + 1;
     state.comments = [];
     $('#itemComments').innerHTML = '<span class="muted">选择单个素材查看评论</span>';
     return;
   }
   if (count !== 1) {
-    state.metadataToken += 1;
-    state.commentsToken += 1;
+    state.metadataToken = (Number.isFinite(state.metadataToken) ? state.metadataToken : 0) + 1;
+    state.commentsToken = (Number.isFinite(state.commentsToken) ? state.commentsToken : 0) + 1;
     state.comments = [];
     $('#itemComments').innerHTML = '<span class="muted">选择单个素材查看评论</span>';
     $('#generationMetadataSection').classList.add('hidden');
@@ -2156,7 +2649,8 @@ async function loadComments(item, context = {}) {
   const libraryPath = context.libraryPath || state.library?.path;
   const target = { paneId, id: item?.id, libraryPath };
   if (!item?.id || !commentContextMatches(target)) return false;
-  const token = ++state.commentsToken;
+  state.commentsToken = (Number.isFinite(state.commentsToken) ? state.commentsToken : 0) + 1;
+  const token = state.commentsToken;
   $('#itemComments').innerHTML = '<span class="muted">正在读取…</span>';
   try {
     const comments = await window.eagleMV.getComments({ id: item.id, libraryPath });
@@ -2318,7 +2812,8 @@ function renderGenerationMetadata(metadata) {
 }
 
 async function loadGenerationMetadata(item) {
-  const token = ++state.metadataToken;
+  state.metadataToken = (Number.isFinite(state.metadataToken) ? state.metadataToken : 0) + 1;
+  const token = state.metadataToken;
   $('#generationMetadataSection').classList.add('hidden');
   if (!isImageItem(item)) return;
   try {
@@ -2868,14 +3363,25 @@ function setupPreviewMedia() {
   renderPreviewZoom();
 }
 
+function pingPreviewHUD(paneId = state.activePaneId) {
+  const modal = paneQuery(paneId, '#previewModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.remove('hud-hidden');
+  const pane = paneById(paneId);
+  if (!pane) return;
+  clearTimeout(pane.hudTimer);
+  pane.hudTimer = setTimeout(() => {
+    if (modal.isConnected && !modal.classList.contains('hidden')) {
+      modal.classList.add('hud-hidden');
+    }
+  }, 1500);
+}
+
 function updatePreviewChrome(item) {
   const items = sortedItems();
   const index = items.findIndex(candidate => candidate.id === item.id);
   const position = index >= 0 ? `${index + 1} / ${state.total || items.length}` : '';
   const fileName = `${item.name}.${item.ext}`;
-  // On a pointer, only the counter stays visible: AI-generated prompt file
-  // names flood the bottom bar. Touch has no hover, so the name would be
-  // unreachable there — it goes inline instead, clipped to one line.
   const caption = $('#modalCaption');
   caption.textContent = window.matchMedia('(pointer: coarse)').matches && position
     ? `${position} · ${fileName}`
@@ -2884,6 +3390,7 @@ function updatePreviewChrome(item) {
   renderPreviewRating(item);
   $('#prevPreview').disabled = index <= 0;
   $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
+  pingPreviewHUD();
 }
 
 // Rating without leaving the preview, the way Eagle's viewer does it. Touch
@@ -3254,7 +3761,7 @@ function applyView(view) {
     const folder = findFolder(state.library?.folders, view.id);
     state.viewTitle = folder?.name || '文件夹';
   } else if (view.kind === 'smart') {
-    state.viewTitle = view.name || '智能文件夹';
+    state.viewTitle = view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
   } else {
     state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类', untagged: '未加标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资料库';
   }
@@ -3335,6 +3842,7 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   if (refreshView) refresh({ reset: true, preserveScroll: false });
   // Picking a destination from the drawer should reveal the result.
   if (isCompactLayout()) closeDrawers();
+  saveSessionState();
   return true;
 }
 
@@ -3445,16 +3953,178 @@ function navigateUp() {
   if (parent) navigate(parent, { restoreScroll: true });
 }
 
+const breadcrumbObservers = new WeakMap();
+
+function eaglePathForView(view = state.currentView) {
+  if (view?.kind === 'root') return '';
+  if (view?.kind !== 'folder') return null;
+  return formatEaglePath(state.library?.folders, view.id);
+}
+
+function breadcrumbPathError(code) {
+  return ({
+    'unsupported-format': '只支持 Eagle 逻辑路径，不支持本机路径',
+    'ambiguous': 'Eagle 文件夹路径有歧义，请补全父级路径',
+    'not-found': '未找到对应的 Eagle 文件夹路径'
+  })[code] || 'Eagle 文件夹路径无效';
+}
+
+function cancelBreadcrumbEdit(breadcrumb, paneId = state.activePaneId) {
+  if (!breadcrumb?.classList.contains('is-editing')) return;
+  withActivePane(paneId, () => renderLocation());
+}
+
+function beginBreadcrumbEdit(breadcrumb, paneId = state.activePaneId) {
+  if (!breadcrumb || breadcrumb.classList.contains('is-editing')) return false;
+  const eaglePath = withActivePane(paneId, () => eaglePathForView());
+  if (eaglePath === null) {
+    toast('当前视图不是 Eagle 文件夹路径');
+    return false;
+  }
+  breadcrumb.classList.add('is-editing');
+  breadcrumb.innerHTML = '<input class="breadcrumb-input" type="text" autocomplete="off" spellcheck="false" aria-label="Eagle 文件夹路径" placeholder="Eagle 文件夹路径（根目录留空）">';
+  const input = breadcrumb.querySelector('.breadcrumb-input');
+  input.value = eaglePath;
+  input.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelBreadcrumbEdit(breadcrumb, paneId);
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    withActivePane(paneId, () => {
+      const result = resolveEaglePath(state.library?.folders, input.value);
+      if (!result.ok) {
+        input.setAttribute('aria-invalid', 'true');
+        toast(breadcrumbPathError(result.code), 3200);
+        input.focus();
+        return;
+      }
+      input.removeAttribute('aria-invalid');
+      const navigated = navigate(result.view, { restoreScroll: true });
+      if (!navigated) {
+        input.setAttribute('aria-invalid', 'true');
+        input.focus();
+      }
+    });
+  });
+  input.addEventListener('input', () => input.removeAttribute('aria-invalid'));
+  input.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (breadcrumb.classList.contains('is-editing') && document.activeElement !== input) cancelBreadcrumbEdit(breadcrumb, paneId);
+    }, 0);
+  });
+  input.focus();
+  input.select();
+  return true;
+}
+
+function breadcrumbButtonMarkup(crumb, index, { current = false, extraClass = '' } = {}) {
+  const classes = ['breadcrumb-segment', extraClass, current ? 'breadcrumb-current' : ''].filter(Boolean).join(' ');
+  return `<button type="button" class="${classes}" data-crumb-index="${index}" title="${escapeHTML(crumb.label)}"${current ? ' disabled aria-current="page"' : ''}>${escapeHTML(crumb.label)}</button>`;
+}
+
+function breadcrumbSeparatorMarkup() {
+  return '<span class="breadcrumb-separator" aria-hidden="true">›</span>';
+}
+
+function fullBreadcrumbMarkup(crumbs) {
+  return `<div class="breadcrumb-track breadcrumb-full" role="list">${crumbs.map((crumb, index) => `${breadcrumbButtonMarkup(crumb, index, { current: index === crumbs.length - 1 })}${index < crumbs.length - 1 ? breadcrumbSeparatorMarkup() : ''}`).join('')}</div>`;
+}
+
+function collapsedBreadcrumbMarkup(crumbs) {
+  const currentIndex = crumbs.length - 1;
+  const parentIndex = currentIndex - 1;
+  const hidden = crumbs.slice(1, Math.max(1, currentIndex - 1));
+  const parts = [breadcrumbButtonMarkup(crumbs[0], 0), breadcrumbSeparatorMarkup()];
+  if (hidden.length) {
+    const hiddenLabels = hidden.map(crumb => crumb.label).join('、');
+    parts.push(`<button type="button" class="breadcrumb-ellipsis" data-crumb-expand title="显示中间路径：${escapeHTML(hiddenLabels)}" aria-label="显示中间路径：${escapeHTML(hiddenLabels)}">…</button>`);
+    parts.push(breadcrumbSeparatorMarkup());
+  }
+  if (parentIndex > 0) {
+    parts.push(breadcrumbButtonMarkup(crumbs[parentIndex], parentIndex, { extraClass: 'breadcrumb-parent' }));
+    parts.push(breadcrumbSeparatorMarkup());
+  }
+  parts.push(breadcrumbButtonMarkup(crumbs[currentIndex], currentIndex, { current: true }));
+  return `<div class="breadcrumb-track breadcrumb-collapsed" role="list">${parts.join('')}</div>`;
+}
+
+function measureBreadcrumbWidth(track) {
+  if (!track) return 0;
+  const previous = {
+    display: track.style.display,
+    width: track.style.width,
+    maxWidth: track.style.maxWidth,
+    flex: track.style.flex,
+    overflow: track.style.overflow
+  };
+  track.style.display = 'flex';
+  track.style.width = 'max-content';
+  track.style.maxWidth = 'none';
+  track.style.flex = '0 0 auto';
+  track.style.overflow = 'visible';
+  const width = Math.ceil(track.getBoundingClientRect().width);
+  track.style.display = previous.display;
+  track.style.width = previous.width;
+  track.style.maxWidth = previous.maxWidth;
+  track.style.flex = previous.flex;
+  track.style.overflow = previous.overflow;
+  return width;
+}
+
+function syncBreadcrumbLayout(breadcrumb) {
+  if (!breadcrumb) return;
+  const full = breadcrumb.querySelector('.breadcrumb-full');
+  const collapsed = breadcrumb.querySelector('.breadcrumb-collapsed');
+  const collapsible = breadcrumb.dataset.collapsible === 'true';
+  const expanded = breadcrumb.classList.contains('is-expanded');
+  const width = breadcrumb.getBoundingClientRect().width;
+  const fullWidth = measureBreadcrumbWidth(full);
+  const compact = !expanded && collapsible && width > 0 && fullWidth > width + 1;
+  breadcrumb.classList.toggle('is-compact', compact);
+  full?.setAttribute('aria-hidden', String(compact || expanded));
+  collapsed?.setAttribute('aria-hidden', String(!compact || expanded));
+  const expandButton = collapsed?.querySelector('[data-crumb-expand]');
+  expandButton?.setAttribute('aria-expanded', String(expanded));
+}
+
+function observeBreadcrumbLayout(breadcrumb) {
+  breadcrumbObservers.get(breadcrumb)?.disconnect();
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(() => syncBreadcrumbLayout(breadcrumb));
+    observer.observe(breadcrumb);
+    breadcrumbObservers.set(breadcrumb, observer);
+  }
+  syncBreadcrumbLayout(breadcrumb);
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => syncBreadcrumbLayout(breadcrumb));
+}
+
 function renderLocation() {
   if (!state.library) return;
   let crumbs = [{ label: state.library.name || '资料库', view: { kind: 'root' } }];
   if (state.currentView.kind === 'folder') {
-    crumbs = crumbs.concat(findFolderPath(state.library.folders, state.currentView.id).map(folder => ({ label: folder.name, view: { kind: 'folder', id: folder.id } })));
+    const folderPath = findFolderPath(state.library.folders, state.currentView.id);
+    crumbs = folderPath.length
+      ? crumbs.concat(folderPath.map(folder => ({ label: folder.name, view: { kind: 'folder', id: folder.id } })))
+      : crumbs.concat({ label: state.viewTitle || '文件夹', view: state.currentView });
   } else if (state.currentView.kind !== 'root') {
     crumbs.push({ label: state.viewTitle, view: state.currentView });
   }
-  $('#breadcrumb').innerHTML = crumbs.map((crumb, index) => `<button data-crumb-index="${index}" ${index === crumbs.length - 1 ? 'disabled' : ''}>${escapeHTML(crumb.label)}</button>${index < crumbs.length - 1 ? '<span>›</span>' : ''}`).join('');
-  $('#breadcrumb')._crumbs = crumbs;
+  const breadcrumb = $('#breadcrumb');
+  if (!breadcrumb) return;
+  const eaglePath = eaglePathForView(state.currentView);
+  breadcrumb.dataset.depth = String(crumbs.length);
+  breadcrumb.dataset.collapsible = String(crumbs.length >= 3);
+  breadcrumb.dataset.eaglePath = eaglePath ?? '';
+  breadcrumb.dataset.eagleEditable = String(eaglePath !== null);
+  breadcrumb.classList.remove('is-expanded', 'is-compact');
+  breadcrumb.classList.remove('is-editing');
+  breadcrumb.innerHTML = `${fullBreadcrumbMarkup(crumbs)}${crumbs.length >= 3 ? collapsedBreadcrumbMarkup(crumbs) : ''}`;
+  breadcrumb._crumbs = crumbs;
+  observeBreadcrumbLayout(breadcrumb);
   $('#backButton').disabled = state.historyIndex <= 0;
   $('#forwardButton').disabled = state.historyIndex < 0 || state.historyIndex >= state.history.length - 1;
   $('#upButton').disabled = !parentView();
@@ -3645,6 +4315,30 @@ function newWindowMenuMarkup() {
   ].join('');
 }
 
+const paneLayoutLabels = Object.freeze({
+  single: '单栏',
+  vertical2: '左右两栏',
+  horizontal2: '上下两栏',
+  grid4: '四格',
+  leftStack: '左大右上下',
+  rightStack: '左上下右大',
+  topStack: '上大下左右',
+  bottomStack: '上左右下大',
+  horizontal3: '三行',
+  vertical3: '三栏',
+  vertical4: '四栏',
+  horizontal4: '四行'
+});
+
+function paneLayoutMenuMarkup(paneId = state.activePaneId) {
+  return Object.keys(paneLayouts).map(layout => contextMenuRow({
+    icon: 'layoutGrid',
+    label: paneLayoutLabels[layout] || layout,
+    action: 'set-pane-layout',
+    payload: { layout, paneId }
+  })).join('');
+}
+
 function contextFolderEntries(action, query = '') {
   const search = searchFolders(state.library?.folders, query, { excludeId: state.contextMenu?.folderId, limit: 100 });
   const searching = Boolean(String(query || '').trim());
@@ -3727,7 +4421,8 @@ function contextMenuMarkup(data) {
       newCreationMenuMarkup({ folderId: data.folderId, paneId: data.paneId }),
       '<div class="context-menu-separator"></div>',
       ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing })] : []),
-      contextMenuRow({ icon: 'refresh', label: '刷新所有分栏', action: 'refresh-all', disabled: !state.connected })
+      contextMenuRow({ icon: 'refresh', label: '刷新所有分栏', action: 'refresh-all', disabled: !state.connected }),
+      contextMenuRow({ icon: 'layoutGrid', label: '分栏布局', submenu: paneLayoutMenuMarkup(data.paneId) })
     ].join('');
   }
   const one = data.ids.length === 1;
@@ -3903,6 +4598,11 @@ async function executeContextAction(action, payload) {
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
+  if (action === 'set-pane-layout') {
+    const paneId = payload.paneId || data.paneId;
+    if (paneId && !activatePane(paneId)) return false;
+    return renderPaneLayout(payload.layout, { refresh: true });
+  }
   // Touch has no ⌘A and no ⌘-click, so the blank-space menu is the only route
   // to a whole-view selection there.
   if (action === 'select-all') { selectAllItems(); return; }
@@ -4205,6 +4905,23 @@ async function renameFolderById(folderId) {
       });
     }
     if (!result?.ok) throw new Error('重命名未完成');
+    if (state.library?.folders) {
+      state.library.folders = overlayFolder(state.library.folders, folder.id, { name: nextName });
+    }
+    for (const pane of state.panes) {
+      if (pane.currentView.kind === 'folder' && pane.currentView.id === folder.id) {
+        pane.viewTitle = nextName;
+      }
+    }
+    if (state.currentView.kind === 'folder' && state.currentView.id === folder.id) {
+      state.viewTitle = nextName;
+      $('#viewTitle').textContent = nextName;
+    }
+    renderLocation();
+    revealFolderPath(folder.id);
+    renderFolderTree();
+    renderGrid({ preserveScroll: true });
+    if (state.selectedFolderCard === folder.id) renderInspector();
     toast('文件夹已重命名');
   } finally {
     setSyncStatus('所有窗口已同步');
@@ -4434,7 +5151,7 @@ async function runItemBatch(ids, worker, timeoutMessage) {
   return { succeeded, failed, firstError };
 }
 
-async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null } = {}) {
+async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourcePaneId = null } = {}) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
   if (!uniqueIds.length || !folderId) return false;
   if (!state.connected) {
@@ -4467,6 +5184,30 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
     const failed = results.filter(result => !result.ok);
     const succeeded = results.length - failed.length;
     if (!succeeded) throw failed[0]?.error || new Error(`没有素材完成${verb}`);
+
+    if (moving && sourceFolderId) {
+      const movedIds = new Set();
+      results.forEach((res, idx) => { if (res?.ok) movedIds.add(uniqueIds[idx]); });
+      for (const pane of state.panes) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+          pane.items = pane.items.filter(item => !movedIds.has(item.id));
+          movedIds.forEach(id => { pane.itemMap?.delete(id); });
+          pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
+          if ('totalCount' in pane) pane.totalCount = pane.total;
+          movedIds.forEach(id => pane.selected.delete(id));
+          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (pane.id === state.activePaneId) {
+            renderResultCount();
+            updateScrollUI();
+            renderGrid({ preserveScroll: true });
+            renderInspector();
+          } else {
+            schedulePaneGridRender(pane.id);
+          }
+        }
+      }
+    }
+
     toast(`${moving ? '已移动到' : '已加入'}“${folderName || '目标文件夹'}”${failed.length ? ` · ${failed.length} 个失败` : ''}`);
     if (failed.length) console.warn('Some dragged items could not be assigned:', failed.map(result => result.error?.message));
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
@@ -4489,15 +5230,17 @@ function paneItemDropContext(targetPaneId, event) {
   try { sourcePaneId = event.dataTransfer.getData('application/x-eagle-multiview-source-pane') || sourcePaneId; } catch {}
   const sourceIsThisWindow = !internalDrag?.sourceWindowId || internalDrag.sourceWindowId === state.windowId;
   const sourcePane = sourceIsThisWindow && sourcePaneId ? paneById(sourcePaneId) : null;
+  const sourceFolderId = sourcePane?.currentView.kind === 'folder'
+    ? sourcePane.currentView.id
+    : (internalDrag?.sourceFolderId || null);
   return {
     targetPaneId,
     ids,
     libraryPath: internalDrag?.libraryPath || state.library?.path,
     targetFolderId: targetPane.currentView.kind === 'folder' ? targetPane.currentView.id : null,
-    sourceFolderId: sourcePane?.currentView.kind === 'folder'
-      ? sourcePane.currentView.id
-      : (internalDrag?.sourceFolderId || null),
-    move: Boolean(event.altKey)
+    sourceFolderId,
+    sourcePaneId,
+    move: Boolean(sourceFolderId || event.altKey)
   };
 }
 
@@ -4526,6 +5269,30 @@ async function handlePaneItemDrop(context) {
     const succeeded = results.length - failed.length;
     if (!succeeded) throw failed[0]?.error || new Error('没有素材完成归类');
     if (failed.length) console.warn('Some dropped items could not be assigned:', failed.map(result => result.error?.message));
+
+    if (move && sourceFolderId) {
+      const movedIds = new Set();
+      results.forEach((res, idx) => { if (res?.ok) movedIds.add(ids[idx]); });
+      for (const pane of state.panes) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+          pane.items = pane.items.filter(item => !movedIds.has(item.id));
+          movedIds.forEach(id => { pane.itemMap?.delete(id); });
+          pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
+          if ('totalCount' in pane) pane.totalCount = pane.total;
+          movedIds.forEach(id => pane.selected.delete(id));
+          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (pane.id === state.activePaneId) {
+            renderResultCount();
+            updateScrollUI();
+            renderGrid({ preserveScroll: true });
+            renderInspector();
+          } else {
+            schedulePaneGridRender(pane.id);
+          }
+        }
+      }
+    }
+
     toast(`${move ? '已移动' : '已复制'} ${succeeded} 个素材到当前栏${failed.length ? ` · ${failed.length} 个失败` : ''}`);
     if (state.library?.path === libraryPath) markFolderUsed(targetFolderId, libraryPath);
     // Refresh the drop target now, but do not hold the native drop completion
@@ -4554,6 +5321,8 @@ function updateToolbarWrapState() {
   const searchTop = Math.round(search.getBoundingClientRect().top);
   const clusterTop = Math.round(cluster.getBoundingClientRect().top);
   toolbar.classList.toggle('wrapped', clusterTop > searchTop);
+  const popover = $('#paneLayoutPopover');
+  if (popover && !popover.classList.contains('hidden')) positionPaneLayoutPopover();
 }
 
 function bindToolbarWrapState() {
@@ -4562,6 +5331,29 @@ function bindToolbarWrapState() {
   // their own handlers, so the class can never go stale.
   updateToolbarWrapState();
   window.addEventListener('resize', updateToolbarWrapState);
+}
+
+// Keep the layout popover horizontally centred under its toolbar button so it
+// always reads as "below the button", while clamping to the viewport so no
+// option column (in particular the single-pane one) is ever clipped off-screen.
+// The little arrow tracks the button centre via a CSS custom property.
+function positionPaneLayoutPopover() {
+  const button = $('#paneLayoutButton');
+  const popover = $('#paneLayoutPopover');
+  if (!button || !popover) return;
+  const anchor = popover.offsetParent || button;
+  const buttonRect = button.getBoundingClientRect();
+  const anchorRect = anchor.getBoundingClientRect();
+  const { left, arrowLeft } = paneLayoutPopoverPosition({
+    buttonLeft: buttonRect.left,
+    buttonWidth: buttonRect.width,
+    popoverWidth: popover.offsetWidth,
+    viewportWidth: window.innerWidth,
+    anchorLeft: anchorRect.left
+  });
+  popover.style.left = `${left}px`;
+  popover.style.right = 'auto';
+  popover.style.setProperty('--popover-arrow-left', `${arrowLeft}px`);
 }
 
 function bindWorkspaceResizers() {
@@ -4885,10 +5677,81 @@ function bindPaneEvents(paneId) {
   query('#backButton').addEventListener('click', () => { activatePane(paneId); requestBackAction(); });
   query('#forwardButton').addEventListener('click', () => { activatePane(paneId); navigateHistory(1); });
   query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
-  query('#breadcrumb').addEventListener('click', event => {
-    activatePane(paneId);
+  const pathRow = root.querySelector('.heading-path-row');
+  const breadcrumb = query('#breadcrumb');
+  pathRow?.addEventListener('pointerdown', event => {
+    if (breadcrumb.classList.contains('is-editing')) return;
+    if (event.target.closest('[data-crumb-expand]')) return;
     const button = event.target.closest('[data-crumb-index]');
-    if (button) navigate($('#breadcrumb')._crumbs[Number(button.dataset.crumbIndex)].view, { restoreScroll: true });
+    if (button && !button.disabled) return;
+    if (!activatePane(paneId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginBreadcrumbEdit(breadcrumb, paneId);
+  });
+  pathRow?.addEventListener('click', event => {
+    if (!activatePane(paneId)) return;
+    if (breadcrumb.classList.contains('is-editing')) return;
+    if (event.target.closest('[data-crumb-expand]')) {
+      breadcrumb.classList.add('is-expanded');
+      syncBreadcrumbLayout(breadcrumb);
+      return;
+    }
+    const button = event.target.closest('[data-crumb-index]');
+    if (!button || button.disabled) {
+      beginBreadcrumbEdit(breadcrumb, paneId);
+      return;
+    }
+    const crumb = breadcrumb._crumbs?.[Number(button.dataset.crumbIndex)];
+    if (crumb) navigate(crumb.view, { restoreScroll: true });
+  });
+  query('#sortSelectButton')?.addEventListener('click', event => {
+    event.stopPropagation();
+    activatePane(paneId);
+    const popover = query('#sortPopover');
+    if (!popover) return;
+    const opening = popover.classList.contains('hidden');
+    for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) {
+      p.classList.add('hidden');
+    }
+    for (const b of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) {
+      b.setAttribute('aria-expanded', 'false');
+    }
+    if (opening) {
+      popover.classList.remove('hidden');
+      query('#sortSelectButton')?.setAttribute('aria-expanded', 'true');
+    }
+  });
+  query('#sortPopover')?.addEventListener('click', event => {
+    const optionBtn = event.target.closest('[data-sort]');
+    if (optionBtn) {
+      activatePane(paneId);
+      const select = query('#sortSelect');
+      if (select) {
+        select.value = optionBtn.dataset.sort;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      query('#sortPopover')?.classList.add('hidden');
+      query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
+    }
+  });
+  query('#sortCascadeCheck')?.addEventListener('change', event => {
+    activatePane(paneId);
+    const checked = event.target.checked;
+    state.sortCascade = checked;
+    const pane = paneById(paneId);
+    if (pane) pane.sortCascade = checked;
+    if (checked && state.currentView?.kind === 'folder') {
+      sortMemory.rememberCascade(
+        state.library?.path,
+        state.currentView.id,
+        state.library?.folders,
+        state.sort,
+        state.sortDir,
+        Date.now()
+      );
+      toast('已将当前排序应用到所有子文件夹');
+    }
   });
   query('#sortSelect').addEventListener('change', event => {
     activatePane(paneId);
@@ -4897,6 +5760,16 @@ function bindPaneEvents(paneId) {
     // Picking 随机 deals a new order; re-picking it from the dropdown fires no
     // change event, which is why the direction button doubles as reshuffle.
     if (state.sort === 'random') state.randomSeed = nextRandomSeed();
+    if (state.sortCascade && state.currentView?.kind === 'folder') {
+      sortMemory.rememberCascade(
+        state.library?.path,
+        state.currentView.id,
+        state.library?.folders,
+        state.sort,
+        state.sortDir,
+        Date.now()
+      );
+    }
     commitSortChange();
     if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
@@ -4909,6 +5782,16 @@ function bindPaneEvents(paneId) {
       return;
     }
     state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
+    if (state.sortCascade && state.currentView?.kind === 'folder') {
+      sortMemory.rememberCascade(
+        state.library?.path,
+        state.currentView.id,
+        state.library?.folders,
+        state.sort,
+        state.sortDir,
+        Date.now()
+      );
+    }
     commitSortChange();
   });
   query('#viewModeGroup').addEventListener('click', event => {
@@ -5078,7 +5961,8 @@ function bindPaneEvents(paneId) {
     if (!folder || !isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = event.altKey ? 'move' : 'copy';
+    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    event.dataTransfer.dropEffect = (sourceFolderId || event.altKey) ? 'move' : 'copy';
     folder.classList.add('drop-target');
   });
   itemGrid.addEventListener('dragleave', event => {
@@ -5104,9 +5988,10 @@ function bindPaneEvents(paneId) {
     }
     const target = findFolder(state.library?.folders, folder.dataset.openFolder);
     const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    const move = event.altKey;
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId }));
+    const move = Boolean(sourceFolderId || event.altKey);
+    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || paneId;
+    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourcePaneId }));
   });
   const scroller = query('#gridScroller');
   bindMarqueeSelection(paneId, scroller);
@@ -5220,6 +6105,207 @@ function bindPaneEvents(paneId) {
     }
     scheduleDropTask(() => importFiles(importable, 'drop'));
   });
+  const previewModal = query('#previewModal');
+  if (previewModal) {
+    previewModal.addEventListener('pointermove', () => pingPreviewHUD(paneId));
+    previewModal.addEventListener('pointerleave', () => {
+      const pane = paneById(paneId);
+      if (pane) {
+        clearTimeout(pane.hudTimer);
+        pane.hudTimer = setTimeout(() => {
+          if (previewModal.isConnected && !previewModal.classList.contains('hidden')) {
+            previewModal.classList.add('hud-hidden');
+          }
+        }, 400);
+      }
+    });
+    query('#closePreview')?.addEventListener('click', () => {
+      activatePane(paneId);
+      withActivePane(paneId, () => closePreview());
+    });
+    previewModal.addEventListener('click', event => {
+      if (Date.now() < swipeClickSuppressUntil) return;
+      if (event.target === event.currentTarget) {
+        activatePane(paneId);
+        withActivePane(paneId, () => closePreview());
+      }
+    });
+    query('#prevPreview')?.addEventListener('click', () => {
+      activatePane(paneId);
+      withActivePane(paneId, () => movePreview(-1));
+    });
+    query('#nextPreview')?.addEventListener('click', () => {
+      activatePane(paneId);
+      withActivePane(paneId, () => movePreview(1));
+    });
+    query('#slideshowToggle')?.addEventListener('click', event => {
+      event.stopPropagation();
+      activatePane(paneId);
+      withActivePane(paneId, () => toggleSlideshow());
+    });
+    query('#slideshowInterval')?.addEventListener('change', event => {
+      const pane = paneById(paneId);
+      if (pane) {
+        pane.slideshow.intervalMs = Number(event.target.value) || 4000;
+        try { localStorage.setItem(SLIDESHOW_INTERVAL_KEY, String(pane.slideshow.intervalMs)); } catch {}
+        if (pane.slideshow.timer) {
+          withActivePane(paneId, () => scheduleSlideshowStep());
+        }
+      }
+    });
+    query('#slideshowControls')?.addEventListener('click', event => event.stopPropagation());
+    query('#previewBackground')?.addEventListener('click', () => {
+      activatePane(paneId);
+      withActivePane(paneId, () => cyclePreviewBackground());
+    });
+    query('#previewGrayscale')?.addEventListener('click', () => {
+      activatePane(paneId);
+      withActivePane(paneId, () => togglePreviewGrayscale());
+    });
+    query('#modalRating')?.addEventListener('click', event => {
+      event.stopPropagation();
+      const star = event.target.closest('[data-preview-rating]');
+      if (!star) return;
+      activatePane(paneId);
+      const value = Number(star.dataset.previewRating);
+      withActivePane(paneId, () => {
+        ratePreviewItem(value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value);
+      });
+    });
+    const modalMedia = query('#modalMedia');
+    if (modalMedia) {
+      modalMedia.addEventListener('dblclick', event => {
+        if (!event.target.closest('img.preview-image')) return;
+        activatePane(paneId);
+        withActivePane(paneId, () => {
+          setPreviewZoom(state.previewZoom.mode === 'fit' ? 'actual' : 'fit');
+        });
+      });
+      modalMedia.addEventListener('wheel', event => {
+        const pane = paneById(paneId);
+        if (!pane?.previewId) return;
+        event.preventDefault();
+        activatePane(paneId);
+        withActivePane(paneId, () => {
+          if (!previewImage()) return;
+          const box = modalMedia.getBoundingClientRect();
+          const anchor = { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
+          changePreviewZoom(event.deltaY < 0 ? .15 : -.15, anchor);
+        });
+      }, { passive: false });
+    }
+
+    const previewPointers = new Map();
+    let pinchBase = null;
+    let swipeSession = null;
+    let swipeClickSuppressUntil = 0;
+    const settleSwipe = event => {
+      const session = swipeSession;
+      if (!session || event.pointerId !== session.pointerId) return;
+      swipeSession = null;
+      const image = paneQuery(paneId, '#modalMedia img.preview-image');
+      const dx = event.clientX - session.startX;
+      const dy = event.clientY - session.startY;
+      if (Math.hypot(dx, dy) > 15) swipeClickSuppressUntil = Date.now() + 400;
+      if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        withActivePane(paneId, () => movePreview(dx < 0 ? 1 : -1));
+        return;
+      }
+      if (dy > 90 && dy > Math.abs(dx) * 1.4) {
+        withActivePane(paneId, () => closePreview());
+        return;
+      }
+      if (image) {
+        image.style.transition = 'transform .18s ease';
+        image.style.transform = '';
+        setTimeout(() => {
+          if (image.isConnected) image.style.transition = '';
+        }, 220);
+      }
+    };
+    const pinchGeometry = () => {
+      const [first, second] = [...previewPointers.values()];
+      return {
+        distance: Math.hypot(second.x - first.x, second.y - first.y),
+        centerX: (first.x + second.x) / 2,
+        centerY: (first.y + second.y) / 2
+      };
+    };
+    previewModal.addEventListener('pointerdown', event => {
+      const image = paneQuery(paneId, '#modalMedia img.preview-image');
+      if (!previewModal.classList.contains('image-gesture')) return;
+      if (event.target.closest('#slideshowControls, #modalRating')) return;
+      const pane = paneById(paneId);
+      if (!pane) return;
+      if (event.pointerType === 'touch') {
+        previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        if (previewPointers.size === 2) {
+          if (!image) return;
+          pane.previewZoom.dragging = false;
+          if (swipeSession) {
+            swipeSession = null;
+            image.style.transform = '';
+          }
+          pinchBase = { ...pinchGeometry(), scale: pane.previewZoom.mode === 'fit' ? 1 : pane.previewZoom.scale };
+          return;
+        }
+        if (!image || pane.previewZoom.mode === 'fit') {
+          swipeSession = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
+          return;
+        }
+      }
+      if (!image || pane.previewZoom.mode === 'fit' || event.button !== 0) return;
+      pane.previewZoom.dragging = true;
+      pane.previewZoom.startX = event.clientX;
+      pane.previewZoom.startY = event.clientY;
+      pane.previewZoom.originX = pane.previewZoom.x;
+      pane.previewZoom.originY = pane.previewZoom.y;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      withActivePane(paneId, () => renderPreviewZoom());
+    });
+    previewModal.addEventListener('pointermove', event => {
+      const pane = paneById(paneId);
+      if (!pane) return;
+      if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1) {
+        previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        const image = paneQuery(paneId, '#modalMedia img.preview-image');
+        if (image) image.style.transform = `translateX(${event.clientX - swipeSession.startX}px)`;
+        return;
+      }
+      if (previewPointers.has(event.pointerId)) {
+        previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (previewPointers.size === 2 && pinchBase) {
+          const current = pinchGeometry();
+          if (pinchBase.distance > 0 && current.distance > 0) {
+            const modalMedia = query('#modalMedia');
+            const box = modalMedia?.getBoundingClientRect() || { left: 0, top: 0, width: 0, height: 0 };
+            const anchor = { x: current.centerX - box.left - box.width / 2, y: current.centerY - box.top - box.height / 2 };
+            const targetScale = Math.max(.25, Math.min(6, pinchBase.scale * (current.distance / pinchBase.distance)));
+            withActivePane(paneId, () => {
+              changePreviewZoom(targetScale - (pane.previewZoom.mode === 'fit' ? 1 : pane.previewZoom.scale), anchor);
+            });
+          }
+          return;
+        }
+      }
+      if (!pane.previewZoom.dragging) return;
+      pane.previewZoom.x = pane.previewZoom.originX + event.clientX - pane.previewZoom.startX;
+      pane.previewZoom.y = pane.previewZoom.originY + event.clientY - pane.previewZoom.startY;
+      withActivePane(paneId, () => renderPreviewZoom());
+    });
+    const releasePreviewPointer = event => {
+      settleSwipe(event);
+      const pane = paneById(paneId);
+      if (previewPointers.delete(event.pointerId) && previewPointers.size < 2) pinchBase = null;
+      if (!pane?.previewZoom.dragging) return;
+      pane.previewZoom.dragging = false;
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      withActivePane(paneId, () => renderPreviewZoom());
+    };
+    previewModal.addEventListener('pointerup', releasePreviewPointer);
+    previewModal.addEventListener('pointercancel', releasePreviewPointer);
+  }
 }
 
 function bindEvents() {
@@ -5270,6 +6356,15 @@ function bindEvents() {
   });
   // Rotating a tablet between drawer and column modes re-renders the panels.
   compactLayoutQuery.addEventListener?.('change', () => renderPanels());
+  window.addEventListener('resize', () => {
+    renderPanels();
+    scheduleGridResize();
+  });
+  const paneLayoutElement = $('#paneLayout');
+  if (paneLayoutElement && typeof ResizeObserver === 'function') {
+    const paneLayoutObserver = new ResizeObserver(() => scheduleGridResize());
+    paneLayoutObserver.observe(paneLayoutElement);
+  }
   $('#generationMetadata').addEventListener('click', async event => {
     const button = event.target.closest('[data-metadata-copy]');
     if (!button) return;
@@ -5314,6 +6409,14 @@ function bindEvents() {
       $('#paneLayoutButton').setAttribute('aria-expanded', 'false');
     }
     if (!event.target.closest('#libraryButton, #libraryPopover')) closeLibraryPopover();
+    if (!event.target.closest('.sort-select-control')) {
+      for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) {
+        p.classList.add('hidden');
+      }
+      for (const b of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) {
+        b.setAttribute('aria-expanded', 'false');
+      }
+    }
   });
   $('#libraryButton').addEventListener('click', event => {
     event.stopPropagation();
@@ -5328,7 +6431,9 @@ function bindEvents() {
   $('#paneLayoutButton').addEventListener('click', event => {
     event.stopPropagation();
     const popover = $('#paneLayoutPopover');
+    const opening = popover.classList.contains('hidden');
     popover.classList.toggle('hidden');
+    if (opening) positionPaneLayoutPopover();
     $('#paneLayoutButton').setAttribute('aria-expanded', String(!popover.classList.contains('hidden')));
     for (const option of popover.querySelectorAll('[data-layout]')) option.classList.toggle('active', option.dataset.layout === $('#paneLayout').dataset.layout);
   });
@@ -5788,6 +6893,12 @@ function bindEvents() {
       if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
       if (!$('#duplicateDialog').classList.contains('hidden')) { event.preventDefault(); closeDuplicateDialog('cancel'); return; }
       if (!$('#contextMenu').classList.contains('hidden')) { event.preventDefault(); hideContextMenu(); return; }
+      if (document.querySelector('.sort-popover:not(.hidden)')) {
+        event.preventDefault();
+        for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) p.classList.add('hidden');
+        for (const b of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) b.setAttribute('aria-expanded', 'false');
+        return;
+      }
       if (previewOpen) { event.preventDefault(); closePreview(); return; }
       if (!editable && (state.selected.size || state.selectedFolderCard) && confirmDiscardChanges()) {
         state.selected.clear();
@@ -5936,12 +7047,19 @@ function bindEvents() {
       return;
     }
     if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'a') {
+      const selection = window.getSelection?.();
+      const hasTextSelection = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+      if (hasTextSelection || event.target?.closest?.('#generationMetadataSection, .generation-metadata')) return;
       event.preventDefault();
       selectAllItems();
     }
     if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
-      event.preventDefault();
-      copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
+      const selection = window.getSelection?.();
+      const hasTextSelection = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+      if (!hasTextSelection) {
+        event.preventDefault();
+        copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
+      }
     }
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -6125,6 +7243,7 @@ function bindHubEvents() {
     }
     state.inspectorDirty = false;
     if (state.textSession) state.textSession.dirty = false;
+    saveSessionState();
     window.eagleMV.confirmClose();
   });
   window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
@@ -6205,7 +7324,15 @@ function bindHubEvents() {
 }
 
 function scheduleLibraryChange(payload) {
+  if (libraryChangeIsStale(payload)) return;
+  if (pendingLibraryChange) {
+    const comparison = compareLibrarySnapshots(payload, pendingLibraryChange);
+    if (comparison < 0) return;
+    if (comparison === 0 && (librarySnapshotRevision(payload) !== null || librarySnapshotModificationTime(payload) !== null)) return;
+  }
   pendingLibraryChange = payload;
+  const revision = librarySnapshotRevision(payload);
+  if (revision !== null) newestLibraryRevision = Math.max(newestLibraryRevision, revision);
   if (librarySyncRunning) return;
   clearTimeout(librarySyncTimer);
   librarySyncTimer = setTimeout(() => {
@@ -6224,6 +7351,7 @@ async function drainLibraryChanges() {
     while (pendingLibraryChange) {
       const payload = pendingLibraryChange;
       pendingLibraryChange = null;
+      if (libraryChangeIsSuperseded(payload)) continue;
       await applyLibraryChange(payload);
     }
   } finally {
@@ -6232,19 +7360,131 @@ async function drainLibraryChanges() {
   }
 }
 
+function librarySnapshotRevision(payload) {
+  const revision = Number(payload?.revision);
+  return Number.isFinite(revision) && revision >= 0 ? revision : null;
+}
+
+function librarySnapshotModificationTime(payload) {
+  const modificationTime = Number(payload?.library?.modificationTime);
+  return Number.isFinite(modificationTime) ? modificationTime : null;
+}
+
+function compareLibrarySnapshots(left, right) {
+  const leftRevision = librarySnapshotRevision(left);
+  const rightRevision = librarySnapshotRevision(right);
+  if (leftRevision !== null && rightRevision !== null && leftRevision !== rightRevision) return leftRevision - rightRevision;
+  const leftModificationTime = librarySnapshotModificationTime(left);
+  const rightModificationTime = librarySnapshotModificationTime(right);
+  if (leftModificationTime !== null && rightModificationTime !== null && leftModificationTime !== rightModificationTime) {
+    return leftModificationTime - rightModificationTime;
+  }
+  return 0;
+}
+
+function libraryChangeIsStale(payload) {
+  if (!payload?.library) return true;
+  const revision = librarySnapshotRevision(payload);
+  if (revision !== null && revision <= lastAppliedLibraryRevision) return true;
+  if (state.library && compareLibrarySnapshots(payload, {
+    library: state.library,
+    revision: lastAppliedLibraryRevision >= 0 ? lastAppliedLibraryRevision : null
+  }) < 0) return true;
+  if (pendingLibraryChange && compareLibrarySnapshots(payload, pendingLibraryChange) < 0) return true;
+  return false;
+}
+
+function libraryChangeIsSuperseded(payload) {
+  if (pendingLibraryChange && compareLibrarySnapshots(pendingLibraryChange, payload) > 0) return true;
+  const revision = librarySnapshotRevision(payload);
+  return revision !== null && newestLibraryRevision > revision;
+}
+
+function recordAppliedLibrarySnapshot(payload) {
+  const revision = librarySnapshotRevision(payload);
+  if (revision === null) return;
+  lastAppliedLibraryRevision = Math.max(lastAppliedLibraryRevision, revision);
+  newestLibraryRevision = Math.max(newestLibraryRevision, revision);
+}
+
+function reconcileLibraryChangePanes() {
+  const missingFolderIds = new Set();
+  let missingSmartFolder = false;
+  for (const pane of state.panes) {
+    if (pane.currentView.kind === 'folder') {
+      const folder = findFolder(state.library?.folders, pane.currentView.id);
+      if (folder) pane.viewTitle = folder.name || '文件夹';
+      else missingFolderIds.add(pane.currentView.id);
+    }
+    if (pane.currentView.kind === 'smart') {
+      const smartFolder = findFolder(state.library?.smartFolders, pane.currentView.id);
+      if (!smartFolder) {
+        missingSmartFolder = true;
+        withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
+      } else {
+        pane.currentView = { ...pane.currentView, name: smartFolder.name };
+        pane.viewTitle = smartFolder.name;
+      }
+    }
+  }
+  return { missingFolderIds: [...missingFolderIds], missingSmartFolder };
+}
+
+function renderReconciledLibraryPanes() {
+  renderFolderTree();
+  for (const pane of state.panes) {
+    withActivePane(pane.id, () => {
+      $('#viewTitle').textContent = pane.viewTitle;
+      renderGrid({ preserveScroll: true });
+      renderLocation();
+    });
+  }
+  const active = activePane();
+  // Do not redraw an item inspector during an unrelated folder update: that
+  // would discard an in-progress metadata edit. A folder-card inspector is
+  // safe to redraw once its ID is present in the fresh tree.
+  if (active?.selectedFolderCard && findFolder(state.library?.folders, active.selectedFolderCard)) renderInspector();
+}
+
+async function confirmMissingCurrentFolders(folderIds, payload) {
+  if (!folderIds.length || libraryChangeIsSuperseded(payload)) return { superseded: true, confirmed: false, library: null, missingFolderIds: [] };
+  let result;
+  try {
+    // This is a bounded, read-only folder/library snapshot confirmation. It
+    // reuses the existing connect surface for both Electron and Web clients.
+    result = await withTimeout(window.eagleMV.connect(), LIBRARY_MISSING_CONFIRM_TIMEOUT_MS, '确认文件夹状态超时');
+  } catch {
+    return { superseded: false, confirmed: false, library: null, missingFolderIds: [] };
+  }
+  if (libraryChangeIsSuperseded(payload)) return { superseded: true, confirmed: false, library: null, missingFolderIds: [] };
+  const library = result?.library;
+  const expectedPath = payload.library?.path;
+  if (!library || (expectedPath && library.path !== expectedPath) || !Array.isArray(library.folders)) {
+    return { superseded: false, confirmed: false, library: null, missingFolderIds: [] };
+  }
+  return {
+    superseded: false,
+    confirmed: true,
+    library,
+    missingFolderIds: folderIds.filter(id => !findFolder(library.folders, id))
+  };
+}
+
 async function applyLibraryChange(payload) {
-    const pathChanged = state.library?.path && state.library.path !== payload.library.path;
-    const hadUnsaved = state.inspectorDirty || state.textSession?.dirty;
-    state.library = payload.library;
-    $('#windowTitle').textContent = 'Eagle MultiView';
-    $('.sidebar-library-label').textContent = payload.library.name || '资源库';
-    setConnection(true);
-    if (pathChanged) {
-      state.expandedFolders.clear();
-      previewPrefetch.clear();
-      for (const pane of state.panes) {
-        pane.query = createQuery();
-        withActivePane(pane.id, () => {
+  if (!payload?.library || libraryChangeIsSuperseded(payload)) return;
+  const pathChanged = state.library?.path && state.library.path !== payload.library.path;
+  const hadUnsaved = state.inspectorDirty || state.textSession?.dirty;
+  state.library = payload.library;
+  recordAppliedLibrarySnapshot(payload);
+  $('#windowTitle').textContent = 'Eagle MultiView';
+  $('.sidebar-library-label').textContent = payload.library.name || '资源库';
+  setConnection(true);
+  if (pathChanged) {
+    state.expandedFolders.clear();
+    previewPrefetch.clear();
+    for (const pane of state.panes) {
+      pane.query = createQuery();
+      withActivePane(pane.id, () => {
         state.history = [];
         state.historyIndex = -1;
         state.selected.clear();
@@ -6255,43 +7495,55 @@ async function applyLibraryChange(payload) {
         state.nextOffset = 0;
         state.hasMore = false;
         navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true });
-        });
-      }
-      renderQueryControls();
-      state.inspectorDirty = false;
-      if (state.textSession) state.textSession.dirty = false;
-      closePreview({ commitSelection: false, skipDiscard: true });
-      await loadLibraryExtras();
-      renderQueryControls();
-      renderFolderTree();
-      await refreshAllPanes({ reset: true, preserveScroll: false });
-      toast(hadUnsaved ? 'Eagle 已切换资料库；旧资料库的未保存修改已取消' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
-    } else {
-      await loadLibraryExtras();
-      let missingFolder = false;
-      let missingSmartFolder = false;
-      for (const pane of state.panes) {
-        if (pane.currentView.kind === 'folder' && !findFolder(state.library.folders, pane.currentView.id)) {
-          missingFolder = true;
-          withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
-        }
-        if (pane.currentView.kind === 'smart') {
-          const smartFolder = findFolder(state.library.smartFolders, pane.currentView.id);
-          if (!smartFolder) {
-            missingSmartFolder = true;
-            withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
-          } else {
-            pane.currentView = { ...pane.currentView, name: smartFolder.name };
-            pane.viewTitle = smartFolder.name;
-          }
-        }
-      }
-      renderFolderTree();
-      for (const pane of state.panes) withActivePane(pane.id, () => { renderGrid({ preserveScroll: true }); renderLocation(); });
-      await refreshAllPanes({ reset: true, preserveScroll: true });
-      if (missingFolder) toast('当前文件夹已在 Eagle 中删除，已返回资料库根目录', 4000);
-      if (missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资料库根目录', 4000);
+      });
     }
+    renderQueryControls();
+    state.inspectorDirty = false;
+    if (state.textSession) state.textSession.dirty = false;
+    closePreview({ commitSelection: false, skipDiscard: true });
+    await loadLibraryExtras();
+    renderQueryControls();
+    renderFolderTree();
+    await refreshAllPanes({ reset: true, preserveScroll: false });
+    toast(hadUnsaved ? 'Eagle 已切换资料库；旧资料库的未保存修改已取消' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
+    return;
+  }
+
+  let reconciliation = reconcileLibraryChangePanes();
+  await loadLibraryExtras();
+  if (libraryChangeIsSuperseded(payload)) return;
+  reconciliation = reconcileLibraryChangePanes();
+  renderReconciledLibraryPanes();
+
+  if (reconciliation.missingFolderIds.length) {
+    const confirmation = await confirmMissingCurrentFolders(reconciliation.missingFolderIds, payload);
+    if (confirmation.superseded) return;
+    if (confirmation.library) {
+      state.library = confirmation.library;
+      $('.sidebar-library-label').textContent = confirmation.library.name || '资源库';
+      await loadLibraryExtras();
+      if (libraryChangeIsSuperseded(payload)) return;
+      reconciliation = reconcileLibraryChangePanes();
+      renderReconciledLibraryPanes();
+    }
+    if (confirmation.confirmed && confirmation.missingFolderIds.length) {
+      const deleted = new Set(confirmation.missingFolderIds);
+      for (const pane of state.panes) {
+        if (pane.currentView.kind === 'folder' && deleted.has(pane.currentView.id)) {
+          withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
+        } else if (pane.selectedFolderCard && deleted.has(pane.selectedFolderCard)) {
+          pane.selectedFolderCard = null;
+          if (pane.id === state.activePaneId) withActivePane(pane.id, () => renderInspector());
+        }
+      }
+      reconciliation = reconcileLibraryChangePanes();
+      renderReconciledLibraryPanes();
+      toast('当前文件夹已在 Eagle 中删除，已返回资料库根目录', 4000);
+    }
+  }
+
+  await refreshAllPanes({ reset: true, preserveScroll: true });
+  if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资料库根目录', 4000);
 }
 
 async function loadLibraryExtras() {
@@ -6317,9 +7569,17 @@ async function loadLibraryExtras() {
 async function restoreInitialWindowState() {
   const initial = await window.eagleMV.initialWindowState().catch(() => null);
   if (!initial) return null;
-  const pane = activePane();
-  if (initial.query) pane.query = cloneQuery(initial.query);
-  if (initial.view) navigate(initial.view, { record: false, refreshView: false, skipDiscard: true });
+  const initialActivePaneId = state.activePaneId;
+  for (const pane of state.panes) {
+    withActivePane(pane.id, () => {
+      // A new window may restore a multi-pane layout before its initial
+      // location arrives.  The location belongs to every pane created for
+      // that window; only the active pane receives the source query/selection
+      // state, so the other panes remain independent after opening.
+      if (pane.id === initialActivePaneId && initial.query) pane.query = cloneQuery(initial.query);
+      if (initial.view) navigate(initial.view, { record: false, refreshView: false, skipDiscard: true });
+    });
+  }
   return initial;
 }
 
@@ -6343,11 +7603,21 @@ async function start() {
   await restoreWindowChromeState();
   restoreUIZoom();
   restorePanelSizes();
-  let savedPaneLayout = 'single';
+  let savedSession = null;
   try {
-    if (paneLayouts[localStorage.getItem('eaglemv.paneLayout')]) savedPaneLayout = localStorage.getItem('eaglemv.paneLayout');
+    savedSession = JSON.parse(localStorage.getItem('eaglemv.sessionState') || 'null');
   } catch {}
-  renderPaneLayout(savedPaneLayout, { refresh: false });
+  let savedPaneLayout = 'single';
+  let savedSplitRatios = null;
+  if (savedSession && paneLayouts[savedSession.layout]) {
+    savedPaneLayout = savedSession.layout;
+    savedSplitRatios = savedSession.splitRatios;
+  } else {
+    try {
+      if (paneLayouts[localStorage.getItem('eaglemv.paneLayout')]) savedPaneLayout = localStorage.getItem('eaglemv.paneLayout');
+    } catch {}
+  }
+  renderPaneLayout(savedPaneLayout, { refresh: false, splitRatios: savedSplitRatios });
   try {
     const thumbnailSize = Number(localStorage.getItem('eaglemv.thumbnailSize'));
     if (Number.isFinite(thumbnailSize) && thumbnailSize > 0) applyThumbnailSize(thumbnailSize, { persist: false });
@@ -6372,12 +7642,15 @@ async function start() {
     state.windowId = await window.eagleMV.identity();
     const { app, library } = await window.eagleMV.connect();
     state.library = library;
+    recordAppliedLibrarySnapshot({ library });
     await loadLibraryExtras();
     $('#windowTitle').textContent = 'Eagle MultiView';
     $('.sidebar-library-label').textContent = library.name || '资源库';
     setConnection(true);
+    renderFolderTree();
     const initial = await restoreInitialWindowState();
-    if (!initial) navigate({ kind: 'root' }, { refreshView: false });
+    if (!initial) restoreSavedSessionPanes();
+    else renderFolderTree();
     await refreshAllPanes({ reset: true, preserveScroll: false });
     if (initial?.selectedIds?.length) {
       const missing = initial.selectedIds.filter(id => !itemById(id));
@@ -6401,9 +7674,13 @@ async function start() {
         const result = await window.eagleMV.connect();
         clearInterval(retry);
         state.library = result.library;
+        recordAppliedLibrarySnapshot({ library: result.library });
         await loadLibraryExtras();
         setConnection(true);
-        navigate({ kind: 'root' }, { refreshView: false });
+        renderFolderTree();
+        const initial = await restoreInitialWindowState();
+        if (!initial) restoreSavedSessionPanes();
+        else renderFolderTree();
         await refreshAllPanes({ reset: true, preserveScroll: false });
       } catch {}
     }, 2500);

@@ -4,7 +4,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createQuery, cloneQuery, queryWithoutSearch, filtersActive, filterCount, selectRange } = require('../src/pane-state');
+const {
+  createQuery,
+  cloneQuery,
+  queryWithoutSearch,
+  filtersActive,
+  filterCount,
+  selectRange,
+  coordinatePaneLayout,
+  paneLayoutSpecs,
+  defaultSplitRatios,
+  resetSplitRatioAxis,
+  findFolderInTree,
+  validateSessionView,
+  createSessionState,
+  calculateSplitRatios
+} = require('../src/pane-state');
+
+function pane(id, currentView, creationOrder = Number(String(id).match(/\d+/)?.[0] || 0)) {
+  return { id, currentView: { ...currentView }, creationOrder };
+}
 
 test('clones query state without sharing tags between panes', () => {
   const first = createQuery({ search: 'one', tags: ['a', 'a'], shape: 'portrait' });
@@ -71,6 +90,105 @@ test('range selection falls back safely when the previous anchor disappeared', (
   assert.deepEqual([...selectRange(items, new Set(['A']), 'C')], ['A', 'B', 'C']);
 });
 
+test('adding a vertical pane fills the middle slot without changing edge pane identity', () => {
+  const left = pane('pane-1', { kind: 'folder', id: 'left-folder' });
+  const right = pane('pane-2', { kind: 'folder', id: 'active-folder' });
+  let createdFrom = null;
+  const result = coordinatePaneLayout({
+    currentLayout: 'vertical2',
+    nextLayout: 'vertical3',
+    panes: [left, right],
+    activePaneId: right.id,
+    createPane: ({ source }) => {
+      createdFrom = source;
+      return {
+        id: 'pane-3',
+        currentView: { ...source.currentView },
+        items: [],
+        selected: new Set(),
+        history: [],
+        scrollTop: 0,
+        query: createQuery()
+      };
+    }
+  });
+
+  assert.deepEqual(result.panes.map(next => next.id), ['pane-1', 'pane-3', 'pane-2']);
+  assert.strictEqual(result.panes[0], left);
+  assert.strictEqual(result.panes[2], right);
+  assert.strictEqual(createdFrom, right);
+  assert.deepEqual(result.panes[1].currentView, right.currentView);
+  assert.deepEqual(result.panes[1].items, []);
+  assert.deepEqual([...result.panes[1].selected], []);
+  assert.deepEqual(result.panes[1].history, []);
+  assert.equal(result.panes[1].scrollTop, 0);
+  assert.deepEqual(result.panes[1].query, createQuery());
+  assert.equal(result.activePaneId, right.id);
+});
+
+test('adding a horizontal pane keeps the top and bottom panes at the edges', () => {
+  const top = pane('pane-1', { kind: 'folder', id: 'top-folder' });
+  const bottom = pane('pane-2', { kind: 'folder', id: 'bottom-folder' });
+  const result = coordinatePaneLayout({
+    currentLayout: 'horizontal2',
+    nextLayout: 'horizontal3',
+    panes: [top, bottom],
+    activePaneId: top.id,
+    createPane: ({ source }) => ({ id: 'pane-3', currentView: { ...source.currentView } })
+  });
+
+  assert.deepEqual(result.panes.map(next => next.id), ['pane-1', 'pane-3', 'pane-2']);
+  assert.equal(result.slots[0].paneId, top.id);
+  assert.equal(result.slots[2].paneId, bottom.id);
+  assert.equal(result.slots[1].paneId, 'pane-3');
+  assert.equal(result.activePaneId, top.id);
+});
+
+test('reducing panes retires the newest non-active pane deterministically', () => {
+  const left = pane('pane-1', { kind: 'folder', id: 'left-folder' }, 1);
+  const inserted = pane('pane-3', { kind: 'folder', id: 'inserted-folder' }, 3);
+  const right = pane('pane-2', { kind: 'folder', id: 'right-folder' }, 2);
+  const first = coordinatePaneLayout({
+    currentLayout: 'vertical3',
+    nextLayout: 'vertical2',
+    panes: [left, inserted, right],
+    activePaneId: left.id
+  });
+  const second = coordinatePaneLayout({
+    currentLayout: 'vertical3',
+    nextLayout: 'vertical2',
+    panes: [left, inserted, right],
+    activePaneId: inserted.id
+  });
+
+  assert.deepEqual(first.panes.map(next => next.id), ['pane-1', 'pane-2']);
+  assert.deepEqual(first.removed.map(next => next.id), ['pane-3']);
+  assert.equal(first.activePaneId, left.id);
+  assert.deepEqual(second.panes.map(next => next.id), ['pane-1', 'pane-3']);
+  assert.deepEqual(second.removed.map(next => next.id), ['pane-2']);
+  assert.equal(second.activePaneId, inserted.id);
+  assert.equal(new Set(second.panes.map(next => next.id)).size, second.panes.length);
+});
+
+test('every supported layout exposes a stable visual slot count', () => {
+  for (const spec of Object.values(paneLayoutSpecs)) {
+    assert.equal(spec.count, spec.slots.length);
+    assert.equal(new Set(spec.slots.map(slot => slot.id)).size, spec.slots.length);
+  }
+});
+
+test('a restored multi-pane window applies its initial path to every pane', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('async function restoreInitialWindowState()');
+  const end = source.indexOf('\n}\n\n// Hide entry points', start);
+  assert.ok(start >= 0 && end > start, 'initial window restore helper exists');
+  const helper = source.slice(start, end);
+  assert.match(helper, /const initialActivePaneId = state\.activePaneId/);
+  assert.match(helper, /for \(const pane of state\.panes\)/);
+  assert.match(helper, /initialActivePaneId && initial\.query\) pane\.query = cloneQuery\(initial\.query\)/);
+  assert.match(helper, /if \(initial\.view\) navigate\(initial\.view, \{ record: false, refreshView: false, skipDiscard: true \}\)/);
+});
+
 test('clicking inside the active pane does not rebuild the global sidebar', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('function activatePane(id)');
@@ -104,7 +222,7 @@ test('layout changes preserve inspector drafts and stay blocked while a save is 
   const savingGuard = handler.indexOf('state.inspectorSaving');
   const foregroundGuard = handler.indexOf('state.operationTracker.size');
   const discardCheck = handler.indexOf('confirmDiscardChanges({ includeText: false })');
-  const replacePanes = handler.indexOf('state.panes = Array.from');
+  const replacePanes = handler.indexOf('state.panes = plan.panes');
   assert.ok(sameLayout >= 0);
   assert.ok(savingGuard > sameLayout);
   assert.ok(foregroundGuard > savingGuard);
@@ -364,3 +482,135 @@ test('slow bulk mutations remain bound to the pane that started them', () => {
     assert.ok(handler.includes('paneId }'), `${functionName} refreshes its source pane`);
   }
 });
+
+test('defaultSplitRatios returns valid column and row proportions for all layout modes', () => {
+  assert.deepEqual(defaultSplitRatios('vertical2'), { cols: ['1fr', '1fr'], rows: ['1fr'] });
+  assert.deepEqual(defaultSplitRatios('vertical3'), { cols: ['1fr', '1fr', '1fr'], rows: ['1fr'] });
+  assert.deepEqual(defaultSplitRatios('vertical4'), { cols: ['1fr', '1fr', '1fr', '1fr'], rows: ['1fr'] });
+  assert.deepEqual(defaultSplitRatios('horizontal2'), { cols: ['1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('horizontal3'), { cols: ['1fr'], rows: ['1fr', '1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('horizontal4'), { cols: ['1fr'], rows: ['1fr', '1fr', '1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('grid4'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('leftStack'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('rightStack'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('topStack'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('bottomStack'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+  assert.deepEqual(defaultSplitRatios('single'), { cols: ['1fr'], rows: ['1fr'] });
+});
+
+test('resetSplitRatioAxis resets the selected axis to default while preserving the other axis', () => {
+  // vertical2
+  const customV2 = { cols: ['0.6fr', '1.4fr'], rows: ['1fr'] };
+  assert.deepEqual(resetSplitRatioAxis(customV2, 'vertical2', 'col'), { cols: ['1fr', '1fr'], rows: ['1fr'] });
+
+  // grid4: reset col leaves rows untouched
+  const customGrid = { cols: ['0.4fr', '1.6fr'], rows: ['0.7fr', '1.3fr'] };
+  assert.deepEqual(resetSplitRatioAxis(customGrid, 'grid4', 'col'), { cols: ['1fr', '1fr'], rows: ['0.7fr', '1.3fr'] });
+
+  // grid4: reset row leaves cols untouched
+  assert.deepEqual(resetSplitRatioAxis(customGrid, 'grid4', 'row'), { cols: ['0.4fr', '1.6fr'], rows: ['1fr', '1fr'] });
+
+  // vertical3
+  const customV3 = { cols: ['0.5fr', '1.5fr', '1.0fr'], rows: ['1fr'] };
+  assert.deepEqual(resetSplitRatioAxis(customV3, 'vertical3', 'col'), { cols: ['1fr', '1fr', '1fr'], rows: ['1fr'] });
+
+  // leftStack
+  const customStack = { cols: ['0.3fr', '1.7fr'], rows: ['0.5fr', '1.5fr'] };
+  assert.deepEqual(resetSplitRatioAxis(customStack, 'leftStack', 'col'), { cols: ['1fr', '1fr'], rows: ['0.5fr', '1.5fr'] });
+  assert.deepEqual(resetSplitRatioAxis(customStack, 'leftStack', 'row'), { cols: ['0.3fr', '1.7fr'], rows: ['1fr', '1fr'] });
+
+  // fallback when null
+  assert.deepEqual(resetSplitRatioAxis(null, 'grid4', 'col'), { cols: ['1fr', '1fr'], rows: ['1fr', '1fr'] });
+});
+
+test('createSessionState conforms to eaglemv.sessionState schema specification', () => {
+  const session = createSessionState({
+    layout: 'vertical2',
+    splitRatios: { cols: ['1fr', '1fr'], rows: ['1fr'] },
+    activePaneId: 'pane-1',
+    panes: [
+      { id: 'pane-0', currentView: { kind: 'folder', id: 'f-1' }, sort: 'added', sortDir: 'desc' },
+      { id: 'pane-1', currentView: { kind: 'folder', id: 'f-2' }, sort: 'name', sortDir: 'asc' }
+    ]
+  });
+
+  assert.equal(session.layout, 'vertical2');
+  assert.deepEqual(session.splitRatios, { cols: ['1fr', '1fr'], rows: ['1fr'] });
+  assert.equal(session.activePaneId, 'pane-1');
+  assert.equal(session.panes.length, 2);
+  assert.deepEqual(session.panes[0], {
+    id: 'pane-0',
+    view: { kind: 'folder', id: 'f-1' },
+    sort: 'added',
+    sortDir: 'desc'
+  });
+  assert.deepEqual(session.panes[1], {
+    id: 'pane-1',
+    view: { kind: 'folder', id: 'f-2' },
+    sort: 'name',
+    sortDir: 'asc'
+  });
+});
+
+test('calculateSplitRatios clamps proportions within min size limits', () => {
+  const startSizes = [500, 500];
+  const delta = 100;
+  const total = 1000;
+  const ratios = calculateSplitRatios('col', 0, startSizes, delta, total, 180);
+  assert.equal(ratios.length, 2);
+  assert.equal(ratios[0], '1.2000fr');
+  assert.equal(ratios[1], '0.8000fr');
+
+  const extremeRatios = calculateSplitRatios('col', 0, startSizes, 400, total, 180);
+  assert.equal(extremeRatios[0], '1.6400fr');
+  assert.equal(extremeRatios[1], '0.3600fr');
+});
+
+test('validateSessionView verifies folder and smart folder presence and falls back to root', () => {
+  const folders = [
+    { id: 'f-root', name: 'Root', children: [{ id: 'f-sub', name: 'Sub' }] }
+  ];
+  const smartFolders = [
+    { id: 'sf-1', name: 'Smart 1' }
+  ];
+
+  assert.deepEqual(validateSessionView({ kind: 'folder', id: 'f-sub' }, folders, smartFolders), { kind: 'folder', id: 'f-sub' });
+  assert.deepEqual(validateSessionView({ kind: 'folder', id: 'f-deleted' }, folders, smartFolders), { kind: 'root' });
+  assert.deepEqual(validateSessionView({ kind: 'smart', id: 'sf-1', name: 'Smart 1' }, folders, smartFolders), { kind: 'smart', id: 'sf-1', name: 'Smart 1' });
+  assert.deepEqual(validateSessionView({ kind: 'smart', id: 'sf-missing' }, folders, smartFolders), { kind: 'root' });
+  assert.deepEqual(validateSessionView({ kind: 'all' }, folders, smartFolders), { kind: 'all' });
+  assert.deepEqual(validateSessionView({ kind: 'tags' }, folders, smartFolders), { kind: 'tags' });
+});
+
+test('session state is persisted on layout change, pane navigation, sort changes, and splitter dragging', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.ok(source.includes('function saveSessionState()'), 'saveSessionState helper defined');
+  assert.ok(source.includes('function serializeSessionState()'), 'serializeSessionState helper defined');
+  assert.ok(source.includes("localStorage.setItem('eaglemv.sessionState'"), 'persists to eaglemv.sessionState');
+
+  const layoutStart = source.indexOf('function renderPaneLayout(');
+  const layoutEnd = source.indexOf('\nasync function refreshAllPanes', layoutStart);
+  const layoutHandler = source.slice(layoutStart, layoutEnd);
+  assert.ok(layoutHandler.includes('saveSessionState()'), 'renderPaneLayout calls saveSessionState');
+
+  const navStart = source.indexOf('function navigate(');
+  const navEnd = source.indexOf('\nfunction enterFolderFromGrid', navStart);
+  const navHandler = source.slice(navStart, navEnd);
+  assert.ok(navHandler.includes('saveSessionState()'), 'navigate calls saveSessionState');
+
+  const sortStart = source.indexOf('function commitSortChange(');
+  const sortEnd = source.indexOf('\nfunction pinTimestamp', sortStart);
+  const sortHandler = source.slice(sortStart, sortEnd);
+  assert.ok(sortHandler.includes('saveSessionState()'), 'commitSortChange calls saveSessionState');
+});
+
+test('app initialization restores session layout, split ratios, and validates panes against library', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.ok(source.includes('function restoreSavedSessionPanes()'), 'restoreSavedSessionPanes helper defined');
+  assert.ok(source.includes('validateSessionView('), 'validates views on session restore');
+  assert.ok(source.includes("eaglemv.sessionState"), 'reads eaglemv.sessionState during startup');
+  assert.ok(source.includes('if (!state.library) return;'), 'saveSessionState guards against early library null writes');
+  assert.ok(source.includes('renderFolderTree();'), 'calls renderFolderTree during start and session restoration');
+});
+
+
