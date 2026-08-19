@@ -104,6 +104,79 @@ test('renames a folder through Eagle and broadcasts the refreshed folder tree', 
   assert.equal(changes[0].origin, 42);
 });
 
+test('keeps a renamed folder in the published snapshot when Eagle briefly returns an incomplete tree', async () => {
+  const client = new FakeClient({ id: 'A' });
+  client.folders = [{ id: 'F', name: '原文件夹', children: [] }];
+  const originalFolderTree = client.folderTree.bind(client);
+  let folderTreeCalls = 0;
+  client.folderTree = async () => {
+    folderTreeCalls += 1;
+    if (folderTreeCalls === 2) return [];
+    return originalFolderTree();
+  };
+  const hub = new DataHub(client);
+  hub.library = { path: '/library', folders: structuredClone(client.folders) };
+  const changes = [];
+  hub.on('library-changed', payload => changes.push(payload));
+
+  const result = await hub.mutateFolder({
+    id: 'F',
+    name: '新文件夹',
+    baseName: '原文件夹',
+    libraryPath: '/library'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.folder.name, '新文件夹');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].library.folders[0].id, 'F');
+  assert.equal(changes[0].library.folders[0].name, '新文件夹');
+});
+
+test('a poll that started before a folder rename cannot overwrite the newer snapshot', async () => {
+  const client = new FakeClient({ id: 'A' });
+  client.folders = [{ id: 'F', name: '原文件夹', children: [] }];
+  let libraryInfoCalls = 0;
+  let releasePoll;
+  let pollStarted;
+  const pollStartedPromise = new Promise(resolve => { pollStarted = resolve; });
+  const originalLibraryInfo = client.libraryInfo.bind(client);
+  client.libraryInfo = async () => {
+    libraryInfoCalls += 1;
+    if (libraryInfoCalls === 1) {
+      pollStarted();
+      return new Promise(resolve => { releasePoll = resolve; });
+    }
+    if (libraryInfoCalls === 2) return originalLibraryInfo();
+    return originalLibraryInfo();
+  };
+  const hub = new DataHub(client);
+  hub.library = { path: '/library', modificationTime: 1, folders: structuredClone(client.folders) };
+  hub.lastModificationTime = 1;
+  hub.connected = true;
+  const changes = [];
+  hub.on('library-changed', payload => changes.push(payload));
+
+  const pollPromise = hub.poll();
+  await pollStartedPromise;
+  const rename = await hub.mutateFolder({
+    id: 'F',
+    name: '新文件夹',
+    baseName: '原文件夹',
+    libraryPath: '/library'
+  });
+  assert.equal(rename.ok, true);
+  assert.equal(hub.library.folders[0].name, '新文件夹');
+
+  releasePoll({ path: '/library', modificationTime: 1 });
+  await pollPromise;
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].library.folders[0].name, '新文件夹');
+  assert.equal(changes[0].revision, 1);
+  assert.equal(hub.lastModificationTime, 2);
+});
+
 test('stops a stale folder rename and broadcasts the name currently in Eagle', async () => {
   const client = new FakeClient({ id: 'A' });
   client.folders = [{ id: 'F', name: 'Eagle 中的新名称', children: [] }];
@@ -291,3 +364,36 @@ test('supplemental items are pruned after Eagle begins returning them normally',
   assert.equal(hub.supplementalItems.size, 0);
   assert.deepEqual(indexed[0].ids, ['duplicate']);
 });
+
+test('renaming a nested parent folder retains its children hierarchy and updates in-place', async () => {
+  const client = new FakeClient({ id: 'A' });
+  client.folders = [{
+    id: 'parent-1',
+    name: '原父文件夹',
+    children: [
+      { id: 'child-1', name: '子文件夹 1', children: [] },
+      { id: 'child-2', name: '子文件夹 2', children: [{ id: 'grandchild-1', name: '孙文件夹', children: [] }] }
+    ]
+  }];
+  const hub = new DataHub(client);
+  hub.library = { path: '/library', folders: structuredClone(client.folders) };
+  const changes = [];
+  hub.on('library-changed', payload => changes.push(payload));
+
+  const result = await hub.mutateFolder({
+    id: 'parent-1',
+    name: '新父文件夹',
+    baseName: '原父文件夹',
+    libraryPath: '/library'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.folder.name, '新父文件夹');
+  assert.equal(result.folder.children.length, 2);
+  assert.equal(result.folder.children[1].children[0].id, 'grandchild-1');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].library.folders[0].name, '新父文件夹');
+  assert.equal(changes[0].library.folders[0].children[0].id, 'child-1');
+  assert.equal(changes[0].library.folders[0].children[1].children[0].id, 'grandchild-1');
+});
+

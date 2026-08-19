@@ -89,5 +89,20 @@
     };
   }
 
-  return { findFolder, findFolderPath, normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders };
+  function overlayFolder(nodes, id, patch) {
+    let changed = false;
+    const next = (nodes || []).map(folder => {
+      if (folder.id === id) {
+        changed = true;
+        return { ...folder, ...patch };
+      }
+      const children = overlayFolder(folder.children, id, patch);
+      if (children === folder.children) return folder;
+      changed = true;
+      return { ...folder, children };
+    });
+    return changed ? next : nodes;
+  }
+
+  return { findFolder, findFolderPath, overlayFolder, normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders };
 });

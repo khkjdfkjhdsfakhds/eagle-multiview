@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders } = require('../src/folder-navigation');
+const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, overlayFolder } = require('../src/folder-navigation');
 
 const folders = [{
   id: 'top',
@@ -90,3 +90,23 @@ test('folder picker reports truncation instead of silently losing later folders'
   assert.equal(page.truncated, true);
   assert.equal(searchFolders(tree, '文件夹 139').results[0].id, 'folder-139');
 });
+
+test('overlayFolder updates folder in place preserving nested children and untouched siblings', () => {
+  const tree = [
+    {
+      id: 'a',
+      name: '原名称A',
+      children: [
+        { id: 'b', name: '子文件夹B', children: [] },
+        { id: 'c', name: '子文件夹C', children: [{ id: 'd', name: '孙D', children: [] }] }
+      ]
+    },
+    { id: 'e', name: '原名称E', children: [] }
+  ];
+  const updated = overlayFolder(tree, 'a', { name: '新名称A' });
+  assert.equal(updated[0].name, '新名称A');
+  assert.equal(updated[0].children.length, 2);
+  assert.equal(updated[0].children[1].children[0].id, 'd');
+  assert.equal(updated[1].name, '原名称E');
+});
+

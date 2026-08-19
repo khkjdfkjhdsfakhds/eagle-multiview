@@ -20,7 +20,7 @@ test('number keys 0-5 set the selection rating like Eagle', () => {
   const handler = renderer.slice(start, renderer.indexOf('\n  });', start));
   // digit branch guarded against text fields, preview, and modifier keys
   assert.match(handler, /\/\^\[0-5\]\$\/\.test\(event\.key\)/);
-  assert.ok(handler.includes('setSelectionRating({ ids: [...state.selected], rating: Number(event.key) })'));
+  assert.ok(handler.includes('setSelectionRating({ ids: [...state.selected], rating: Number(event.key) })') || handler.includes('setSelectionRating({ ids: [...state.selected], rating })'));
   // Must not fire while typing in a field or with modifiers. It does fire
   // during a preview, where it rates the item on screen rather than the grid
   // selection — a touch tap previews without selecting anything.
@@ -28,7 +28,7 @@ test('number keys 0-5 set the selection rating like Eagle', () => {
   assert.ok(line.includes('!editable'));
   assert.ok(line.includes('(previewOpen || state.selected.size)'));
   assert.ok(line.includes('!event.metaKey') || line.includes('!primaryKey'));
-  assert.ok(handler.includes('if (previewOpen) ratePreviewItem(Number(event.key));'));
+  assert.ok(handler.includes('if (previewOpen) ratePreviewItem(Number(event.key));') || handler.includes('ratePreviewItem(rating);'));
 });
 
 test('grid cards render a star overlay only when rated', () => {

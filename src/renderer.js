@@ -239,6 +239,35 @@ function storedPaneViewModes() {
   }
 }
 
+let syncPanesEnabled = false;
+try {
+  syncPanesEnabled = localStorage.getItem('eaglemv.syncPanes') === 'true';
+} catch {}
+
+function setSyncPanesEnabled(enabled) {
+  syncPanesEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem('eaglemv.syncPanes', String(syncPanesEnabled));
+  } catch {}
+  const checkbox = $('#syncPanesCheckbox');
+  if (checkbox) checkbox.checked = syncPanesEnabled;
+}
+
+function broadcastPaneAction(actionFn) {
+  if (!syncPanesEnabled || !state.panes || state.panes.length <= 1) return;
+  const currentActiveId = state.activePaneId;
+  for (const pane of state.panes) {
+    if (pane.id === currentActiveId) continue;
+    withActivePane(pane.id, () => {
+      try {
+        actionFn(pane);
+      } catch (err) {
+        console.error(`Sync pane ${pane.id} action failed:`, err);
+      }
+    });
+  }
+}
+
 function paneTitleForView(view) {
   if (view?.kind === 'folder') return findFolder(state.library?.folders, view.id)?.name || '文件夹';
   if (view?.kind === 'smart') return view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
@@ -3249,8 +3278,8 @@ function mediaMarkup(item) {
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
   if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
   const imageURL = previewImageURL(item);
-  if (imageURL) return `<img src="${imageURL}" alt="${escapeHTML(item.name)}">`;
-  return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览${hasCapability('openDefault') ? '<br><span>按 ⇧Enter 使用默认应用打开</span>' : ''}</p></div>`;
+  if (imageURL) return `<img src="${imageURL}" alt="${escapeHTML(item.name)}" draggable="false">`;
+  return `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}" draggable="false"><p>${escapeHTML(String(item.ext || '文件').toUpperCase())} 无法直接预览${hasCapability('openDefault') ? '<br><span>按 ⇧Enter 使用默认应用打开</span>' : ''}</p></div>`;
 }
 
 // Warming the neighbours makes swiping (and ←/→) show the next full-size
@@ -3298,12 +3327,13 @@ function renderPreviewZoom() {
   if (!image) return;
   const fit = zoom.mode === 'fit';
   image.classList.toggle('preview-actual', !fit);
+  image.classList.toggle('dragging', Boolean(zoom.dragging));
   image.style.maxWidth = fit ? '100%' : 'none';
   image.style.maxHeight = fit ? '100%' : 'none';
   image.style.width = 'auto';
   image.style.height = 'auto';
   image.style.transform = fit ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
-  image.style.cursor = !fit ? (zoom.dragging ? 'grabbing' : 'grab') : 'zoom-in';
+  image.style.cursor = zoom.dragging ? 'grabbing' : 'grab';
 }
 
 function setPreviewZoom(mode, scale = null) {
@@ -3322,7 +3352,7 @@ function setPreviewZoom(mode, scale = null) {
 }
 
 function changePreviewZoom(delta, anchor = null) {
-  const previous = state.previewZoom.scale;
+  const previous = state.previewZoom.mode === 'fit' ? 1 : state.previewZoom.scale;
   const next = Math.max(.25, Math.min(6, previous + delta));
   if (anchor && next !== previous) {
     // Keep the image point under the cursor fixed: x' = a − (k'/k)·(a − x),
@@ -3340,6 +3370,8 @@ function setupPreviewMedia() {
   // text/PDF previews keep native touch behavior for their scrollables.
   $('#previewModal').classList.toggle('image-gesture', Boolean(image));
   if (image) {
+    image.setAttribute('draggable', 'false');
+    image.addEventListener('dragstart', event => event.preventDefault());
     image.classList.add('preview-image');
     image.addEventListener('load', () => renderPreviewZoom(), { once: true });
     // Eagle can hold an index entry whose file is gone (or a type with no
@@ -3549,7 +3581,7 @@ async function saveTextPreview(force = false) {
   }
 }
 
-function closePreview({ commitSelection = true, skipDiscard = false } = {}) {
+function closePreview({ commitSelection = true, skipDiscard = false, syncBroadcast = true } = {}) {
   if (!skipDiscard && state.textSession?.dirty && !confirmDiscardChanges()) return false;
   stopSlideshow();
   const finalId = state.previewId;
@@ -3574,6 +3606,11 @@ function closePreview({ commitSelection = true, skipDiscard = false } = {}) {
       card?.focus({ preventScroll: true });
       card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       updateScrollUI();
+    });
+  }
+  if (syncBroadcast) {
+    broadcastPaneAction(pane => {
+      if (pane.previewId) closePreview({ commitSelection, skipDiscard, syncBroadcast: false });
     });
   }
   return true;
@@ -6123,13 +6160,6 @@ function bindPaneEvents(paneId) {
       activatePane(paneId);
       withActivePane(paneId, () => closePreview());
     });
-    previewModal.addEventListener('click', event => {
-      if (Date.now() < swipeClickSuppressUntil) return;
-      if (event.target === event.currentTarget) {
-        activatePane(paneId);
-        withActivePane(paneId, () => closePreview());
-      }
-    });
     query('#prevPreview')?.addEventListener('click', () => {
       activatePane(paneId);
       withActivePane(paneId, () => movePreview(-1));
@@ -6174,13 +6204,6 @@ function bindPaneEvents(paneId) {
     });
     const modalMedia = query('#modalMedia');
     if (modalMedia) {
-      modalMedia.addEventListener('dblclick', event => {
-        if (!event.target.closest('img.preview-image')) return;
-        activatePane(paneId);
-        withActivePane(paneId, () => {
-          setPreviewZoom(state.previewZoom.mode === 'fit' ? 'actual' : 'fit');
-        });
-      });
       modalMedia.addEventListener('wheel', event => {
         const pane = paneById(paneId);
         if (!pane?.previewId) return;
@@ -6255,7 +6278,14 @@ function bindPaneEvents(paneId) {
           return;
         }
       }
-      if (!image || pane.previewZoom.mode === 'fit' || event.button !== 0) return;
+      if (!image || event.button !== 0) return;
+      event.preventDefault();
+      if (pane.previewZoom.mode === 'fit') {
+        pane.previewZoom.mode = 'zoom';
+        pane.previewZoom.scale = 1;
+        pane.previewZoom.x = 0;
+        pane.previewZoom.y = 0;
+      }
       pane.previewZoom.dragging = true;
       pane.previewZoom.startX = event.clientX;
       pane.previewZoom.startY = event.clientY;
@@ -6433,9 +6463,16 @@ function bindEvents() {
     const popover = $('#paneLayoutPopover');
     const opening = popover.classList.contains('hidden');
     popover.classList.toggle('hidden');
-    if (opening) positionPaneLayoutPopover();
+    if (opening) {
+      positionPaneLayoutPopover();
+      const syncCb = $('#syncPanesCheckbox');
+      if (syncCb) syncCb.checked = syncPanesEnabled;
+    }
     $('#paneLayoutButton').setAttribute('aria-expanded', String(!popover.classList.contains('hidden')));
     for (const option of popover.querySelectorAll('[data-layout]')) option.classList.toggle('active', option.dataset.layout === $('#paneLayout').dataset.layout);
+  });
+  $('#syncPanesCheckbox')?.addEventListener('change', event => {
+    setSyncPanesEnabled(event.target.checked);
   });
   $('#paneLayoutPopover').addEventListener('click', event => {
     const option = event.target.closest('[data-layout]');
@@ -6699,10 +6736,6 @@ function bindEvents() {
   });
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);
-  $('#previewModal').addEventListener('click', event => {
-    if (Date.now() < swipeClickSuppressUntil) return;
-    if (event.target === event.currentTarget) closePreview();
-  });
   $('#prevPreview').addEventListener('click', () => movePreview(-1));
   $('#nextPreview').addEventListener('click', () => movePreview(1));
   $('#slideshowToggle').addEventListener('click', event => {
@@ -6725,12 +6758,6 @@ function bindEvents() {
     const value = Number(star.dataset.previewRating);
     // Clicking the star that is already lit clears the rating, as Eagle does.
     ratePreviewItem(value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value);
-  });
-  // The zoom toolbar is gone by user request; the wheel still zooms at the
-  // cursor and double-click toggles 适应/100% like Eagle's preview.
-  $('#modalMedia').addEventListener('dblclick', event => {
-    if (!event.target.closest('img.preview-image')) return;
-    setPreviewZoom(state.previewZoom.mode === 'fit' ? 'actual' : 'fit');
   });
   $('#modalMedia').addEventListener('wheel', event => {
     if (!previewImage()) return;
@@ -6805,7 +6832,14 @@ function bindEvents() {
         return;
       }
     }
-    if (!image || state.previewZoom.mode === 'fit' || event.button !== 0) return;
+    if (!image || event.button !== 0) return;
+    event.preventDefault();
+    if (state.previewZoom.mode === 'fit') {
+      state.previewZoom.mode = 'zoom';
+      state.previewZoom.scale = 1;
+      state.previewZoom.x = 0;
+      state.previewZoom.y = 0;
+    }
     state.previewZoom.dragging = true;
     state.previewZoom.startX = event.clientX;
     state.previewZoom.startY = event.clientY;
@@ -7039,7 +7073,13 @@ function bindEvents() {
     } else if (!editable && event.code === 'Space' && state.selected.size) {
       event.preventDefault();
       const first = firstSelectedInViewOrder();
-      if (first) openPreview(first.id);
+      if (first) {
+        openPreview(first.id);
+        broadcastPaneAction(() => {
+          const siblingFirst = firstSelectedInViewOrder();
+          if (siblingFirst) openPreview(siblingFirst.id);
+        });
+      }
     }
     if (!editable && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o' && (state.previewId || state.selected.size === 1)) {
       event.preventDefault();
@@ -7064,15 +7104,21 @@ function bindEvents() {
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       moveCardFocus(event.key);
+      broadcastPaneAction(() => moveCardFocus(event.key));
     }
     if (!editable && event.altKey && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
     if (!editable && event.altKey && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
     if (!editable && event.metaKey && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
-      const grid = $('#gridScroller');
-      const top = event.key === 'Home' ? 0 : event.key === 'End' ? grid.scrollHeight : grid.scrollTop + (event.key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
-      grid.scrollTo({ top, behavior: event.key.startsWith('Page') ? 'smooth' : 'auto' });
+      const scrollGrid = key => {
+        const grid = $('#gridScroller');
+        if (!grid) return;
+        const top = key === 'Home' ? 0 : key === 'End' ? grid.scrollHeight : grid.scrollTop + (key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
+        grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
+      };
+      scrollGrid(event.key);
+      broadcastPaneAction(() => scrollGrid(event.key));
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !state.textSession && state.inspectorDirty) {
       event.preventDefault();
@@ -7081,9 +7127,16 @@ function bindEvents() {
     if (previewOpen && !editable && !primaryKey && !event.shiftKey && !event.altKey &&
         ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
       event.preventDefault();
-      if (event.key === 'ArrowLeft') movePreview(-1);
-      else if (event.key === 'ArrowRight') movePreview(1);
-      else movePreviewVertically(event.key);
+      if (event.key === 'ArrowLeft') {
+        movePreview(-1);
+        broadcastPaneAction(pane => { if (pane.previewId) movePreview(-1); });
+      } else if (event.key === 'ArrowRight') {
+        movePreview(1);
+        broadcastPaneAction(pane => { if (pane.previewId) movePreview(1); });
+      } else {
+        movePreviewVertically(event.key);
+        broadcastPaneAction(pane => { if (pane.previewId) movePreviewVertically(event.key); });
+      }
       return;
     }
     if (!editable && !primaryKey && !event.altKey && !event.shiftKey && /^[0-5]$/.test(event.key) && (previewOpen || state.selected.size)) {
@@ -7091,8 +7144,14 @@ function bindEvents() {
       // While previewing, the number keys rate what is on screen; the grid
       // selection is not necessarily the same item (a touch tap previews
       // without selecting).
-      if (previewOpen) ratePreviewItem(Number(event.key));
-      else setSelectionRating({ ids: [...state.selected], rating: Number(event.key) });
+      const rating = Number(event.key);
+      if (previewOpen) {
+        ratePreviewItem(rating);
+        broadcastPaneAction(pane => { if (pane.previewId) ratePreviewItem(rating); });
+      } else {
+        setSelectionRating({ ids: [...state.selected], rating });
+        broadcastPaneAction(() => { if (state.selected.size) setSelectionRating({ ids: [...state.selected], rating }); });
+      }
       return;
     }
     if (deleteKey && !editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && state.selected.size) setTrash([...state.selected], true);

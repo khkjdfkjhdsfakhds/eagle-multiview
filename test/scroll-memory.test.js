@@ -34,8 +34,11 @@ test('back, forward, up, and breadcrumb navigation all restore the scroll positi
   ), 'history navigation restores');
   assert.ok(renderer.includes('if (parent) navigate(parent, { restoreScroll: true });'), 'navigateUp restores');
   assert.ok(renderer.includes(
-    "navigate($('#breadcrumb')._crumbs[Number(button.dataset.crumbIndex)].view, { restoreScroll: true });"
+    'const crumb = breadcrumb._crumbs?.[Number(button.dataset.crumbIndex)];'
   ), 'breadcrumb restores');
+  assert.ok(renderer.includes(
+    "if (crumb) navigate(crumb.view, { restoreScroll: true });"
+  ), 'breadcrumb uses the owning pane');
 });
 
 test('refresh backfills to the remembered count before jumping back', () => {

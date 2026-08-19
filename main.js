@@ -377,7 +377,7 @@ function createWindow(initialState = null) {
     title: 'Eagle MultiView',
     backgroundColor: '#111317',
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 17, y: 18 },
+    trafficLightPosition: { x: 16, y: 15 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -446,7 +446,7 @@ function setupMenu() {
         { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
         { type: 'separator' },
         {
-          label: '新建资料库窗口',
+          label: '新窗口',
           accelerator: 'CmdOrCtrl+Alt+N',
           click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
         },
@@ -1286,13 +1286,13 @@ if (!gotLock) {
     setupMenu();
     setupIPC();
     await installProtocol();
-    await windowRouter.openEagle();
+    createWindow(null);
     hub.startPolling();
     applyWebAccess().catch(error => logFault('web', `Web 访问初始化失败：${error.message}`, error));
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      windowRouter.openEagle().catch(error => logFault('window', '无法恢复窗口', error));
+      createWindow(null);
     }
   });
   app.on('window-all-closed', () => {

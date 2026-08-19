@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-ui-test-'));
 app.setPath('userData', userData);
+app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {
   await app.whenReady();
@@ -86,6 +87,14 @@ async function run() {
     await wait(30);
     assert(secondPane.classList.contains('active'), 'the second pane should be active');
 
+    window.__uiTestEmitFolderRename('重命名后文件夹');
+    await until(() => state.panes.find(pane => pane.id === state.activePaneId)?.viewTitle === '重命名后文件夹');
+    const renamedPane = state.panes.find(pane => pane.id === state.activePaneId);
+    assert(renamedPane.currentView.kind === 'folder' && renamedPane.currentView.id === 'mv-folder', '同 ID 重命名不应离开当前文件夹');
+    assert(document.querySelector('.content-pane.active #breadcrumb').textContent.includes('重命名后文件夹'), '路径栏没有显示重命名后的文件夹');
+    assert([...document.querySelectorAll('.folder-row')].some(row => row.textContent.includes('重命名后文件夹')), '文件夹树没有显示重命名后的文件夹');
+    const renamePreserved = { viewId: renamedPane.currentView.id, title: renamedPane.viewTitle };
+
     mainButton.click();
     await wait(10);
     assert(window.__uiTestCalls.at(-1)?.data?.view?.id === 'mv-folder', 'main button did not use the latest active pane');
@@ -119,7 +128,7 @@ async function run() {
     document.querySelector('#currentEaglePathButton').click();
     await until(() => secondPane.querySelector('#breadcrumb').textContent.includes('Eagle 文件夹'));
 
-    return { labels, recent, searchExited };
+    return { labels, recent, searchExited, renamePreserved };
   })()`);
   window.setSize(820, 820);
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -189,7 +198,9 @@ async function run() {
           if (heading.scrollWidth > heading.clientWidth + 1) {
             throw new Error('content heading overflows at ${width}px');
           }
-          const visibleGroups = [...heading.children].filter(visible);
+        const visibleGroups = [...heading.children]
+          .filter(visible)
+          .filter(element => !element.classList.contains('location-block'));
           for (let leftIndex = 0; leftIndex < visibleGroups.length; leftIndex += 1) {
             const left = visibleGroups[leftIndex].getBoundingClientRect();
             if (left.left < headingRect.left - 1 || left.right > headingRect.right + 1) {

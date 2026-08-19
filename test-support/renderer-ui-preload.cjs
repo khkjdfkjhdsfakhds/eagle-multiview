@@ -8,6 +8,20 @@ const folders = [
 
 window.__uiTestCalls = [];
 window.__uiTestEagleState = { view: { kind: 'folder', id: 'eagle-folder' } };
+window.__uiTestLibraryChanged = null;
+window.__uiTestEmitFolderRename = name => {
+  folders[0].name = name;
+  window.__uiTestLibraryChanged?.({
+    library: {
+      path: '/tmp/EagleMV-UI-Test.library',
+      name: '测试资料库',
+      folders,
+      smartFolders: []
+    },
+    revision: 1,
+    source: 'multiview'
+  });
+};
 
 const bridge = {
   platform: 'darwin',
@@ -41,6 +55,12 @@ const bridge = {
   getTagColors: async () => ({}),
   initialWindowState: async () => null,
   currentEagleWindowState: async () => window.__uiTestEagleState,
+  onLibraryChanged: callback => {
+    window.__uiTestLibraryChanged = callback;
+    return () => {
+      if (window.__uiTestLibraryChanged === callback) window.__uiTestLibraryChanged = null;
+    };
+  },
   prepareNewWindow: () => null,
   newWindow: async data => {
     window.__uiTestCalls.push({ kind: 'new-window', data });

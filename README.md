@@ -8,21 +8,28 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 
 ## 适合做什么
 
-你可以让不同窗口或分栏分别停留在不同文件夹、搜索结果、筛选结果和预览位置，用来并排对照素材、跨目录整理大型资料库、批量归类、编辑信息和连续预览。各视图保持独立导航状态，同时共享最新的素材修改结果。
+你可以让不同窗口或分栏分别停留在不同文件夹、搜索结果、筛选结果和预览位置，用来并排对照素材、跨目录整理大型资料库、批量归类、编辑信息和连续预览。各视图保持独立导航状态，同时共享最新的素材修改结果。还可以开启内置 Web 访问，在局域网内通过手机和平板直接浏览与整理资料库。
 
 ## 主要功能
 
-- 同一资料库可打开多个窗口，并可在单个窗口中选择单栏、双栏、三栏或四栏布局；每个视图独立浏览文件夹、搜索和筛选结果。
-- Eagle 风格侧栏，包括最近使用、随机模式、回收站、快速访问、智能文件夹和真实文件夹树。
-- 文件夹树默认收起；支持层级线、路径导航、文件夹卡片、双击进入和 `/` 展开/收起定位。
-- 素材网格支持懒加载、连续滚动、键盘导航、缩略图大小调整和回到顶部。
-- 图片支持适应窗口、实际大小、滚轮缩放和拖动查看；长图会完整适应可视区域。
-- 支持 GIF、SVG、视频、音频、PDF 和 TXT 预览；TXT 可直接编辑并安全保存。
-- Eagle 风格右键菜单支持打开、系统文件管理器定位、复制路径、导出、创建副本、文件夹操作、标签、评分、置顶和回收站。
-- 支持名称、标签、评分、备注、来源地址、批量标签和标签颜色管理。
-- 支持新建文件夹、TXT 等文档、智能文件夹，以及文件选择、拖放、文件复制粘贴和剪贴板图片导入。
-- 可从图片中读取 NovelAI、Stable Diffusion WebUI、ComfyUI、InvokeAI 等常见生成信息，并在检查器中查看。
-- 多窗口实时广播修改，并在保存前检查同字段冲突，避免旧数据覆盖新数据。
+- **多窗口与多分栏工作区**：同一资料库可打开多个独立窗口，单窗口内支持单栏、双栏、三栏或四栏布局；支持多分栏联动同步（同步滚动、翻页、预览与打分），双击分割线即可重置比例。
+- **多种视图模式**：支持自适应网格、瀑布流 (Waterfall) 与详细列表 (List) 视图，每个分栏独立记忆视图模式；列表视图清晰展示标签、评分与添加日期。
+- **Eagle 风格侧栏与资料库切换**：包含最近使用、随机模式、回收站、快速访问、智能文件夹和真实文件夹树；支持侧栏直接切换 Eagle 资料库。
+- **层级文件夹与路径导航**：文件夹树层级清晰，支持顶部路径面包屑导航、文件夹卡片、双击进入和 `/` 展开/收起定位。
+- **高级筛选与色彩搜索**：支持主色调色彩筛选（可直接在检查器色板中 Option-点击筛选）、文件大小、分辨率尺寸、添加日期范围筛选与单字段精准搜索。
+- **素材整理与高效交互**：
+  - 框选橡皮筋工具（空白处拖拽框选素材，支持边缘自动滚动）；
+  - `Option` 拖拽素材直接移动归类（自动移出原文件夹）；
+  - 快捷键 `0-5` 快速设置评分并展示卡片星级，`F2` 快捷重命名；
+  - 检查器属性自动静默保存（失焦或停顿即时写入），Eagle 风格标签建议浮窗与颜色管理。
+- **强大预览与媒体扩展**：
+  - 支持图片、GIF、SVG、视频、音频、PDF 和 TXT 预览；TXT 可直接编辑并安全备份保存；
+  - 支持相机 RAW 格式（CR2/CR3/NEF/ARW/DNG/ORF/RAF/RW2 等）及 PSD/TIFF/HEIC 高清预览；
+  - 幻灯片放映模式（自定义轮播间隔）；
+  - 预览背景切换（棋盘格/黑/白/无）与一键灰度模式；
+  - 预览键盘方向导航与源网格几何位置严格对齐。
+- **Web 访问与移动端适配**：内置 Web 服务与 PWA 支持，同一局域网下手机/平板扫码即可访问，支持触控手势（下拉刷新、双指缩放、滑动手势切图、长按菜单、底部选择栏）及跨设备下载与素材上传。
+- **安全与稳定性**：多窗口实时广播修改与字段级冲突检查；网格虚拟化渲染 (`content-visibility`)；滚动位置记忆；错误日志自动落盘。
 
 ![Eagle MultiView 文件夹总览](docs/screenshots/library-folders.jpg)
 
@@ -37,7 +44,7 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 
 ### macOS
 
-1. 从 [GitHub Releases](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) 下载 `Eagle-MultiView-1.5.2-arm64.dmg`。
+1. 从 [GitHub Releases](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) 下载 `Eagle-MultiView-1.6.0-arm64.dmg`。
 2. 打开 DMG，将 Eagle MultiView 拖到“应用程序”。
 3. 先启动 Eagle 并打开目标资料库，再启动 Eagle MultiView。
 4. 点击右上角“新窗口”或按 `Command-Option-N` 创建额外窗口。
@@ -46,7 +53,7 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 
 ### Windows（实验性）
 
-从同一 Release 下载 `Eagle-MultiView-1.5.2-Setup.exe`。这个安装包是根据当前源码生成的 Windows x64 实验性版本，未进行 Windows 代码签名，**未完成 Windows 实机 GUI 回归，后续不承诺兼容性修复、更新或维护**。Windows 用户应自行评估后使用；主要功能仍依赖本机正在运行的 Eagle 及其 HTTP API。
+从同一 Release 下载 `Eagle-MultiView-1.6.0-Setup.exe`。这个安装包是根据当前源码生成的 Windows x64 实验性版本，未进行 Windows 代码签名，**未完成 Windows 实机 GUI 回归，后续不承诺兼容性修复、更新或维护**。Windows 用户应自行评估后使用；主要功能仍依赖本机正在运行的 Eagle 及其 HTTP API。
 
 ## 基本操作
 
@@ -59,12 +66,14 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 | 导入文件 | `Command-Shift-O` |
 | 预览 / 关闭预览 | `Space` |
 | 进入文件夹 / 预览素材 | `Return` |
+| 快捷重命名 | `F2` |
+| 快速评分 (0-5 星) | `0` ~ `5` |
 | 默认应用打开 | `Command-O` |
 | 返回 / 前进 / 上一级 | `Option-Left` / `Option-Right` / `Option-Up` |
 | 展开或收起当前文件夹树 | `/` |
 | 显示或隐藏侧栏 | `Command-Shift-L` |
 | 显示或隐藏检查器 | `Command-Shift-I` |
-| 保存 TXT 或检查器修改 | `Command-S` |
+| 保存 TXT | `Command-S` |
 
 ## 数据安全
 
@@ -73,14 +82,14 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 - Eagle 切换资料库时，所有 MultiView 窗口会统一跟随，并清空旧库缓存和排队写入。
 - 同一素材的写入按顺序执行；保存前会重新读取最新值并检查字段冲突。
 - TXT 保存会检查外部修改，在 MultiView 自己的应用数据目录创建恢复备份后再原子替换。
-- MultiView 自己的置顶和标签颜色状态保存在 Electron `userData` 中，不写入 Eagle 资料库。
-- 应用不收集遥测，也不会把资料库内容上传到网络。
+- MultiView 自己的置顶、排序偏好和标签颜色状态保存在 Electron `userData` 中，不写入 Eagle 资料库。
+- 应用不收集遥测，局域网 Web 访问默认关闭，需要手动开启。
 
 ## 已知限制
 
 - 依赖 Eagle 的本机 HTTP API，因此 Eagle 关闭或切换资料库期间编辑功能会暂时禁用。
 - 资料库切换由 Eagle 本体决定，MultiView 不维护独立的资料库列表。
-- 标签颜色和 MultiView 置顶是本地增强状态，不会显示在 Eagle 本体或其他电脑上。
+- 标签颜色、排序记忆和 MultiView 置顶是本地增强状态，不会显示在 Eagle 本体或其他电脑上。
 - 插件管理、资料库修复/合并和永久删除仍需在 Eagle 中完成。
 - macOS 构建未经过 Apple 公证。
 - Windows x64 仅按当前版本提供未签名的实验性安装包，不承诺后续维护；macOS 专属操作在 Windows 上可能不可用或行为不同。
@@ -111,7 +120,7 @@ pnpm dist:mac
 pnpm dist:win
 ```
 
-项目使用 Electron、原生 Node.js 和 Eagle HTTP API，没有网页服务端。
+项目桌面端基于 Electron 与原生 Node.js 构建，通过 Eagle HTTP API 交互；可选的 Web 访问服务基于 Node.js 原生 HTTP/WebSocket 模块运行。
 
 ## 发布记录
 
@@ -123,4 +132,4 @@ pnpm dist:win
 
 ## English summary
 
-Eagle MultiView is an unofficial multi-window client for Eagle 4. It can browse, search, filter, preview, organize, import, and edit one Eagle library across independent windows and multi-pane layouts while synchronizing changes through Eagle's local HTTP API. Apple silicon macOS is the primary supported platform. A Windows x64 build is provided as an untested experimental artifact without a maintenance commitment. No library content is uploaded, and metadata changes are routed through Eagle instead of rewriting its database files directly.
+Eagle MultiView is an unofficial multi-window client for Eagle 4. It can browse, search, filter, preview, organize, import, and edit one Eagle library across independent windows, multi-pane layouts, and local-network mobile browsers while synchronizing changes through Eagle's local HTTP API. Apple silicon macOS is the primary supported platform. A Windows x64 build is provided as an untested experimental artifact without a maintenance commitment. No library content is uploaded, and metadata changes are routed through Eagle instead of rewriting its database files directly.

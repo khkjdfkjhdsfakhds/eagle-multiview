@@ -3,6 +3,7 @@ dist/
 .codex-local/
 AGENTS.md
 AGENTS.override.md
+agent.md
 .DS_Store
 *.log
 *.app
@@ -10,3 +11,4 @@ AGENTS.override.md
 *.zip
 *.asar
 work/
+.scratch/

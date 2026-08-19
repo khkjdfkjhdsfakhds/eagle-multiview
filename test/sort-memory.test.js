@@ -7,10 +7,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createSortMemory, STORAGE_KEY, MAX_VIEWS_PER_LIBRARY } = require('../src/sort-memory');
+const { createSortMemory, rememberCascade, STORAGE_KEY, MAX_VIEWS_PER_LIBRARY } = require('../src/sort-memory');
 
 const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
 
 function fakeStorage(initial = {}) {
   const map = new Map(Object.entries(initial));
@@ -89,4 +90,69 @@ test('the parsed store is cached and can be invalidated by other windows', () =>
   memory.recall('/A.library', 'folder:F1');
   assert.equal(reads, 2, 'invalidate must force a fresh read');
   assert.ok(renderer.includes("window.addEventListener('storage'"), 'cross-window updates must invalidate the cache');
+});
+
+test('rememberCascade writes sort preference for parent folder and all descendants', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const foldersTree = [
+    {
+      id: 'F1',
+      name: 'Folder 1',
+      children: [
+        {
+          id: 'F1_1',
+          name: 'Folder 1.1',
+          children: [
+            { id: 'F1_1_1', name: 'Folder 1.1.1' }
+          ]
+        },
+        { id: 'F1_2', name: 'Folder 1.2' }
+      ]
+    },
+    {
+      id: 'F2',
+      name: 'Folder 2',
+      children: [
+        { id: 'F2_1', name: 'Folder 2.1' }
+      ]
+    }
+  ];
+
+  const updatedIds = memory.rememberCascade('/A.library', 'F1', foldersTree, 'rating', 'asc', 100);
+  assert.deepEqual(updatedIds.sort(), ['F1', 'F1_1', 'F1_1_1', 'F1_2'].sort());
+
+  assert.deepEqual(memory.recall('/A.library', 'folder:F1'), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recall('/A.library', 'folder:F1_1'), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recall('/A.library', 'folder:F1_1_1'), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recall('/A.library', 'folder:F1_2'), { sort: 'rating', sortDir: 'asc' });
+
+  // Sibling folders must not be touched
+  assert.equal(memory.recall('/A.library', 'folder:F2'), null);
+  assert.equal(memory.recall('/A.library', 'folder:F2_1'), null);
+
+  // Cascading default reset clears entries
+  memory.rememberCascade('/A.library', 'folder:F1', foldersTree, 'default', 'auto', 200);
+  assert.equal(memory.recall('/A.library', 'folder:F1'), null);
+  assert.equal(memory.recall('/A.library', 'folder:F1_1'), null);
+  assert.equal(memory.recall('/A.library', 'folder:F1_1_1'), null);
+  assert.equal(memory.recall('/A.library', 'folder:F1_2'), null);
+});
+
+test('exported top-level rememberCascade helper works with storage or memory instance', () => {
+  const storage = fakeStorage();
+  const tree = [{ id: 'F10', children: [{ id: 'F11' }] }];
+  rememberCascade(storage, '/A.library', 'F10', tree, 'size', 'desc', 123);
+  const memory = createSortMemory(storage);
+  assert.deepEqual(memory.recall('/A.library', 'folder:F10'), { sort: 'size', sortDir: 'desc' });
+  assert.deepEqual(memory.recall('/A.library', 'folder:F11'), { sort: 'size', sortDir: 'desc' });
+});
+
+test('sort controls include cascade checkbox in markup, scoping, and event bindings', () => {
+  assert.ok(renderer.includes('id="sortCascadeCheck"'), 'markup includes cascade checkbox');
+  assert.ok(renderer.includes("'#sortCascadeCheck'"), 'cascade check is pane-scoped');
+  assert.ok(renderer.includes('id="sortPopover"'), 'markup includes sort popover');
+  assert.ok(renderer.includes('sortMemory.rememberCascade('), 'cascade checkbox invokes rememberCascade');
+  assert.match(styles, /\.sort-popover\s*\{/, 'styles define .sort-popover');
+  assert.match(styles, /\.sort-cascade-check\s*\{/, 'styles define .sort-cascade-check');
 });

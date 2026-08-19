@@ -26,7 +26,10 @@ test('each pane owns a four-way view mode with per-slot persistence', () => {
 });
 
 test('pane navigation, layout, and sort controls match the primary toolbar scale', () => {
-  assert.match(cssSource, /\.content-pane \.navigation-controls \{ height: 34px; \}/);
+  assert.match(cssSource, /\.heading-path-row \{[\s\S]*?border-bottom: 1px solid/);
+  assert.match(cssSource, /\.heading-main-row \{[\s\S]*?display: flex;[\s\S]*?align-items: center/);
+  assert.match(cssSource, /\.content-heading \{[\s\S]*?grid-template-rows: 24px 48px;/);
+  assert.match(cssSource, /\.content-pane \.navigation-controls \{[\s\S]*?position: static;[\s\S]*?height: 34px;[\s\S]*?transform: none;[\s\S]*?\}/);
   assert.match(cssSource, /\.content-pane \.nav-button \{ width: 28px; height: 28px; \}/);
   assert.match(cssSource, /\.nav-button \.ui-icon, \.nav-image-icon \{ width: 16px; height: 16px;/);
   assert.match(cssSource, /\.view-mode-button \{[\s\S]*?width: 28px;[\s\S]*?height: 28px;/);

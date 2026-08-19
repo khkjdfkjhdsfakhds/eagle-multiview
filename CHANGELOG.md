@@ -2,6 +2,53 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.6.0 - 2026-08-19
+
+### Web access and mobile support
+
+- Added built-in local-network Web access with PWA support, allowing phones, tablets, and remote browsers to browse, search, and manage the Eagle library.
+- Added address QR code generation, one-time or keyless access modes, browser-side file downloads, and direct file uploads.
+- Optimized mobile touch interactions, including pull-to-refresh, pinch-to-resize thumbnails, swipe gestures between previews, long-press context menus, and a bottom selection strip.
+- Added native Android client scaffold with resilient session recovery and system back gesture handling.
+
+### Views, layouts, and pane synchronization
+
+- Added Waterfall and List view modes alongside adaptive grid, with per-pane view mode memory. List view displays tags, ratings, and added date columns.
+- Added synchronized multi-pane mode (Sync Panes) for coordinated scrolling, page navigation, preview switching, and rating across panes.
+- Updated split layout with vector split-view icons, double-click splitter proportion reset, and responsive pane headers.
+- Added top path bar breadcrumb navigation and logical path resolution.
+
+### Search, filters, and sorting
+
+- Added dominant color filtering with client-side palette matching; Option-clicking an inspector palette swatch instantly filters by that color.
+- Added advanced filter criteria for file size, resolution dimensions, and added date ranges.
+- Added field-specific targeted search.
+- Added Random shuffle sort alongside Date Added, Rating, and Extension sort options, with per-folder sort memory.
+
+### Selection and organization
+
+- Added rubber-band marquee selection on empty grid areas with modifier-key unions and edge auto-scrolling.
+- Added Option-drag to move items into folders (removing them from the drag-source folder).
+- Added inspector auto-saving on input pause or blur, Eagle-style tag suggestions popover, and color dots.
+- Added 0-5 number keys for rapid rating (with grid star overlays) and F2 for quick renaming.
+- Added multi-select shared tag removal and batch tag assignment.
+
+### Preview and media
+
+- Added Slideshow presentation mode with configurable interval and seamless wrap-around.
+- Added preview background switching (checkerboard, black, white, none) and one-click grayscale view.
+- Expanded preview support to camera RAW formats (CR2, CR3, NEF, ARW, DNG, ORF, RAF, RW2) and high-res PSD/TIFF/HEIC renderings.
+- Fixed PDF preview plugin integration in Chromium.
+- Aligned preview directional arrow navigation with the geometric layout of the source grid.
+
+### Performance, system, and reliability
+
+- Added library switcher in the sidebar to switch active Eagle libraries.
+- Added grid virtualization using `content-visibility` for smoother rendering of large libraries.
+- Added scroll position memory across parent views and back navigation.
+- Added rolling error logging to disk (`userData/logs/error.log`).
+- Added recursive folder import safeguards skipping hidden files and circular symlinks.
+
 ## 1.5.2 - 2026-07-25
 
 ### Multi-pane workspace

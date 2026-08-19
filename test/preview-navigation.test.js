@@ -29,9 +29,9 @@ test('plain preview arrows route horizontal and vertical movement separately', (
     renderer.indexOf('// --- Web access settings')
   );
   assert.ok(handler.includes("['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)"));
-  assert.ok(handler.includes("if (event.key === 'ArrowLeft') movePreview(-1);"));
-  assert.ok(handler.includes("else if (event.key === 'ArrowRight') movePreview(1);"));
-  assert.ok(handler.includes('else movePreviewVertically(event.key);'));
+  assert.match(handler, /if \(event\.key === 'ArrowLeft'\)\s*\{?\s*movePreview\(-1\);/);
+  assert.match(handler, /else if \(event\.key === 'ArrowRight'\)\s*\{?\s*movePreview\(1\);/);
+  assert.match(handler, /else\s*\{?\s*movePreviewVertically\(event\.key\);/);
   assert.match(handler, /previewOpen && !editable && !primaryKey && !event\.shiftKey && !event\.altKey/,
     'modified arrow shortcuts must not also move the preview');
 });

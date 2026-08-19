@@ -24,8 +24,11 @@ test('the slideshow is built on the preview, not beside it', () => {
 });
 
 test('a running show cannot outlive its preview', () => {
-  assert.ok(renderer.includes('function closePreview({ commitSelection = true, skipDiscard = false } = {}) {\n  if (!skipDiscard && state.textSession?.dirty && !confirmDiscardChanges()) return false;\n  stopSlideshow();'),
-    'closing the preview stops the timer');
+  assert.match(
+    renderer,
+    /function closePreview\([^)]*\)\s*\{\s*if \(!skipDiscard && state\.textSession\?\.dirty && !confirmDiscardChanges\(\)\) return false;\s*stopSlideshow\(\);/,
+    'closing the preview stops the timer'
+  );
   // Every timer is cleared before a new one is set, so a stray schedule cannot
   // leave two running at once.
   assert.ok(renderer.includes('if (state.slideshow.timer) clearTimeout(state.slideshow.timer);\n  state.slideshow.timer = setTimeout'));

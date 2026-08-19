@@ -100,3 +100,32 @@ test('cross-window drag context carries the source library, pane, folder and win
   }
   assert.ok(renderer.includes('internalDrag.sourceWindowId === state.windowId'));
 });
+
+test('folder drops enforce move semantics from folder view and remove items from current view', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.ok(source.includes('const move = Boolean(sourceFolderId || event.altKey);'));
+  assert.ok(source.includes('pane.items = pane.items.filter(item => !movedIds.has(item.id));'));
+  assert.ok(source.includes('movedIds.forEach(id => { pane.itemMap?.delete(id); });'));
+  assert.ok(source.includes('pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);'));
+  assert.ok(source.includes('movedIds.forEach(id => pane.selected.delete(id));'));
+});
+
+test('folderMoveDelta calculates move vs add semantics correctly', () => {
+  const { folderMoveDelta } = require('../src/folder-navigation');
+  // Moving from folder view to target folder removes from source and adds to target
+  assert.deepEqual(folderMoveDelta('source-folder-1', 'target-folder-2'), {
+    add: ['target-folder-2'],
+    remove: ['source-folder-1']
+  });
+  // Dragging from non-folder view (null source) only adds to target
+  assert.deepEqual(folderMoveDelta(null, 'target-folder-2'), {
+    add: ['target-folder-2'],
+    remove: []
+  });
+  // Moving to same folder is a no-op removal
+  assert.deepEqual(folderMoveDelta('same-folder', 'same-folder'), {
+    add: ['same-folder'],
+    remove: []
+  });
+});
+

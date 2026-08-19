@@ -38,7 +38,7 @@ test('default new-window request stays with the most recently focused live windo
   assert.deepEqual(created, []);
 });
 
-test('default routing falls back through older windows and then Eagle', async () => {
+test('default routing falls back through older windows and then default state', async () => {
   const created = [];
   const router = createWindowRouter({
     createWindow: state => created.push(state),
@@ -59,5 +59,5 @@ test('default routing falls back through older windows and then Eagle', async ()
   first.destroyed = true;
   first.emit('closed');
   await router.openDefault();
-  assert.deepEqual(created, [{ view: { kind: 'folder', id: 'eagle' } }]);
+  assert.deepEqual(created, [null]);
 });

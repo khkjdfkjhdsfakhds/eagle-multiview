@@ -265,12 +265,12 @@ test('single unfiled import omits a folder assignment', async () => {
   assert.deepEqual(client.calls[0].options.body, { paths: ['/tmp/a.png'] });
 });
 
-test('folder rename uses the Eagle folder update endpoint', async () => {
+test('folder rename uses the Eagle folder rename endpoint', async () => {
   const client = new RecordingClient();
   await client.updateFolder('folder-1', { name: '新名称' });
-  assert.equal(client.calls[0].path, '/api/v2/folder/update');
+  assert.equal(client.calls[0].path, '/api/folder/rename');
   assert.equal(client.calls[0].options.method, 'POST');
-  assert.deepEqual(client.calls[0].options.body, { id: 'folder-1', name: '新名称' });
+  assert.deepEqual(client.calls[0].options.body, { folderId: 'folder-1', newName: '新名称' });
 });
 
 test('surfaces Eagle response details instead of a generic HTTP status', async () => {

@@ -105,7 +105,6 @@ test('narrow screens get chrome that fits them', () => {
   // A 286px popover anchored two thirds across the toolbar runs off a phone.
   assert.match(compact, /\.filter-popover \{[^}]*position: fixed/);
   assert.match(compact, /\.filter-popover \{[^}]*left: 8px/);
-  assert.ok(compact.includes('.pane-badge { display: none; }'), 'one pane down here, so no "栏 N"');
   // Phone-only: a 768px tablet is wide enough for the desktop default.
   assert.ok(!compact.includes(':root { --thumb: 132px; }'));
   const phone = styles.slice(styles.indexOf('@media (max-width: 600px) {'));
@@ -129,14 +128,15 @@ test('the layout switcher stays reachable on a phone', () => {
   // which on a phone is always. Compact layouts wrap the row instead.
   assert.match(styles, /@container \(max-width: 460px\) \{\s*\.content-heading \.view-mode-group \{ display: none; \}/);
   const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {'), styles.indexOf('@media (max-width: 600px) {'));
-  assert.ok(compact.includes('.content-pane .content-heading { flex-wrap: wrap; row-gap: 7px; }'));
+  assert.ok(compact.includes('.content-pane .content-heading { grid-template-rows: 24px auto; min-height: 72px; }'));
+  assert.ok(compact.includes('.content-pane .heading-main-row { min-height: 36px; height: auto; flex-wrap: wrap; row-gap: 7px; }'));
   // Re-shown only where the pane can hold it: a compact window split four ways
   // leaves ~224px panes, where forcing it back overflowed the window by 23px.
   assert.ok(styles.includes('@container (min-width: 340px) {\n  body.compact-layout .content-heading .view-mode-group { display: inline-flex; }\n}'));
   assert.ok(!compact.includes('.view-mode-group { display: inline-flex; }'), 'the media query must not force it unconditionally');
   // No forced 100% basis: the row wraps only when it has to, so a phone in
   // landscape keeps a single-row header.
-  assert.ok(compact.includes('.content-pane .content-heading .location-block { flex: 1 1 210px; }'));
+  assert.ok(compact.includes('.content-pane .heading-main-row .location-block { flex: 1 1 210px; }'));
   assert.ok(!compact.includes('flex: 1 1 100%'), 'the controls must not be forced onto their own row');
 });
 

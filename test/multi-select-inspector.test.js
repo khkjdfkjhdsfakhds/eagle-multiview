@@ -67,3 +67,12 @@ test('batch rating change sets the selection rating then clears the select', () 
   assert.ok(handler.includes('setSelectionRating({ ids: [...state.selected], rating: Number(value) })'));
   assert.ok(handler.includes("event.target.value = '';"));
 });
+
+test('state object initializes commentsToken and metadataToken to 0 to prevent NaN token comparisons', () => {
+  const stateMatch = renderer.match(/const state = \{([\s\S]*?)\n\};/);
+  assert.ok(stateMatch, 'state object definition should exist');
+  const stateBody = stateMatch[1];
+  assert.match(stateBody, /\bcommentsToken:\s*0\b/, 'state.commentsToken must be initialized to 0');
+  assert.match(stateBody, /\bmetadataToken:\s*0\b/, 'state.metadataToken must be initialized to 0');
+});
+
