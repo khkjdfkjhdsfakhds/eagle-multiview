@@ -708,27 +708,6 @@ function getLayoutSplitters(layout) {
   }
 }
 
-const LAYOUT_ICONS_SVG = {
-  single: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/></svg>',
-  vertical2: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="13" y1="1" x2="13" y2="19"/></svg>',
-  horizontal2: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="1" y1="10" x2="25" y2="10"/></svg>',
-  grid4: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="13" y1="1" x2="13" y2="19"/><line x1="1" y1="10" x2="25" y2="10"/></svg>',
-  leftStack: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="13" y1="1" x2="13" y2="19"/><line x1="13" y1="10" x2="25" y2="10"/></svg>',
-  rightStack: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="13" y1="1" x2="13" y2="19"/><line x1="1" y1="10" x2="13" y2="10"/></svg>',
-  topStack: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="1" y1="10" x2="25" y2="10"/><line x1="13" y1="10" x2="13" y2="19"/></svg>',
-  bottomStack: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="1" y1="10" x2="25" y2="10"/><line x1="13" y1="10" x2="13" y2="10"/></svg>',
-  horizontal3: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="1" y1="7" x2="25" y2="7"/><line x1="1" y1="13" x2="25" y2="13"/></svg>',
-  vertical3: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="9" y1="1" x2="9" y2="19"/><line x1="17" y1="1" x2="17" y2="19"/></svg>',
-  vertical4: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="7" y1="1" x2="7" y2="19"/><line x1="13" y1="1" x2="13" y2="19"/><line x1="19" y1="1" x2="19" y2="19"/></svg>',
-  horizontal4: '<svg viewBox="0 0 26 20" width="16" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="24" height="18" rx="2"/><line x1="1" y1="5.5" x2="25" y2="5.5"/><line x1="1" y1="10" x2="25" y2="10"/><line x1="1" y1="14.5" x2="25" y2="14.5"/></svg>'
-};
-
-function updatePaneLayoutButtonIcon(layout) {
-  const icon = $('#paneLayoutButton .pane-split-icon');
-  if (!icon) return;
-  icon.innerHTML = LAYOUT_ICONS_SVG[layout] || LAYOUT_ICONS_SVG.single;
-}
-
 function splitterMarkup(s) {
   const isCol = s.axis === 'col';
   const cls = isCol ? 'pane-splitter-vertical' : 'pane-splitter-horizontal';
@@ -1030,7 +1009,6 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
   state.panes = plan.panes;
   state.activePaneId = plan.activePaneId || state.panes[0]?.id;
   layoutRoot.dataset.layout = layout;
-  updatePaneLayoutButtonIcon(layout);
   const splitters = getLayoutSplitters(layout);
   const splittersHTML = splitters.map(s => splitterMarkup(s)).join('');
   layoutRoot.innerHTML = state.panes.map((pane, index) => paneMarkup(pane.id, index)).join('') + splittersHTML;

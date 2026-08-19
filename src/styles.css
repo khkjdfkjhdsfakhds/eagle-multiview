@@ -947,29 +947,34 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   border-color: rgba(247, 248, 248, .16);
   background: rgba(255, 255, 255, .08);
 }
-.pane-layout-control { position: relative; display: flex; align-items: center; }
-.pane-layout-chevron {
-  width: 6px;
-  height: 6px;
-  margin-top: -3px;
-  border-right: 1.4px solid currentColor;
-  border-bottom: 1.4px solid currentColor;
-  transform: rotate(45deg);
-  opacity: .78;
-}
 .pane-split-icon {
   position: relative;
-  width: 16px;
-  height: 13px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  width: 15px;
+  height: 15px;
+  display: block;
+  border: 1.4px solid currentColor;
+  border-radius: 3px;
   opacity: .9;
 }
-.pane-split-icon svg {
-  width: 16px;
-  height: 13px;
-  display: block;
+.pane-split-icon::before,
+.pane-split-icon::after {
+  position: absolute;
+  background: currentColor;
+  content: "";
+}
+.pane-split-icon::before {
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-.5px);
+}
+.pane-split-icon::after {
+  top: 50%;
+  right: 1px;
+  left: 1px;
+  height: 1px;
+  transform: translateY(-.5px);
 }
 .pane-layout-popover {
   position: absolute;
@@ -1003,34 +1008,25 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   display: grid;
   place-items: center;
   padding: 5px;
-  border: 1.5px solid transparent;
+  border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
-  color: #8e8e93;
+  color: #bfc4cd;
   cursor: pointer;
-  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
 }
-.pane-layout-option:hover {
-  border-color: rgba(255, 255, 255, .15);
-  background: rgba(255, 255, 255, .06);
-  color: #ffffff;
-}
-.pane-layout-option.active {
-  border-color: #007aff;
-  background: rgba(0, 122, 255, .15);
-  color: #007aff;
-}
+.pane-layout-option:hover, .pane-layout-option.active { border-color: rgba(0, 114, 239, .5); background: rgba(0, 114, 239, .13); color: white; }
 .layout-icon {
   position: relative;
-  width: 26px;
-  height: 20px;
+  width: 31px;
+  height: 27px;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: .82;
 }
 .layout-icon svg {
-  width: 26px;
-  height: 20px;
+  width: 31px;
+  height: 27px;
   display: block;
 }
 .content-heading {
