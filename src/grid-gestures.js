@@ -15,6 +15,9 @@
   const THUMB_MIN = 110;
   const THUMB_MAX = 260;
   const THUMB_DEFAULT = 168;
+  // Keyboard Cmd/Ctrl +/- steps the middle-grid thumbnail size by a fixed
+  // amount each press; the pinch handler scales by finger spread instead.
+  const THUMB_STEP = 12;
 
   function pullOffset(delta, { resistance = PULL_RESISTANCE, max = PULL_MAX } = {}) {
     if (!Number.isFinite(delta) || delta <= 0) return 0;
@@ -43,6 +46,13 @@
     return clampThumbnailSize(Number(baseSize) * (currentSpread / startSpread));
   }
 
+  // Keyboard zoom: step the current size by THUMB_STEP toward the direction,
+  // then clamp to the same bounds as every other thumbnail-size driver.
+  function stepThumbnailSize(size, direction) {
+    const delta = Number(direction) > 0 ? THUMB_STEP : -THUMB_STEP;
+    return clampThumbnailSize(Number(size) + delta);
+  }
+
   function spread(touches) {
     if (!touches || touches.length < 2) return 0;
     return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
@@ -55,11 +65,13 @@
     THUMB_MIN,
     THUMB_MAX,
     THUMB_DEFAULT,
+    THUMB_STEP,
     pullOffset,
     pullArmed,
     pullOpacity,
     clampThumbnailSize,
     pinchThumbnailSize,
+    stepThumbnailSize,
     spread
   };
 });

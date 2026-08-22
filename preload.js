@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 function on(channel, callback) {
   const listener = (_event, payload) => callback(payload);
@@ -24,7 +24,6 @@ contextBridge.exposeInMainWorld('eagleMV', {
     importLocal: true,
     customThumbnail: true,
     copyPath: true,
-    uiZoom: true,
     webAccess: true
   },
   mediaURL: (kind, id) => `eaglemv://${kind}/${encodeURIComponent(String(id))}`,
@@ -55,7 +54,6 @@ contextBridge.exposeInMainWorld('eagleMV', {
   initialWindowState: () => ipcRenderer.invoke('window:initial-state'),
   focusWindow: () => ipcRenderer.invoke('window:focus'),
   isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
-  setZoomFactor: factor => webFrame.setZoomFactor(Number(factor)),
   confirmClose: () => ipcRenderer.send('window:confirm-close'),
   cancelClose: () => ipcRenderer.send('window:cancel-close'),
   createFolder: data => ipcRenderer.invoke('folder:create', data),

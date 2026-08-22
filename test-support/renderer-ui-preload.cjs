@@ -37,7 +37,6 @@ const bridge = {
     importLocal: false,
     customThumbnail: false,
     copyPath: false,
-    uiZoom: false,
     webAccess: false
   },
   mediaURL: (kind, id) => `test://${kind}/${id}`,
@@ -67,7 +66,6 @@ const bridge = {
     return true;
   },
   isFullScreen: async () => false,
-  setZoomFactor: () => {},
   confirmClose: () => {},
   cancelClose: () => {}
 };

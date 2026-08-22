@@ -46,6 +46,14 @@ test('thumbnail size clamps to the slider bounds and rounds to whole pixels', ()
   assert.ok(indexHTML.includes(`min="${gestures.THUMB_MIN}" max="${gestures.THUMB_MAX}" value="${gestures.THUMB_DEFAULT}"`));
 });
 
+test('keyboard thumbnail step moves by THUMB_STEP and clamps to the same bounds', () => {
+  assert.ok(Number.isInteger(gestures.THUMB_STEP) && gestures.THUMB_STEP > 0);
+  assert.strictEqual(gestures.stepThumbnailSize(gestures.THUMB_DEFAULT, 1), gestures.THUMB_DEFAULT + gestures.THUMB_STEP);
+  assert.strictEqual(gestures.stepThumbnailSize(gestures.THUMB_DEFAULT, -1), gestures.THUMB_DEFAULT - gestures.THUMB_STEP);
+  assert.strictEqual(gestures.stepThumbnailSize(gestures.THUMB_MAX, 1), gestures.THUMB_MAX, 'plus never exceeds the max');
+  assert.strictEqual(gestures.stepThumbnailSize(gestures.THUMB_MIN, -1), gestures.THUMB_MIN, 'minus never drops below the min');
+});
+
 test('pinch scales thumbnails with the finger spread', () => {
   assert.strictEqual(gestures.pinchThumbnailSize(120, 100, 200), 240, 'spreading doubles the size');
   assert.strictEqual(gestures.pinchThumbnailSize(240, 200, 100), 120, 'closing halves it');
@@ -82,4 +90,20 @@ test('every thumbnail-size driver goes through the shared clamp', () => {
   // Nothing may poke --thumb behind applyThumbnailSize's back.
   const pokes = renderer.match(/setProperty\('--thumb'/g) || [];
   assert.strictEqual(pokes.length, 1, 'only applyThumbnailSize writes --thumb');
+});
+
+test('Cmd/Ctrl +/- drive the middle-grid thumbnail size, not whole-window zoom', () => {
+  // The shortcuts route through the same applyThumbnailSize path as the slider,
+  // so the toolbar slider stays in sync, and the side columns are untouched.
+  assert.ok(renderer.includes("event.code === 'Equal' || event.code === 'NumpadAdd'"));
+  assert.ok(renderer.includes("event.code === 'Minus' || event.code === 'NumpadSubtract'"));
+  assert.ok(renderer.includes("event.code === 'Digit0' || event.code === 'Numpad0'"));
+  assert.ok(renderer.includes('changeThumbnailSize(1)'));
+  assert.ok(renderer.includes('changeThumbnailSize(-1)'));
+  assert.ok(renderer.includes('resetThumbnailSize()'));
+  assert.ok(renderer.includes('gestures.stepThumbnailSize(currentThumbnailSize(), direction)'), 'the shortcut uses the shared step function');
+  // The old whole-window zoom plumbing is fully removed.
+  for (const dead of ['setUIZoom', 'changeUIZoom', 'restoreUIZoom', 'setZoomFactor', 'UI_ZOOM_MIN', 'UI_ZOOM_MAX', 'UI_ZOOM_STEP', 'eaglemv.uiZoom', "hasCapability('uiZoom')"]) {
+    assert.ok(!renderer.includes(dead), `renderer 不应再残留 ${dead}`);
+  }
 });

@@ -292,7 +292,6 @@
       importLocal: true,
       customThumbnail: false,
       copyPath: false,
-      uiZoom: false,
       webAccess: false
     },
     mediaURL: (kind, id) => `/media/${encodeURIComponent(String(kind))}/${encodeURIComponent(String(id))}`,
@@ -343,7 +342,6 @@
       return true;
     },
     isFullScreen: async () => Boolean(document.fullscreenElement),
-    setZoomFactor: () => {},
     confirmClose: () => {},
     cancelClose: () => {},
     createFolder: data => invoke('folder:create', [data]),

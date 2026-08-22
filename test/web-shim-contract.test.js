@@ -137,7 +137,6 @@ test('renderer guards host-bound entry points behind capabilities', () => {
     "hasCapability('clipboardFiles')",
     "hasCapability('copyPath')",
     "hasCapability('importLocal')",
-    "hasCapability('uiZoom')",
     "hasCapability('export')",
     "hasCapability('share')",
     "hasCapability('openOther')",

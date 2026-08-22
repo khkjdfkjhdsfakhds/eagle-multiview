@@ -351,9 +351,6 @@ for (const key of paneStateKeys) {
 }
 
 const paneLayouts = paneLayoutSpecs;
-const UI_ZOOM_MIN = 0.8;
-const UI_ZOOM_MAX = 1.6;
-const UI_ZOOM_STEP = 0.1;
 // Non-default sorts pull the full folder so the order is exact; very large
 // folders stop auto-fetching here and fall back to scroll-driven loading.
 const SORT_FETCH_CAP = 3000;
@@ -441,26 +438,15 @@ function triggerTouchLongPress(card, paneId, point) {
   });
 }
 
-function setUIZoom(factor, { persist = true, announce = false } = {}) {
-  const next = Math.max(UI_ZOOM_MIN, Math.min(UI_ZOOM_MAX, Math.round(Number(factor) * 10) / 10));
-  window.eagleMV.setZoomFactor(next);
-  if (persist) {
-    try { localStorage.setItem('eaglemv.uiZoom', String(next)); } catch {}
-  }
-  if (announce) toast(`界面缩放 ${Math.round(next * 100)}%`, 1400);
-  return next;
+// Keyboard Cmd/Ctrl +/- steps only the middle-grid thumbnail size (the same
+// variable the size slider and pinch drive), so the side columns stay put and
+// the slider in the toolbar tracks the shortcut. Cmd/Ctrl+0 resets to default.
+function changeThumbnailSize(direction) {
+  applyThumbnailSize(gestures.stepThumbnailSize(currentThumbnailSize(), direction));
 }
 
-function changeUIZoom(delta) {
-  let current = 1;
-  try { current = Number(localStorage.getItem('eaglemv.uiZoom')) || 1; } catch {}
-  setUIZoom(current + delta * UI_ZOOM_STEP, { announce: true });
-}
-
-function restoreUIZoom() {
-  let saved = 1;
-  try { saved = Number(localStorage.getItem('eaglemv.uiZoom')) || 1; } catch {}
-  setUIZoom(saved, { persist: false });
+function resetThumbnailSize() {
+  applyThumbnailSize(gestures.THUMB_DEFAULT);
 }
 
 function applyWindowChromeState(payload = {}) {
@@ -7009,10 +6995,10 @@ function bindEvents() {
       setTrash(selectedIds, true);
       return;
     }
-    if (!editable && hasCapability('uiZoom') && (event.metaKey || event.ctrlKey) && !event.altKey) {
-      if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeUIZoom(1); return; }
-      if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changeUIZoom(-1); return; }
-      if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); setUIZoom(1, { announce: true }); return; }
+    if (!editable && (event.metaKey || event.ctrlKey) && !event.altKey) {
+      if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeThumbnailSize(1); return; }
+      if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changeThumbnailSize(-1); return; }
+      if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); resetThumbnailSize(); return; }
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'n') {
       event.preventDefault();
@@ -7660,7 +7646,6 @@ async function start() {
   bindWebAccessDialog();
   applyCapabilityVisibility();
   await restoreWindowChromeState();
-  restoreUIZoom();
   restorePanelSizes();
   let savedSession = null;
   try {

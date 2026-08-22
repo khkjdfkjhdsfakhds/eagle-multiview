@@ -37,7 +37,6 @@ const bridge = {
     importLocal: false,
     customThumbnail: false,
     copyPath: false,
-    uiZoom: false,
     webAccess: false
   },
   mediaURL: (kind, id) => `test://${kind}/${id}`,
@@ -62,7 +61,6 @@ const bridge = {
   currentEagleWindowState: async () => ({ view: { kind: 'root' } }),
   newWindow: async () => true,
   isFullScreen: async () => false,
-  setZoomFactor: () => {},
   resizeWindow: (width, height) => ipcRenderer.invoke('path-bar-ui-resize', { width, height })
 };
 
