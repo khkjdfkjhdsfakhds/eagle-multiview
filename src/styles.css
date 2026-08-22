@@ -1599,7 +1599,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   outline: none;
   cursor: default;
   user-select: none;
-  transition: background .14s ease, border-color .14s ease, transform .14s ease, box-shadow .14s ease;
+  transition: background .14s ease, border-color .14s ease, transform .14s ease, box-shadow .14s ease, flex-basis .18s ease;
 }
 .item-card:hover { background: rgba(255, 255, 255, .033); transform: translateY(-1px); }
 .item-card.selected {
@@ -1744,7 +1744,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
      flex container, blowing the rows apart. */
   flex: none;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px auto;
+  /* The list triage rows follow --thumb so Cmd/Ctrl +/- resizes them too; the
+     thumbnail is a quarter of the grid thumb (168px -> 42px at the default). */
+  grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px auto;
   align-items: center;
   column-gap: 10px;
   padding: 4px 8px;
@@ -1771,31 +1773,32 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .asset-grid.list .card-list-date { color: #74757a; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* A squeezed pane sheds the softer columns before the name and the size. */
 @container (max-width: 620px) {
-  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) minmax(0, 1fr) 62px auto; }
   .asset-grid.list .card-list-date { display: none; }
 }
 @container (max-width: 500px) {
-  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) 62px auto; }
   .asset-grid.list .card-list-tags { display: none; }
 }
 @container (max-width: 400px) {
-  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr) auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) auto; }
   .asset-grid.list .card-list-rating { display: none; }
 }
 /* A four-way vertical split leaves ~185px per pane, where even the dimensions
    column cannot shrink and pushed the row past its scroller. The name is what
    a list at that width is for. */
 @container (max-width: 300px) {
-  .asset-grid.list .item-card { grid-template-columns: 42px minmax(0, 1fr); }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr); }
   .asset-grid.list .card-meta { display: none; }
 }
 .asset-grid.list .item-card:hover { transform: none; }
 .asset-grid.list .thumb-wrap {
-  width: 42px;
-  height: 42px;
+  width: calc(var(--thumb) * 0.25);
+  height: calc(var(--thumb) * 0.25);
   aspect-ratio: auto;
   border-radius: 7px;
   box-shadow: none;
+  transition: width .16s ease, height .16s ease;
 }
 .asset-grid.list .thumb-wrap img { object-fit: cover; }
 .asset-grid.list .card-name { margin: 0; font-size: 12px; }
@@ -2188,6 +2191,43 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 .content-pane .modal-rating {
   display: none !important;
 }
+/* The web client (phone/tablet, no keyboard) needs the preview HUD to switch
+   and close images, so its ‹ › × controls show there as a dim, low-presence
+   HUD; the desktop app keeps them hidden (Esc/arrows cover those actions). */
+body.web-client .content-pane .modal-close,
+body.web-client .content-pane .modal-nav {
+  display: grid !important;
+  place-items: center !important;
+}
+body.web-client .content-pane .modal-caption { display: block !important; }
+/* hud-hidden fades the whole preview HUD out slowly after a period of no
+   interaction; the controls already animate opacity at .7s. */
+.preview-modal.hud-hidden .modal-close,
+.preview-modal.hud-hidden .modal-nav,
+.preview-modal.hud-hidden .modal-caption,
+.preview-modal.hud-hidden .slideshow-controls,
+.preview-modal.hud-hidden .modal-rating {
+  opacity: 0;
+  pointer-events: none;
+}
+/* The web client (phone/tablet/browser) gets a real touch target for the
+   path strip: it grows to the same font size as the view title so it is easy
+   to tap, while staying dim and low-presence. The taller path row pushes the
+   divider and the title row down. This is intentionally NOT width-gated so it
+   also applies on wide tablets, not just the 900px phone breakpoint. */
+body.web-client .content-pane .content-heading { grid-template-rows: 32px auto; min-height: 88px; }
+body.web-client .content-pane .heading-main-row { min-height: 40px; height: auto; flex-wrap: wrap; row-gap: 7px; }
+body.web-client .content-pane .heading-main-row .location-block { flex: 1 1 210px; }
+body.web-client .content-pane .heading-main-row .sort-controls { margin-left: auto; }
+body.web-client .content-pane .heading-path-row { padding-top: 4px; padding-bottom: 4px; }
+body.web-client .content-pane .heading-path-row .breadcrumb {
+  display: flex;
+  font-size: 14px;
+  line-height: 24px;
+  height: 24px;
+  opacity: .62;
+}
+body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 42vw; }
 /* Slideshow and rating rules kept for compatibility */
 .modal-rating {
   position: absolute;
@@ -2610,11 +2650,9 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   /* Keep the path strip and the action row separate on Web too. The action
      row may wrap on a phone, but it never drags the path strip into a half
      row or loses its divider. */
-  body.web-client .content-pane .content-heading { grid-template-rows: 24px auto; min-height: 72px; }
-  body.web-client .content-pane .heading-main-row { min-height: 36px; height: auto; flex-wrap: wrap; row-gap: 7px; }
-  body.web-client .content-pane .heading-main-row .location-block { flex: 1 1 210px; }
-  body.web-client .content-pane .heading-main-row .sort-controls { margin-left: auto; }
-  body.web-client .content-pane .heading-path-row .breadcrumb { display: flex; }
+  /* The web-client path-strip touch enlargement lives in the top-level
+     body.web-client block below so it also applies to wide tables beyond the
+     900px phone breakpoint; only the drawer layout is gated here. */
   /* The filter popover is 286px anchored to a button two thirds across the
      toolbar — on a phone that runs straight off the right edge. Turn it into
      a bottom sheet so every control stays reachable. */

@@ -67,7 +67,7 @@ test('the list layout earns extra columns, and only there', () => {
   assert.ok(rendererSource.includes('class="card-list-tags"'));
   assert.ok(rendererSource.includes('class="card-list-rating"'));
   assert.ok(rendererSource.includes('class="card-list-date"'));
-  assert.match(cssSource, /\.asset-grid\.list \.item-card \{[^}]*grid-template-columns: 42px minmax\(0, 1\.6fr\) minmax\(0, 1fr\) 62px 84px auto/);
+  assert.match(cssSource, /\.asset-grid\.list \.item-card \{[^}]*grid-template-columns: calc\(var\(--thumb\) \* 0\.25\) minmax\(0, 1\.6fr\) minmax\(0, 1fr\) 62px 84px auto/);
   // Narrow panes shed the soft columns in order rather than overflowing; the
   // last step drops the dimensions too, which a 185px four-way split needs.
   for (const [width, dropped] of [[620, '.card-list-date'], [500, '.card-list-tags'], [400, '.card-list-rating'], [300, '.card-meta']]) {

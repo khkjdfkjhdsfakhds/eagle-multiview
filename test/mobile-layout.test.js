@@ -128,8 +128,8 @@ test('the layout switcher stays reachable on a phone', () => {
   // which on a phone is always. Compact layouts wrap the row instead.
   assert.match(styles, /@container \(max-width: 460px\) \{\s*\.content-heading \.view-mode-group \{ display: none; \}/);
   const compact = styles.slice(styles.indexOf('@media (max-width: 900px) {'), styles.indexOf('@media (max-width: 600px) {'));
-  assert.ok(compact.includes('.content-pane .content-heading { grid-template-rows: 24px auto; min-height: 72px; }'));
-  assert.ok(compact.includes('.content-pane .heading-main-row { min-height: 36px; height: auto; flex-wrap: wrap; row-gap: 7px; }'));
+  assert.ok(compact.includes('.content-pane .content-heading { grid-template-rows: 32px auto; min-height: 88px; }'));
+  assert.ok(compact.includes('.content-pane .heading-main-row { min-height: 40px; height: auto; flex-wrap: wrap; row-gap: 7px; }'));
   // Re-shown only where the pane can hold it: a compact window split four ways
   // leaves ~224px panes, where forcing it back overflowed the window by 23px.
   assert.ok(styles.includes('@container (min-width: 340px) {\n  body.compact-layout .content-heading .view-mode-group { display: inline-flex; }\n}'));

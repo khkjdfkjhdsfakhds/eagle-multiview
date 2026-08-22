@@ -442,11 +442,24 @@ function triggerTouchLongPress(card, paneId, point) {
 // variable the size slider and pinch drive), so the side columns stay put and
 // the slider in the toolbar tracks the shortcut. Cmd/Ctrl+0 resets to default.
 function changeThumbnailSize(direction) {
-  applyThumbnailSize(gestures.stepThumbnailSize(currentThumbnailSize(), direction));
+  showThumbnailSizeFeedback(applyThumbnailSize(gestures.stepThumbnailSize(currentThumbnailSize(), direction)));
 }
 
 function resetThumbnailSize() {
-  applyThumbnailSize(gestures.THUMB_DEFAULT);
+  showThumbnailSizeFeedback(applyThumbnailSize(gestures.THUMB_DEFAULT));
+}
+
+// Keyboard zoom resizes the whole grid at once, so a size readout centred on
+// the active pane keeps the press from feeling like a silent relayout — the
+// same badge the pinch gesture shows. Auto-hides once the change settles.
+function showThumbnailSizeFeedback(size) {
+  const pane = activePane();
+  const badge = paneRoot(state.activePaneId)?.querySelector('#pinchBadge');
+  if (!pane || !badge) return;
+  badge.textContent = `缩略图 ${Math.round(size)}`;
+  badge.classList.remove('hidden');
+  clearTimeout(pane.thumbSizeBadgeTimer);
+  pane.thumbSizeBadgeTimer = setTimeout(() => badge.classList.add('hidden'), 900);
 }
 
 function applyWindowChromeState(payload = {}) {
@@ -6130,6 +6143,9 @@ function bindPaneEvents(paneId) {
   });
   const previewModal = query('#previewModal');
   if (previewModal) {
+    // A tap has almost no pointer-move, so wake the HUD on pointer-down too
+    // (touch users need it just as much as desktop mouse users).
+    previewModal.addEventListener('pointerdown', () => pingPreviewHUD(paneId));
     previewModal.addEventListener('pointermove', () => pingPreviewHUD(paneId));
     previewModal.addEventListener('pointerleave', () => {
       const pane = paneById(paneId);
