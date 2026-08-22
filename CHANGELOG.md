@@ -13,6 +13,7 @@ All notable public changes to Eagle MultiView are recorded here.
 
 ### Views, layouts, and pane synchronization
 
+- Cmd/Ctrl +/- now resize only the middle-grid thumbnail size (matching Eagle's own shortcut) instead of zooming the whole window; the toolbar size slider stays in sync and Cmd/Ctrl+0 resets to the default.
 - Added Waterfall and List view modes alongside adaptive grid, with per-pane view mode memory. List view displays tags, ratings, and added date columns.
 - Added synchronized multi-pane mode (Sync Panes) for coordinated scrolling, page navigation, preview switching, and rating across panes.
 - Updated split layout with vector split-view icons, double-click splitter proportion reset, and responsive pane headers.
