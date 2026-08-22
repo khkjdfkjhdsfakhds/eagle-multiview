@@ -10,7 +10,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 
 const execFileAsync = promisify(execFile);
 
-test('zoom feedback: list rows follow --thumb and the size readout badge appears then auto-hides', { timeout: 20000 }, async () => {
+test('zoom feedback: list rows follow --thumb, and the keyboard zoom resizes without a size readout badge', { timeout: 20000 }, async () => {
   const electron = require('electron');
   const runner = require.resolve('../test-support/zoom-feedback-probe.cjs');
   const env = { ...process.env };
@@ -23,10 +23,8 @@ test('zoom feedback: list rows follow --thumb and the size readout badge appears
   assert.equal(result.defaultWidth, 42, 'list thumb is 42px at the default --thumb');
   assert.equal(result.grownWidth, 55, 'list thumb grows with --thumb (220px -> 55px)');
   assert.equal(result.afterPlus.thumb, 180, 'Cmd+plus grows the thumb');
-  assert.equal(result.afterPlus.badgeVisible, true, 'Cmd+plus shows the size readout');
   assert.equal(result.afterReset.thumb, 168, 'Cmd+0 resets to the default');
-  assert.equal(result.afterReset.badgeVisible, true, 'Cmd+0 shows the size readout');
-  assert.equal(result.autoHidden, true, 'the readout badge auto-hides after inactivity');
+  assert.equal(result.badgeGone, true, 'the size readout badge element is removed entirely');
 });
 
 test('list view reuses --thumb instead of a fixed 42px thumbnail', () => {

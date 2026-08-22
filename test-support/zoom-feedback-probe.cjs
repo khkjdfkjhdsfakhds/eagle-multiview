@@ -27,20 +27,19 @@ async function run() {
     document.documentElement.style.removeProperty('--thumb');
     probeList.remove();
 
-    // Verify the keyboard shortcut grows the size, resets via Cmd+0, and the
-    // active pane shows the size readout badge both times.
+    // Verify the keyboard shortcut grows the size and Cmd+0 resets it. The
+    // size readout badge was removed entirely (per product request), so the
+    // #pinchBadge element must not exist in the DOM at all.
     const readThumb = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--thumb'));
-    const badge = () => document.querySelector('.content-pane.active #pinchBadge');
+    const badgeGone = document.querySelector('.content-pane.active #pinchBadge') === null;
     const press = (code, meta=true) => document.dispatchEvent(new KeyboardEvent('keydown', { code, metaKey: meta, ctrlKey: false, altKey: false, bubbles: true, cancelable: true }));
 
     press('Equal'); await wait(60);
-    const afterPlus = { thumb: readThumb(), badgeText: badge().textContent, badgeVisible: !badge().classList.contains('hidden') };
+    const afterPlus = { thumb: readThumb() };
     press('Digit0'); await wait(60);
-    const afterReset = { thumb: readThumb(), badgeText: badge().textContent, badgeVisible: !badge().classList.contains('hidden') };
-    await wait(1000);
-    const autoHidden = badge().classList.contains('hidden');
+    const afterReset = { thumb: readThumb() };
 
-    return { defaultWidth, grownWidth, afterPlus, afterReset, autoHidden };
+    return { defaultWidth, grownWidth, afterPlus, afterReset, badgeGone };
   })()`);
   process.stdout.write(`EAGLEMV_ZOOM_FEEDBACK ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();

@@ -108,7 +108,7 @@ const newFileTypes = Object.freeze({
 const paneScopedSelectors = new Set([
   '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect', '#sortDirButton',
   '#sortSelectButton', '#sortSelectLabel', '#sortPopover', '#sortCascadeDivider', '#sortCascadeItem', '#sortCascadeCheck',
-  '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay', '#pinchBadge',
+  '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay',
   '#previewModal', '#modalMedia', '#closePreview', '#prevPreview', '#nextPreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
   '#previewBackground', '#previewGrayscale', '#modalRating', '#modalCaption', '#textEditor', '#textStatus', '#reloadTextButton', '#saveTextButton'
 ]);
@@ -442,24 +442,11 @@ function triggerTouchLongPress(card, paneId, point) {
 // variable the size slider and pinch drive), so the side columns stay put and
 // the slider in the toolbar tracks the shortcut. Cmd/Ctrl+0 resets to default.
 function changeThumbnailSize(direction) {
-  showThumbnailSizeFeedback(applyThumbnailSize(gestures.stepThumbnailSize(currentThumbnailSize(), direction)));
+  applyThumbnailSize(gestures.stepThumbnailSize(currentThumbnailSize(), direction));
 }
 
 function resetThumbnailSize() {
-  showThumbnailSizeFeedback(applyThumbnailSize(gestures.THUMB_DEFAULT));
-}
-
-// Keyboard zoom resizes the whole grid at once, so a size readout centred on
-// the active pane keeps the press from feeling like a silent relayout — the
-// same badge the pinch gesture shows. Auto-hides once the change settles.
-function showThumbnailSizeFeedback(size) {
-  const pane = activePane();
-  const badge = paneRoot(state.activePaneId)?.querySelector('#pinchBadge');
-  if (!pane || !badge) return;
-  badge.textContent = `缩略图 ${Math.round(size)}`;
-  badge.classList.remove('hidden');
-  clearTimeout(pane.thumbSizeBadgeTimer);
-  pane.thumbSizeBadgeTimer = setTimeout(() => badge.classList.add('hidden'), 900);
+  applyThumbnailSize(gestures.THUMB_DEFAULT);
 }
 
 function applyWindowChromeState(payload = {}) {
@@ -677,7 +664,6 @@ function paneMarkup(id, index) {
       <button id="scrollTopButton" class="scroll-top-button hidden" title="回到顶部（Home）">↑</button>
     </div>
     <div id="dropOverlay" class="drop-overlay hidden"><div><strong>导入到当前文件夹</strong><span>松开即可导入文件</span></div></div>
-    <div id="pinchBadge" class="pinch-badge hidden" aria-hidden="true"></div>
     <div id="previewModal" class="preview-modal hidden">
       <div id="slideshowControls" class="slideshow-controls">
         <button id="slideshowToggle" class="slideshow-button" type="button" title="幻灯片播放（S）" aria-pressed="false" aria-label="幻灯片播放">▶</button>
@@ -5596,8 +5582,7 @@ function bindMarqueeSelection(paneId, scroller) {
 function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
   const indicator = scroller.querySelector('#pullRefresh');
   const indicatorText = scroller.querySelector('#pullRefreshText');
-  const badge = paneRoot(paneId)?.querySelector('#pinchBadge');
-  if (!indicator || !indicatorText || !badge) return;
+  if (!indicator || !indicatorText) return;
   let pull = null;
   let pinch = null;
   const drawPull = (offset, label) => {
@@ -5625,12 +5610,10 @@ function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
     if (pinch) {
       if (event.touches.length !== 2) return;
       event.preventDefault();
-      const size = applyThumbnailSize(
+      applyThumbnailSize(
         gestures.pinchThumbnailSize(pinch.size, pinch.spread, gestures.spread(event.touches)),
         { persist: false }
       );
-      badge.textContent = `缩略图 ${size}`;
-      badge.classList.remove('hidden');
       return;
     }
     if (!pull || event.touches.length !== 1) return;
@@ -5659,7 +5642,6 @@ function bindGridTouchGestures(paneId, scroller, cancelLongPress) {
     if (pinch && event.touches.length < 2) {
       pinch = null;
       applyThumbnailSize(currentThumbnailSize());
-      badge.classList.add('hidden');
       suppressTouchClickUntil = Date.now() + 400;
     }
     if (!pull) return;

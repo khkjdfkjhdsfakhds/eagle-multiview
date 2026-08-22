@@ -79,7 +79,6 @@ test('the grid binds pull-to-refresh and pinch resize to native touch events', (
   assert.ok(renderer.includes('suppressTouchClickUntil = Date.now() + 400;'), 'a pull is not a blank-space tap');
   assert.ok(styles.includes('.grid-scroller { touch-action: pan-y; }'), 'pinch-zoom belongs to the grid, scrolling stays native');
   assert.ok(styles.includes('.pull-refresh {'));
-  assert.ok(styles.includes('.pinch-badge {'));
 });
 
 test('every thumbnail-size driver goes through the shared clamp', () => {
