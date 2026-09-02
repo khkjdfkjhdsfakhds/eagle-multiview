@@ -31,9 +31,9 @@ test('preview image disables native dragging and removes click-to-close backgrou
   assert.ok(styles.includes('-webkit-user-drag: none;'), 'styles must set -webkit-user-drag: none');
 });
 
-test('syncPanes broadcast is wired to keyboard navigation, preview open/close, and rating', () => {
+test('syncPanes keeps grid arrow selection pane-local while preview navigation still syncs', () => {
   assert.ok(renderer.includes('function broadcastPaneAction('), 'broadcastPaneAction helper must exist');
-  assert.ok(renderer.includes('broadcastPaneAction(() => moveCardFocus(event.key))'), 'Arrow keys in grid must broadcast');
+  assert.ok(!renderer.includes('broadcastPaneAction(() => moveCardFocus(event.key))'), 'grid Arrow keys must stay pane-local');
   assert.ok(renderer.includes('broadcastPaneAction(pane => { if (pane.previewId) movePreview('), 'Arrow keys in preview must broadcast');
   assert.ok(renderer.includes('broadcastPaneAction(pane => {\n      if (pane.previewId) closePreview('), 'closePreview must broadcast close to sibling panes');
   assert.ok(renderer.includes('localStorage.setItem(\'eaglemv.syncPanes\''), 'syncPanes state must persist to localStorage');

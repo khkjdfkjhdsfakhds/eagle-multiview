@@ -408,7 +408,7 @@ test('delayed import refreshes stay attached to the pane that received the impor
   const start = source.indexOf('async function importFiles(');
   const end = source.indexOf('\n}', start);
   const handler = source.slice(start, end);
-  assert.ok(handler.includes('const sourcePaneId = state.activePaneId;'));
+  assert.ok(handler.includes('const sourcePaneId = target.paneId || state.activePaneId;'));
   assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: sourcePaneId \}\), 1600\)/);
   assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: sourcePaneId \}\), 4200\)/);
 });

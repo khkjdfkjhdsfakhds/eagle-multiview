@@ -2185,6 +2185,10 @@ body.web-client .content-pane .modal-nav {
   place-items: center !important;
 }
 body.web-client .content-pane .modal-caption { display: block !important; }
+body.web-client .content-pane .modal-rating,
+body.web-client .content-pane .slideshow-controls { display: flex !important; }
+body.web-client .content-pane .modal-star { width: 34px; height: 34px; font-size: 18px; }
+body.web-client .content-pane .slideshow-controls .preview-view-button { display: none; }
 /* hud-hidden fades the whole preview HUD out slowly after a period of no
    interaction; the controls already animate opacity at .7s. */
 .preview-modal.hud-hidden .modal-close,

@@ -36,6 +36,7 @@ const {
   hasType: dragHasType,
   readItemIds,
   isInternalItemDrag,
+  classifyDrop,
   shouldShowImportOverlay
 } = window.EagleMVDragDrop;
 const {
@@ -1874,10 +1875,15 @@ function selectFolderCard(id) {
 
 function focusSelectedCard() {
   const root = paneRoot();
+  const focusedCard = document.activeElement?.closest?.('#itemGrid .folder-card, #itemGrid .item-card');
+  const focusedId = focusedCard?.dataset.id;
+  if (focusedCard && root?.contains(focusedCard) && state.selected.size > 1 && focusedId && state.selected.has(focusedId)) {
+    return focusedCard;
+  }
   const selectedFolder = state.selectedFolderCard && root?.querySelector(`.folder-card[data-open-folder="${CSS.escape(state.selectedFolderCard)}"]`);
   const selectedItemId = state.selected.size === 1 ? [...state.selected][0] : null;
   const selectedItem = selectedItemId && root?.querySelector(`.item-card[data-id="${CSS.escape(selectedItemId)}"]`);
-  return selectedFolder || selectedItem || root?.querySelector('#itemGrid .folder-card, #itemGrid .item-card');
+  return selectedFolder || selectedItem || null;
 }
 
 function directionalCard(cards, current, key) {
@@ -1898,7 +1904,7 @@ function moveCardFocus(key) {
   const cards = [...(paneRoot()?.querySelectorAll('#itemGrid .folder-card, #itemGrid .item-card') || [])];
   if (!cards.length) return;
   const current = focusSelectedCard();
-  let next = current || cards[0];
+  let next = current || ((key === 'ArrowLeft' || key === 'ArrowUp') ? cards.at(-1) : cards[0]);
   if (current) next = directionalCard(cards, current, key) || current;
   if (next.classList.contains('folder-card')) selectFolderCard(next.dataset.openFolder);
   else selectItem(next.dataset.id);
@@ -2287,10 +2293,11 @@ function toggleFolder(id) {
 function attachFolderDragTargets() {
   for (const row of document.querySelectorAll('[data-folder-id]')) {
     row.addEventListener('dragover', event => {
-      if (!isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
+      const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+      if (dropKind === 'unsupported') return;
       event.preventDefault();
       const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-      event.dataTransfer.dropEffect = (sourceFolderId || event.altKey) ? 'move' : 'copy';
+      event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
       row.classList.add('drop-target');
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
@@ -2305,6 +2312,10 @@ function attachFolderDragTargets() {
       event.preventDefault();
       event.stopPropagation();
       row.classList.remove('drop-target');
+      if (classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files') {
+        scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId);
+        return;
+      }
       if (!ids.length) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
@@ -3105,6 +3116,14 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
     pane.selected = new Set(outcome.failed.length || !keepSelection ? outcome.failed : ids);
     if (state.activePaneId === paneId) renderInspector();
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (keepSelection && !outcome.failed.length) {
+      const visibleIds = new Set(pane.items.map(item => item.id));
+      pane.selected = new Set(ids.filter(id => visibleIds.has(id)));
+      if (state.activePaneId === paneId) withActivePane(paneId, () => {
+        updateCardSelectionStyles();
+        renderInspector();
+      });
+    }
     toast(outcome.failed.length
       ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
       : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
@@ -3182,7 +3201,10 @@ function removeSelectionFromFolder(payload) {
 function addTagToSelection(payload) {
   const tags = normalizeTags(Array.isArray(payload?.tag) ? payload.tag : [payload?.tag]);
   if (!tags.length) return false;
-  return mutateSelectionSet(payload.ids, 'tags', { add: tags }, '正在添加标签…', payload?.paneId || state.activePaneId);
+  return mutateSelectionSet(payload.ids, 'tags', { add: tags }, '正在添加标签…', payload?.paneId || state.activePaneId, {
+    keepSelection: true,
+    successMessage: tags.length === 1 ? `已添加标签「${tags[0]}」` : `已添加 ${tags.length} 个标签`
+  });
 }
 
 async function setSelectionRating(payload) {
@@ -4185,15 +4207,17 @@ function importTargetFolderId() {
   return state.currentView.kind === 'folder' ? state.currentView.id : null;
 }
 
-async function importFiles(paths = null, source = 'picker') {
+async function importFiles(paths = null, source = 'picker', target = {}) {
   if (!state.connected || state.importing) return;
-  const sourcePaneId = state.activePaneId;
+  const sourcePaneId = target.paneId || state.activePaneId;
+  const libraryPath = target.libraryPath || state.library?.path;
+  const folderId = Object.prototype.hasOwnProperty.call(target, 'folderId') ? target.folderId : importTargetFolderId();
   const operationToken = beginForegroundOperation('正在导入到 Eagle…', { key: 'import' });
   if (!operationToken) return;
   state.importing = true;
   setSyncStatus('正在导入到 Eagle…');
   try {
-    const payload = { folderId: importTargetFolderId(), libraryPath: state.library?.path };
+    const payload = { folderId, libraryPath };
     let result = source === 'clipboard'
       ? await window.eagleMV.importClipboard(payload)
       : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
@@ -5092,6 +5116,23 @@ function activeDraggedItemIds() {
   return sharedIds?.length ? sharedIds : (state.draggingItemIds || []);
 }
 
+function externalDropImportables(dataTransfer) {
+  const files = [...(dataTransfer?.files || [])];
+  const paths = files.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+  return paths.length ? paths : (window.eagleMV.platform === 'web' ? files : []);
+}
+
+function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId) {
+  const importable = externalDropImportables(dataTransfer);
+  if (!importable.length) {
+    clearDragUI();
+    return false;
+  }
+  const libraryPath = state.library?.path;
+  scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId }));
+  return true;
+}
+
 function clearDragUI() {
   const token = state.internalDrag?.token || null;
   state.dragDepth = 0;
@@ -5976,11 +6017,12 @@ function bindPaneEvents(paneId) {
   itemGrid.addEventListener('dragend', clearDragUI);
   itemGrid.addEventListener('dragover', event => {
     const folder = event.target.closest('.folder-card');
-    if (!folder || !isInternalItemDrag(event.dataTransfer, activeDraggedItemIds())) return;
+    const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    if (!folder || dropKind === 'unsupported') return;
     event.preventDefault();
     event.stopPropagation();
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    event.dataTransfer.dropEffect = (sourceFolderId || event.altKey) ? 'move' : 'copy';
+    event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
     folder.classList.add('drop-target');
   });
   itemGrid.addEventListener('dragleave', event => {
@@ -5999,6 +6041,10 @@ function bindPaneEvents(paneId) {
     event.preventDefault();
     event.stopPropagation();
     folder.classList.remove('drop-target');
+    if (classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files') {
+      scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId);
+      return;
+    }
     if (!ids.length) {
       toast('无法识别拖入的素材，请重新拖动', 3500);
       clearDragUI();
@@ -6071,7 +6117,7 @@ function bindPaneEvents(paneId) {
   });
   scroller.addEventListener('dragenter', event => {
     const fallbackIds = activeDraggedItemIds();
-    if (!dragHasType(event.dataTransfer, 'Files') && !isInternalItemDrag(event.dataTransfer, fallbackIds)) return;
+    if (classifyDrop(event.dataTransfer, fallbackIds) === 'unsupported') return;
     event.preventDefault();
     if (!activatePane(paneId)) {
       clearDragUI();
@@ -6083,9 +6129,10 @@ function bindPaneEvents(paneId) {
   });
   scroller.addEventListener('dragover', event => {
     const fallbackIds = activeDraggedItemIds();
-    if (!dragHasType(event.dataTransfer, 'Files') && !isInternalItemDrag(event.dataTransfer, fallbackIds)) return;
+    const dropKind = classifyDrop(event.dataTransfer, fallbackIds);
+    if (dropKind === 'unsupported') return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = isInternalItemDrag(event.dataTransfer, fallbackIds) ? (event.altKey ? 'move' : 'copy') : 'copy';
+    event.dataTransfer.dropEffect = dropKind === 'internal-items' ? (event.altKey ? 'move' : 'copy') : 'copy';
   });
   scroller.addEventListener('dragleave', () => {
     if ($('#dropOverlay').classList.contains('hidden')) return;
@@ -6099,7 +6146,7 @@ function bindPaneEvents(paneId) {
       return;
     }
     const fallbackIds = activeDraggedItemIds();
-    if (isInternalItemDrag(event.dataTransfer, fallbackIds)) {
+    if (classifyDrop(event.dataTransfer, fallbackIds) === 'internal-items') {
       const context = paneItemDropContext(paneId, event);
       if (!context) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
@@ -6109,19 +6156,18 @@ function bindPaneEvents(paneId) {
       scheduleDropTask(() => handlePaneItemDrop(context));
       return;
     }
-    if (!event.dataTransfer?.files?.length) {
-      clearDragUI();
-      return;
-    }
-    const droppedFiles = [...event.dataTransfer.files];
-    const paths = droppedFiles.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
-    // Web: no host paths exist — hand the File objects to the shim uploader.
-    const importable = paths.length ? paths : (window.eagleMV.platform === 'web' ? droppedFiles : []);
+    const importable = externalDropImportables(event.dataTransfer);
     if (!importable.length) {
       clearDragUI();
       return;
     }
-    scheduleDropTask(() => importFiles(importable, 'drop'));
+    const targetPane = paneById(paneId);
+    const target = {
+      paneId,
+      libraryPath: state.library?.path,
+      folderId: targetPane?.currentView.kind === 'folder' ? targetPane.currentView.id : null
+    };
+    scheduleDropTask(() => importFiles(importable, 'drop', target));
   });
   const previewModal = query('#previewModal');
   if (previewModal) {
@@ -6191,10 +6237,10 @@ function bindPaneEvents(paneId) {
       modalMedia.addEventListener('wheel', event => {
         const pane = paneById(paneId);
         if (!pane?.previewId) return;
-        event.preventDefault();
         activatePane(paneId);
         withActivePane(paneId, () => {
           if (!previewImage()) return;
+          event.preventDefault();
           const box = modalMedia.getBoundingClientRect();
           const anchor = { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
           changePreviewZoom(event.deltaY < 0 ? .15 : -.15, anchor);
@@ -7088,7 +7134,6 @@ function bindEvents() {
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       moveCardFocus(event.key);
-      broadcastPaneAction(() => moveCardFocus(event.key));
     }
     if (!editable && event.altKey && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
     if (!editable && event.altKey && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }

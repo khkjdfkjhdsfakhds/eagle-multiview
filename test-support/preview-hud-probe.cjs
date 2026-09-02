@@ -17,11 +17,18 @@ async function run() {
       close: getComputedStyle(document.querySelector('#closePreview')).display,
       prev: getComputedStyle(document.querySelector('#prevPreview')).display,
       next: getComputedStyle(document.querySelector('#nextPreview')).display,
+      rating: getComputedStyle(document.querySelector('#modalRating')).display,
+      slideshow: getComputedStyle(document.querySelector('#slideshowControls')).display,
+      previewBackground: getComputedStyle(document.querySelector('#previewBackground')).display,
       closeOpacity: parseFloat(getComputedStyle(document.querySelector('#closePreview')).opacity)
     });
     const desktop = read();
     document.body.classList.add('web-client');
     const web = read();
+    window.state.previewId = 'fixture-preview';
+    document.querySelector('#slideshowToggle').click();
+    const slideshowPressed = document.querySelector('#slideshowToggle').getAttribute('aria-pressed');
+    document.querySelector('#slideshowToggle').click();
     modal.classList.add('hud-hidden');
     // Let the slow .7s opacity transition settle; poll in case the Electron
     // process is busy and the compositor frame is delayed under load.
@@ -32,7 +39,7 @@ async function run() {
     const hudHidden = read();
     modal.classList.remove('hud-hidden');
     document.body.classList.remove('web-client');
-    return { desktop, web, hudHidden };
+    return { desktop, web, hudHidden, slideshowPressed };
   })()`);
   process.stdout.write(`EAGLEMV_HUD ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();

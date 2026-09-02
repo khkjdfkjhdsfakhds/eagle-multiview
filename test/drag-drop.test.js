@@ -6,6 +6,7 @@ const {
   ITEM_TYPE,
   readItemIds,
   isInternalItemDrag,
+  classifyDrop,
   shouldShowImportOverlay
 } = require('../src/drag-drop');
 const fs = require('node:fs');
@@ -35,6 +36,12 @@ test('shows the import overlay for files that genuinely come from outside MultiV
   const dataTransfer = transfer(['Files']);
   assert.equal(isInternalItemDrag(dataTransfer), false);
   assert.equal(shouldShowImportOverlay(dataTransfer), true);
+});
+
+test('classifies internal items, external files, and unsupported drags at one boundary', () => {
+  assert.equal(classifyDrop(transfer([ITEM_TYPE], { [ITEM_TYPE]: '["A"]' })), 'internal-items');
+  assert.equal(classifyDrop(transfer(['Files'])), 'external-files');
+  assert.equal(classifyDrop(transfer(['text/plain'])), 'unsupported');
 });
 
 test('falls back to the active session when custom drag data is malformed', () => {
@@ -128,4 +135,3 @@ test('folderMoveDelta calculates move vs add semantics correctly', () => {
     remove: []
   });
 });
-

@@ -25,9 +25,15 @@
     return hasType(dataTransfer, ITEM_TYPE) || readItemIds(dataTransfer, fallbackIds).length > 0;
   }
 
-  function shouldShowImportOverlay(dataTransfer, fallbackIds = []) {
-    return hasType(dataTransfer, 'Files') && !isInternalItemDrag(dataTransfer, fallbackIds);
+  function classifyDrop(dataTransfer, fallbackIds = []) {
+    if (isInternalItemDrag(dataTransfer, fallbackIds)) return 'internal-items';
+    if (hasType(dataTransfer, 'Files')) return 'external-files';
+    return 'unsupported';
   }
 
-  return { ITEM_TYPE, SOURCE_PANE_TYPE, hasType, readItemIds, isInternalItemDrag, shouldShowImportOverlay };
+  function shouldShowImportOverlay(dataTransfer, fallbackIds = []) {
+    return classifyDrop(dataTransfer, fallbackIds) === 'external-files';
+  }
+
+  return { ITEM_TYPE, SOURCE_PANE_TYPE, hasType, readItemIds, isInternalItemDrag, classifyDrop, shouldShowImportOverlay };
 });

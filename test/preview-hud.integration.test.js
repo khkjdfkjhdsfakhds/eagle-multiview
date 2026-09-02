@@ -28,6 +28,10 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   assert.equal(result.web.close, 'grid', 'web client shows the close button');
   assert.equal(result.web.prev, 'grid', 'web client shows the previous button');
   assert.equal(result.web.next, 'grid', 'web client shows the next button');
+  assert.equal(result.web.rating, 'flex', 'web client shows touch rating controls');
+  assert.equal(result.web.slideshow, 'flex', 'web client shows slideshow controls');
+  assert.equal(result.web.previewBackground, 'none', 'web client does not expose unrelated preview-view controls');
+  assert.equal(result.slideshowPressed, 'true', 'the visible slideshow control starts playback');
   // The HUD stays low-presence (not fully opaque) while visible.
   assert.ok(result.web.closeOpacity < 1, 'the web close button is semi-transparent, not opaque');
   // After inactivity the HUD fades out.
