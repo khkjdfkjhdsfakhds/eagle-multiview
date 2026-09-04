@@ -163,7 +163,7 @@
     const storage = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
     if (storage) {
       const memory = createSortMemory(storage);
-      return memory.rememberCascade(storageOrMemory, libraryPath, parentFolderId, foldersTree, sort, sortDir);
+      return memory.rememberCascade(libraryPath, parentFolderId, foldersTree, sort, sortDir, now);
     }
     return [];
   }

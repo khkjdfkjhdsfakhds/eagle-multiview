@@ -148,6 +148,22 @@ test('exported top-level rememberCascade helper works with storage or memory ins
   assert.deepEqual(memory.recall('/A.library', 'folder:F11'), { sort: 'size', sortDir: 'desc' });
 });
 
+test('exported top-level rememberCascade helper keeps arguments aligned with browser localStorage fallback', () => {
+  const storage = fakeStorage();
+  const tree = [{ id: 'F20', children: [{ id: 'F21' }] }];
+  const previousWindow = global.window;
+  global.window = { localStorage: storage };
+  try {
+    rememberCascade(null, '/B.library', 'F20', tree, 'rating', 'asc', 456);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+  const memory = createSortMemory(storage);
+  assert.deepEqual(memory.recall('/B.library', 'folder:F20'), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recall('/B.library', 'folder:F21'), { sort: 'rating', sortDir: 'asc' });
+});
+
 test('sort controls include cascade checkbox in markup, scoping, and event bindings', () => {
   assert.ok(renderer.includes('id="sortCascadeCheck"'), 'markup includes cascade checkbox');
   assert.ok(renderer.includes("'#sortCascadeCheck'"), 'cascade check is pane-scoped');
