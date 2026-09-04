@@ -22,29 +22,47 @@ function pngWithText(chunks) {
   return Buffer.concat([PNG_SIGNATURE, ...encoded, pngChunk('IEND', Buffer.alloc(0))]);
 }
 
-function jpegWithExifComment(comment) {
+function tiffWithExifComment(comment, byteOrder = 'II') {
   const raw = Buffer.concat([Buffer.from('ASCII\0\0\0', 'ascii'), Buffer.from(comment), Buffer.from([0])]);
   const tiff = Buffer.alloc(44 + raw.length);
-  tiff.write('II', 0, 'ascii');
-  tiff.writeUInt16LE(42, 2);
-  tiff.writeUInt32LE(8, 4);
-  tiff.writeUInt16LE(1, 8);
-  tiff.writeUInt16LE(0x8769, 10);
-  tiff.writeUInt16LE(4, 12);
-  tiff.writeUInt32LE(1, 14);
-  tiff.writeUInt32LE(26, 18);
-  tiff.writeUInt32LE(0, 22);
-  tiff.writeUInt16LE(1, 26);
-  tiff.writeUInt16LE(0x9286, 28);
-  tiff.writeUInt16LE(7, 30);
-  tiff.writeUInt32LE(raw.length, 32);
-  tiff.writeUInt32LE(44, 36);
-  tiff.writeUInt32LE(0, 40);
+  const write16 = byteOrder === 'II' ? tiff.writeUInt16LE.bind(tiff) : tiff.writeUInt16BE.bind(tiff);
+  const write32 = byteOrder === 'II' ? tiff.writeUInt32LE.bind(tiff) : tiff.writeUInt32BE.bind(tiff);
+  tiff.write(byteOrder, 0, 'ascii');
+  write16(42, 2);
+  write32(8, 4);
+  write16(1, 8);
+  write16(0x8769, 10);
+  write16(4, 12);
+  write32(1, 14);
+  write32(26, 18);
+  write32(0, 22);
+  write16(1, 26);
+  write16(0x9286, 28);
+  write16(7, 30);
+  write32(raw.length, 32);
+  write32(44, 36);
+  write32(0, 40);
   raw.copy(tiff, 44);
+  return tiff;
+}
+
+function jpegWithExifComment(comment) {
+  const tiff = tiffWithExifComment(comment);
   const exif = Buffer.concat([Buffer.from('Exif\0\0', 'binary'), tiff]);
   const size = Buffer.alloc(2);
   size.writeUInt16BE(exif.length + 2);
   return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1]), size, exif, Buffer.from([0xff, 0xd9])]);
+}
+
+function webpWithExifComment(comment) {
+  const tiff = tiffWithExifComment(comment, 'MM');
+  const chunkSize = Buffer.alloc(4);
+  chunkSize.writeUInt32LE(tiff.length);
+  const padding = tiff.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0);
+  const body = Buffer.concat([Buffer.from('WEBPEXIF', 'ascii'), chunkSize, tiff, padding]);
+  const riffSize = Buffer.alloc(4);
+  riffSize.writeUInt32LE(body.length);
+  return Buffer.concat([Buffer.from('RIFF', 'ascii'), riffSize, body]);
 }
 
 test('parses Automatic1111 prompts, parameters, and LoRA tokens', () => {
@@ -91,6 +109,15 @@ test('parses NovelAI metadata bundle from JPEG EXIF UserComment', () => {
   assert.equal(metadata.positive, 'novelai prompt');
   assert.equal(metadata.negative, 'bad hands');
   assert.equal(metadata.params.Seed, '456');
+});
+
+test('parses NovelAI metadata bundle from WebP EXIF UserComment', () => {
+  const bundle = JSON.stringify({ Description: 'webp prompt', Comment: JSON.stringify({ uc: 'webp negative', steps: 20, seed: 2304848398 }) });
+  const metadata = readMetadataBuffer(webpWithExifComment(bundle), 'webp');
+  assert.equal(metadata.format, 'NovelAI');
+  assert.equal(metadata.positive, 'webp prompt');
+  assert.equal(metadata.negative, 'webp negative');
+  assert.equal(metadata.params.Seed, '2304848398');
 });
 
 test('returns null for an image without supported generation metadata', () => {
