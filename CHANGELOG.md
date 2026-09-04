@@ -2,6 +2,24 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.7.0 - 2026-09-05
+
+### Metadata
+
+- Added WebP RIFF/EXIF parsing so embedded NovelAI generation metadata appears in the Metadata panel instead of being treated as absent.
+
+### Navigation, sorting, and panes
+
+- Consolidated the reviewed navigation, path-bar, preview, scroll-memory, sorting, and responsive layout changes into the formal app.
+- Improved per-folder sort recall, including inherited sort state and direction handling.
+- Restricted synchronized-pane behavior to the intended fullscreen preview flow and added mobile/touch regression coverage.
+- Preserved macOS window-control clearance when the sidebar is hidden.
+
+### Creation and drag behavior
+
+- Preserved Eagle logical folder-name semantics without applying local filename restrictions.
+- Added a macOS conversion fallback for WebP drag thumbnails so Finder drags keep a usable icon.
+
 ## 1.6.0 - 2026-08-19
 
 ### Web access and mobile support
