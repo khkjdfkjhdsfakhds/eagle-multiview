@@ -6,6 +6,7 @@
   if (root) root.EagleMVSortMemory = api;
 })(typeof window !== 'undefined' ? window : globalThis, () => {
   const STORAGE_KEY = 'eaglemv.sortPrefs';
+  const SORT_CASCADE_KEY = 'eaglemv.sortCascade';
   const MAX_VIEWS_PER_LIBRARY = 400;
 
   function findFolderNode(nodes, targetId) {
@@ -18,6 +19,19 @@
       if (child) return child;
     }
     return null;
+  }
+
+  function findFolderPath(nodes, targetId, trail = []) {
+    if (!nodes || !targetId) return [];
+    const list = Array.isArray(nodes) ? nodes : [nodes];
+    for (const node of list) {
+      if (!node || typeof node !== 'object') continue;
+      const next = [...trail, node];
+      if (node.id === targetId) return next;
+      const child = findFolderPath(node.children, targetId, next);
+      if (child.length) return child;
+    }
+    return [];
   }
 
   function collectFolderIds(node) {
@@ -77,6 +91,23 @@
       };
     }
 
+    function recallFolderSort(libraryPath, folderId, foldersTree = null, cascade = false) {
+      if (!libraryPath || !folderId) return null;
+      const cleanId = String(folderId).replace(/^folder:/, '');
+      const direct = recall(libraryPath, `folder:${cleanId}`);
+      if (direct) return direct;
+      if (!cascade || !foldersTree) return null;
+      const path = findFolderPath(foldersTree, cleanId);
+      for (let i = path.length - 2; i >= 0; i--) {
+        const ancestor = path[i];
+        if (ancestor && ancestor.id) {
+          const ancestorSort = recall(libraryPath, `folder:${ancestor.id}`);
+          if (ancestorSort) return ancestorSort;
+        }
+      }
+      return null;
+    }
+
     function remember(libraryPath, viewKey, sort, sortDir, now = 0) {
       if (!libraryPath || !viewKey) return;
       const data = read();
@@ -118,7 +149,7 @@
       return ids;
     }
 
-    return { recall, remember, rememberCascade, invalidate };
+    return { recall, recallFolderSort, remember, rememberCascade, invalidate };
   }
 
   function rememberCascade(storageOrMemory, libraryPath, parentFolderId, foldersTree, sort, sortDir, now = 0) {
@@ -137,5 +168,5 @@
     return [];
   }
 
-  return { createSortMemory, rememberCascade, STORAGE_KEY, MAX_VIEWS_PER_LIBRARY };
+  return { createSortMemory, rememberCascade, findFolderPath, STORAGE_KEY, SORT_CASCADE_KEY, MAX_VIEWS_PER_LIBRARY };
 });

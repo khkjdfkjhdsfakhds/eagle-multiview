@@ -79,7 +79,7 @@ test('entering a folder search result clears only the text search', () => {
 test('folder cards share the search-exiting navigation path', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   assert.match(source, /function enterFolderFromGrid\(folderId\)[\s\S]*?navigate\(\{ kind: 'folder', id: folderId \}, \{ exitSearch: true \}\)/);
-  assert.match(source, /if \(touch && !state\.selected\.size\) \{ enterFolderFromGrid\(folder\.dataset\.openFolder\); return; \}/);
+  assert.match(source, /if \(touch && !state\.selected\.size\) \{ enterFolderFromGrid\(folderId\); return; \}/);
   assert.match(source, /if \(folder\) \{ enterFolderFromGrid\(folder\.dataset\.openFolder\); return; \}/);
   assert.match(source, /event\.key === 'Enter' && state\.selectedFolderCard\) \{ event\.preventDefault\(\); enterFolderFromGrid\(state\.selectedFolderCard\); \}/);
 });
@@ -403,14 +403,15 @@ test('background grid renders respect the visibly active pane before updating th
   assert.equal((handler.match(/if \(updateSharedFooter\) updateScrollUI\(\);/g) || []).length, 3);
 });
 
-test('delayed import refreshes stay attached to the pane that received the import', () => {
+test('delayed import refreshes stay attached to the pane that received the import and any matching folder pane', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('async function importFiles(');
   const end = source.indexOf('\n}', start);
   const handler = source.slice(start, end);
-  assert.ok(handler.includes('const sourcePaneId = target.paneId || state.activePaneId;'));
-  assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: sourcePaneId \}\), 1600\)/);
-  assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: sourcePaneId \}\), 4200\)/);
+  assert.ok(handler.includes('const targetPaneId = target.paneId || state.activePaneId;'));
+  assert.ok(handler.includes('refreshPaneIds.add(pane.id)'));
+  assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: pId \}\), 1600\)/);
+  assert.match(handler, /setTimeout\(\(\) => refresh\(\{ reset: true, preserveScroll: true, paneId: pId \}\), 4200\)/);
 });
 
 test('blocking dialogs consume Escape before workspace shortcuts can run', () => {
@@ -612,5 +613,4 @@ test('app initialization restores session layout, split ratios, and validates pa
   assert.ok(source.includes('if (!state.library) return;'), 'saveSessionState guards against early library null writes');
   assert.ok(source.includes('renderFolderTree();'), 'calls renderFolderTree during start and session restoration');
 });
-
 

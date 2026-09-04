@@ -31,10 +31,18 @@ test('preview image disables native dragging and removes click-to-close backgrou
   assert.ok(styles.includes('-webkit-user-drag: none;'), 'styles must set -webkit-user-drag: none');
 });
 
-test('syncPanes keeps grid arrow selection pane-local while preview navigation still syncs', () => {
+test('syncPanes broadcast is limited to preview open, navigation, and close', () => {
   assert.ok(renderer.includes('function broadcastPaneAction('), 'broadcastPaneAction helper must exist');
-  assert.ok(!renderer.includes('broadcastPaneAction(() => moveCardFocus(event.key))'), 'grid Arrow keys must stay pane-local');
   assert.ok(renderer.includes('broadcastPaneAction(pane => { if (pane.previewId) movePreview('), 'Arrow keys in preview must broadcast');
-  assert.ok(renderer.includes('broadcastPaneAction(pane => {\n      if (pane.previewId) closePreview('), 'closePreview must broadcast close to sibling panes');
+  assert.ok(renderer.includes('broadcastPaneAction(pane => {\n      if (pane.previewId) closePreview({ commitSelection: false'), 'closePreview must broadcast without changing sibling selections');
+  assert.ok(!renderer.includes('broadcastPaneAction(() => moveCardFocus(event.key))'), 'grid selection must stay pane-local');
+  assert.ok(!renderer.includes('broadcastPaneAction(() => scrollGrid(event.key))'), 'grid scrolling must stay pane-local');
+  assert.ok(!renderer.includes("broadcastPaneAction(() => { if (state.selected.size) setSelectionRating"), 'grid rating must stay pane-local');
+  assert.ok(!renderer.includes('broadcastPaneAction(pane => { if (pane.previewId) ratePreviewItem'), 'preview rating must not repeat the same Eagle mutation');
   assert.ok(renderer.includes('localStorage.setItem(\'eaglemv.syncPanes\''), 'syncPanes state must persist to localStorage');
+});
+
+test('single click/pointerdown does not force fit preview into zoom mode', () => {
+  assert.ok(!renderer.includes("previewZoom.mode = 'zoom';\n        pane.previewZoom.scale = 1"), 'pane pointerdown must not auto-switch fit to zoom');
+  assert.ok(!renderer.includes("previewZoom.mode = 'zoom';\n      state.previewZoom.scale = 1"), 'global pointerdown must not auto-switch fit to zoom');
 });

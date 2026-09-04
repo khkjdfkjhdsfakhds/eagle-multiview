@@ -31,7 +31,7 @@ test('path bars stay pane-local across Web and Electron responsive layouts', { t
   assert.equal(electronResult.mobile, false);
   assert.equal(electronResult.panes, 2);
   assert.equal(electronResult.layout, 'vertical2');
-  assert.ok(electronResult.deepPath.fontSize >= 8.5 && electronResult.deepPath.fontSize <= 9.5, `路径栏文字没有恢复到紧凑字号: ${JSON.stringify(electronResult.deepPath)}`);
+  assert.ok(electronResult.deepPath.fontSize >= 13 && electronResult.deepPath.fontSize <= 15, `路径栏文字没有与标题同字号: ${JSON.stringify(electronResult.deepPath)}`);
   assert.ok(electronResult.deepPath.pathTextToDividerGap >= 4 && electronResult.deepPath.pathTextToDividerGap <= 8, `路径文字和分隔线距离不合理: ${JSON.stringify(electronResult.deepPath)}`);
   assert.ok(electronResult.deepPath.dividerToTitleGap >= 3, `分隔线和第二行距离不足: ${JSON.stringify(electronResult.deepPath)}`);
   assert.ok(electronResult.deepPath.breadcrumbToTitleGap >= 5, `路径栏和标题之间的间距不足: ${JSON.stringify(electronResult.deepPath)}`);

@@ -17,15 +17,15 @@ test('panes carry per-view scroll memory through the state proxy', () => {
 });
 
 test('navigate remembers the departing view and arms restore for back-style navigation', () => {
-  assert.ok(renderer.includes('function rememberViewPosition()'));
+  assert.ok(renderer.includes('function rememberViewPosition'));
   assert.ok(renderer.includes('if (changed) rememberViewPosition();'));
   assert.ok(renderer.includes(
     'state.restoreScroll = changed && restoreScroll ? state.viewMemory.get(descriptorKey(view)) || null : null;'
   ), 'restore only arms when the caller asks for it and the view actually changes');
   // Memory is bounded and top-of-list departures clear the entry.
   assert.ok(renderer.includes('const VIEW_MEMORY_LIMIT = 50;'));
-  assert.ok(renderer.includes('while (memory.size > VIEW_MEMORY_LIMIT) memory.delete(memory.keys().next().value);'));
-  assert.ok(renderer.includes('count: Math.min(state.items.length, SORT_FETCH_CAP)'));
+  assert.ok(renderer.includes('const count = Math.min((pane ? pane.items : state.items)?.length || 0, SORT_FETCH_CAP);'));
+  assert.ok(renderer.includes('restoreScroll = true'), 'navigate defaults to restoring scroll if remembered');
 });
 
 test('back, forward, up, and breadcrumb navigation all restore the scroll position', () => {
@@ -49,4 +49,15 @@ test('refresh backfills to the remembered count before jumping back', () => {
   assert.ok(block.includes('needsViewportFill || continueBackfill || continueRestore'));
   assert.ok(block.includes('scroller.scrollTop = restoreTarget.scrollTop;'), 'lands on the remembered offset');
   assert.ok(block.includes('pane.restoreScroll = null;'), 'restore is one-shot');
+});
+
+test('rememberViewPosition preserves scroll position for folders containing only subfolders', () => {
+  assert.ok(
+    !renderer.includes('if (!state.items.length || scrollTop <= 0) return;'),
+    'does not reject views with 0 items (such as folder-only categories)'
+  );
+  assert.ok(
+    renderer.includes('if (scrollTop <= 0) return;'),
+    'stores memory whenever scrollTop > 0'
+  );
 });

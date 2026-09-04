@@ -95,6 +95,9 @@ test('a new folder is named before it exists; documents still use a default name
   const mainFolderEnd = main.indexOf("handleRPC('document:create'", mainFolderStart);
   const mainFolderHandler = main.slice(mainFolderStart, mainFolderEnd);
   assert.ok(mainFolderHandler.includes("name = '未命名文件夹'"));
+  assert.ok(mainFolderHandler.includes('const requestedName = normalizeEagleFolderName(name)'),
+    'folder creation must use Eagle logical-name rules rather than local filename rules');
+  assert.equal(mainFolderHandler.includes('validateNewItemName(name)'), false);
   assert.ok(mainFolderHandler.includes('nextAvailableName(requestedName, siblingFolders(folders, parent))'));
   assert.ok(mainFolderHandler.includes('renamed: availableName !== requestedName'));
   assert.equal(mainFolderHandler.includes('同一位置已存在同名文件夹'), false);
@@ -223,4 +226,17 @@ test('bulk file actions resolve missing items independently with bounded concurr
     assert.ok(start >= 0, `${handler} exists`);
     assert.ok(source.slice(start, start + 1400).includes('resolveItemFiles(ids)'), `${handler} tolerates per-item resolution failures`);
   }
+});
+
+test('history and folder navigation support Control and Option arrow shortcuts', () => {
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownEnd = renderer.indexOf('\n  });\n}', keydownStart);
+  const handler = renderer.slice(keydownStart, keydownEnd);
+
+  assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowLeft'"));
+  assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowRight'"));
+  assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowUp'"));
+  assert.match(renderer, /id="backButton"[^>]+title="返回（⌥← \/ ⌃←）"/);
+  assert.match(renderer, /id="forwardButton"[^>]+title="前进（⌥→ \/ ⌃→）"/);
+  assert.match(renderer, /id="upButton"[^>]+title="上一级（⌥↑ \/ ⌃↑）"/);
 });

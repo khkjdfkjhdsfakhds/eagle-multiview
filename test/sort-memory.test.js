@@ -7,7 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createSortMemory, rememberCascade, STORAGE_KEY, MAX_VIEWS_PER_LIBRARY } = require('../src/sort-memory');
+const { createSortMemory, rememberCascade, STORAGE_KEY, SORT_CASCADE_KEY, MAX_VIEWS_PER_LIBRARY } = require('../src/sort-memory');
 
 const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
@@ -155,4 +155,125 @@ test('sort controls include cascade checkbox in markup, scoping, and event bindi
   assert.ok(renderer.includes('sortMemory.rememberCascade('), 'cascade checkbox invokes rememberCascade');
   assert.match(styles, /\.sort-popover\s*\{/, 'styles define .sort-popover');
   assert.match(styles, /\.sort-cascade-check\s*\{/, 'styles define .sort-cascade-check');
+});
+
+test('sort cascade preference key is exported and renderer wires persistence and storage events', () => {
+  assert.equal(SORT_CASCADE_KEY, 'eaglemv.sortCascade');
+  assert.ok(renderer.includes('SORT_CASCADE_KEY'), 'renderer defines SORT_CASCADE_KEY');
+  assert.ok(renderer.includes('setSortCascadeEnabled'), 'renderer includes setSortCascadeEnabled helper');
+  assert.ok(renderer.includes('localStorage.setItem(SORT_CASCADE_KEY'), 'saves sort cascade preference');
+  assert.ok(renderer.includes('localStorage.getItem(SORT_CASCADE_KEY'), 'reads sort cascade preference');
+});
+
+test('recallFolderSort falls back to closest ancestor sort when cascade is enabled', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const foldersTree = [
+    {
+      id: 'ParentFolder',
+      name: 'Parent',
+      children: [
+        {
+          id: 'NewSubFolder',
+          name: 'New Sub'
+        }
+      ]
+    }
+  ];
+
+  memory.remember('/A.library', 'folder:ParentFolder', 'rating', 'asc', 100);
+
+  // Without cascade enabled: returns null for new subfolder with no explicit sort
+  assert.equal(memory.recallFolderSort('/A.library', 'NewSubFolder', foldersTree, false), null);
+
+  // With cascade enabled: inherits parent sort
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewSubFolder', foldersTree, true), {
+    sort: 'rating',
+    sortDir: 'asc'
+  });
+});
+
+test('recallFolderSort traverses deep ancestor chains to find the closest sort preference', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const foldersTree = [
+    {
+      id: 'GrandParent',
+      children: [
+        {
+          id: 'Parent',
+          children: [
+            {
+              id: 'Child',
+              children: [
+                { id: 'GrandChild' }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'SiblingParent',
+          children: [{ id: 'SiblingChild' }]
+        }
+      ]
+    }
+  ];
+
+  // Set sort at GrandParent
+  memory.remember('/A.library', 'folder:GrandParent', 'size', 'desc', 10);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, true), {
+    sort: 'size',
+    sortDir: 'desc'
+  });
+
+  // Override sort at Parent
+  memory.remember('/A.library', 'folder:Parent', 'name', 'asc', 20);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, true), {
+    sort: 'name',
+    sortDir: 'asc'
+  });
+
+  // Sibling branch still inherits from GrandParent
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'SiblingChild', foldersTree, true), {
+    sort: 'size',
+    sortDir: 'desc'
+  });
+
+  // Without cascade enabled, none of them inherit
+  assert.equal(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, false), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'SiblingChild', foldersTree, false), null);
+});
+
+test('recallFolderSort handles nonexistent folders, null inputs, and missing library safely', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  assert.equal(memory.recallFolderSort('', 'F1', [], true), null);
+  assert.equal(memory.recallFolderSort('/A.library', '', [], true), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', [], true), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', null, true), null);
+});
+
+test('newly added child folder dynamically reflects parent sort changes when cascade is enabled', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const foldersTree = [
+    {
+      id: 'Parent',
+      children: [{ id: 'NewChild' }]
+    }
+  ];
+
+  // Set sort at Parent
+  memory.remember('/A.library', 'folder:Parent', 'date', 'desc', 10);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewChild', foldersTree, true), {
+    sort: 'date',
+    sortDir: 'desc'
+  });
+
+  // When Parent sort changes, NewChild dynamically reflects the change without static record
+  memory.remember('/A.library', 'folder:Parent', 'rating', 'asc', 20);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewChild', foldersTree, true), {
+    sort: 'rating',
+    sortDir: 'asc'
+  });
 });

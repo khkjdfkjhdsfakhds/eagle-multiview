@@ -26,10 +26,7 @@ test('clicking a lit star clears the rating, as Eagle does', () => {
 });
 
 test('rating from the preview targets the previewed item, not the selection', () => {
-  assert.ok(
-    renderer.includes('  if (previewOpen) ratePreviewItem(Number(event.key));\n      else setSelectionRating(') ||
-    renderer.includes('if (previewOpen) {\n        ratePreviewItem(rating);\n        broadcastPaneAction(pane => { if (pane.previewId) ratePreviewItem(rating); });\n      } else {')
-  );
+  assert.ok(renderer.includes('if (previewOpen) {\n        ratePreviewItem(rating);\n      } else {'));
   assert.ok(renderer.includes('setSelectionRating({ ids: [state.previewId], rating });'));
 });
 

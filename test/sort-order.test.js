@@ -69,13 +69,13 @@ test('添加日期 sorts by btime, independently of the file modification time',
   assert.equal(compareBySort('added', 'asc', { id: 'x' }, { id: 'y', btime: 1 }), -1);
 });
 
-test('pane markup offers rating/type options and a direction toggle', () => {
+test('pane markup offers rating/type options and direction options in popover', () => {
   assert.ok(renderer.includes('<option value="added">添加日期</option>'));
   assert.ok(renderer.includes('<option value="rating">评分</option>'));
   assert.ok(renderer.includes('<option value="type">文件类型</option>'));
-  assert.ok(renderer.includes('id="sortDirButton"'));
-  assert.ok(renderer.includes("'#sortDirButton'"), 'direction button must be pane-scoped');
-  assert.match(styles, /\.sort-dir-button\s*\{/);
+  assert.ok(renderer.includes('data-sort-dir="asc"'));
+  assert.ok(renderer.includes('data-sort-dir="desc"'));
+  assert.ok(!renderer.includes('id="sortDirButton"'), 'sortDirButton removed from toolbar');
 });
 
 test('pane state tracks sortDir and syncs it across layouts', () => {
@@ -90,7 +90,7 @@ test('non-default sorts backfill the whole folder up to the cap', () => {
   assert.ok(renderer.includes('const SORT_FETCH_CAP = 3000;'));
   const start = renderer.indexOf('const sortBackfillActive');
   assert.ok(start >= 0);
-  const block = renderer.slice(start, start + 1800);
+  const block = renderer.slice(start, start + 2400);
   assert.ok(block.includes('state.items.length < SORT_FETCH_CAP'));
   // Backfill pages render quietly; the grid rebuilds once when it settles.
   assert.ok(block.includes('quiet: nextQuiet'));
@@ -131,11 +131,10 @@ test('随机 shuffles stably and reshuffles on demand', () => {
   assert.ok(new Set(pool.map(item => randomRank('seed-a', item.id))).size >= 39);
 });
 
-test('the shuffle is wired to the pane and the direction button', () => {
+test('the shuffle is wired to the pane and re-selection', () => {
   assert.ok(renderer.includes('<option value="random">随机</option>'));
   assert.ok(renderer.includes('function nextRandomSeed()'));
   assert.ok(renderer.includes("randomSeed: source.randomSeed || nextRandomSeed(),"));
   assert.ok(renderer.includes("if (state.sort === 'random') state.randomSeed = nextRandomSeed();"), '选中随机时重新洗牌');
-  assert.ok(renderer.includes("dirButton.textContent = '⟳';"), '方向钮在随机时变成重新洗牌');
   assert.ok(renderer.includes("compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed })"));
 });

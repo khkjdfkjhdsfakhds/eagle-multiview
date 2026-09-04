@@ -81,9 +81,37 @@ const {
   installBackRouter
 } = window.EagleMVWindowRouter;
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
+const SORT_CASCADE_KEY = window.EagleMVSortMemory?.SORT_CASCADE_KEY || 'eaglemv.sortCascade';
+let sortCascadeEnabled = false;
+try {
+  sortCascadeEnabled = localStorage.getItem(SORT_CASCADE_KEY) === 'true';
+} catch {}
+
+function setSortCascadeEnabled(enabled) {
+  sortCascadeEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem(SORT_CASCADE_KEY, String(sortCascadeEnabled));
+  } catch {}
+  if (typeof state !== 'undefined' && Array.isArray(state.panes)) {
+    for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
+    state.sortCascade = sortCascadeEnabled;
+  }
+  const cascadeCheck = $('#sortCascadeCheck');
+  if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+}
+
 // Another MultiView window may update the shared sort preferences.
 window.addEventListener('storage', event => {
   if (event.key === window.EagleMVSortMemory.STORAGE_KEY) sortMemory.invalidate();
+  if (event.key === SORT_CASCADE_KEY) {
+    sortCascadeEnabled = event.newValue === 'true';
+    if (typeof state !== 'undefined' && Array.isArray(state.panes)) {
+      for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
+      state.sortCascade = sortCascadeEnabled;
+    }
+    const cascadeCheck = $('#sortCascadeCheck');
+    if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+  }
 });
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
@@ -107,7 +135,7 @@ const newFileTypes = Object.freeze({
 });
 
 const paneScopedSelectors = new Set([
-  '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect', '#sortDirButton',
+  '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect',
   '#sortSelectButton', '#sortSelectLabel', '#sortPopover', '#sortCascadeDivider', '#sortCascadeItem', '#sortCascadeCheck',
   '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay',
   '#previewModal', '#modalMedia', '#closePreview', '#prevPreview', '#nextPreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
@@ -148,7 +176,7 @@ const state = {
   inspectorAutoSaveTimer: null,
   sort: 'default',
   sortDir: 'auto',
-  sortCascade: false,
+  sortCascade: sortCascadeEnabled,
   randomSeed: 'seed',
   viewMode: 'justified',
   sortCapNoticeKey: '',
@@ -307,7 +335,7 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     selectedBase: fresh ? null : (source.selectedBase || null),
     sort: fresh ? 'default' : (source.sort || 'default'),
     sortDir: source.sortDir || 'auto',
-    sortCascade: fresh ? false : Boolean(source.sortCascade),
+    sortCascade: sortCascadeEnabled,
     randomSeed: source.randomSeed || nextRandomSeed(),
     viewMode: fresh ? 'justified' : (paneViewModes.has(storedPaneViewModes()[id]) ? storedPaneViewModes()[id] : (source.viewMode || 'justified')),
     sortCapNoticeKey: '',
@@ -596,9 +624,9 @@ function paneMarkup(id, index) {
       </div>
       <div class="heading-main-row">
         <div class="navigation-controls">
-          <button id="backButton" class="nav-button" title="返回（⌥←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-          <button id="forwardButton" class="nav-button" title="前进（⌥→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-          <button id="upButton" class="nav-button up" title="上一级（⌥↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
+          <button id="backButton" class="nav-button" title="返回（⌥← / ⌃←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="forwardButton" class="nav-button" title="前进（⌥→ / ⌃→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="upButton" class="nav-button up" title="上一级（⌥↑ / ⌃↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
         </div>
         <div class="location-block">
           <h1 id="viewTitle">资料库</h1>
@@ -639,6 +667,11 @@ function paneMarkup(id, index) {
                 <button type="button" class="sort-popover-option" data-sort="type">文件类型</button>
                 <button type="button" class="sort-popover-option" data-sort="random">随机</button>
               </div>
+              <div id="sortDirDivider" class="sort-popover-divider"></div>
+              <div id="sortDirGroup" class="sort-popover-options sort-popover-dir-group">
+                <button type="button" class="sort-popover-option" data-sort-dir="asc">升序</button>
+                <button type="button" class="sort-popover-option" data-sort-dir="desc">降序</button>
+              </div>
               <div id="sortCascadeDivider" class="sort-popover-divider"></div>
               <label id="sortCascadeItem" class="sort-popover-item sort-cascade-item">
                 <input type="checkbox" id="sortCascadeCheck" class="sort-cascade-check">
@@ -646,7 +679,6 @@ function paneMarkup(id, index) {
               </label>
             </div>
           </div>
-          <button id="sortDirButton" class="sort-dir-button" title="切换排序方向" aria-label="切换排序方向">↓</button>
         </div>
       </div>
     </div>
@@ -1247,6 +1279,12 @@ function renderSortControls() {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
       btn.classList.toggle('active', btn.dataset.sort === sortKey);
     }
+    const sortable = Boolean(state.sort) && state.sort !== 'default' && state.sort !== 'random';
+    const currentDir = effectiveSortDir(state.sort, state.sortDir);
+    for (const btn of popover.querySelectorAll('[data-sort-dir]')) {
+      btn.disabled = !sortable;
+      btn.classList.toggle('active', sortable && btn.dataset.sortDir === currentDir);
+    }
     const isFolder = state.currentView?.kind === 'folder';
     const divider = $('#sortCascadeDivider');
     const cascadeItem = $('#sortCascadeItem');
@@ -1255,22 +1293,6 @@ function renderSortControls() {
     const cascadeCheck = $('#sortCascadeCheck');
     if (cascadeCheck) cascadeCheck.checked = Boolean(state.sortCascade);
   }
-  const dirButton = $('#sortDirButton');
-  if (!dirButton) return;
-  // A shuffle has no direction, so the same button reshuffles instead.
-  if (state.sort === 'random') {
-    dirButton.disabled = false;
-    dirButton.textContent = '⟳';
-    dirButton.title = '重新随机排列';
-    return;
-  }
-  const sortable = Boolean(state.sort) && state.sort !== 'default';
-  const dir = effectiveSortDir(state.sort, state.sortDir);
-  dirButton.disabled = !sortable;
-  dirButton.textContent = dir === 'asc' ? '↑' : '↓';
-  dirButton.title = sortable
-    ? `切换排序方向（当前${dir === 'asc' ? '升序' : '降序'}）`
-    : 'Eagle 顺序不支持切换方向';
 }
 
 // Persist the active pane's sort choice for its current view, then re-render.
@@ -2127,7 +2149,9 @@ function renderGrid({ preserveScroll = true } = {}) {
     if (image.complete) image.classList.add('loaded');
     image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
   }
-  state.scrollTop = preserveScroll ? scrollTop : 0;
+  const restoreTarget = paneRoot()?.dataset.paneId ? paneById(paneRoot().dataset.paneId)?.restoreScroll : state.restoreScroll;
+  const targetScroll = preserveScroll ? scrollTop : (restoreTarget ? restoreTarget.scrollTop : 0);
+  state.scrollTop = targetScroll;
   scroller.scrollTop = state.scrollTop;
   if (updateSharedFooter) updateScrollUI();
   scheduleVisibleItemWatch();
@@ -2290,37 +2314,44 @@ function toggleFolder(id) {
   renderFolderTree();
 }
 
+function handleFolderTargetDragOver(event, targetElement) {
+  const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+  if (dropKind === 'unsupported') return false;
+  event.preventDefault();
+  const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+  event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
+  targetElement.classList.add('drop-target');
+  return true;
+}
+
 function attachFolderDragTargets() {
   for (const row of document.querySelectorAll('[data-folder-id]')) {
     row.addEventListener('dragover', event => {
-      const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
-      if (dropKind === 'unsupported') return;
-      event.preventDefault();
-      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-      event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
-      row.classList.add('drop-target');
+      handleFolderTargetDragOver(event, row);
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
     row.addEventListener('drop', event => {
-      const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
-      const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-      const folderId = row.dataset.folderId;
-      const folderName = row.dataset.folderName;
-      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-      const move = Boolean(sourceFolderId || event.altKey);
-      const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
+      const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+      if (dropKind === 'unsupported') return;
       event.preventDefault();
       event.stopPropagation();
       row.classList.remove('drop-target');
-      if (classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files') {
+      const folderId = row.dataset.folderId;
+      if (dropKind === 'external-files') {
         scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId);
         return;
       }
+      const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
       if (!ids.length) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
         return;
       }
+      const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
+      const folderName = row.dataset.folderName;
+      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+      const move = Boolean(sourceFolderId || event.altKey);
+      const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
       scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
     });
   }
@@ -2461,14 +2492,25 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
           const nextQuiet = (continueBackfill || continueRestore) && !needsViewportFill;
           setTimeout(() => refresh({ reset: false, preserveScroll: true, paneId, quiet: nextQuiet }), 0);
         } else {
+          if (restoreTarget) {
+            pane.restoreScroll = null;
+            scroller.scrollTop = restoreTarget.scrollTop;
+            pane.scrollTop = scroller.scrollTop;
+          }
           if (quiet) renderGrid({ preserveScroll: true });
           if (restoreTarget) {
             // Back/up navigation: every remembered page is in, land where the
             // user left off (the browser clamps if the list shrank meanwhile).
-            pane.restoreScroll = null;
             scroller.scrollTop = restoreTarget.scrollTop;
             pane.scrollTop = scroller.scrollTop;
             if (paneIsActive) updateScrollUI();
+            requestAnimationFrame?.(() => {
+              if (scroller && Math.abs(scroller.scrollTop - restoreTarget.scrollTop) > 1 && scroller.scrollHeight > scroller.clientHeight) {
+                scroller.scrollTop = restoreTarget.scrollTop;
+                pane.scrollTop = scroller.scrollTop;
+                if (paneIsActive) updateScrollUI();
+              }
+            });
           }
           if (sortBackfillActive && state.items.length >= SORT_FETCH_CAP) {
             // One notice per (view, sort) episode — the key derives staleness
@@ -3335,11 +3377,13 @@ function renderPreviewZoom() {
   const fit = zoom.mode === 'fit';
   image.classList.toggle('preview-actual', !fit);
   image.classList.toggle('dragging', Boolean(zoom.dragging));
-  image.style.maxWidth = fit ? '100%' : 'none';
-  image.style.maxHeight = fit ? '100%' : 'none';
+  image.style.maxWidth = '100%';
+  image.style.maxHeight = '100%';
   image.style.width = 'auto';
   image.style.height = 'auto';
-  image.style.transform = fit ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
+  image.style.transform = (zoom.x === 0 && zoom.y === 0 && zoom.scale === 1)
+    ? ''
+    : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
   image.style.cursor = zoom.dragging ? 'grabbing' : 'grab';
 }
 
@@ -3617,7 +3661,7 @@ function closePreview({ commitSelection = true, skipDiscard = false, syncBroadca
   }
   if (syncBroadcast) {
     broadcastPaneAction(pane => {
-      if (pane.previewId) closePreview({ commitSelection, skipDiscard, syncBroadcast: false });
+      if (pane.previewId) closePreview({ commitSelection: false, skipDiscard, syncBroadcast: false });
     });
   }
   return true;
@@ -3812,7 +3856,9 @@ function applyView(view) {
   // Eagle remembers the sort per folder. Restoring here — the one place the
   // current view is assigned — covers every navigation path, including the
   // startup root view and library switches.
-  const remembered = sortMemory.recall(state.library?.path, descriptorKey(view));
+  const remembered = view.kind === 'folder'
+    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders, Boolean(state.sortCascade || sortCascadeEnabled))
+    : sortMemory.recall(state.library?.path, descriptorKey(view));
   state.sort = remembered?.sort || 'default';
   state.sortDir = remembered?.sortDir || 'auto';
   renderSortControls();
@@ -3821,18 +3867,23 @@ function applyView(view) {
 // Leaving a view keeps its scroll offset and loaded-item count so back/up
 // navigation can land where the user left off instead of the top of page one.
 const VIEW_MEMORY_LIMIT = 50;
-function rememberViewPosition() {
-  const key = descriptorKey(state.currentView);
-  const memory = state.viewMemory;
+function rememberViewPosition(paneId = state.activePaneId) {
+  const pane = paneById(paneId);
+  const currentView = pane ? pane.currentView : state.currentView;
+  if (!currentView) return;
+  const key = descriptorKey(currentView);
+  const memory = pane ? pane.viewMemory : state.viewMemory;
+  if (!memory) return;
   memory.delete(key);
-  const scroller = $('#gridScroller');
-  const scrollTop = scroller ? scroller.scrollTop : state.scrollTop || 0;
-  if (!state.items.length || scrollTop <= 0) return;
-  memory.set(key, { scrollTop, count: Math.min(state.items.length, SORT_FETCH_CAP) });
+  const scroller = paneQuery(pane?.id || state.activePaneId, '#gridScroller') || $('#gridScroller');
+  const scrollTop = scroller ? scroller.scrollTop : (pane ? pane.scrollTop : state.scrollTop) || 0;
+  if (scrollTop <= 0) return;
+  const count = Math.min((pane ? pane.items : state.items)?.length || 0, SORT_FETCH_CAP);
+  memory.set(key, { scrollTop, count });
   while (memory.size > VIEW_MEMORY_LIMIT) memory.delete(memory.keys().next().value);
 }
 
-function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = false, exitSearch = false } = {}) {
+function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = true, exitSearch = false } = {}) {
   if (!state.library) return;
   view = normalizeView(view);
   if (view.kind === 'folder') {
@@ -3871,6 +3922,7 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   closePreview({ commitSelection: false, skipDiscard: true });
   state.selected.clear();
   state.selectedFolderCard = null;
+  const restoring = Boolean(state.restoreScroll);
   if (changed) {
     state.items = [];
     state.total = 0;
@@ -3878,12 +3930,14 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.nextOffset = 0;
     state.hasMore = false;
     $('#resultCount').textContent = '正在读取…';
-    renderGrid({ preserveScroll: false });
+    if (!restoring) {
+      renderGrid({ preserveScroll: false });
+    }
   }
   renderInspector();
   renderFolderTree();
   renderLocation();
-  if (refreshView) refresh({ reset: true, preserveScroll: false });
+  if (refreshView) refresh({ reset: true, preserveScroll: false, quiet: restoring });
   // Picking a destination from the drawer should reveal the result.
   if (isCompactLayout()) closeDrawers();
   saveSessionState();
@@ -4209,7 +4263,7 @@ function importTargetFolderId() {
 
 async function importFiles(paths = null, source = 'picker', target = {}) {
   if (!state.connected || state.importing) return;
-  const sourcePaneId = target.paneId || state.activePaneId;
+  const targetPaneId = target.paneId || state.activePaneId;
   const libraryPath = target.libraryPath || state.library?.path;
   const folderId = Object.prototype.hasOwnProperty.call(target, 'folderId') ? target.folderId : importTargetFolderId();
   const operationToken = beginForegroundOperation('正在导入到 Eagle…', { key: 'import' });
@@ -4238,8 +4292,18 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     const rejected = (result.rejected?.length || 0) + (result.duplicateFailed || 0);
     toast(`已接收 ${result.count} 个素材${pending ? ` · ${pending} 个仍由 Eagle 后台处理` : ''}${rejected ? ` · ${rejected} 个未完成` : ''}`, 4200);
     if (pending) {
-      setTimeout(() => refresh({ reset: true, preserveScroll: true, paneId: sourcePaneId }), 1600);
-      setTimeout(() => refresh({ reset: true, preserveScroll: true, paneId: sourcePaneId }), 4200);
+      const refreshPaneIds = new Set([targetPaneId]);
+      if (folderId && Array.isArray(state.panes)) {
+        for (const pane of state.panes) {
+          if (pane.currentView?.kind === 'folder' && pane.currentView.id === folderId) {
+            refreshPaneIds.add(pane.id);
+          }
+        }
+      }
+      for (const pId of refreshPaneIds) {
+        setTimeout(() => refresh({ reset: true, preserveScroll: true, paneId: pId }), 1600);
+        setTimeout(() => refresh({ reset: true, preserveScroll: true, paneId: pId }), 4200);
+      }
     }
   } catch (error) {
     toast(`导入失败：${error.message}`, 4600);
@@ -5785,21 +5849,47 @@ function bindPaneEvents(paneId) {
     const optionBtn = event.target.closest('[data-sort]');
     if (optionBtn) {
       activatePane(paneId);
-      const select = query('#sortSelect');
-      if (select) {
-        select.value = optionBtn.dataset.sort;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
+      const targetSort = optionBtn.dataset.sort;
+      if (targetSort === 'random' && state.sort === 'random') {
+        state.randomSeed = nextRandomSeed();
+        commitSortChange();
+      } else {
+        const select = query('#sortSelect');
+        if (select) {
+          select.value = targetSort;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
       query('#sortPopover')?.classList.add('hidden');
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    const dirBtn = event.target.closest('[data-sort-dir]');
+    if (dirBtn && !dirBtn.disabled) {
+      activatePane(paneId);
+      const targetDir = dirBtn.dataset.sortDir;
+      if (targetDir === 'asc' || targetDir === 'desc') {
+        state.sortDir = targetDir;
+        if (state.sortCascade && state.currentView?.kind === 'folder') {
+          sortMemory.rememberCascade(
+            state.library?.path,
+            state.currentView.id,
+            state.library?.folders,
+            state.sort,
+            state.sortDir,
+            Date.now()
+          );
+        }
+        commitSortChange();
+        query('#sortPopover')?.classList.add('hidden');
+        query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
+      }
     }
   });
   query('#sortCascadeCheck')?.addEventListener('change', event => {
     activatePane(paneId);
     const checked = event.target.checked;
-    state.sortCascade = checked;
-    const pane = paneById(paneId);
-    if (pane) pane.sortCascade = checked;
+    setSortCascadeEnabled(checked);
     if (checked && state.currentView?.kind === 'folder') {
       sortMemory.rememberCascade(
         state.library?.path,
@@ -5832,27 +5922,6 @@ function bindPaneEvents(paneId) {
     commitSortChange();
     if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
-  query('#sortDirButton').addEventListener('click', () => {
-    activatePane(paneId);
-    if (!state.sort || state.sort === 'default') return;
-    if (state.sort === 'random') {
-      state.randomSeed = nextRandomSeed();
-      commitSortChange();
-      return;
-    }
-    state.sortDir = effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc';
-    if (state.sortCascade && state.currentView?.kind === 'folder') {
-      sortMemory.rememberCascade(
-        state.library?.path,
-        state.currentView.id,
-        state.library?.folders,
-        state.sort,
-        state.sortDir,
-        Date.now()
-      );
-    }
-    commitSortChange();
-  });
   query('#viewModeGroup').addEventListener('click', event => {
     const button = event.target.closest('[data-view-mode]');
     if (!button) return;
@@ -5873,20 +5942,28 @@ function bindPaneEvents(paneId) {
     const touch = isTouchEvent(event);
     const folder = event.target.closest('.folder-card');
     if (folder) {
+      const folderId = folder.dataset.openFolder;
       // Touch: a tap enters the folder directly (no double-tap on phones).
-      if (touch && !state.selected.size) { enterFolderFromGrid(folder.dataset.openFolder); return; }
-      selectFolderCard(folder.dataset.openFolder);
+      if (touch && !state.selected.size) { enterFolderFromGrid(folderId); return; }
+      selectFolderCard(folderId);
       return;
     }
     const card = event.target.closest('.item-card');
     if (card) {
+      const id = card.dataset.id;
       if (touch) {
         // Touch: tap previews; with a selection active it toggles instead.
-        if (state.selected.size) selectItem(card.dataset.id, true);
-        else openPreview(card.dataset.id);
+        if (state.selected.size) {
+          selectItem(id, true);
+        } else {
+          openPreview(id);
+          broadcastPaneAction(() => {
+            if (itemById(id)) openPreview(id);
+          });
+        }
         return;
       }
-      selectItem(card.dataset.id, event.metaKey || event.ctrlKey, event.shiftKey);
+      selectItem(id, event.metaKey || event.ctrlKey, event.shiftKey);
       return;
     }
   });
@@ -5934,7 +6011,12 @@ function bindPaneEvents(paneId) {
     const folder = event.target.closest('.folder-card');
     if (folder) { enterFolderFromGrid(folder.dataset.openFolder); return; }
     const card = event.target.closest('.item-card');
-    if (card) openPreview(card.dataset.id);
+    if (card) {
+      openPreview(card.dataset.id);
+      broadcastPaneAction(() => {
+        if (itemById(card.dataset.id)) openPreview(card.dataset.id);
+      });
+    }
   });
   query('#itemGrid').addEventListener('contextmenu', event => {
     // Touch long-press menus are driven by triggerTouchLongPress; swallow the
@@ -6017,13 +6099,10 @@ function bindPaneEvents(paneId) {
   itemGrid.addEventListener('dragend', clearDragUI);
   itemGrid.addEventListener('dragover', event => {
     const folder = event.target.closest('.folder-card');
-    const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
-    if (!folder || dropKind === 'unsupported') return;
-    event.preventDefault();
-    event.stopPropagation();
-    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
-    folder.classList.add('drop-target');
+    if (!folder) return;
+    if (handleFolderTargetDragOver(event, folder)) {
+      event.stopPropagation();
+    }
   });
   itemGrid.addEventListener('dragleave', event => {
     const folder = event.target.closest('.folder-card');
@@ -6036,15 +6115,17 @@ function bindPaneEvents(paneId) {
       return;
     }
     const folder = event.target.closest('.folder-card');
-    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
     if (!folder) return;
+    const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    if (dropKind === 'unsupported') return;
     event.preventDefault();
     event.stopPropagation();
     folder.classList.remove('drop-target');
-    if (classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files') {
+    if (dropKind === 'external-files') {
       scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId);
       return;
     }
+    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
     if (!ids.length) {
       toast('无法识别拖入的素材，请重新拖动', 3500);
       clearDragUI();
@@ -6193,10 +6274,16 @@ function bindPaneEvents(paneId) {
     query('#prevPreview')?.addEventListener('click', () => {
       activatePane(paneId);
       withActivePane(paneId, () => movePreview(-1));
+      broadcastPaneAction(pane => {
+        if (pane.previewId) movePreview(-1);
+      });
     });
     query('#nextPreview')?.addEventListener('click', () => {
       activatePane(paneId);
       withActivePane(paneId, () => movePreview(1));
+      broadcastPaneAction(pane => {
+        if (pane.previewId) movePreview(1);
+      });
     });
     query('#slideshowToggle')?.addEventListener('click', event => {
       event.stopPropagation();
@@ -6228,8 +6315,9 @@ function bindPaneEvents(paneId) {
       if (!star) return;
       activatePane(paneId);
       const value = Number(star.dataset.previewRating);
+      const rating = value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value;
       withActivePane(paneId, () => {
-        ratePreviewItem(value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value);
+        ratePreviewItem(rating);
       });
     });
     const modalMedia = query('#modalMedia');
@@ -6262,6 +6350,9 @@ function bindPaneEvents(paneId) {
       if (Math.hypot(dx, dy) > 15) swipeClickSuppressUntil = Date.now() + 400;
       if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.4) {
         withActivePane(paneId, () => movePreview(dx < 0 ? 1 : -1));
+        broadcastPaneAction(pane => {
+          if (pane.previewId) movePreview(dx < 0 ? 1 : -1);
+        });
         return;
       }
       if (dy > 90 && dy > Math.abs(dx) * 1.4) {
@@ -6310,12 +6401,6 @@ function bindPaneEvents(paneId) {
       }
       if (!image || event.button !== 0) return;
       event.preventDefault();
-      if (pane.previewZoom.mode === 'fit') {
-        pane.previewZoom.mode = 'zoom';
-        pane.previewZoom.scale = 1;
-        pane.previewZoom.x = 0;
-        pane.previewZoom.y = 0;
-      }
       pane.previewZoom.dragging = true;
       pane.previewZoom.startX = event.clientX;
       pane.previewZoom.startY = event.clientY;
@@ -6742,8 +6827,11 @@ function bindEvents() {
         : ids.filter(id => pane.items.some(item => item.id === id)));
       $('#batchTagInput').value = '';
       setTagValues('batch', [], false);
-      if (state.activePaneId === paneId) renderInspector();
       await refresh({ reset: true, preserveScroll: true, paneId });
+      if (state.activePaneId === paneId) withActivePane(paneId, () => {
+        updateCardSelectionStyles();
+        renderInspector();
+      });
       toast(outcome.failed.length
         ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中`
         : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
@@ -6864,12 +6952,6 @@ function bindEvents() {
     }
     if (!image || event.button !== 0) return;
     event.preventDefault();
-    if (state.previewZoom.mode === 'fit') {
-      state.previewZoom.mode = 'zoom';
-      state.previewZoom.scale = 1;
-      state.previewZoom.x = 0;
-      state.previewZoom.y = 0;
-    }
     state.previewZoom.dragging = true;
     state.previewZoom.startX = event.clientX;
     state.previewZoom.startY = event.clientY;
@@ -6972,7 +7054,7 @@ function bindEvents() {
       }
       return;
     }
-    if (!editable && event.altKey && event.key === 'ArrowLeft') {
+    if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowLeft') {
       event.preventDefault();
       requestBackAction();
       return;
@@ -7135,8 +7217,8 @@ function bindEvents() {
       event.preventDefault();
       moveCardFocus(event.key);
     }
-    if (!editable && event.altKey && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
-    if (!editable && event.altKey && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
+    if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
+    if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
     if (!editable && event.metaKey && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
@@ -7147,7 +7229,6 @@ function bindEvents() {
         grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
       };
       scrollGrid(event.key);
-      broadcastPaneAction(() => scrollGrid(event.key));
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !state.textSession && state.inspectorDirty) {
       event.preventDefault();
@@ -7176,10 +7257,8 @@ function bindEvents() {
       const rating = Number(event.key);
       if (previewOpen) {
         ratePreviewItem(rating);
-        broadcastPaneAction(pane => { if (pane.previewId) ratePreviewItem(rating); });
       } else {
         setSelectionRating({ ids: [...state.selected], rating });
-        broadcastPaneAction(() => { if (state.selected.size) setSelectionRating({ ids: [...state.selected], rating }); });
       }
       return;
     }

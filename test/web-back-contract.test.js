@@ -164,13 +164,13 @@ test('history snapshots restore search while following the actual cross-folder v
   ]);
 });
 
-test('renderer exposes one WebView-safe entry and routes Option+Left through it', () => {
+test('renderer exposes one WebView-safe entry and routes Option+Left and Control+Left through it', () => {
   const root = path.join(__dirname, '..');
   const renderer = fs.readFileSync(path.join(root, 'src/renderer.js'), 'utf8');
   const indexHTML = fs.readFileSync(path.join(root, 'src/index.html'), 'utf8');
   assert.ok(indexHTML.includes('<script src="window-router.js"></script>'));
   assert.ok(renderer.includes('window.EagleMVBack.request()'));
   assert.ok(renderer.includes('installBackRouter(backActionRouter)'));
-  assert.ok(renderer.includes("event.altKey && event.key === 'ArrowLeft'"));
+  assert.ok(renderer.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowLeft'"));
   assert.ok(renderer.includes('requestBackAction()'));
 });
