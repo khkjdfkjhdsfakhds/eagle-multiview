@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   NEW_FILE_TYPES,
   normalizeNewFileType,
+  normalizeEagleFolderName,
   validateNewItemName,
   nextAvailableName,
   newFileContent,
@@ -27,6 +28,12 @@ test('new item names reject unsafe paths and strip an already typed extension', 
     assert.throws(() => validateNewItemName(name, { extension: 'txt' }));
   }
   assert.equal(validateNewItemName(' 说明 '), '说明');
+});
+
+test('Eagle logical folder names preserve characters reserved by local filesystems', () => {
+  const name = '参考 / 分镜 \\ 草稿 : * ? " < > |';
+  assert.equal(normalizeEagleFolderName(`  ${name}  `), name);
+  assert.throws(() => normalizeEagleFolderName('   '), /名称不能为空/);
 });
 
 test('same-type duplicate names receive a stable numeric suffix', () => {

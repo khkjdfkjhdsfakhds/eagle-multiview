@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
 const { DataHub } = require('./lib/data-hub');
@@ -27,6 +27,7 @@ const { resolveEagleWindowState } = require('./lib/window-location');
 const { createWindowRouter } = require('./lib/window-router');
 const {
   normalizeNewFileType,
+  normalizeEagleFolderName,
   validateNewItemName,
   nextAvailableName,
   createTemporaryNewFile
@@ -44,6 +45,7 @@ const windowRouter = createWindowRouter({
 });
 const windows = new Set();
 const thumbnailCache = new Map();
+const convertedDragIconCache = new Map();
 const metadataCache = new Map();
 const duplicateIndex = new DuplicateIndex();
 let dragSequence = 0;
@@ -597,13 +599,60 @@ async function copyItemFiles(ids) {
   return { count: copied.length, missing: resolved.length - copied.length };
 }
 
+function convertedMacDragIcon(id, filePath) {
+  if (process.platform !== 'darwin' || !filePath) return nativeImage.createEmpty();
+  let cacheKey;
+  try {
+    const stat = fs.statSync(filePath);
+    cacheKey = `${filePath}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch {
+    return nativeImage.createEmpty();
+  }
+  const cached = convertedDragIconCache.get(cacheKey);
+  if (cached && !cached.isEmpty()) {
+    convertedDragIconCache.delete(cacheKey);
+    convertedDragIconCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const safeId = String(id || 'item').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const temporaryPath = path.join(os.tmpdir(), `eaglemv-drag-${process.pid}-${safeId}-${process.hrtime.bigint()}.png`);
+  try {
+    const result = spawnSync('/usr/bin/sips', ['-s', 'format', 'png', '-Z', '96', filePath, '--out', temporaryPath], {
+      stdio: 'ignore',
+      timeout: 1500,
+      windowsHide: true
+    });
+    if (result.status !== 0) return nativeImage.createEmpty();
+    const converted = nativeImage.createFromPath(temporaryPath);
+    if (converted.isEmpty()) return converted;
+    convertedDragIconCache.set(cacheKey, converted);
+    while (convertedDragIconCache.size > 128) {
+      convertedDragIconCache.delete(convertedDragIconCache.keys().next().value);
+    }
+    return converted;
+  } catch {
+    return nativeImage.createEmpty();
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch {}
+  }
+}
+
 function dragIcon(id, filePath) {
-  for (const candidate of [thumbnailCache.get(id), filePath, path.join(process.resourcesPath, 'icon.icns')]) {
+  const candidates = [thumbnailCache.get(id), filePath];
+  for (const candidate of candidates) {
     if (!candidate) continue;
     const image = nativeImage.createFromPath(candidate);
     if (!image.isEmpty()) return image.resize({ width: 96, height: 96, quality: 'good' });
   }
-  return nativeImage.createEmpty();
+  // nativeImage does not decode Eagle's WebP thumbnails, while macOS sips does.
+  // Convert synchronously so startDrag still begins inside the renderer drag gesture.
+  for (const candidate of candidates) {
+    const converted = convertedMacDragIcon(id, candidate);
+    if (!converted.isEmpty()) return converted;
+  }
+  const fallback = nativeImage.createFromPath(path.join(__dirname, 'src', 'brand-icon.png'));
+  return fallback.isEmpty() ? nativeImage.createEmpty() : fallback.resize({ width: 96, height: 96, quality: 'good' });
 }
 
 async function readTrashItems(libraryPath) {
@@ -899,7 +948,7 @@ function setupIPC() {
     quitting = false;
   });
   handleRPC('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
-    const requestedName = validateNewItemName(name);
+    const requestedName = normalizeEagleFolderName(name);
     const libraryKey = path.resolve(libraryPath);
     return enqueueCreation(`folder:${libraryKey}:${parent || 'root'}`, async () => {
       await hub.ensureLibraryPath(libraryPath);

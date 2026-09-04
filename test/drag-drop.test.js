@@ -67,6 +67,31 @@ test('item drag: Electron cancels the default session, the web keeps HTML5 alive
   assert.ok(html5Data > cancelDefault && html5Data < startNativeDrag, 'web path carries ids on the live HTML5 session');
 });
 
+test('native drag uses a bundled PNG when the item preview cannot be decoded', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf('function dragIcon(');
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(start >= 0 && end > start);
+  const handler = source.slice(start, end);
+  assert.ok(
+    handler.includes("path.join(__dirname, 'src', 'brand-icon.png')"),
+    'startDrag must always receive a NativeImage that Electron can decode'
+  );
+  assert.equal(handler.includes("path.join(process.resourcesPath, 'icon.icns')"), false);
+});
+
+test('native drag converts an unsupported macOS thumbnail before using the app icon', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const converterStart = source.indexOf('function convertedMacDragIcon(');
+  const dragStart = source.indexOf('function dragIcon(');
+  const dragEnd = source.indexOf('\n}\n', dragStart);
+  assert.ok(converterStart >= 0, 'unsupported image formats need a synchronous macOS thumbnail converter');
+  assert.ok(source.includes("spawnSync('/usr/bin/sips'"));
+  assert.ok(source.includes("'-Z', '96'"));
+  const handler = source.slice(dragStart, dragEnd);
+  assert.ok(handler.indexOf('convertedMacDragIcon(') < handler.indexOf("brand-icon.png"));
+});
+
 test('folder drops keep every queued mutation inside the library where the drag began', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   for (const functionName of ['addItemsToFolder', 'handlePaneItemDrop']) {
