@@ -6,17 +6,19 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { createSaveHandler } = require('./save-handler');
 const profile = path.join(os.homedir(), 'Library', 'Application Support', 'eagle-multiview-review-20260905');
 const connectionFile = path.join(profile, 'TXT Bridge', 'connection.json');
 const stagingRoot = path.join(profile, 'Text Backups', 'staging');
-const save = createSaveHandler({ eagle, stagingRoot });
+let save;
 const sessionId = crypto.randomUUID();
 let stopped = false;
 let active = false;
+let timer;
+const requests = new Set();
 
 function request(config, route, body) {
   return new Promise((resolve, reject) => {
+    if (stopped) return reject(new Error('Plugin stopped'));
     const payload = body ? JSON.stringify(body) : null;
     const req = http.request({
       host: '127.0.0.1', port: config.port, path: route, method: payload ? 'POST' : 'GET',
@@ -31,6 +33,8 @@ function request(config, route, body) {
       });
       res.on('error', reject);
     });
+    requests.add(req);
+    req.once('close', () => requests.delete(req));
     req.setTimeout(2500, () => req.destroy(new Error('Bridge connection timed out')));
     req.on('error', reject);
     req.end(payload);
@@ -42,15 +46,17 @@ async function tick() {
   active = true;
   try {
     const config = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
+    if (stopped) return;
     if (config.version !== 1 || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535
       || !/^[a-f0-9]{64}$/.test(config.token || '') || path.resolve(config.stagingRoot || '.') !== stagingRoot) return;
     const job = await request(config, '/next');
-    if (!job) return;
+    if (stopped || !job) return;
     let reply;
     try { reply = { requestId: job.requestId, leaseId: job.leaseId, result: await save(job) }; }
     catch (error) { reply = { requestId: job.requestId, leaseId: job.leaseId, error: { message: error.message || 'Eagle TXT 保存失败' } }; }
     // Retry only a result receipt, never execute the save job twice.
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (stopped) break;
       try { await request(config, '/result', reply); break; }
       catch { if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250)); }
     }
@@ -58,9 +64,27 @@ async function tick() {
     // Review not running/disconnected: keep quiet, no modal or window focus.
   } finally {
     active = false;
-    if (!stopped) setTimeout(tick, 250);
+    if (!stopped) timer = setTimeout(tick, 250);
   }
 }
 
-eagle.onPluginCreate(() => { tick(); });
-window.addEventListener('beforeunload', () => { stopped = true; });
+eagle.onPluginCreate(plugin => {
+  if (stopped || save) return;
+  try {
+    // Eagle's global require resolves relative names from its SDK, not this
+    // script. Initialize only after plugin-create supplies the plugin identity.
+    if (!plugin || typeof plugin.path !== 'string' || !path.isAbsolute(plugin.path)) throw new Error('Invalid plugin identity');
+    const { createSaveHandler } = require(path.join(plugin.path, 'save-handler.js'));
+    save = createSaveHandler({ eagle, stagingRoot });
+    return tick();
+  } catch {
+    // No path, token, modal or foreground activation in startup diagnostics.
+    const message = 'MultiView Review TXT 后台保存初始化失败，请重新加载插件。';
+    try { eagle.log.error(message); } catch { console.error(message); }
+  }
+});
+window.addEventListener('beforeunload', () => {
+  stopped = true;
+  clearTimeout(timer);
+  for (const req of requests) req.destroy(new Error('Plugin stopped'));
+});

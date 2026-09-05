@@ -102,5 +102,6 @@ test('alt-clicking a palette swatch applies the color filter, plain click still 
   assert.ok(handler.includes('event.altKey'));
   assert.ok(handler.includes('pane.query.color = swatch.dataset.color;'));
   assert.ok(handler.includes('schedulePaneFilterRefresh(paneId)'));
-  assert.ok(handler.includes('window.eagleMV.copyText(swatch.dataset.color)'));
+  assert.ok(handler.includes('copyTextWithFeedback(swatch.dataset.color,'));
+  assert.ok(renderer.includes('await window.eagleMV.copyText(text)'));
 });

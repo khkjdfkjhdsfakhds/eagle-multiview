@@ -2322,8 +2322,8 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   height: 100%;
   max-width: min(1020px, calc(100% - 24px));
   max-height: min(760px, calc(100% - 24px));
-  display: grid;
-  grid-template-rows: 46px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -2379,12 +2379,13 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
     font-size: 18px;
   }
 }
-.text-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 1px solid var(--line); background: #1f2024; }
-.text-toolbar .text-status { margin-right: auto; color: #86878d; font-size: 11px; }
-.text-toolbar button { height: 29px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #2f3034; color: #dadadf; cursor: pointer; }
+.text-toolbar { display: flex; flex: 0 0 auto; min-width: 0; min-height: 46px; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 13px; border-bottom: 1px solid var(--line); background: #1f2024; }
+.text-toolbar .text-status { flex: 1 1 150px; min-width: 0; margin-right: auto; overflow-wrap: anywhere; color: #86878d; font-size: 11px; }
+.text-toolbar select { flex: 1 1 180px; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+.text-toolbar button { flex: 0 0 auto; height: 29px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #2f3034; color: #dadadf; white-space: nowrap; cursor: pointer; }
 .text-toolbar button.primary { border-color: rgba(0, 114, 239, .5); background: #0072ef; color: white; }
 .text-toolbar button:disabled { opacity: .38; }
-.text-editor { width: 100%; height: 100%; padding: 27px 31px 80px; border: 0; outline: 0; resize: none; tab-size: 4; background: #18191d; color: #f0f0f2; caret-color: #4aa0ff; font: 14px/1.75 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; white-space: pre-wrap; }
+.text-editor { flex: 1; min-height: 0; width: 100%; padding: 27px 31px 80px; border: 0; outline: 0; resize: none; tab-size: 4; background: #18191d; color: #f0f0f2; caret-color: #4aa0ff; font: 14px/1.75 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; white-space: pre-wrap; }
 .toast {
   position: fixed;
   z-index: 30;

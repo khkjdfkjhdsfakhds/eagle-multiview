@@ -42,7 +42,8 @@ test('inspector renders a dominant-color palette from item.palettes', () => {
   assert.ok(renderer.includes("item.palettes"));
   // swatch carries a copyable hex and is wired to clipboard
   assert.ok(renderer.includes('class="palette-swatch"'));
-  assert.ok(renderer.includes("window.eagleMV.copyText(swatch.dataset.color)"));
+  assert.ok(renderer.includes('copyTextWithFeedback(swatch.dataset.color,'));
+  assert.ok(renderer.includes('await window.eagleMV.copyText(text)'));
   assert.match(html, /id="itemPalette"/);
   assert.match(styles, /\.palette-swatch\s*\{/);
 });

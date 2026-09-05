@@ -28,17 +28,31 @@ window.__audit = {
 };
 window.confirm = message => { window.__audit.confirmations.push(message); return false; };
 let mutationHub = null;
-if (process.argv.includes('--eaglemv-real-mutation-hub')) {
+const realMutationEvents = process.argv.includes('--eaglemv-real-mutation-events');
+if (process.argv.includes('--eaglemv-real-mutation-hub') || realMutationEvents) {
   const { DataHub } = require('../lib/data-hub');
   mutationHub = new DataHub({
     libraryInfo: async () => ({ path: '/mock/interaction-audit.library' }),
     getItem: async id => clone(items.find(item => item.id === id)),
     updateItem: async (id, patch) => {
       const item = items.find(candidate => candidate.id === id);
-      Object.assign(item, clone(patch)); return clone(item);
-    }
+      Object.assign(item, clone(patch));
+      if (window.__audit.ackReadbackTime) item.lastModified = window.__audit.ackReadbackTime.ack;
+      const response = clone(item);
+      if (window.__audit.ackReadbackTime) item.lastModified = window.__audit.ackReadbackTime.readback;
+      return response;
+    },
+    request: async (_url, options) => ({ data: clone(items.filter(item => options.body.ids.includes(item.id))) })
   });
   mutationHub.library = { path: '/mock/interaction-audit.library' };
+  if (realMutationEvents) {
+    window.__audit.pollSelectedItem = async () => {
+      mutationHub.setWatchedIds('fixture', ['item-1']);
+      await mutationHub.refreshWatchedItems();
+    };
+    mutationHub.on('items-changed', payload => listeners.onItemsChanged?.(clone(payload)));
+    mutationHub.on('query-invalidated', payload => listeners.onQueryInvalidated?.(clone(payload)));
+  }
 }
 const bridge = {
   platform: realHttpCapabilities ? 'web' : 'darwin',
@@ -49,6 +63,7 @@ const bridge = {
   initialWindowState: async () => ({ view: { kind: 'all' } }),
   currentEagleWindowState: async () => ({ view: { kind: 'all' } }),
   query: async (query = {}) => {
+    if (realMutationEvents) window.__audit.calls.push({ kind: 'query' });
     let data = items.filter(item => !item.isDeleted);
     if (query.folderId) data = data.filter(item => item.folders.includes(query.folderId));
     if (query.unfiled) data = data.filter(item => !item.folders.length);
@@ -62,7 +77,7 @@ const bridge = {
     window.__audit.calls.push({ kind: 'mutate', ...clone(payload) });
     if (window.__audit.failIds.includes(payload.id)) throw new Error('fixture partial failure');
     if (window.__audit.mutationDelay) await new Promise(resolve => { mutationResolve = resolve; });
-    if (mutationHub) return mutationHub.mutate(payload);
+    if (mutationHub) return mutationHub.mutate(realMutationEvents ? { ...payload, origin: 'isolated-interaction-audit' } : payload);
     const item = items.find(candidate => candidate.id === payload.id);
     Object.assign(item, payload.patch);
     return { ok: true, item: clone(item) };

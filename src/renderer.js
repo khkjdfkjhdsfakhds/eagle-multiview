@@ -605,7 +605,9 @@ const scheduleChangedInspectorRender = debounce(() => {
   pendingInspectorExternalChange = false;
   const editing = state.inspectorEditing || isInspectorEditor();
   if (state.inspectorDirty || state.inspectorSaving || editing) {
-    if (external) $('#staleBanner').classList.remove('hidden');
+    if (external && state.selected.size === 1 && inspectorMetadataChanged(itemById([...state.selected][0]))) {
+      $('#staleBanner').classList.remove('hidden');
+    }
     return;
   }
   renderInspector();
@@ -2381,7 +2383,6 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
   setSyncStatus('正在同步…');
   const currentView = { ...pane.currentView };
   const selectedId = pane.selected.size === 1 ? [...pane.selected][0] : null;
-  const selectedBefore = selectedId ? pane.items.find(item => item.id === selectedId) : null;
   const offset = reset ? 0 : pane.nextOffset;
   const restoreCount = reset && preserveScroll ? Math.max(state.pageSize, pane.items.length) : state.pageSize;
   const libraryPath = state.library?.path;
@@ -2459,7 +2460,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
           if (paneIsActive) renderInspector();
         } else if (!state.inspectorDirty && !state.inspectorSaving && !isInspectorEditor() && paneIsActive) {
           renderInspector();
-        } else if (JSON.stringify(selectedBefore) !== JSON.stringify(selectedAfter) && paneIsActive) {
+        } else if (paneIsActive && inspectorMetadataChanged(selectedAfter, pane.selectedBase)) {
           $('#staleBanner').classList.remove('hidden');
         }
       }
@@ -2694,6 +2695,7 @@ function renderInspector() {
   state.selectedBase = structuredClone(item);
   state.inspectorDirty = false;
   $('#staleBanner').classList.add('hidden');
+  delete $('#staleBanner').dataset.conflictDraftKey;
   $('#staleBanner').textContent = '此素材已在另一个窗口更新；保存时会检查冲突。';
   $('#itemName').value = item.name || '';
   setTagValues('item', item.tags || [], false);
@@ -3038,6 +3040,7 @@ function offerInspectorDraftRecovery(id) {
   if (!source) return;
   const paneId = state.activePaneId;
   const banner = $('#staleBanner');
+  delete banner.dataset.conflictDraftKey;
   banner.classList.remove('hidden');
   banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button>';
   banner.querySelector('button').addEventListener('click', () => {
@@ -3076,11 +3079,22 @@ function inspectorValuesEqual(value, reference) {
   const base = reference ?? (Array.isArray(value) ? [] : typeof value === 'number' ? 0 : '');
   return JSON.stringify(Array.isArray(value) ? [...value].sort() : value) === JSON.stringify(Array.isArray(base) ? [...base].sort() : base);
 }
+function inspectorMetadataChanged(item, base = state.selectedBase) {
+  if (!item || !base || item.id !== base.id) return false;
+  // Eagle can settle derived timestamps after its update ACK. Only a change
+  // to the editable values relative to the user's accepted baseline is stale
+  // inspector content; object key order and lastModified are not edits.
+  return ['name', 'tags', 'star', 'annotation', 'url'].some(field => {
+    const value = item[field] ?? (field === 'tags' ? [] : field === 'star' ? 0 : '');
+    return !inspectorValuesEqual(value, base[field]);
+  });
+}
 function inspectorDraftPatch(draft) {
   return Object.fromEntries(Object.entries(draft.values).filter(([key, value]) => !inspectorValuesEqual(value, draft.base[key])));
 }
 function showInspectorDraftConflict(draft) {
   const banner = $('#staleBanner');
+  banner.dataset.conflictDraftKey = draft.key;
   banner.classList.remove('hidden');
   banner.innerHTML = '<span>外部内容已变化，你的草稿已保留。</span><button type="button" class="small-action" data-draft-action="reload">载入最新</button><button type="button" class="small-action" data-draft-action="overwrite">以草稿覆盖</button>';
   const current = () => state.library?.path === draft.libraryPath && state.activePaneId === draft.paneId && state.selected.size === 1 && state.selected.has(draft.id);
@@ -3182,6 +3196,12 @@ async function saveInspectorDraft(draft, force = false) {
         updateURLActions();
         resizeAnnotation();
         state.inspectorDirty = Object.keys(collectPatch()).length > 0;
+        // Clear only the passive notice once this ACK has reconciled the
+        // editable baseline. Conflict/recovery action panels remain intact.
+        const banner = $('#staleBanner');
+        if (!inspectorMetadataChanged(itemById(id), pane.selectedBase) && !banner.querySelector('[data-draft-action]')) {
+          banner.classList.add('hidden');
+        }
         renderGrid();
       } else {
         schedulePaneGridRender(paneId);
@@ -3192,6 +3212,17 @@ async function saveInspectorDraft(draft, force = false) {
         base = structuredClone(draft.base);
         overwrite = false;
         continue;
+      }
+      if (contextStillActive && inspectorDrafts.get(draft.key) === draft) {
+        const banner = $('#staleBanner');
+        if (banner.dataset.conflictDraftKey === draft.key && banner.querySelector('[data-draft-action="overwrite"]')
+          && !inspectorMetadataChanged(itemById(id), pane.selectedBase)) {
+          // Only this draft's fully acknowledged conflict is resolved. A
+          // queued edit can still conflict above; recovery belongs elsewhere.
+          banner.classList.add('hidden');
+          banner.textContent = '此素材已在另一个窗口更新；保存时会检查冲突。';
+          delete banner.dataset.conflictDraftKey;
+        }
       }
       inspectorDrafts.delete(draft.key);
       persistInspectorDraft(draft, true);
@@ -3254,7 +3285,8 @@ function closeDuplicateDialog(choice = null) {
 }
 
 function blockingSurfaceOpen() {
-  return ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
+  return Boolean(document.querySelector('.web-copy-dialog[open]')) ||
+    ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
     .some(selector => !$(selector).classList.contains('hidden'));
 }
 
@@ -3829,7 +3861,7 @@ function renderTextPreview(session) {
       <button id="reloadTextButton" type="button">重新载入</button>
       <button id="saveTextButton" class="primary" type="button" disabled>保存 ⌘S</button>
     </div>
-    ${session.recoveryDrafts?.length ? `<div class="text-toolbar"><select id="textDraftSelect" aria-label="选择可恢复草稿" style="min-width:0;max-width:60%"><option value="">可恢复草稿（${session.recoveryDrafts.length}）</option>${session.recoveryDrafts.map((draft, index) => `<option value="${index}">${escapeHTML(new Date(draft.updatedAt || Date.now()).toLocaleString('zh-CN'))} · ${escapeHTML(draft.content.slice(0, 24) || '空白正文')}</option>`).join('')}</select><button id="restoreTextDraft" type="button" disabled>恢复所选草稿</button></div>` : ''}
+    ${session.recoveryDrafts?.length ? `<div class="text-toolbar"><select id="textDraftSelect" aria-label="选择可恢复草稿"><option value="">可恢复草稿（${session.recoveryDrafts.length}）</option>${session.recoveryDrafts.map((draft, index) => `<option value="${index}">${escapeHTML(new Date(draft.updatedAt || Date.now()).toLocaleString('zh-CN'))} · ${escapeHTML(draft.content.slice(0, 24) || '空白正文')}</option>`).join('')}</select><button id="restoreTextDraft" type="button" disabled>恢复所选草稿</button></div>` : ''}
     <textarea id="textEditor" class="text-editor" spellcheck="false" aria-label="TXT 内容"></textarea>
   </div>`;
   const editor = $('#textEditor');
@@ -5169,7 +5201,7 @@ async function executeContextAction(action, payload) {
     });
   }
   if (action === 'duplicate') return duplicateSelection(ids);
-  if (action === 'copy-name') return window.eagleMV.copyText(ids.map(id => itemById(id)?.name || '').filter(Boolean).join('\n'));
+  if (action === 'copy-name') return copyTextWithFeedback(ids.map(id => itemById(id)?.name || '').filter(Boolean).join('\n'));
   if (action === 'copy-path') return copyItemPath(firstId);
   if (action === 'copy-tags') return copyTagsFromItems(ids);
   if (action === 'paste-tags') return pasteTagsToItems(ids);
@@ -5573,6 +5605,18 @@ async function showItemInFileManager(id) {
   }
 }
 
+async function copyTextWithFeedback(text, message = '', duration) {
+  try {
+    const copied = await window.eagleMV.copyText(text);
+    if (copied === false) return false;
+    if (message) toast(message, duration);
+    return true;
+  } catch (error) {
+    if (error?.code !== 'COPY_CANCELED') toast(`复制失败：${error?.message || String(error)}`, 4000);
+    return false;
+  }
+}
+
 async function copyItemPath(id) {
   if (!id) return false;
   const filePath = await window.eagleMV.filePath(id);
@@ -5580,9 +5624,7 @@ async function copyItemPath(id) {
     toast('找不到素材原文件', 3500);
     return false;
   }
-  await window.eagleMV.copyText(filePath);
-  toast('文件路径已复制');
-  return true;
+  return copyTextWithFeedback(filePath, '文件路径已复制');
 }
 
 function copyTagsFromItems(ids = selectedActionIds()) {
@@ -7001,8 +7043,7 @@ function bindEvents() {
     if (!button) return;
     const value = $('#generationMetadataSection').dataset[button.dataset.metadataCopy] || '';
     if (!value) return;
-    await window.eagleMV.copyText(value);
-    toast('提示词已复制');
+    await copyTextWithFeedback(value, '提示词已复制');
   });
   $('#addCommentButton').addEventListener('click', () => addCommentToSelected());
   $('#itemComments').addEventListener('click', event => {
@@ -7247,8 +7288,7 @@ function bindEvents() {
   $('#copyURLButton').addEventListener('click', async () => {
     const url = $('#itemURL').value.trim();
     if (!url) return;
-    await window.eagleMV.copyText(url);
-    toast('已复制来源网址', 2000);
+    await copyTextWithFeedback(url, '已复制来源网址', 2000);
   });
   $('#itemRating').addEventListener('change', () => {
     syncRatingPlaceholder();
@@ -7272,8 +7312,7 @@ function bindEvents() {
       toast(`按主色筛选 ${swatch.dataset.color}`, 2200);
       return;
     }
-    window.eagleMV.copyText(swatch.dataset.color);
-    toast(`已复制颜色 ${swatch.dataset.color}`, 1600);
+    copyTextWithFeedback(swatch.dataset.color, `已复制颜色 ${swatch.dataset.color}`, 1600);
   });
   $('#pinButton').addEventListener('click', () => {
     const item = itemById([...state.selected][0]);
@@ -7516,6 +7555,7 @@ function bindEvents() {
     // event.target is the most reliable source; activeElement is retained for
     // synthetic/app-menu events. inspectorEditing is a final safety net if a
     // browser or future render unexpectedly blurs the editor between keys.
+    if (document.querySelector('.web-copy-dialog[open]')) return;
     const editable = isEditableElement(event.target) || isEditableElement() || state.inspectorEditing;
     const previewOpen = !$('#previewModal').classList.contains('hidden');
     if (event.key === 'Escape') {
@@ -7835,8 +7875,7 @@ function bindWebAccessDialog() {
   $('#webAccessCopyKey').addEventListener('click', async () => {
     const key = $('#webAccessKey').textContent;
     if (!key || key.includes('生成')) return;
-    await window.eagleMV.copyText(key);
-    toast('访问密钥已复制');
+    await copyTextWithFeedback(key, '访问密钥已复制');
   });
   $('#webAccessAddresses').addEventListener('click', async event => {
     const qrToggle = event.target.closest('[data-qr-index]');
@@ -7846,8 +7885,7 @@ function bindWebAccessDialog() {
     }
     const entry = event.target.closest('[data-url]');
     if (!entry) return;
-    await window.eagleMV.copyText(entry.dataset.url);
-    toast('访问地址已复制');
+    await copyTextWithFeedback(entry.dataset.url, '访问地址已复制');
   });
 }
 

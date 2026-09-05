@@ -47,5 +47,6 @@ test('open goes through the gate and copy reuses the clipboard bridge', () => {
   assert.ok(open.includes('window.eagleMV.openExternal('));
   assert.ok(open.includes('toast(`打开来源失败：${error.message}`'), 'main-process gate errors surface as a toast');
   const copy = renderer.slice(renderer.indexOf("$('#copyURLButton').addEventListener"), renderer.indexOf('\n  });', renderer.indexOf("$('#copyURLButton').addEventListener")));
-  assert.ok(copy.includes('window.eagleMV.copyText(url)'));
+  assert.ok(copy.includes('copyTextWithFeedback(url,'));
+  assert.ok(renderer.includes('await window.eagleMV.copyText(text)'));
 });

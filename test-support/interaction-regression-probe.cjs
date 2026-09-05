@@ -25,6 +25,46 @@ const snapshot = () => window.state.panes.map(p => ({id:p.id, preview:p.previewI
 await until(() => window.state?.library && window.state.panes.length && window.state.panes.every(p => !p.loading && p.items.length));
 `;
 const scenarios = {
+  inspectorResolvedConflict: `
+click(pane(0).querySelector('[data-id="item-1"]'));
+window.__audit.externalItemChange('item-1',{annotation:'outside note'});
+const input=document.querySelector('#itemAnnotation');input.focus();input.value='local draft';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(3,3);
+await until(()=>document.querySelector('[data-draft-action="overwrite"]'));
+window.confirm=()=>true;document.querySelector('[data-draft-action="overwrite"]').click();
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2&&!window.state.inspectorSaving);await wait(450);
+return {dirty:window.state.inspectorDirty,stored:window.__audit.snapshotItem('item-1').annotation,value:input.value,focused:document.activeElement===input,caret:input.selectionStart,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),conflictButtons:!!document.querySelector('[data-draft-action="overwrite"]')};`,
+  inspectorResolvedThenLateConflict: `
+click(pane(0).querySelector('[data-id="item-1"]'));
+window.__audit.externalItemChange('item-1',{annotation:'outside note'});
+const input=document.querySelector('#itemAnnotation');input.value='local draft';input.dispatchEvent(new Event('input',{bubbles:true}));
+await until(()=>document.querySelector('[data-draft-action="overwrite"]'));
+window.__audit.mutationDelay=true;window.confirm=()=>true;document.querySelector('[data-draft-action="overwrite"]').click();
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2);
+const name=document.querySelector('#itemName');name.focus();name.value='late local name';name.dispatchEvent(new Event('input',{bubbles:true}));name.setSelectionRange(2,2);
+window.__audit.externalItemChange('item-1',{name:'outside name'});window.__audit.mutationDelay=false;window.__audit.resolveMutation();
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===3&&!window.state.inspectorSaving);await wait(50);
+return {dirty:window.state.inspectorDirty,storedName:window.__audit.snapshotItem('item-1').name,storedAnnotation:window.__audit.snapshotItem('item-1').annotation,name:name.value,focused:document.activeElement===name,caret:name.selectionStart,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),conflictButtons:!!document.querySelector('[data-draft-action="overwrite"]'),forces:window.__audit.calls.filter(call=>call.kind==='mutate').map(call=>Boolean(call.force))};`,
+  inspectorOwnSaveEcho: `
+click(pane(0).querySelector('[data-id="item-1"]'));window.__audit.ackReadbackTime={ack:1788595267432,readback:1788595609033};
+const input=document.querySelector('#itemAnnotation');input.focus();input.value='own annotation';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(4,4);
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await wait(450);
+return {value:input.value,stored:window.__audit.snapshotItem('item-1').annotation,dirty:window.state.inspectorDirty,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),focused:document.activeElement===input,caret:input.selectionStart};`,
+  inspectorPollEchoAndExternalConflict: `
+click(pane(0).querySelector('[data-id="item-1"]'));
+const input=document.querySelector('#itemAnnotation');input.focus();
+const stale=()=>!document.querySelector('#staleBanner').classList.contains('hidden');
+window.__audit.externalItemChange('item-1',{lastModified:1788595609033});await window.__audit.pollSelectedItem();await wait(50);
+const timeOnlyStale=stale();
+window.__audit.externalItemChange('item-1',{tags:['outside tag']});await window.__audit.pollSelectedItem();await wait(50);
+const externalTagsStale=stale();
+input.value='own note';input.dispatchEvent(new Event('input',{bubbles:true}));
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await wait(50);
+const accepted={stale:stale(),tags:[...window.state.draftTags],dirty:window.state.inspectorDirty};
+window.__audit.externalItemChange('item-1',{annotation:'outside note'});await window.__audit.pollSelectedItem();await wait(50);
+const externalNoteStale=stale();
+input.value='local draft';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(3,3);
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2);await until(()=>!window.state.inspectorSaving);
+return {timeOnlyStale,externalTagsStale,accepted,externalNoteStale,conflict:!!document.querySelector('[data-draft-action="overwrite"]'),dirty:window.state.inspectorDirty,value:input.value,stored:window.__audit.snapshotItem('item-1').annotation,focused:document.activeElement===input,caret:input.selectionStart};`,
   inspectorLateIntentNoRemote: `
 click(pane(0).querySelector('[data-id="item-1"]'));window.__audit.mutationDelay=true;
 const name=document.querySelector('#itemName');name.value='first name';name.dispatchEvent(new Event('input',{bubbles:true}));
@@ -302,9 +342,10 @@ async function run() {
     const windowOptions = { show:false, width:1440, height:900, webPreferences:{ backgroundThrottling:false, contextIsolation:false, nodeIntegration:false, preload:path.join(__dirname,'interaction-regression-preload.cjs'), partition:`audit-${name}` } };
     if (name === 'webHttpBootstrap') windowOptions.webPreferences.additionalArguments = ['--eaglemv-http-capabilities'];
     if (name === 'textStoreLifecycle') windowOptions.webPreferences.additionalArguments = ['--eaglemv-real-drafts'];
-    if (['inspectorRemoteRebase', 'inspectorRemoteLateIntent', 'inspectorExplicitFieldRevert', 'inspectorLateIntentNoRemote'].includes(name)) {
+    const realMutationEvents = ['inspectorOwnSaveEcho', 'inspectorPollEchoAndExternalConflict', 'inspectorResolvedConflict', 'inspectorResolvedThenLateConflict'].includes(name);
+    if (realMutationEvents || ['inspectorRemoteRebase', 'inspectorRemoteLateIntent', 'inspectorExplicitFieldRevert', 'inspectorLateIntentNoRemote'].includes(name)) {
       windowOptions.webPreferences.sandbox = false;
-      windowOptions.webPreferences.additionalArguments = ['--eaglemv-real-mutation-hub'];
+      windowOptions.webPreferences.additionalArguments = [realMutationEvents ? '--eaglemv-real-mutation-events' : '--eaglemv-real-mutation-hub'];
     }
     let win = new BrowserWindow(windowOptions);
     try {

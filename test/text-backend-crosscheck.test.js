@@ -15,7 +15,43 @@ const { createSaveHandler } = require('../eagle-plugin/text-save-service/save-ha
 const { TextDraftStore } = require('../lib/text-draft-store');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function fixture(t, { bridgeTimeoutMs = 500 } = {}) {
+function bridgeClock() {
+  let now = 1000000;
+  let nextId = 0;
+  const timers = new Map();
+  return {
+    Date: { now: () => now },
+    setTimeout(callback, milliseconds) {
+      const id = ++nextId;
+      timers.set(id, { callback, due: now + milliseconds });
+      return id;
+    },
+    clearTimeout: id => timers.delete(id),
+    advance(milliseconds) {
+      const end = now + milliseconds;
+      while (true) {
+        const next = [...timers].filter(([, timer]) => timer.due <= end).sort((a, b) => a[1].due - b[1].due)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        timers.delete(id);
+        now = timer.due;
+        timer.callback();
+      }
+      now = end;
+    }
+  };
+}
+
+function bridgeWithClock(clock, options) {
+  const file = path.resolve(__dirname, '../lib/text-plugin-bridge.js');
+  const context = { require: createRequire(file), module: { exports: {} }, Buffer, ...clock };
+  // Only this module's clock is controlled; its HTTP, authentication, queue,
+  // lease and reconciliation implementation execute unchanged.
+  vm.runInNewContext(syncFs.readFileSync(file, 'utf8'), context, { filename: file });
+  return context.module.exports.createTextPluginBridge(options);
+}
+
+async function fixture(t, { bridgeTimeoutMs = 500, clock } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-text-crosscheck-'));
   const profile = path.join(root, 'Library', 'Application Support', 'eagle-multiview-review-20260905');
   const libraryPath = path.join(root, 'synthetic-store');
@@ -26,7 +62,8 @@ async function fixture(t, { bridgeTimeoutMs = 500 } = {}) {
   const item = { id: 'I', ext: 'txt', filePath };
   item.replaceFile = async stage => { await fs.copyFile(stage, filePath); };
   const eagle = { library: { path: libraryPath }, item: { getById: async () => item }, onPluginCreate() {} };
-  const bridge = createTextPluginBridge({ directory: path.join(profile, 'TXT Bridge'), stagingRoot: path.join(backupRoot, 'staging'), timeoutMs: bridgeTimeoutMs });
+  const bridgeOptions = { directory: path.join(profile, 'TXT Bridge'), stagingRoot: path.join(backupRoot, 'staging'), timeoutMs: bridgeTimeoutMs };
+  const bridge = clock ? bridgeWithClock(clock, bridgeOptions) : createTextPluginBridge(bridgeOptions);
   t.after(async () => { await bridge.stop(); await fs.rm(root, { recursive: true, force: true }); });
   await bridge.start();
   const config = JSON.parse(await fs.readFile(path.join(profile, 'TXT Bridge', 'connection.json'), 'utf8'));
@@ -38,13 +75,15 @@ async function fixture(t, { bridgeTimeoutMs = 500 } = {}) {
 function pluginRuntime(f) {
   const file = path.resolve(__dirname, '../eagle-plugin/text-save-service/plugin.js');
   const realRequire = createRequire(file);
+  let onCreate;
+  const eagle = { ...f.eagle, onPluginCreate: callback => { onCreate = callback; } };
   const context = {
     require(name) {
       if (name === 'node:os') return { homedir: () => f.root };
-      if (name === './save-handler') return { createSaveHandler: options => createSaveHandler({ ...options, timeoutMs: 20 }) };
+      if (name === path.join(path.dirname(file), 'save-handler.js')) return { createSaveHandler: options => createSaveHandler({ ...options, timeoutMs: 20 }) };
       return realRequire(name);
     },
-    eagle: f.eagle, window: { addEventListener() {} }, module: { exports: {} }, Buffer, console,
+    eagle, window: { addEventListener() {} }, module: { exports: {} }, Buffer, console, clearTimeout,
     setTimeout(callback, milliseconds) {
       // The test owns scheduling. Do not leave a real Eagle-like poller alive.
       if (callback.name === 'tick') return 0;
@@ -52,7 +91,8 @@ function pluginRuntime(f) {
     }
   };
   vm.runInNewContext(syncFs.readFileSync(file, 'utf8') + '\nmodule.exports = { tick };', context, { filename: file });
-  return context.module.exports;
+  const ready = onCreate({ path: path.dirname(file) });
+  return { tick: async () => { await ready; await context.module.exports.tick(); } };
 }
 
 async function throughPlugin(f, runtime, content, base) {
@@ -161,23 +201,29 @@ test('TXT crosscheck: a truly unfinished write remains gated across reconciliati
   assert.equal(next.conflict, false); assert.equal(calls, 2); assert.equal((await readText(f)).content, 'after recovery');
 });
 
-test('TXT crosscheck: a surviving SDK temporary file blocks fresh-session reconciliation even when the new hash matches', async t => {
-  const f = await fixture(t, { bridgeTimeoutMs: 30 });
+test('TXT crosscheck: a surviving SDK temporary file blocks fresh-session reconciliation even when the new hash matches', { timeout: 10000 }, async t => {
+  // The 30 ms lease is deliberately short to exercise expiry, not to impose
+  // a disk/HTTP performance SLA on the unrelated full-suite workload.
+  const clock = bridgeClock();
+  const f = await fixture(t, { bridgeTimeoutMs: 30, clock });
   await fetch(`${f.baseURL}/next`, { headers: f.headers });
   const base = (await readText(f)).fingerprint, stagedPath = path.join(f.backupRoot, 'staging', 'temporary.txt');
   await fs.mkdir(path.dirname(stagedPath), { recursive: true }); await fs.writeFile(stagedPath, 'new bytes');
   const request = { id: 'I', libraryPath: f.libraryPath, stagedPath, base, outputHash: crypto.createHash('sha256').update('new bytes').digest('hex') };
   const pending = f.bridge.replaceFile(request).catch(error => error);
-  await (await fetch(`${f.baseURL}/next`, { headers: f.headers })).json();
+  const leased = await (await fetch(`${f.baseURL}/next`, { headers: f.headers })).json();
+  assert.equal(leased.operation, 'replace');
   await fs.writeFile(`${f.filePath}.tmp`, 'base'); await fs.writeFile(f.filePath, 'new bytes');
-  await pending; await fs.unlink(stagedPath);
+  clock.advance(30);
+  assert.match((await pending).message, /回执超时/);
+  await fs.unlink(stagedPath);
   const runtime = pluginRuntime(f);
-  await pause(35); await runtime.tick();
+  clock.advance(30); await runtime.tick();
   await assert.rejects(f.bridge.replaceFile(request), /上次 TXT 保存结果/);
   // Only the synthetic SDK finishes its own transaction; the product
   // reconciliation path never renames/deletes a library temporary file.
   await fs.unlink(`${f.filePath}.tmp`);
-  await pause(35); await runtime.tick();
+  clock.advance(30); await runtime.tick();
   const next = await throughPlugin(f, runtime, 'after SDK cleanup', (await readText(f)).fingerprint);
   assert.equal(next.conflict, false); assert.equal((await readText(f)).content, 'after SDK cleanup');
 });

@@ -231,12 +231,16 @@
         dialog.remove();
         previousFocus?.focus?.({ preventScroll: true });
         if (copied) resolve(true);
-        else reject(new Error('已取消复制'));
+        else reject(Object.assign(new Error('已取消复制'), { code: 'COPY_CANCELED' }));
       };
       done.addEventListener('click', () => finish(true));
       cancel.addEventListener('click', () => finish(false));
       dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
       dialog.addEventListener('keydown', event => {
+        // Keep native text selection/copy and button activation, but never let
+        // the obscured renderer handle navigation, rating, or deletion keys.
+        // Escape must stay contained even after finish removes the dialog.
+        event.stopPropagation();
         if (event.key === 'Escape') { event.preventDefault(); finish(false); }
         if (event.key === 'Tab') {
           const elements = [field, done, cancel];
