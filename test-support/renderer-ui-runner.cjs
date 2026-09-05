@@ -120,6 +120,8 @@ async function run() {
       assert(layoutButton.dataset.layout === layout, 'button did not follow layout: ' + layout);
       assert(layoutButton.querySelector('svg').outerHTML === option.querySelector('svg').outerHTML, 'button and option icons differ: ' + layout);
       assert(option.querySelectorAll('rect').length === 1, 'layout icon has nested borders: ' + layout);
+      assert(option.querySelector('rect').getAttribute('rx') === '2.4', 'layout frame must use the rounded toolbar style: ' + layout);
+      assert(option.querySelector('svg').getAttribute('stroke-linejoin') === 'round', 'layout strokes must have soft joins: ' + layout);
       assert(layoutButton.getAttribute('aria-label').includes(option.getAttribute('aria-label')), 'layout accessible name is stale');
     }
     state.inspectorSaving = true;

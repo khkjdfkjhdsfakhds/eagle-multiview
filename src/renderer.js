@@ -61,6 +61,7 @@ const {
   sharedTags: computeSharedTags,
   appendableTailCount,
   paneLayoutSpecs,
+  paneRevealTargets,
   coordinatePaneLayout,
   defaultSplitRatios,
   resetSplitRatioAxis,
@@ -539,6 +540,7 @@ function escapeHTML(value) {
 
 function uiIcon(name, className = 'tree-icon-svg') {
   const paths = {
+    revealPane: '<path d="M10 3h7v14H3v-4M10 3v14M1 8h6M4 5l3 3-3 3"></path>',
     folder: '<path d="M2.5 6.7h5l1.45 1.7h8.55v6.7a1.9 1.9 0 0 1-1.9 1.9H4.4a1.9 1.9 0 0 1-1.9-1.9V6.7Z"></path><path d="M2.5 7.5V5.9A1.9 1.9 0 0 1 4.4 4h3.1l1.5 1.7h6.6a1.9 1.9 0 0 1 1.9 1.9v.8"></path>',
     library: '<rect x="3" y="4" width="14" height="12.5" rx="2.2"></rect><path d="M6.5 4v12.5M3 7.5h3.5"></path>',
     all: '<rect x="3" y="3" width="5.5" height="5.5" rx="1.4"></rect><rect x="11.5" y="3" width="5.5" height="5.5" rx="1.4"></rect><rect x="3" y="11.5" width="5.5" height="5.5" rx="1.4"></rect><rect x="11.5" y="11.5" width="5.5" height="5.5" rx="1.4"></rect>',
@@ -2407,7 +2409,7 @@ function attachFolderDragTargets() {
   }
 }
 
-async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false } = {}) {
+async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false, minimumCount = 0 } = {}) {
   const pane = paneById(paneId);
   if (!pane || (pane.loading && !reset)) return;
   const refreshToken = ++pane.refreshToken;
@@ -2417,7 +2419,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
   const currentView = { ...pane.currentView };
   const selectedId = pane.selected.size === 1 ? [...pane.selected][0] : null;
   const offset = reset ? 0 : pane.nextOffset;
-  const restoreCount = reset && preserveScroll ? Math.max(state.pageSize, pane.items.length) : state.pageSize;
+  const restoreCount = Math.max(state.pageSize, reset && preserveScroll ? pane.items.length : 0, minimumCount);
   const libraryPath = state.library?.path;
   const query = {
     ...cloneQuery(pane.query),
@@ -4361,7 +4363,7 @@ function rememberViewPosition(paneId = state.activePaneId) {
   while (memory.size > VIEW_MEMORY_LIMIT) memory.delete(memory.keys().next().value);
 }
 
-function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = true, exitSearch = false } = {}) {
+function navigate(view, { record = true, refreshView = true, skipDiscard = false, restoreScroll = true, exitSearch = false, query = null } = {}) {
   if (!state.library) return;
   view = normalizeView(view);
   if (view.kind === 'folder') {
@@ -4374,7 +4376,7 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
   const currentQuery = cloneQuery(state.query);
-  const nextQuery = exitSearch && view.kind === 'folder' && currentQuery.search
+  const nextQuery = query ? cloneQuery(query) : exitSearch && view.kind === 'folder' && currentQuery.search
     ? queryWithoutSearch(currentQuery)
     : currentQuery;
   if (record && changed) {
@@ -4940,6 +4942,90 @@ function paneLayoutMenuMarkup(paneId = state.activePaneId) {
   })).join('');
 }
 
+function capturePaneReveal(data) {
+  const source = paneById(data.paneId || state.activePaneId);
+  if (!source) return null;
+  const folderId = data.kind === 'folder' ? data.folderId : data.kind === 'sidebar' ? data.targetFolderId : null;
+  const isPath = ['workspace', 'folder', 'sidebar', 'smart-folder'].includes(data.kind);
+  return {
+    sourcePaneId: source.id,
+    libraryPath: state.library?.path,
+    layout: $('#paneLayout').dataset.layout,
+    view: folderId ? { kind: 'folder', id: folderId }
+      : data.kind === 'smart-folder' ? { kind: 'smart', id: data.smartFolderId }
+      : { ...source.currentView },
+    query: isPath ? createQuery() : cloneQuery(source.query),
+    ids: isPath ? [] : [...new Set(data.ids || [])],
+    loadedCount: isPath ? 0 : source.items.length
+  };
+}
+
+function revealInPaneMenuMarkup(data) {
+  const context = data.paneReveal;
+  if (!context) return '';
+  const targets = paneRevealTargets(context.layout, state.panes, context.sourcePaneId, { stacked: isCompactLayout() });
+  if (!targets.length) return '';
+  const disabled = !state.connected;
+  const row = target => contextMenuRow({
+    icon: 'revealPane', label: target.label, action: 'reveal-in-pane',
+    payload: { paneId: target.paneId }, disabled
+  });
+  if (targets.length === 1) return row({ ...targets[0], label: '在另一窗格显示' });
+  return contextMenuRow({ icon: 'revealPane', label: '在窗格中显示', submenu: '<div class="pane-target-options">' + targets.map(row).join('') + '</div>', disabled });
+}
+
+async function revealInPane(context, targetPaneId) {
+  if (!context || context.libraryPath !== state.library?.path ||
+      context.layout !== $('#paneLayout').dataset.layout || !paneById(context.sourcePaneId)) return false;
+  const target = paneById(targetPaneId);
+  if (!target || target.id === context.sourcePaneId) return false;
+  if (!state.connected) { toast('Eagle 未连接，请连接后重试'); return false; }
+  if (state.inspectorSaving || state.operationTracker.size || target.textSaving) {
+    toast('正在保存或处理操作，请稍候再切换窗格');
+    return false;
+  }
+  if (context.view.kind === 'folder') {
+    const folder = findFolder(state.library?.folders, context.view.id);
+    if (!folder || folder.password) { toast('目标文件夹不可用或已加密'); return false; }
+  }
+  const previousPaneId = state.activePaneId;
+  if (!activatePane(target.id)) return false;
+  // Navigate owns draft confirmation and history. Pass the replacement query
+  // only after that confirmation so Cancel leaves the target completely intact.
+  if (!navigate(context.view, { query: context.query, refreshView: false, restoreScroll: false })) {
+    activatePane(previousPaneId);
+    return false;
+  }
+  const viewKey = descriptorKey(target.currentView);
+  const queryKey = JSON.stringify(target.query);
+  const refreshToken = target.refreshToken + 1;
+  const stillCurrent = () => paneById(target.id) === target &&
+    state.library?.path === context.libraryPath && target.refreshToken === refreshToken &&
+    descriptorKey(target.currentView) === viewKey && JSON.stringify(target.query) === queryKey;
+  await refresh({ paneId: target.id, reset: true, preserveScroll: false, minimumCount: context.loadedCount });
+  if (!stillCurrent() || target.errorMessage) return false;
+  if (context.ids.length) {
+    const available = new Set(target.items.map(item => item.id));
+    target.selected = new Set(context.ids.filter(id => available.has(id)));
+    withActivePane(target.id, () => updateCardSelectionStyles());
+    if (state.activePaneId === target.id) renderInspector();
+    if (target.selected.size !== context.ids.length) toast('部分素材已变化或不在当前结果中，请刷新来源窗格后重试');
+  }
+  saveSessionState();
+  requestAnimationFrame(() => {
+    if (!stillCurrent() || state.activePaneId !== target.id) return;
+    const firstId = [...target.selected][0];
+    const card = firstId && paneRoot(target.id)?.querySelector('.item-card[data-id="' + CSS.escape(firstId) + '"]');
+    if (card) {
+      card.scrollIntoView({ block: 'nearest' });
+      card.focus({ preventScroll: true });
+    } else {
+      paneRoot(target.id)?.scrollIntoView({ block: 'nearest' });
+    }
+  });
+  return true;
+}
+
 function contextFolderEntries(action, query = '') {
   const search = searchFolders(state.library?.folders, query, { excludeId: state.contextMenu?.folderId, limit: 100 });
   const searching = Boolean(String(query || '').trim());
@@ -4994,6 +5080,7 @@ function contextMenuMarkup(data) {
   }
   if (data.kind === 'smart-folder') {
     return [
+      revealInPaneMenuMarkup(data),
       contextMenuRow({ icon: 'rename', label: '重命名智能文件夹', action: 'rename-smart-folder', payload: { id: data.smartFolderId } }),
       contextMenuRow({ icon: 'smart', label: '将当前筛选另存为智能文件夹', action: 'save-smart-folder' }),
       '<div class="context-menu-separator"></div>',
@@ -5002,6 +5089,7 @@ function contextMenuMarkup(data) {
   }
   if (data.kind === 'sidebar') {
     return [
+      revealInPaneMenuMarkup(data),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : [])
@@ -5009,6 +5097,7 @@ function contextMenuMarkup(data) {
   }
   if (data.kind === 'folder') {
     return [
+      revealInPaneMenuMarkup(data),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
       contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } })
@@ -5016,6 +5105,7 @@ function contextMenuMarkup(data) {
   }
   if (data.kind === 'workspace') {
     return [
+      revealInPaneMenuMarkup(data),
       contextMenuRow({ icon: 'all', label: '全选', shortcut: '⌘ A', action: 'select-all', disabled: !state.items.length }),
       ...(state.selected.size ? [contextMenuRow({ icon: 'remove', label: '取消选择', action: 'clear-selection' })] : []),
       '<div class="context-menu-separator"></div>',
@@ -5043,6 +5133,7 @@ function contextMenuMarkup(data) {
   ].join('');
   return [
     contextMenuRow({ icon: 'window', label: '在新窗口打开', shortcut: '⌘ O', action: 'open-window' }),
+    revealInPaneMenuMarkup(data),
     ...(hasCapability('openDefault') ? [contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one })] : []),
     ...(hasCapability('openOther') ? [contextMenuRow({ icon: 'open', label: '在其它应用打开…', action: 'open-other', disabled: !one })] : []),
     ...(hasCapability('finder') ? [
@@ -5137,7 +5228,7 @@ function openSelectionInNewWindow(ids = []) {
 }
 
 function showContextMenuAt(x, y, data) {
-  state.contextMenu = { ...data, x, y };
+  state.contextMenu = { ...data, x, y, paneReveal: capturePaneReveal(data) };
   const menu = $('#contextMenu');
   menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind));
   menu.innerHTML = contextMenuMarkup(state.contextMenu);
@@ -5160,6 +5251,15 @@ function showContextMenuAt(x, y, data) {
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+    const targets = menu.querySelector('.pane-target-options');
+    if (targets) {
+      const submenu = targets.parentElement;
+      const row = submenu.parentElement.getBoundingClientRect();
+      const width = parseFloat(getComputedStyle(submenu).width);
+      const flip = row.right + width > window.innerWidth - 8;
+      submenu.style.left = flip ? 'auto' : 'calc(100% - 2px)';
+      submenu.style.right = flip ? 'calc(100% - 2px)' : 'auto';
+    }
   });
 }
 
@@ -5187,6 +5287,7 @@ function openSidebarContextMenu(target, point) {
 async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
+  if (action === 'reveal-in-pane') return revealInPane(data.paneReveal, payload.paneId);
   if (action === 'save-smart-folder') return saveCurrentViewAsSmartFolder();
   if (action === 'rename-smart-folder') return renameSmartFolder(payload.id);
   if (action === 'remove-smart-folder') return removeSmartFolder(payload.id);

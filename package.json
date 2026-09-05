@@ -1,6 +1,6 @@
 {
   "name": "eagle-multiview-review-20260905",
-  "version": "1.7.1-review.3",
+  "version": "1.7.1-review.5",
   "description": "Multi-window Eagle client for browsing, organizing, previewing, importing, editing, and synchronizing one library",
   "main": "main.js",
   "author": "Eagle MultiView contributors",

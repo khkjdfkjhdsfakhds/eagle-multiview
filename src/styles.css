@@ -2479,6 +2479,7 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .context-menu-arrow { color: #8e949e; font-size: 17px; line-height: 1; }
 .context-menu-row:hover .context-menu-arrow, .context-menu-row.submenu-open .context-menu-arrow { color: white; }
 .context-menu-separator { height: 1px; margin: 5px 7px; background: rgba(247, 248, 248, .09); }
+.context-submenu:has(> .pane-target-options) { width: 148px; }
 .context-submenu {
   position: absolute;
   z-index: 1;

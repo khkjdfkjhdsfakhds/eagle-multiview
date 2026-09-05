@@ -114,6 +114,23 @@
     return paneLayoutSpecs[layout] || paneLayoutSpecs.single;
   }
 
+  function paneRevealTargets(layout, panes, sourcePaneId, { stacked = false } = {}) {
+    const list = Array.isArray(panes) ? panes : [];
+    if (!list.some(pane => pane.id === sourcePaneId)) return [];
+    const labels = {
+      left: '左', right: '右', top: '上', bottom: '下', middle: '中',
+      'top-left': '左上', 'left-top': '左上', 'top-right': '右上', 'right-top': '右上',
+      'bottom-left': '左下', 'left-bottom': '左下', 'bottom-right': '右下', 'right-bottom': '右下',
+      'upper-middle': layout === 'vertical4' ? '中左' : '中上',
+      'lower-middle': layout === 'vertical4' ? '中右' : '中下'
+    };
+    const slots = paneLayoutSpec(layout).slots;
+    return list.flatMap((pane, index) => pane.id === sourcePaneId ? [] : [{
+      paneId: pane.id,
+      label: stacked ? '第 ' + (index + 1) + ' 栏' : labels[slots[index]?.id] || '第 ' + (index + 1) + ' 栏'
+    }]);
+  }
+
   function paneCreationRank(pane, index) {
     const explicit = Number(pane?.creationOrder);
     if (Number.isFinite(explicit)) return explicit;
@@ -464,6 +481,7 @@
     appendableTailCount,
     paneLayoutSpecs,
     paneLayoutSpec,
+    paneRevealTargets,
     coordinatePaneLayout,
     defaultSplitRatios,
     resetSplitRatioAxis,
