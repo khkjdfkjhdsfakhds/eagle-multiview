@@ -151,14 +151,14 @@ const editor=pane(0).querySelector('#textEditor'); window.__audit.textSaveMode='
 editor.value='my conflicting draft'; editor.dispatchEvent(new Event('input',{bubbles:true})); await wait(650);
 const conflict={text:editor.value,dirty:window.state.textSession.dirty,confirmations:window.__audit.confirmations.length,status:pane(0).querySelector('#textStatus').textContent};
 window.__audit.textSaveMode='normal'; editor.value=''; editor.dispatchEvent(new Event('input',{bubbles:true})); click(pane(0).querySelector('#saveTextButton')); await wait(100);
-return {conflict,empty:{text:editor.value,dirty:window.state.textSession.dirty,status:pane(0).querySelector('#textStatus').textContent},stored:window.__audit.snapshotText(),calls:window.__audit.calls.filter(c=>c.kind==='save-text')};`,
+return {conflict,empty:{text:editor.value,dirty:window.state.textSession.dirty,status:pane(0).querySelector('#textStatus').textContent,detail:pane(0).querySelector('#textStatus').title},stored:window.__audit.snapshotText(),calls:window.__audit.calls.filter(c=>c.kind==='save-text')};`,
   textImeAndPending: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); editor.focus(); window.__audit.textSaveMode='pending';
 editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); editor.value='中文输入'; editor.dispatchEvent(new Event('input',{bubbles:true}));
 await wait(600); const during=window.__audit.calls.filter(c=>c.kind==='save-text').length;
 editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); await until(()=>!window.state.textSession.dirty);
-return {during,stored:window.__audit.snapshotText(),status:pane(0).querySelector('#textStatus').textContent,focused:document.activeElement===editor};`,
+return {during,stored:window.__audit.snapshotText(),status:pane(0).querySelector('#textStatus').textContent,detail:pane(0).querySelector('#textStatus').title,focused:document.activeElement===editor};`,
   inspectorFailureRestore: `
 click(pane(0).querySelector('[data-id="item-1"]')); window.__audit.failIds=['item-1'];
 const input=document.querySelector('#itemAnnotation'); input.value='recover failed draft'; input.dispatchEvent(new Event('input',{bubbles:true}));

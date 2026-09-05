@@ -87,7 +87,7 @@ async function run() {
         const editor = pane.querySelector('#textEditor');
         editor.value = '尚未保存的布局验收草稿';
         editor.dispatchEvent(new Event('input', { bubbles: true }));
-        await until(() => pane.querySelector('#textStatus').textContent.includes('尚未保存'));
+        await until(() => pane.querySelector('#textStatus').title.includes('尚未保存'));
       }
       await wait(80);
       const preview = pane.querySelector('.text-preview');

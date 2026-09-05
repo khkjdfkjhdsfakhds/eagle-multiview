@@ -3980,10 +3980,13 @@ function textSessionStatus(session, message) {
   const status = paneQuery(pane.id, '#textStatus');
   const save = paneQuery(pane.id, '#saveTextButton');
   if (status && message) {
-    const next = session.storageError && session.dirty
+    const detail = session.storageError && session.dirty
       ? '即时草稿备份失败；请保持窗口开启直至保存成功，或复制正文'
       : message;
+    // Keep the visible label fixed-length; operational detail belongs on hover.
+    const next = session.dirty ? '编辑中' : '已保存';
     if (status.textContent !== next) status.textContent = next;
+    if (status.title !== detail) status.title = detail;
   }
   if (save) save.disabled = Boolean(session.saving) || !session.dirty || !state.connected;
 }
@@ -4026,7 +4029,7 @@ function renderTextPreview(session) {
   const paneId = state.activePaneId;
   $('#modalMedia').innerHTML = `<div class="text-preview">
     <div class="text-toolbar">
-      <span id="textStatus" class="text-status">UTF-8 · ${formatBytes(session.fingerprint?.size || 0)}</span>
+      <span id="textStatus" class="text-status" title="UTF-8 · ${formatBytes(session.fingerprint?.size || 0)}">${session.dirty ? '编辑中' : '已保存'}</span>
       <button id="reloadTextButton" type="button">重新载入</button>
       <button id="saveTextButton" class="primary" type="button" disabled>保存 ⌘S</button>
     </div>

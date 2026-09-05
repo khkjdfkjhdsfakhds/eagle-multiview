@@ -85,7 +85,8 @@ test('TXT conflict and empty-body failure preserve local content without automat
   assert.equal(r.conflict.confirmations, 0);
   assert.equal(r.empty.text, '');
   assert.equal(r.empty.dirty, true);
-  assert.match(r.empty.status, /空白草稿已保留.*暂未保存/);
+  assert.equal(r.empty.status, '编辑中');
+  assert.match(r.empty.detail, /空白草稿已保留.*暂未保存/);
   assert.equal(r.stored, 'original');
   assert.equal(r.calls.length, 1);
 });
@@ -93,7 +94,8 @@ test('IME composition delays TXT autosave and pending thumbnail completion repor
   const r = (await probe()).textImeAndPending;
   assert.equal(r.during, 0);
   assert.equal(r.stored, '中文输入');
-  assert.match(r.status, /正文已保存.*刷新待确认/);
+  assert.equal(r.status, '已保存');
+  assert.match(r.detail, /正文已保存.*刷新待确认/);
   assert.equal(r.focused, true);
 });
 test('failed metadata save is restored on returning to the item and can be retried', async () => {
