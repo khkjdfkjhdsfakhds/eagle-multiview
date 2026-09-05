@@ -1113,8 +1113,41 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
   for (const pane of document.querySelectorAll('.content-pane')) pane.classList.toggle('active', pane.dataset.paneId === state.activePaneId);
   renderQueryControls();
   renderFolderTree();
+  syncPaneLayoutButton(layout);
   if (refresh && state.connected) refreshAllPanes({ reset: true, preserveScroll: true });
   return true;
+}
+
+function syncPaneLayoutButton(layout) {
+  const button = $('#paneLayoutButton');
+  const option = document.querySelector('#paneLayoutPopover [data-layout="' + layout + '"]');
+  const icon = option?.querySelector('svg');
+  if (!button || !icon) return;
+  button.querySelector('.pane-split-icon').replaceChildren(icon.cloneNode(true));
+  button.dataset.layout = layout;
+  const label = '分栏布局：' + option.getAttribute('aria-label');
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  for (const entry of document.querySelectorAll('.pane-layout-option')) {
+    entry.classList.toggle('active', entry === option);
+  }
+}
+
+async function requestRefreshAllPanes() {
+  const button = $('#refreshAllPanesButton');
+  if (button.disabled) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  button.title = '正在刷新所有分栏…';
+  try {
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+  } catch (error) {
+    toast(error?.message || '刷新失败，请重试');
+  } finally {
+    button.disabled = false;
+    button.setAttribute('aria-busy', 'false');
+    button.title = '刷新所有分栏';
+  }
 }
 
 async function refreshAllPanes(options = {}) {
@@ -7000,18 +7033,8 @@ function bindEvents() {
       folderId: folderCreationParentForPane(paneId)
     });
   });
-  $('#newWindowButton').addEventListener('click', requestDefaultNewWindow);
-  $('#newWindowMenuButton').addEventListener('click', event => {
-    event.stopPropagation();
-    if (!$('#contextMenu').classList.contains('hidden') && state.contextMenu?.kind === 'new-window-menu') {
-      hideContextMenu();
-      return;
-    }
-    const rect = event.currentTarget.getBoundingClientRect();
-    event.currentTarget.setAttribute('aria-expanded', 'true');
-    showContextMenuAt(rect.right - 294, rect.bottom + 6, { kind: 'new-window-menu' });
-  });
   $('#currentEaglePathButton').addEventListener('click', navigateToCurrentEaglePath);
+  $('#refreshAllPanesButton').addEventListener('click', requestRefreshAllPanes);
   $('#toggleSidebarButton').addEventListener('click', () => togglePanel('sidebar'));
   $('#toggleInspectorButton').addEventListener('click', () => togglePanel('inspector'));
   $('#drawerBackdrop').addEventListener('click', closeDrawers);

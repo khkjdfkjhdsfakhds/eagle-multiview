@@ -8,7 +8,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 
 const execFileAsync = promisify(execFile);
 
-test('actual Electron renderer drives new-window controls, folder rename sync, and responsive wrapping', { timeout: 20000 }, async () => {
+test('actual Electron renderer drives layout icons, refresh-all, window shortcuts and responsive wrapping', { timeout: 20000 }, async () => {
   const electron = require('electron');
   const runner = require.resolve('../test-support/renderer-ui-runner.cjs');
   const env = { ...process.env };
@@ -18,7 +18,9 @@ test('actual Electron renderer drives new-window controls, folder rename sync, a
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_UI_RESULT '));
   assert.ok(line, `missing UI result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_UI_RESULT '.length));
-  assert.equal(result.labels.length, 3);
+  assert.equal(result.layoutCount, 12);
+  assert.equal(result.refreshRecovered, true);
+  assert.equal(result.restoredLayout, 'vertical2');
   assert.equal(result.searchExited, true);
   assert.deepEqual(result.renamePreserved, { viewId: 'mv-folder', title: '重命名后文件夹' });
   assert.equal(result.recent[1].id, 'eagle-folder');

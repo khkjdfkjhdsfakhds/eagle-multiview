@@ -21,7 +21,7 @@ async function run() {
       preload: path.join(__dirname, 'renderer-ui-preload.cjs')
     }
   });
-  await window.loadFile(path.join(__dirname, '../src/index.html'));
+  await window.loadFile(path.join(process.env.EAGLEMV_UI_SOURCE_ROOT || path.join(__dirname, '..'), 'src/index.html'));
   const result = await window.webContents.executeJavaScript(`(async () => {
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const until = async predicate => {
@@ -95,40 +95,65 @@ async function run() {
     assert([...document.querySelectorAll('.folder-row')].some(row => row.textContent.includes('重命名后文件夹')), '文件夹树没有显示重命名后的文件夹');
     const renamePreserved = { viewId: renamedPane.currentView.id, title: renamedPane.viewTitle };
 
-    mainButton.click();
-    await wait(10);
-    assert(window.__uiTestCalls.at(-1)?.data?.view?.id === 'mv-folder', 'main button did not use the latest active pane');
+    assert(!mainButton && !menuButton, 'new-window toolbar controls must be removed');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, altKey: true, bubbles: true, cancelable: true }));
+    await wait(15);
+    assert(window.__uiTestCalls.at(-1)?.data?.view?.id === 'mv-folder', 'new-window shortcut must use the latest active pane');
 
-    menuButton.click();
-    assert(menuButton.getAttribute('aria-expanded') === 'true', 'chevron did not expand');
-    assert(!menu.classList.contains('hidden'), 'location menu did not open');
-    assert(menu.getAttribute('aria-label') === '新窗口位置', 'location menu has the wrong accessible name');
-    const labels = [...menu.querySelectorAll('.context-menu-label')].map(node => node.textContent.trim());
-    assert(JSON.stringify(labels) === JSON.stringify(['新建在根目录', '新建在当前 Eagle 路径', '新建在当前 MultiView 路径（默认）']), 'location menu labels are wrong');
-    menuButton.click();
-    assert(menu.classList.contains('hidden'), 'second chevron click did not collapse the menu');
-
-    menuButton.click();
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-    assert(menu.classList.contains('hidden'), 'Escape did not close the location menu');
-    menuButton.click();
-    document.querySelector('.search-box').click();
-    assert(menu.classList.contains('hidden'), 'outside click did not close the location menu');
-
-    for (const action of ['new-window-root', 'new-window-eagle', 'new-window-multiview']) {
-      menuButton.click();
-      menu.querySelector('[data-context-action="' + action + '"]').click();
-      await wait(15);
-    }
+    // Keep exercising the existing window target actions without the removed toolbar.
+    for (const target of ['root', 'eagle', 'multiview']) await openNewWindowAt(target);
     const recent = window.__uiTestCalls.slice(-3).map(call => call.data.view);
-    assert(recent[0].kind === 'root', 'root menu action failed');
-    assert(recent[1].kind === 'folder' && recent[1].id === 'eagle-folder', 'Eagle menu action failed');
-    assert(recent[2].kind === 'folder' && recent[2].id === 'mv-folder', 'MultiView menu action failed');
+    assert(recent[0].kind === 'root', 'root window action failed');
+    assert(recent[1].id === 'eagle-folder', 'Eagle window action failed');
+    assert(recent[2].id === 'mv-folder', 'MultiView window action failed');
 
     document.querySelector('#currentEaglePathButton').click();
     await until(() => secondPane.querySelector('#breadcrumb').textContent.includes('Eagle 文件夹'));
 
-    return { labels, recent, searchExited, renamePreserved };
+    const layoutButton = document.querySelector('#paneLayoutButton');
+    const options = [...document.querySelectorAll('.pane-layout-option')];
+    for (const option of options) {
+      layoutButton.click();
+      option.click();
+      const layout = option.dataset.layout;
+      assert(document.querySelector('#paneLayout').dataset.layout === layout, 'layout not applied: ' + layout);
+      assert(layoutButton.dataset.layout === layout, 'button did not follow layout: ' + layout);
+      assert(layoutButton.querySelector('svg').outerHTML === option.querySelector('svg').outerHTML, 'button and option icons differ: ' + layout);
+      assert(option.querySelectorAll('rect').length === 1, 'layout icon has nested borders: ' + layout);
+      assert(layoutButton.getAttribute('aria-label').includes(option.getAttribute('aria-label')), 'layout accessible name is stale');
+    }
+    state.inspectorSaving = true;
+    assert(!renderPaneLayout('single'), 'saving should block layout changes');
+    assert(layoutButton.dataset.layout === 'horizontal4', 'blocked layout changed the button');
+    state.inspectorSaving = false;
+    renderPaneLayout('vertical2', { refresh: false });
+    await until(() => !state.panes.some(pane => pane.loading));
+    const refreshButton = document.querySelector('#refreshAllPanesButton');
+    const originalQuery = window.eagleMV.query;
+    const pending = [];
+    window.eagleMV.query = query => new Promise((resolve, reject) => pending.push({ query, resolve, reject }));
+    const activeBefore = state.activePaneId;
+    const viewsBefore = JSON.stringify(state.panes.map(pane => ({ view: pane.currentView, query: pane.query })));
+    state.panes[0].textSession = { dirty: true, value: 'unsaved draft' };
+    refreshButton.click();
+    refreshButton.click();
+    assert(pending.length === 2, 'refresh must query both panes once despite repeated clicks');
+    assert(refreshButton.disabled && refreshButton.getAttribute('aria-busy') === 'true', 'refresh has no busy feedback');
+    pending[0].resolve({ data: [], total: 0, hasMore: false });
+    await wait(30);
+    assert(refreshButton.disabled, 'refresh stopped waiting for the slower pane');
+    pending[1].reject(new Error('test offline pane'));
+    await until(() => !refreshButton.disabled);
+    assert(state.panes[1].errorMessage, 'failed pane should expose its error');
+    assert(state.activePaneId === activeBefore, 'refresh changed the active pane');
+    assert(JSON.stringify(state.panes.map(pane => ({ view: pane.currentView, query: pane.query }))) === viewsBefore, 'refresh changed pane locations or filters');
+    assert(state.panes[0].textSession.value === 'unsaved draft', 'refresh discarded the TXT draft');
+    window.eagleMV.query = originalQuery;
+    refreshButton.click();
+    await until(() => !refreshButton.disabled);
+    assert(!state.panes[1].errorMessage && refreshButton.getAttribute('aria-busy') === 'false', 'retry failed to recover');
+    state.panes[0].textSession = null;
+    return { layoutCount: options.length, refreshRecovered: true, recent, searchExited, renamePreserved };
   })()`);
   window.setSize(820, 820);
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -188,8 +213,7 @@ async function run() {
         const cluster = document.querySelector('.toolbar-cluster');
         const slider = document.querySelector('.size-control');
         const eagleButton = document.querySelector('#currentEaglePathButton');
-        const mainButton = document.querySelector('#newWindowButton');
-        const menuButton = document.querySelector('#newWindowMenuButton');
+        const refreshButton = document.querySelector('#refreshAllPanesButton');
         const toolbarRect = toolbar.getBoundingClientRect();
         const sliderRect = slider.getBoundingClientRect();
         const eagleRect = eagleButton.getBoundingClientRect();
@@ -229,7 +253,9 @@ async function run() {
         if (sliderRect.right > toolbarRect.right + 1) throw new Error('thumbnail slider leaves toolbar at ${width}px');
         if (!visible(eagleButton)) throw new Error('Eagle path button disappeared at ${width}px');
         if (eagleRect.right > toolbarRect.right + 1) throw new Error('Eagle path button leaves toolbar at ${width}px');
-        if (visible(mainButton) && eagleRect.left < menuButton.getBoundingClientRect().right) throw new Error('Eagle path button is not to the right at ${width}px');
+        const refreshRect = refreshButton.getBoundingClientRect();
+        if (!visible(refreshButton) || refreshRect.right > toolbarRect.right + 1 || refreshRect.left < eagleRect.right) throw new Error('refresh button is misplaced at ${width}px');
+        if (Math.abs(refreshRect.top + refreshRect.height / 2 - eagleRect.top - eagleRect.height / 2) > 1) throw new Error('toolbar icons are not vertically aligned at ${width}px');
         return {
           width: ${width},
           wrapped: toolbar.classList.contains('wrapped'),
@@ -246,6 +272,23 @@ async function run() {
   if (!result.layouts.some(layout => layout.wrapped)) throw new Error(`narrow layouts never exercised toolbar wrapping: ${JSON.stringify(result.layouts)}`);
   for (const layout of result.layouts.filter(entry => entry.wrapped)) {
     if (Math.abs(layout.clusterTop - layout.sliderTop) > 10) throw new Error(`slider detached from wrapped toolbar cluster at ${layout.width}px`);
+  }
+  const reloaded = new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+  window.webContents.reload();
+  await reloaded;
+  result.restoredLayout = await window.webContents.executeJavaScript(`(() => {
+    const root = document.querySelector('#paneLayout');
+    const button = document.querySelector('#paneLayoutButton');
+    if (root.dataset.layout !== 'vertical2' || button.dataset.layout !== root.dataset.layout) throw new Error('restored layout icon is stale');
+    return button.dataset.layout;
+  })()`);
+  if (process.env.EAGLEMV_UI_SCREENSHOT_DIR) {
+    window.setSize(1280, 820);
+    await window.webContents.executeJavaScript(`document.querySelector('#paneLayoutButton').click(); true`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    fs.mkdirSync(process.env.EAGLEMV_UI_SCREENSHOT_DIR, { recursive: true });
+    const screenshot = await window.webContents.capturePage();
+    fs.writeFileSync(path.join(process.env.EAGLEMV_UI_SCREENSHOT_DIR, 'toolbar-layout.png'), screenshot.toPNG());
   }
   process.stdout.write(`EAGLEMV_UI_RESULT ${JSON.stringify(result)}\n`);
   window.destroy();

@@ -13,10 +13,9 @@ const shim = fs.readFileSync(path.join(root, 'src/web-shim.js'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'src/styles.css'), 'utf8');
 
-test('new-window toolbar control is a split button with an accessible menu trigger', () => {
-  assert.match(html, /class="new-window-control"/);
-  assert.match(html, /id="newWindowButton"[^>]+title="在当前 MultiView 路径新建窗口（默认，⌘⌥N）"/);
-  assert.match(html, /id="newWindowMenuButton"[^>]+aria-haspopup="menu"[^>]+aria-expanded="false"/);
+test('new-window toolbar controls are removed while the window bridge remains available', () => {
+  assert.doesNotMatch(html, /id="newWindow(?:Menu)?Button"/);
+  assert.doesNotMatch(renderer, /\$\('#newWindow(?:Menu)?Button'\)\.addEventListener/);
   assert.match(html, /<script src="window-target\.js"><\/script>[\s\S]*<script src="window-actions\.js"><\/script>[\s\S]*<script src="renderer\.js"><\/script>/);
 });
 
@@ -44,8 +43,8 @@ test('desktop and web bridges expose current Eagle location and default-window r
   assert.ok(shim.includes('newWindow: async (data, preparedWindow) =>'));
 });
 
-test('current Eagle path button sits beside the new-window control and navigates the active pane', () => {
-  assert.match(html, /class="new-window-control"[\s\S]*?<\/div>\s*<button id="currentEaglePathButton"/);
+test('refresh-all follows the current Eagle path button, which still navigates the active pane', () => {
+  assert.match(html, /id="currentEaglePathButton"[\s\S]*?<\/button>\s*<button id="refreshAllPanesButton"/);
   assert.match(html, /id="currentEaglePathButton"[^>]+title="跳转到当前 Eagle 路径"[^>]+aria-label="跳转到当前 Eagle 路径"/);
   assert.ok(renderer.includes("$('#currentEaglePathButton').addEventListener('click', navigateToCurrentEaglePath);"));
   assert.ok(renderer.includes('async function navigateToCurrentEaglePath()'));

@@ -38,7 +38,7 @@ test('new-item shortcuts follow Eagle folder creation without reviving the old c
   assert.doesNotMatch(main, /label: '新建 TXT', accelerator: 'CmdOrCtrl\+Shift\+N'/);
   assert.doesNotMatch(main, /新窗口', accelerator: 'CmdOrCtrl\+N'/);
   assert.match(html, /id="newButton"[^>]+title="新建文件夹或文件（⌥N 新建文件夹）"/);
-  assert.match(html, /id="newWindowButton"[^>]+title="在当前 MultiView 路径新建窗口（默认，⌘⌥N）"/);
+  assert.doesNotMatch(html, /id="newWindowButton"/);
   const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
   const handler = renderer.slice(keydownStart, renderer.indexOf('\n  });\n}', keydownStart));
   assert.ok(handler.includes("primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'n'"));

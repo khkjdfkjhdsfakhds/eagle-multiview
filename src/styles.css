@@ -938,10 +938,11 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .content-pane .grid-scroller { padding: 5px 11px 12px; }
 .content-pane .breadcrumb button { max-width: 110px; }
 .content-pane .drop-overlay { inset: 0; }
-.pane-layout-button {
+.pane-layout-button,
+.toolbar-refresh-button {
   width: 40px;
   min-width: 40px;
-  height: 30px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -952,38 +953,40 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   background: rgba(255, 255, 255, .025);
 }
 .pane-layout-button:hover,
-.pane-layout-button[aria-expanded="true"] {
+.pane-layout-button[aria-expanded="true"],
+.toolbar-refresh-button:hover {
   border-color: rgba(247, 248, 248, .16);
   background: rgba(255, 255, 255, .08);
 }
 .pane-split-icon {
-  position: relative;
-  width: 15px;
-  height: 15px;
+  width: 20px;
+  height: 20px;
   display: block;
-  border: 1.4px solid currentColor;
-  border-radius: 3px;
   opacity: .9;
 }
-.pane-split-icon::before,
-.pane-split-icon::after {
-  position: absolute;
-  background: currentColor;
-  content: "";
+.pane-split-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
-.pane-split-icon::before {
-  top: 1px;
-  bottom: 1px;
-  left: 50%;
-  width: 1px;
-  transform: translateX(-.5px);
+.toolbar-refresh-button .ui-icon {
+  width: 20px;
+  height: 20px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
-.pane-split-icon::after {
-  top: 50%;
-  right: 1px;
-  left: 1px;
-  height: 1px;
-  transform: translateY(-.5px);
+.toolbar-refresh-button:disabled {
+  opacity: .55;
+  cursor: progress;
+}
+.toolbar-refresh-button[aria-busy="true"] .ui-icon {
+  animation: toolbar-refresh-spin 1s linear infinite;
+}
+@keyframes toolbar-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-refresh-button[aria-busy="true"] .ui-icon { animation: none; }
 }
 .pane-layout-popover {
   position: absolute;
@@ -1053,16 +1056,16 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .pane-layout-option:hover, .pane-layout-option.active { border-color: rgba(0, 114, 239, .5); background: rgba(0, 114, 239, .13); color: white; }
 .layout-icon {
   position: relative;
-  width: 31px;
-  height: 27px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: .82;
 }
 .layout-icon svg {
-  width: 31px;
-  height: 27px;
+  width: 30px;
+  height: 30px;
   display: block;
 }
 .content-heading {
