@@ -85,7 +85,7 @@ test('TXT conflict and empty-body failure preserve local content without automat
   assert.equal(r.conflict.confirmations, 0);
   assert.equal(r.empty.text, '');
   assert.equal(r.empty.dirty, true);
-  assert.match(r.empty.status, /空正文/);
+  assert.match(r.empty.status, /空白草稿已保留.*暂未保存/);
   assert.equal(r.stored, 'original');
   assert.equal(r.calls.length, 1);
 });

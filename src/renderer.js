@@ -3964,6 +3964,7 @@ async function recoverableTextDrafts(libraryPath, id, draftId) {
 function discardTextSession(session) {
   if (!session) return;
   clearTimeout(session.autoSaveTimer);
+  clearTimeout(session.statusTimer);
   session.dirty = false;
   session.content = session.original;
   session.revision += 1;
@@ -3973,15 +3974,32 @@ function textSessionPane(session) {
   return state.panes.find(pane => pane.textSession === session) || null;
 }
 function textSessionStatus(session, message) {
+  if (message) clearTimeout(session.statusTimer);
   const pane = textSessionPane(session);
   if (!pane) return;
   const status = paneQuery(pane.id, '#textStatus');
   const save = paneQuery(pane.id, '#saveTextButton');
-  if (status && message) status.textContent = session.storageError && session.dirty
-    ? '即时草稿备份失败；请保持窗口开启直至保存成功，或复制正文'
-    : message;
+  if (status && message) {
+    const next = session.storageError && session.dirty
+      ? '即时草稿备份失败；请保持窗口开启直至保存成功，或复制正文'
+      : message;
+    if (status.textContent !== next) status.textContent = next;
+  }
   if (save) save.disabled = Boolean(session.saving) || !session.dirty || !state.connected;
 }
+function textSavedStatus(session, message, automatic) {
+  if (!automatic) { textSessionStatus(session, message); return; }
+  clearTimeout(session.statusTimer);
+  const revision = session.revision;
+  // Saving still runs at the original cadence. Only routine success feedback
+  // waits for a typing pause, so every 500 ms save does not flash the toolbar.
+  session.statusTimer = setTimeout(() => {
+    if (session.revision === revision && !session.dirty && !session.saving && !session.composing) {
+      textSessionStatus(session, message);
+    }
+  }, Math.max(0, 1200 - (Date.now() - (session.lastInputAt || 0))));
+}
+const EMPTY_TEXT_DRAFT_STATUS = '空白草稿已保留 · 暂未保存到 Eagle';
 function confirmTextSessionsLeave(panes) {
   const sessions = panes.map(pane => pane.textSession).filter(Boolean);
   if (sessions.some(session => session.saving)) {
@@ -4036,12 +4054,16 @@ function renderTextPreview(session) {
     textSessionStatus(session, '草稿已恢复；请核对正文，编辑或点击保存后提交');
   });
   editor.addEventListener('input', () => {
+    session.lastInputAt = Date.now();
     session.content = editor.value;
     session.revision += 1;
     session.dirty = session.content !== session.original;
     if (session.blocked !== 'conflict') session.blocked = false;
+    if (session.dirty && !session.content.length && !session.blocked) session.blocked = 'empty';
     persistTextDraft(session);
-    textSessionStatus(session, session.dirty ? '草稿已保留 · 停顿后自动保存' : '已保存');
+    textSessionStatus(session, session.blocked === 'conflict'
+      ? '外部内容已变化；草稿已保留，重新载入前请核对或复制正文'
+      : session.dirty ? (session.content.length ? '编辑中 · 草稿已保留' : EMPTY_TEXT_DRAFT_STATUS) : '已保存');
     queueTextAutoSave(session);
   });
   editor.addEventListener('compositionstart', () => { session.composing = true; clearTimeout(session.autoSaveTimer); });
@@ -4148,14 +4170,24 @@ async function saveTextPreview(force = false, { session = state.textSession, aut
   if (session.saving) return session.saving;
   if (session.composing || (automatic && session.blocked)) return false;
   clearTimeout(session.autoSaveTimer);
+  if (!session.content.length) {
+    if (session.blocked !== 'conflict') session.blocked = 'empty';
+    persistTextDraft(session);
+    textSessionStatus(session, EMPTY_TEXT_DRAFT_STATUS);
+    return false;
+  }
   const task = async () => {
     setTextSaving(true, session);
-    textSessionStatus(session, '正在后台保存…');
+    if (!automatic) textSessionStatus(session, '正在后台保存…');
     try {
       do {
         const { id, libraryPath, content } = session;
         if (state.library?.path !== libraryPath) throw new Error('资料库已切换；旧库草稿已保留');
-        if (!content.length) throw new Error('Eagle 暂不提交空正文；空白草稿已保留，尚未保存');
+        if (!content.length) {
+          session.blocked = 'empty';
+          textSessionStatus(session, EMPTY_TEXT_DRAFT_STATUS);
+          return false;
+        }
         const revision = session.revision;
         const result = await window.eagleMV.saveText({ id, libraryPath, content, base: structuredClone(session.fingerprint), force: Boolean(force) });
         force = false;
@@ -4175,7 +4207,10 @@ async function saveTextPreview(force = false, { session = state.textSession, aut
         // into the live editor or delete a newer draft from another write.
         if (!session.dirty) session.revision = Math.max(session.revision, revision);
         persistTextDraft(session);
-        textSessionStatus(session, session.dirty ? '正在保存后续输入…' : result.status === 'written_pending_refresh' ? '正文已保存 · Eagle 预览刷新待确认' : '已自动保存');
+        if (!session.dirty) {
+          if (result.status === 'written_pending_refresh') textSessionStatus(session, '正文已保存 · Eagle 预览刷新待确认');
+          else textSavedStatus(session, automatic ? '已自动保存' : '已保存', automatic);
+        }
       } while (session.dirty && !session.composing && state.library?.path === session.libraryPath);
       return !session.dirty;
     } catch (error) {
@@ -4203,6 +4238,7 @@ function closePreview({ commitSelection = true, skipDiscard = false, syncBroadca
   stopSlideshow();
   persistTextDraft(state.textSession);
   clearTimeout(state.textSession?.autoSaveTimer);
+  clearTimeout(state.textSession?.statusTimer);
   const finalId = state.previewId;
   const paneId = state.activePaneId;
   const wasActive = paneRoot(paneId)?.classList.contains('active');
