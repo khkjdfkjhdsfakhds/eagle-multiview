@@ -46,7 +46,8 @@ test('PDF previews resolve a main-minted file URL instead of the custom protocol
   const fn = renderer.slice(start, renderer.indexOf('\n}', start));
   assert.ok(fn.includes("embed[data-pdf-item]"));
   assert.ok(fn.includes('window.eagleMV.fileURL(pdfEmbed.dataset.pdfItem)'));
-  assert.ok(fn.includes('token !== state.previewToken'), 'stale preview loads must not attach');
+  assert.ok(fn.includes('owner.previewToken === ownerToken'), 'stale preview loads must check the originating pane token');
+  assert.ok(fn.includes('!validOwner() || !pdfEmbed.isConnected'), 'retired or replaced owner previews must not attach');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const handler = main.slice(main.indexOf("handleRPC('item:file-url'"), main.indexOf('\n  });', main.indexOf("handleRPC('item:file-url'")));
   assert.ok(handler.includes('pathToFileURL(filePath).toString()'), 'URL minting stays in the main process');

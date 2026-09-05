@@ -7,6 +7,7 @@ const { exportFiles, isInside, uniqueDestination } = require('../lib/export-serv
 
 test('rejects export destinations inside the Eagle library', async () => {
   assert.equal(isInside('/library/Eagle.library', '/library/Eagle.library/out'), true);
+  assert.equal(isInside('/library/Eagle.library', '/library/Eagle.library/..archive'), true);
   await assert.rejects(() => exportFiles({
     filePaths: ['/tmp/a.png'],
     destinationRoot: '/library/Eagle.library/out',
@@ -19,6 +20,7 @@ test('exports files with collision-safe names and reports missing files', async 
   const copied = [];
   const existing = new Set([path.join('/tmp/out', 'a.png')]);
   const fs = {
+    realpath: async file => file,
     mkdir: async () => {},
     access: async file => { if (file === '/tmp/missing.png') throw new Error('missing'); },
     existsSync: file => existing.has(file),

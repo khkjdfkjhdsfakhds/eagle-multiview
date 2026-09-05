@@ -39,7 +39,7 @@ test('new-item shortcuts follow Eagle folder creation without reviving the old c
   assert.doesNotMatch(main, /新窗口', accelerator: 'CmdOrCtrl\+N'/);
   assert.match(html, /id="newButton"[^>]+title="新建文件夹或文件（⌥N 新建文件夹）"/);
   assert.match(html, /id="newWindowButton"[^>]+title="在当前 MultiView 路径新建窗口（默认，⌘⌥N）"/);
-  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
   const handler = renderer.slice(keydownStart, renderer.indexOf('\n  });\n}', keydownStart));
   assert.ok(handler.includes("primaryKey && !event.shiftKey && event.altKey && event.key.toLowerCase() === 'n'"));
   assert.ok(handler.includes("!primaryKey && event.shiftKey && event.altKey && (event.code === 'KeyN' || event.key.toLowerCase() === 'n')"));
@@ -175,7 +175,7 @@ test('advertised Eagle item shortcuts have exact non-conflicting keyboard handle
 });
 
 test('remove, trash, preview and paste shortcuts cannot fall through to the wrong action', () => {
-  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
   const keydownEnd = renderer.indexOf('\n  });\n}', keydownStart);
   const handler = renderer.slice(keydownStart, keydownEnd);
   const remove = handler.indexOf('primaryKey && event.shiftKey && !event.altKey && deleteKey');
@@ -191,7 +191,7 @@ test('remove, trash, preview and paste shortcuts cannot fall through to the wron
 });
 
 test('inspector editing remains a hard stop for the Backspace trash shortcut', () => {
-  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
   const keydownEnd = renderer.indexOf('\n  });\n}', keydownStart);
   const handler = renderer.slice(keydownStart, keydownEnd);
   const editableGuard = handler.indexOf('isEditableElement(event.target) || isEditableElement() || state.inspectorEditing');
@@ -229,7 +229,7 @@ test('bulk file actions resolve missing items independently with bounded concurr
 });
 
 test('history and folder navigation support Control and Option arrow shortcuts', () => {
-  const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+  const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
   const keydownEnd = renderer.indexOf('\n  });\n}', keydownStart);
   const handler = renderer.slice(keydownStart, keydownEnd);
 

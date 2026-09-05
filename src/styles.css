@@ -2667,6 +2667,11 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   /* The selection strip overlays the drawer's last rows. */
   body.web-client.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
 }
+.web-copy-dialog { width: min(520px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+.web-copy-dialog::backdrop { background: #0008; }
+.web-copy-dialog p { margin: 0 0 12px; line-height: 1.5; }
+.web-copy-dialog textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 12px; user-select: text; }
+.web-copy-dialog button { min-height: 40px; margin-right: 8px; }
 @media (max-width: 600px) {
   /* Phones fit ~2 justified columns at the desktop default and occasionally
      one, which turns a single card into half a screen. A smaller base size
@@ -2677,8 +2682,10 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   /* Force a single column of panes; extra panes stack vertically instead of
      shredding into unusable slivers. */
   body.web-client .pane-layout,
-  body.web-client .pane-layout[data-layout] { display: grid; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: none; grid-auto-rows: minmax(72vh, auto); }
+  body.web-client .pane-layout[data-layout] { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: none; grid-auto-rows: minmax(72vh, auto); overflow-y: auto; align-content: start; }
+  body.web-client .pane-layout[data-layout="single"] { grid-template-rows: minmax(0, 1fr); align-content: normal; }
   body.web-client .pane-layout[data-layout] .content-pane { grid-area: auto; }
+  body.web-client .pane-layout .pane-splitter { display: none; }
   body.web-client .toolbar { flex-wrap: wrap; }
   body.web-client .toolbar .search-box { min-width: 0; flex: 1 1 160px; }
   body.web-client .toolbar .search-box kbd { display: none; }

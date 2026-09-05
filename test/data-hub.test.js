@@ -244,7 +244,8 @@ test('folder-tree refresh failure keeps the app connected with the previous tree
   await hub.poll();
   assert.equal(hub.connected, true);
   assert.deepEqual(hub.library.folders, oldFolders);
-  assert.equal(hub.lastModificationTime, 2);
+  assert.equal(hub.lastModificationTime, 1, 'a failed folder read must not advance its success watermark');
+  assert.equal(hub.folderTreeDirty, true);
 });
 
 test('polling retains the folder tree when the library metadata is unchanged', async () => {
@@ -396,4 +397,3 @@ test('renaming a nested parent folder retains its children hierarchy and updates
   assert.equal(changes[0].library.folders[0].children[0].id, 'child-1');
   assert.equal(changes[0].library.folders[0].children[1].children[0].id, 'grandchild-1');
 });
-

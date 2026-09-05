@@ -1,10 +1,11 @@
 'use strict';
 
 (function exposeSmartFolder(root, factory) {
-  const api = factory();
+  const querySpec = typeof module === 'object' && module.exports ? require('./query-spec') : root.EagleMVQuerySpec;
+  const api = factory(querySpec);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.EagleMVSmartFolder = api;
-})(typeof window !== 'undefined' ? window : globalThis, () => {
+})(typeof window !== 'undefined' ? window : globalThis, querySpec => {
   function cloneConditions(conditions) {
     return (conditions || []).map(condition => ({
       ...condition,
@@ -16,6 +17,13 @@
     if (['recent', 'random', 'trash', 'tags'].includes(view.kind)) {
       return { conditions: [], unsupported: '当前特殊视图不能等价保存为 Eagle 智能文件夹' };
     }
+    // Every active filter must have a verified conversion. New query fields
+    // default to rejection rather than silently widening a saved folder.
+    const supported = new Set(['search', 'tags', 'ext', 'rating', 'annotation', 'url', 'shape']);
+    const normalized = querySpec.createQuery(query);
+    const labels = { color: '颜色', size: '文件大小', added: '添加日期', pixels: '像素范围', searchScope: '限定搜索字段' };
+    const unsupported = querySpec.spec.filter(field => (field.filter || field.key === 'searchScope') && field.isActive(normalized[field.key], normalized) && !supported.has(field.key));
+    if (unsupported.length) return { conditions: [], unsupported: `以下条件暂不支持无损保存：${unsupported.map(field => labels[field.key] || field.key).join('、')}` };
     const conditions = cloneConditions(baseConditions);
     const search = String(query.search || '').trim();
     if (search) {

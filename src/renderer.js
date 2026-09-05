@@ -766,6 +766,11 @@ function splitterMarkup(s) {
 
 function applyLayoutSplitRatios(layoutRoot, ratios) {
   if (!layoutRoot) return;
+  if (window.eagleMV.platform === 'web' && window.matchMedia('(max-width: 600px)').matches) {
+    layoutRoot.style.gridTemplateColumns = '';
+    layoutRoot.style.gridTemplateRows = '';
+    return;
+  }
   if (ratios?.cols?.length > 1) {
     layoutRoot.style.gridTemplateColumns = ratios.cols.map(c => `minmax(0, ${c})`).join(' ');
   } else {
@@ -1053,6 +1058,16 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
     activePaneId: state.activePaneId,
     createPane: ({ source }) => createPaneState(nextPaneId(), source, { inheritCurrentViewOnly: true })
   });
+  if (!confirmTextSessionsLeave(plan.removed)) return false;
+  for (const pane of plan.removed) {
+    clearTimeout(pane.slideshow.timer);
+    clearTimeout(pane.hudTimer);
+    pane.slideshow.generation = (pane.slideshow.generation || 0) + 1;
+    clearTimeout(pane.textSession?.autoSaveTimer);
+    breadcrumbObservers.get(paneQuery(pane.id, '#breadcrumb'))?.disconnect();
+    ++pane.previewToken;
+    ++pane.refreshToken;
+  }
   state.panes = plan.panes;
   state.activePaneId = plan.activePaneId || state.panes[0]?.id;
   layoutRoot.dataset.layout = layout;
@@ -1364,7 +1379,7 @@ function markFolderUsed(folderId, libraryPath = state.library?.path) {
 }
 
 function confirmDiscardChanges({ includeText = true } = {}) {
-  if (state.textSaving) {
+  if (includeText && state.textSaving) {
     toast('正在保存 TXT，请稍候', 2400);
     return false;
   }
@@ -1376,14 +1391,14 @@ function confirmDiscardChanges({ includeText = true } = {}) {
     if (!confirm('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
     state.inspectorDirty = false;
     clearInspectorAutoSave();
-  } else if (state.inspectorDirty && !state.inspectorSaving) saveInspector();
+  } else if (state.inspectorDirty) saveInspector();
   if (!textDirty) return true;
   if (state.inspectorSaving) {
     toast('正在保存素材信息，请稍候再离开 TXT 编辑', 2400);
     return false;
   }
   const discard = confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
-  if (discard && state.textSession) state.textSession.dirty = false;
+  if (discard && state.textSession) discardTextSession(state.textSession);
   return discard;
 }
 
@@ -2368,6 +2383,8 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
   const selectedId = pane.selected.size === 1 ? [...pane.selected][0] : null;
   const selectedBefore = selectedId ? pane.items.find(item => item.id === selectedId) : null;
   const offset = reset ? 0 : pane.nextOffset;
+  const restoreCount = reset && preserveScroll ? Math.max(state.pageSize, pane.items.length) : state.pageSize;
+  const libraryPath = state.library?.path;
   const query = {
     ...cloneQuery(pane.query),
     folderId: currentView.kind === 'folder' ? currentView.id : null,
@@ -2384,12 +2401,29 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       : currentView.kind === 'trash'
         ? await window.eagleMV.getTrashItems({ ...query, libraryPath: state.library?.path, offset, limit: state.pageSize })
         : await window.eagleMV.query({ ...query, offset, limit: state.pageSize });
+    // A reset is a replacement of the loaded range, not just page one. This
+    // also allows every selected ID to be reconciled against the new query.
+    while (reset && page.hasMore && (page.data || []).length < restoreCount && !page.error) {
+      if (refreshToken !== pane.refreshToken || state.library?.path !== libraryPath || !paneById(paneId)) return;
+      const nextOffset = page.nextOffset ?? (page.data || []).length;
+      const next = currentView.kind === 'trash'
+        ? await window.eagleMV.getTrashItems({ ...query, libraryPath, offset: nextOffset, limit: state.pageSize })
+        : await window.eagleMV.query({ ...query, offset: nextOffset, limit: state.pageSize });
+      if (next.error) { page.error = next.error; break; }
+      const known = new Set((page.data || []).map(item => item.id));
+      const additions = (next.data || []).filter(item => !known.has(item.id));
+      page.data = [...(page.data || []), ...additions];
+      page.total = next.total ?? page.total;
+      page.nextOffset = next.nextOffset ?? (nextOffset + (next.data || []).length);
+      page.hasMore = Boolean(next.hasMore);
+      if (page.nextOffset <= nextOffset || !additions.length) break;
+    }
     if (page.error) {
       const error = new Error(page.error.message || '读取失败');
       error.code = page.error.code;
       throw error;
     }
-    if (refreshToken !== pane.refreshToken) return;
+    if (refreshToken !== pane.refreshToken || state.library?.path !== libraryPath || !paneById(paneId)) return;
     const paneIsActive = state.activePaneId === paneId;
     withActivePane(paneId, () => {
       state.errorMessage = '';
@@ -2415,13 +2449,15 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       // Append pages must keep the scroll position (`preserveScroll && reset`
       // used to reset it, teleporting scroll-driven paging back to the top)
       // — with it preserved, renderGrid can take the append fast path.
+      if (reset) state.selected = new Set([...state.selected].filter(id => state.itemMap.has(id)));
       if (!quiet) renderGrid({ preserveScroll });
+      if (reset && !selectedId && paneIsActive) queueChangedInspectorRender(false);
       if (reset && selectedId) {
         const selectedAfter = itemById(selectedId);
         if (!selectedAfter) {
-          state.selected.clear();
+          state.selected.delete(selectedId);
           if (paneIsActive) renderInspector();
-        } else if (!state.inspectorDirty && paneIsActive) {
+        } else if (!state.inspectorDirty && !state.inspectorSaving && !isInspectorEditor() && paneIsActive) {
           renderInspector();
         } else if (JSON.stringify(selectedBefore) !== JSON.stringify(selectedAfter) && paneIsActive) {
           $('#staleBanner').classList.remove('hidden');
@@ -2431,7 +2467,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
     setSyncStatus(`已同步 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
     setConnection(true);
   } catch (error) {
-    if (refreshToken !== pane.refreshToken) return;
+    if (refreshToken !== pane.refreshToken || state.library?.path !== libraryPath || !paneById(paneId)) return;
     if (currentView.kind === 'trash' && error?.code === 'TRASH_SCAN_INVALIDATED') {
       pane.hasMore = false;
       pane.nextOffset = 0;
@@ -2658,12 +2694,33 @@ function renderInspector() {
   state.selectedBase = structuredClone(item);
   state.inspectorDirty = false;
   $('#staleBanner').classList.add('hidden');
+  $('#staleBanner').textContent = '此素材已在另一个窗口更新；保存时会检查冲突。';
   $('#itemName').value = item.name || '';
   setTagValues('item', item.tags || [], false);
   $('#itemRating').value = String(item.star || 0);
   syncRatingPlaceholder();
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
+  const draftKey = inspectorDraftKey(state.activePaneId, id);
+  let draft = inspectorDrafts.get(draftKey);
+  if (!draft) {
+    try {
+      draft = JSON.parse(localStorage.getItem('eaglemv.inspectorDraft.v1.' + draftKey) || 'null');
+      if (draft?.values && draft?.base) inspectorDrafts.set(draftKey, draft);
+      else draft = null;
+    } catch { draft = null; }
+  }
+  if (draft) {
+    state.selectedBase = structuredClone(draft.base);
+    $('#itemName').value = draft.values.name;
+    setTagValues('item', draft.values.tags, false);
+    $('#itemRating').value = String(draft.values.star);
+    $('#itemAnnotation').value = draft.values.annotation;
+    $('#itemURL').value = draft.values.url;
+    state.inspectorDirty = Object.keys(collectPatch()).length > 0;
+    if (draft.error === 'conflict') showInspectorDraftConflict(draft);
+    else if (draft.error) $('#staleBanner').classList.remove('hidden');
+  }
   updateURLActions();
   resizeAnnotation();
   $('#previewBox').innerHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
@@ -2677,6 +2734,7 @@ function renderInspector() {
   $('#pinButton').disabled = !canPin || !state.connected;
   $('#pinButton').textContent = canPin && itemIsPinned(item) ? '取消置顶' : '置顶';
   $('#pinButton').title = canPin ? '在当前文件夹内置顶；会同步到所有 MultiView 窗口' : '与 Eagle 原版一致，置顶只在普通文件夹中可用';
+  if (!draft) offerInspectorDraftRecovery(id);
 }
 
 function commentGeometryLabel(comment) {
@@ -2894,6 +2952,7 @@ async function loadGenerationMetadata(item) {
 
 function markDirty() {
   state.inspectorDirty = Object.keys(collectPatch()).length > 0;
+  captureInspectorDraft();
   if (state.inspectorDirty) queueInspectorAutoSave();
   else clearInspectorAutoSave();
   if (!state.inspectorDirty && !$('#staleBanner').classList.contains('hidden')) renderInspector();
@@ -2948,70 +3007,206 @@ function setInspectorSaving(saving) {
   $('#inspectorContent').classList.toggle('saving', state.inspectorSaving);
 }
 
-async function saveInspector(force = false) {
-  if (state.inspectorSaving) return false;
+const inspectorDrafts = new Map();
+function inspectorDraftKey(paneId, id, libraryPath = state.library?.path) {
+  return JSON.stringify([textWindowKey, libraryPath, paneId, id]);
+}
+function persistInspectorDraft(draft, remove = false) {
+  try {
+    const key = 'eaglemv.inspectorDraft.v1.' + draft.key;
+    if (remove) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ key: draft.key, id: draft.id, paneId: draft.paneId, libraryPath: draft.libraryPath, base: draft.base, values: draft.values, fieldVersions: draft.fieldVersions, revision: draft.revision, error: draft.error }));
+    draft.storageError = false;
+    return true;
+  } catch {
+    draft.storageError = true;
+    toast('素材草稿备份失败；请保持窗口开启直至保存成功', 4400);
+    return false;
+  }
+}
+function offerInspectorDraftRecovery(id) {
+  let source;
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith('eaglemv.inspectorDraft.v1.')) continue;
+      const candidate = JSON.parse(localStorage.getItem(key) || 'null');
+      if (candidate?.id === id && candidate.libraryPath === state.library?.path && candidate.values && candidate.base
+        && candidate.key !== inspectorDraftKey(state.activePaneId, id)) { source = candidate; break; }
+    }
+  } catch {}
+  if (!source) return;
   const paneId = state.activePaneId;
+  const banner = $('#staleBanner');
+  banner.classList.remove('hidden');
+  banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button>';
+  banner.querySelector('button').addEventListener('click', () => {
+    if (state.activePaneId !== paneId || state.library?.path !== source.libraryPath || !state.selected.has(id)) return;
+    if (state.inspectorDirty && !confirm('恢复草稿将替换当前未保存的素材信息，是否继续？')) return;
+    const draft = { ...structuredClone(source), key: inspectorDraftKey(paneId, id), paneId, saving: null, revision: 1 };
+    inspectorDrafts.set(draft.key, draft);
+    persistInspectorDraft(draft);
+    renderInspector();
+  });
+}
+function captureInspectorDraft() {
+  const pane = activePane();
+  if (pane?.selected.size !== 1 || !pane.selectedBase) return null;
+  const id = [...pane.selected][0];
+  const key = inspectorDraftKey(pane.id, id);
+  let draft = inspectorDrafts.get(key);
+  if (!draft) {
+    if (!state.inspectorDirty) return null;
+    draft = { key, id, paneId: pane.id, libraryPath: state.library?.path, base: structuredClone(pane.selectedBase), revision: 0 };
+    inspectorDrafts.set(key, draft);
+  }
+  const values = { name: $('#itemName').value.trim(), tags: [...state.draftTags], star: Number($('#itemRating').value), annotation: $('#itemAnnotation').value, url: $('#itemURL').value.trim() };
+  draft.fieldVersions ||= {};
+  for (const [field, value] of Object.entries(values)) {
+    if (!inspectorValuesEqual(value, (draft.values || draft.base)[field])) {
+      draft.fieldVersions[field] = (draft.fieldVersions[field] || 0) + 1;
+    }
+  }
+  draft.values = values;
+  draft.revision += 1;
+  persistInspectorDraft(draft);
+  return draft;
+}
+function inspectorValuesEqual(value, reference) {
+  const base = reference ?? (Array.isArray(value) ? [] : typeof value === 'number' ? 0 : '');
+  return JSON.stringify(Array.isArray(value) ? [...value].sort() : value) === JSON.stringify(Array.isArray(base) ? [...base].sort() : base);
+}
+function inspectorDraftPatch(draft) {
+  return Object.fromEntries(Object.entries(draft.values).filter(([key, value]) => !inspectorValuesEqual(value, draft.base[key])));
+}
+function showInspectorDraftConflict(draft) {
+  const banner = $('#staleBanner');
+  banner.classList.remove('hidden');
+  banner.innerHTML = '<span>外部内容已变化，你的草稿已保留。</span><button type="button" class="small-action" data-draft-action="reload">载入最新</button><button type="button" class="small-action" data-draft-action="overwrite">以草稿覆盖</button>';
+  const current = () => state.library?.path === draft.libraryPath && state.activePaneId === draft.paneId && state.selected.size === 1 && state.selected.has(draft.id);
+  banner.querySelector('[data-draft-action="overwrite"]').addEventListener('click', () => {
+    if (current() && confirm('以当前草稿覆盖发生冲突的字段？其他未编辑字段不会覆盖。')) saveInspector(true);
+  });
+  banner.querySelector('[data-draft-action="reload"]').addEventListener('click', async () => {
+    if (!current() || !confirm('放弃当前素材信息草稿并载入最新内容？')) return;
+    try {
+      const item = await window.eagleMV.getItem(draft.id);
+      if (!item || !current()) return;
+      const pane = paneById(draft.paneId);
+      const index = pane.items.findIndex(candidate => candidate.id === draft.id);
+      if (index >= 0) pane.items[index] = item;
+      inspectorDrafts.delete(draft.key);
+      persistInspectorDraft(draft, true);
+      renderInspector();
+    } catch (error) { toast(`载入失败，草稿已保留：${error.message}`, 4000); }
+  });
+}
+
+async function saveInspector(force = false) {
+  const draft = captureInspectorDraft();
+  if (!draft) return true;
+  if (draft.error === 'conflict' && !force) {
+    showInspectorDraftConflict(draft);
+    return false;
+  }
+  if (draft.saving) return draft.saving;
+  draft.saving = Promise.resolve().then(() => saveInspectorDraft(draft, force));
+  return draft.saving;
+}
+
+async function saveInspectorDraft(draft, force = false) {
+  const { paneId, id, libraryPath } = draft;
   const pane = paneById(paneId);
-  const id = [...(pane?.selected || [])][0];
-  const patch = collectPatch();
+  let patch = inspectorDraftPatch(draft);
   if (!id || !Object.keys(patch).length) {
+    draft.saving = null;
+    inspectorDrafts.delete(draft.key);
+    persistInspectorDraft(draft, true);
     state.inspectorDirty = false;
     clearInspectorAutoSave();
     return true;
   }
   clearInspectorAutoSave();
-  const base = structuredClone(pane.selectedBase || {});
-  const libraryPath = state.library?.path;
+  let base = structuredClone(draft.base);
   let overwrite = Boolean(force);
-  const operationToken = beginForegroundOperation('正在安全保存素材信息…', { key: 'inspector-save' });
+  const operationToken = beginForegroundOperation('正在安全保存素材信息…', { key: `inspector-save:${draft.key}` });
   if (!operationToken) return false;
-  let queueFollowUp = false;
   setInspectorSaving(true);
   setSyncStatus('正在安全保存…');
   try {
     while (true) {
+      const sentFieldVersions = { ...draft.fieldVersions };
       const result = await window.eagleMV.mutate({ id, patch, base, force: overwrite, libraryPath });
       if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资料库，旧资料库的保存结果已忽略');
       if (result.conflict) {
-        const fields = result.conflicts.map(conflict => conflict.field).join('、');
-        overwrite = confirm(`另一个窗口或 Eagle 已修改：${fields}\n\n按“确定”以当前窗口的内容覆盖这些字段；按“取消”载入最新内容。`);
-        if (overwrite) continue;
-        const index = pane.items.findIndex(item => item.id === id);
-        if (index >= 0) pane.items[index] = result.current;
-        state.inspectorDirty = false;
-        if (state.activePaneId === paneId) {
-          renderGrid();
-          renderInspector();
-        } else {
-          schedulePaneGridRender(paneId);
-        }
-        toast('已载入另一窗口的最新内容');
-        return true;
+        draft.error = 'conflict';
+        persistInspectorDraft(draft);
+        if (state.activePaneId === paneId && pane.selected.has(id)) showInspectorDraftConflict(draft);
+        toast('素材信息存在外部修改；你的输入已保留，请核对后再保存', 4400);
+        return false;
       }
-      const index = pane.items.findIndex(item => item.id === id);
+      const index = pane?.items.findIndex(item => item.id === id) ?? -1;
       if (index >= 0) pane.items[index] = result.item;
+      // An ACK authorizes a new edit baseline only for our own sent fields.
+      // A field first edited in-flight must retain the value the user saw;
+      // otherwise an unseen remote change would be silently accepted as its
+      // baseline and the next request could overwrite it without conflict.
+      const nextBase = structuredClone(result.item);
+      for (const [field, value] of Object.entries(draft.values)) {
+        const editedInFlight = (draft.fieldVersions?.[field] || 0) !== (sentFieldVersions[field] || 0);
+        const wasSent = Object.prototype.hasOwnProperty.call(patch, field);
+        if (editedInFlight && (wasSent || !inspectorValuesEqual(value, draft.base[field]))) {
+          if (!wasSent) nextBase[field] = structuredClone(draft.base[field] ?? (Array.isArray(value) ? [] : typeof value === 'number' ? 0 : ''));
+          continue;
+        }
+        // Reverting an unsent field to its edit origin cancels that intent.
+        // Adopt and show the remote value instead of clearing dirty while
+        // leaving the old value on screen. Reverting a sent field stays above.
+        draft.values[field] = structuredClone(result.item[field] ?? (Array.isArray(value) ? [] : typeof value === 'number' ? 0 : ''));
+      }
+      draft.base = nextBase;
+      draft.error = null;
       const contextStillActive = state.activePaneId === paneId
-        && pane.selected.size === 1
+        && pane?.selected.size === 1
         && pane.selected.has(id)
         && state.library?.path === libraryPath;
       if (contextStillActive) {
-        pane.selectedBase = structuredClone(result.item);
+        pane.selectedBase = structuredClone(draft.base);
+        for (const [field, selector] of Object.entries({ name: '#itemName', star: '#itemRating', annotation: '#itemAnnotation', url: '#itemURL' })) {
+          const control = $(selector);
+          const displayedValue = field === 'name' || field === 'url' ? control.value.trim() : control.value;
+          if (displayedValue !== String(draft.values[field])) control.value = String(draft.values[field]);
+        }
+        if (!inspectorValuesEqual(state.draftTags, draft.values.tags)) setTagValues('item', draft.values.tags, false);
+        syncRatingPlaceholder();
+        updateURLActions();
+        resizeAnnotation();
         state.inspectorDirty = Object.keys(collectPatch()).length > 0;
-        queueFollowUp = state.inspectorDirty;
         renderGrid();
       } else {
         schedulePaneGridRender(paneId);
       }
+      patch = inspectorDraftPatch(draft);
+      if (Object.keys(patch).length) {
+        persistInspectorDraft(draft);
+        base = structuredClone(draft.base);
+        overwrite = false;
+        continue;
+      }
+      inspectorDrafts.delete(draft.key);
+      persistInspectorDraft(draft, true);
       toast('修改已同步到所有窗口');
       return true;
     }
   } catch (error) {
+    draft.error = error.message;
+    persistInspectorDraft(draft);
     toast(`保存失败：${error.message}`, 4000);
     return false;
   } finally {
-    setInspectorSaving(false);
-    if (queueFollowUp) queueInspectorAutoSave();
-    setSyncStatus('所有窗口已同步');
+    draft.saving = null;
+    setInspectorSaving([...inspectorDrafts.values()].some(other => other !== draft && other.saving));
+    setSyncStatus(draft.error ? '仍有待保存草稿' : '所有窗口已同步');
     endForegroundOperation(operationToken);
   }
 }
@@ -3416,6 +3611,9 @@ function changePreviewZoom(delta, anchor = null) {
 }
 
 function setupPreviewMedia() {
+  const owner = activePane();
+  const ownerToken = owner.previewToken;
+  const validOwner = () => paneById(owner.id) === owner && owner.previewToken === ownerToken;
   const image = $('#modalMedia img');
   // Image previews own the whole modal as a gesture surface (swipe/pinch);
   // text/PDF previews keep native touch behavior for their scrollables.
@@ -3424,22 +3622,24 @@ function setupPreviewMedia() {
     image.setAttribute('draggable', 'false');
     image.addEventListener('dragstart', event => event.preventDefault());
     image.classList.add('preview-image');
-    image.addEventListener('load', () => renderPreviewZoom(), { once: true });
+    image.addEventListener('load', () => { if (validOwner()) withActivePane(owner.id, () => renderPreviewZoom()); }, { once: true });
     // Eagle can hold an index entry whose file is gone (or a type with no
     // generated preview). A broken-image glyph in the middle of the modal is
     // worse than saying so.
     const token = state.previewToken;
     image.addEventListener('error', () => {
-      if (token !== state.previewToken || !image.isConnected) return;
-      const item = itemById(state.previewId);
-      $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>无法读取这个素材的图像<br><span>${escapeHTML(String(item?.ext || '文件').toUpperCase())} · 原文件可能已被移动或删除</span></p></div>`;
+      if (!validOwner() || !image.isConnected) return;
+      withActivePane(owner.id, () => {
+        const item = itemById(state.previewId);
+        $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>无法读取这个素材的图像<br><span>${escapeHTML(String(item?.ext || '文件').toUpperCase())} · 原文件可能已被移动或删除</span></p></div>`;
+      });
     }, { once: true });
   }
   const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
   if (pdfEmbed) {
     const token = state.previewToken;
     window.eagleMV.fileURL(pdfEmbed.dataset.pdfItem).then(fileURL => {
-      if (!fileURL || token !== state.previewToken || !pdfEmbed.isConnected) return;
+      if (!fileURL || !validOwner() || !pdfEmbed.isConnected) return;
       pdfEmbed.src = fileURL;
     }).catch(() => {});
   }
@@ -3495,24 +3695,175 @@ function ratePreviewItem(rating) {
   return true;
 }
 
+const TEXT_DRAFT_PREFIX = 'eaglemv.textDraft.v1.';
+function createDraftWindowKey() {
+  // randomUUID is secure-context-only; the default LAN HTTP client still
+  // exposes getRandomValues. These IDs separate drafts, not authentication.
+  const bytes = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+let textWindowKey;
+try {
+  // window.open clones the opener's sessionStorage, including its draft IDs.
+  // A child document's first navigation must fork those identities. Reload
+  // and history restoration remain the same editing window and keep theirs.
+  const navigationType = performance.getEntriesByType('navigation')[0]?.type;
+  const openedByAnotherWindow = Boolean(window.opener) && !['reload', 'back_forward'].includes(navigationType);
+  textWindowKey = (!openedByAnotherWindow && sessionStorage.getItem('eaglemv.textWindowKey')) || createDraftWindowKey();
+  sessionStorage.setItem('eaglemv.textWindowKey', textWindowKey);
+} catch { textWindowKey = createDraftWindowKey(); }
+
+const textDraftIdentities = new Map();
+function textDraftId(paneId, libraryPath, id, { renew = false } = {}) {
+  const identity = JSON.stringify([textWindowKey, paneId, libraryPath, id]);
+  const storageKey = 'eaglemv.textSession.v1.' + identity;
+  let draftId = textDraftIdentities.get(identity);
+  try { draftId ||= sessionStorage.getItem(storageKey); } catch {}
+  // A clean lifecycle may already have a high-revision removal tombstone.
+  // Allocate a new identity instead of resetting that identity to revision 0.
+  // Until the first lookup completes, retain the old ID to recover v1 drafts.
+  if (renew) draftId = JSON.stringify([textWindowKey, paneId, createDraftWindowKey()]);
+  if (draftId) {
+    textDraftIdentities.set(identity, draftId);
+    try { sessionStorage.setItem(storageKey, draftId); } catch {}
+  }
+  return draftId || identity;
+}
+function textDraftRecord(session) {
+  return { draftId: session.draftId, libraryPath: session.libraryPath, id: session.id, revision: session.revision,
+    content: session.content, base: session.fingerprint, original: session.original, updatedAt: Date.now() };
+}
+function persistTextDraft(session) {
+  if (!session) return;
+  const record = textDraftRecord(session);
+  try {
+    if (session.dirty || session.saving) localStorage.setItem(TEXT_DRAFT_PREFIX + session.draftId, JSON.stringify(record));
+    else localStorage.removeItem(TEXT_DRAFT_PREFIX + session.draftId);
+    session.storageError = false;
+  } catch {
+    session.storageError = true;
+    textSessionStatus(session, '草稿存储空间不足；请保持窗口开启并保存或复制正文');
+  }
+  const { draftId, libraryPath, id, revision, content, base } = record;
+  const identity = { draftId, libraryPath, id, revision };
+  if (session.dirty || session.saving) {
+    window.eagleMV.putTextDraft?.({ ...identity, content, base })?.then(saved => {
+      if (session.dirty && session.revision === revision) session.hostDraftError = !saved;
+    }).catch(() => {
+      session.hostDraftError = true;
+      if (session.storageError) textSessionStatus(session, '草稿备份失败；请保持窗口开启并复制正文');
+    });
+  } else {
+    window.eagleMV.removeTextDraft?.(identity)?.catch(() => {});
+  }
+}
+function readLocalTextDraft(draftId) {
+  try { return JSON.parse(localStorage.getItem(TEXT_DRAFT_PREFIX + draftId) || 'null'); } catch { return null; }
+}
+async function recoverableTextDrafts(libraryPath, id, draftId) {
+  const records = new Map();
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(TEXT_DRAFT_PREFIX)) continue;
+      const record = JSON.parse(localStorage.getItem(key) || 'null');
+      if (record?.libraryPath === libraryPath && record.id === id && record.draftId !== draftId) records.set(record.draftId, record);
+    }
+  } catch {}
+  const persisted = await window.eagleMV.listTextDrafts?.({ libraryPath, id })?.catch(() => []);
+  for (const record of persisted || []) {
+    if (record.draftId !== draftId && (!records.has(record.draftId) || records.get(record.draftId).revision < record.revision)) records.set(record.draftId, record);
+  }
+  return [...records.values()].filter(record => typeof record.content === 'string').sort((left, right) => right.updatedAt - left.updatedAt);
+}
+function discardTextSession(session) {
+  if (!session) return;
+  clearTimeout(session.autoSaveTimer);
+  session.dirty = false;
+  session.content = session.original;
+  session.revision += 1;
+  persistTextDraft(session);
+}
+function textSessionPane(session) {
+  return state.panes.find(pane => pane.textSession === session) || null;
+}
+function textSessionStatus(session, message) {
+  const pane = textSessionPane(session);
+  if (!pane) return;
+  const status = paneQuery(pane.id, '#textStatus');
+  const save = paneQuery(pane.id, '#saveTextButton');
+  if (status && message) status.textContent = session.storageError && session.dirty
+    ? '即时草稿备份失败；请保持窗口开启直至保存成功，或复制正文'
+    : message;
+  if (save) save.disabled = Boolean(session.saving) || !session.dirty || !state.connected;
+}
+function confirmTextSessionsLeave(panes) {
+  const sessions = panes.map(pane => pane.textSession).filter(Boolean);
+  if (sessions.some(session => session.saving)) {
+    toast('TXT 正在保存，请稍候再关闭其编辑栏', 2800);
+    return false;
+  }
+  const dirty = sessions.filter(session => session.dirty);
+  if (!dirty.length) return true;
+  if (!confirm(`有 ${dirty.length} 个 TXT 草稿尚未保存。\n\n按“确定”放弃修改并继续；按“取消”保留编辑。`)) return false;
+  dirty.forEach(discardTextSession);
+  return true;
+}
+function queueTextAutoSave(session, { immediate = false } = {}) {
+  clearTimeout(session.autoSaveTimer);
+  if (!session.dirty || session.composing || session.saving || session.blocked || !state.connected) return;
+  session.firstDirtyAt ||= Date.now();
+  const wait = immediate ? 0 : Math.max(0, Math.min(500, 2500 - (Date.now() - session.firstDirtyAt)));
+  session.autoSaveTimer = setTimeout(() => {
+    session.autoSaveTimer = null;
+    saveTextPreview(false, { session, automatic: true });
+  }, wait);
+}
 function renderTextPreview(session) {
+  const paneId = state.activePaneId;
   $('#modalMedia').innerHTML = `<div class="text-preview">
     <div class="text-toolbar">
-      <span id="textStatus" class="text-status">UTF-8 · ${formatBytes(session.fingerprint.size)}</span>
+      <span id="textStatus" class="text-status">UTF-8 · ${formatBytes(session.fingerprint?.size || 0)}</span>
       <button id="reloadTextButton" type="button">重新载入</button>
       <button id="saveTextButton" class="primary" type="button" disabled>保存 ⌘S</button>
     </div>
+    ${session.recoveryDrafts?.length ? `<div class="text-toolbar"><select id="textDraftSelect" aria-label="选择可恢复草稿" style="min-width:0;max-width:60%"><option value="">可恢复草稿（${session.recoveryDrafts.length}）</option>${session.recoveryDrafts.map((draft, index) => `<option value="${index}">${escapeHTML(new Date(draft.updatedAt || Date.now()).toLocaleString('zh-CN'))} · ${escapeHTML(draft.content.slice(0, 24) || '空白正文')}</option>`).join('')}</select><button id="restoreTextDraft" type="button" disabled>恢复所选草稿</button></div>` : ''}
     <textarea id="textEditor" class="text-editor" spellcheck="false" aria-label="TXT 内容"></textarea>
   </div>`;
   const editor = $('#textEditor');
   editor.value = session.content;
-  editor.disabled = state.textSaving;
+  const draftSelect = paneQuery(paneId, '#textDraftSelect');
+  const restoreDraft = paneQuery(paneId, '#restoreTextDraft');
+  draftSelect?.addEventListener('change', () => { restoreDraft.disabled = draftSelect.value === '' || Boolean(session.saving); });
+  restoreDraft?.addEventListener('click', () => {
+    const draft = session.recoveryDrafts[Number(draftSelect.value)];
+    if (!draft || session.saving || draftSelect.value === '') return;
+    if (session.dirty && !confirm('恢复所选草稿将替换当前编辑内容，是否继续？')) return;
+    session.content = draft.content;
+    session.fingerprint = draft.base;
+    session.dirty = session.content !== session.original;
+    session.revision += 1;
+    session.blocked = 'recovered';
+    persistTextDraft(session);
+    // This is a copy into this window's own draft, not a claim on or deletion
+    // of the source window's record. Saving still compares the source base.
+    editor.value = session.content;
+    textSessionStatus(session, '草稿已恢复；请核对正文，编辑或点击保存后提交');
+  });
   editor.addEventListener('input', () => {
     session.content = editor.value;
+    session.revision += 1;
     session.dirty = session.content !== session.original;
-    $('#saveTextButton').disabled = state.textSaving || !session.dirty || !state.connected;
-    $('#textStatus').textContent = session.dirty ? '有未保存修改' : `UTF-8 · ${formatBytes(session.fingerprint.size)}`;
+    if (session.blocked !== 'conflict') session.blocked = false;
+    persistTextDraft(session);
+    textSessionStatus(session, session.dirty ? '草稿已保留 · 停顿后自动保存' : '已保存');
+    queueTextAutoSave(session);
   });
+  editor.addEventListener('compositionstart', () => { session.composing = true; clearTimeout(session.autoSaveTimer); });
+  editor.addEventListener('compositionend', () => { session.composing = false; queueTextAutoSave(session); });
+  editor.addEventListener('blur', () => queueTextAutoSave(session, { immediate: true }));
   editor.addEventListener('keydown', event => {
     if (event.key === 'Tab') {
       event.preventDefault();
@@ -3522,28 +3873,35 @@ function renderTextPreview(session) {
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      saveTextPreview();
+      saveTextPreview(false, { session });
     }
   });
-  $('#saveTextButton').addEventListener('click', () => saveTextPreview());
+  $('#saveTextButton').addEventListener('click', () => saveTextPreview(false, { session }));
   $('#reloadTextButton').addEventListener('click', async () => {
+    if (session.saving) return;
     if (session.dirty && !confirm('重新载入会放弃当前 TXT 修改，是否继续？')) return;
-    session.dirty = false;
-    await openPreview(session.id, { forceReload: true });
+    discardTextSession(session);
+    if (paneById(paneId)) await withActivePane(paneId, () => openPreview(session.id, { forceReload: true }));
   });
-  $('#reloadTextButton').disabled = state.textSaving;
+  $('#reloadTextButton').disabled = Boolean(session.saving);
+  textSessionStatus(session, session.dirty ? (session.blocked ? '外部版本已变化；恢复的草稿已保留，请核对内容' : '已恢复未保存草稿 · 编辑后自动保存') : null);
 }
 
 async function openPreview(id, { forceReload = false } = {}) {
+  const pane = activePane();
+  const paneId = pane?.id;
+  const libraryPath = state.library?.path;
   const item = itemById(id);
   if (!item) return false;
   if (!forceReload && state.previewId && state.previewId !== id && !confirmDiscardChanges()) return false;
-  if (forceReload && state.textSession) state.textSession.dirty = false;
+  if (forceReload && state.textSession) discardTextSession(state.textSession);
   const token = ++state.previewToken;
+  const ownsResult = () => paneById(paneId) === pane && pane.previewToken === token && pane.previewId === id && state.library?.path === libraryPath;
   state.previewId = id;
   $('#previewModal').classList.remove('hidden');
   updatePreviewChrome(item);
   if (String(item.ext || '').toLowerCase() !== 'txt') {
+    clearTimeout(pane.textSession?.autoSaveTimer);
     state.textSession = null;
     $('#modalMedia').innerHTML = mediaMarkup(item);
     setPreviewZoom('fit');
@@ -3552,90 +3910,119 @@ async function openPreview(id, { forceReload = false } = {}) {
     return true;
   }
   setPreviewZoom('fit');
+  state.textSession = null;
   $('#modalMedia').innerHTML = '<div class="unsupported-preview"><p>正在读取 TXT…</p></div>';
   try {
-    const result = await window.eagleMV.readText({ id, libraryPath: state.library?.path });
-    if (token !== state.previewToken || state.previewId !== id) return false;
-    state.textSession = { id, content: result.content, original: result.content, fingerprint: result.fingerprint, dirty: false };
-    renderTextPreview(state.textSession);
+    const result = await window.eagleMV.readText({ id, libraryPath });
+    if (!ownsResult()) return false;
+    let draftId = textDraftId(paneId, libraryPath, id);
+    let draft = !forceReload && readLocalTextDraft(draftId);
+    if (!forceReload && window.eagleMV.getTextDraft) {
+      const persisted = await window.eagleMV.getTextDraft({ id, libraryPath, draftId }).catch(() => null);
+      if (persisted && (!draft || persisted.revision > draft.revision)) draft = persisted;
+    }
+    if (!ownsResult()) return false;
+    if (!draft) draftId = textDraftId(paneId, libraryPath, id, { renew: true });
+    const session = { id, libraryPath, draftId, revision: Number(draft?.revision) || 0, content: result.content, original: result.content, fingerprint: result.fingerprint, dirty: false };
+    session.recoveryDrafts = await recoverableTextDrafts(libraryPath, id, draftId);
+    if (!ownsResult()) return false;
+    if (draft && draft.libraryPath === libraryPath && draft.id === id && draft.content !== result.content) {
+      session.content = draft.content;
+      session.original = draft.original ?? result.content;
+      session.fingerprint = draft.base;
+      session.dirty = true;
+      session.blocked = JSON.stringify(draft.base) !== JSON.stringify(result.fingerprint) ? 'conflict' : false;
+    }
+    pane.textSession = session;
+    pane.textSaving = false;
+    persistTextDraft(session);
+    withActivePane(paneId, () => renderTextPreview(session));
     return true;
   } catch (error) {
-    if (token !== state.previewToken) return false;
-    state.textSession = null;
-    $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt=""><p>无法读取 TXT<br><span>${escapeHTML(error.message)}${hasCapability('openDefault') ? ' · 可按 ⇧Enter 用默认应用打开' : ''}</span></p></div>`;
+    if (!ownsResult()) return false;
+    pane.textSession = null;
+    withActivePane(paneId, () => {
+      $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>读取 TXT 失败<br><span>${escapeHTML(error.message)}</span></p></div>`;
+    });
     return false;
   }
 }
 
 function setTextSaving(saving, session = state.textSession) {
-  state.textSaving = Boolean(saving);
-  if (state.textSession !== session) return;
-  const editor = $('#textEditor');
-  const reload = $('#reloadTextButton');
-  const save = $('#saveTextButton');
-  if (editor) editor.disabled = state.textSaving;
-  if (reload) reload.disabled = state.textSaving;
-  if (save) save.disabled = state.textSaving || !session?.dirty || !state.connected;
+  if (!session) return;
+  const pane = textSessionPane(session);
+  if (!pane) return;
+  pane.textSaving = Boolean(saving);
+  const reload = paneQuery(pane.id, '#reloadTextButton');
+  if (reload) reload.disabled = Boolean(saving);
+  // Do not disable or replace the editor: input, IME, selection and focus stay
+  // untouched while an immutable snapshot is being committed.
+  textSessionStatus(session);
 }
 
-async function saveTextPreview(force = false) {
-  if (state.textSaving) return false;
-  const session = state.textSession;
+async function saveTextPreview(force = false, { session = state.textSession, automatic = false } = {}) {
   if (!session?.dirty) return true;
-  const id = session.id;
-  const content = session.content;
-  const base = structuredClone(session.fingerprint);
-  const libraryPath = state.library?.path;
-  let overwrite = Boolean(force);
-  const operationToken = beginForegroundOperation('正在安全保存 TXT…', { key: 'text-save' });
-  if (!operationToken) return false;
+  if (session.saving) return session.saving;
+  if (session.composing || (automatic && session.blocked)) return false;
+  clearTimeout(session.autoSaveTimer);
+  const task = async () => {
+    setTextSaving(true, session);
+    textSessionStatus(session, '正在后台保存…');
+    try {
+      do {
+        const { id, libraryPath, content } = session;
+        if (state.library?.path !== libraryPath) throw new Error('资料库已切换；旧库草稿已保留');
+        if (!content.length) throw new Error('Eagle 暂不提交空正文；空白草稿已保留，尚未保存');
+        const revision = session.revision;
+        const result = await window.eagleMV.saveText({ id, libraryPath, content, base: structuredClone(session.fingerprint), force: Boolean(force) });
+        force = false;
+        if (result.conflict) {
+          session.blocked = 'conflict';
+          textSessionStatus(session, '外部内容已变化；草稿已保留，重新载入前请核对或复制正文');
+          return false;
+        }
+        if (!result.fingerprint) throw new Error('保存回执缺少内容版本；草稿保留，请核对后重试');
+        session.fingerprint = result.fingerprint;
+        session.original = content;
+        session.revision += 1;
+        session.dirty = session.content !== content;
+        session.blocked = false;
+        session.firstDirtyAt = session.dirty ? Date.now() : null;
+        // Keep a later input revision intact; never assign sent content back
+        // into the live editor or delete a newer draft from another write.
+        if (!session.dirty) session.revision = Math.max(session.revision, revision);
+        persistTextDraft(session);
+        textSessionStatus(session, session.dirty ? '正在保存后续输入…' : result.status === 'written_pending_refresh' ? '正文已保存 · Eagle 预览刷新待确认' : '已自动保存');
+      } while (session.dirty && !session.composing && state.library?.path === session.libraryPath);
+      return !session.dirty;
+    } catch (error) {
+      session.blocked = true;
+      textSessionStatus(session, `尚未保存 · ${error.message}`);
+      if (!automatic) toast(`TXT 草稿已保留：${error.message}`, 4400);
+      return false;
+    } finally {
+      session.saving = null;
+      setTextSaving(false, session);
+      persistTextDraft(session);
+      if (session.dirty && !session.blocked) queueTextAutoSave(session);
+    }
+  };
+  // Start on a microtask so the in-flight marker precedes even synchronous
+  // validation failures and is cleared by finally, not overwritten afterwards.
+  session.saving = Promise.resolve().then(task);
   setTextSaving(true, session);
-  $('#textStatus').textContent = '正在安全保存…';
-  try {
-    while (true) {
-      const result = await window.eagleMV.saveText({ id, libraryPath, content, base, force: overwrite });
-      if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资料库，旧资料库的 TXT 保存结果已忽略');
-      if (result.conflict) {
-        overwrite = confirm('这个 TXT 已在另一个窗口或其他应用中修改。\n\n按“确定”用当前编辑内容覆盖；按“取消”载入磁盘上的最新内容。');
-        if (overwrite) continue;
-        session.content = result.current.content;
-        session.original = result.current.content;
-        session.fingerprint = result.current.fingerprint;
-        session.dirty = false;
-        if (state.textSession === session) renderTextPreview(session);
-        toast('已载入磁盘上的最新 TXT 内容');
-        return true;
-      }
-      session.fingerprint = result.fingerprint;
-      session.original = content;
-      session.content = content;
-      session.dirty = false;
-      if (state.textSession === session) {
-        $('#saveTextButton').disabled = true;
-        $('#textStatus').textContent = `已保存 · ${formatBytes(result.fingerprint.size)}`;
-      }
-      toast('TXT 已安全保存；原版本已备份');
-      return true;
-    }
-  } catch (error) {
-    if (state.textSession === session) {
-      const save = $('#saveTextButton');
-      const status = $('#textStatus');
-      if (save) save.disabled = false;
-      if (status) status.textContent = '保存失败';
-    }
-    toast(`TXT 保存失败：${error.message}`, 4400);
-    return false;
-  } finally {
-    setTextSaving(false, session);
-    endForegroundOperation(operationToken);
-  }
+  persistTextDraft(session);
+  return session.saving;
 }
 
 function closePreview({ commitSelection = true, skipDiscard = false, syncBroadcast = true } = {}) {
   if (!skipDiscard && state.textSession?.dirty && !confirmDiscardChanges()) return false;
   stopSlideshow();
+  persistTextDraft(state.textSession);
+  clearTimeout(state.textSession?.autoSaveTimer);
   const finalId = state.previewId;
+  const paneId = state.activePaneId;
+  const wasActive = paneRoot(paneId)?.classList.contains('active');
   ++state.previewToken;
   state.previewId = null;
   state.textSession = null;
@@ -3653,7 +4040,8 @@ function closePreview({ commitSelection = true, skipDiscard = false, syncBroadca
       renderInspector();
     }
     requestAnimationFrame(() => {
-      const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(finalId)}"]`);
+      if (!wasActive || state.activePaneId !== paneId) return;
+      const card = paneRoot(paneId)?.querySelector(`.item-card[data-id="${CSS.escape(finalId)}"]`);
       card?.focus({ preventScroll: true });
       card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       updateScrollUI();
@@ -3677,25 +4065,33 @@ async function openWithDefault(id) {
 }
 
 async function movePreview(delta, { fromSlideshow = false } = {}) {
+  const pane = activePane();
+  const paneId = pane.id;
+  const token = pane.previewToken;
+  const slideshowGeneration = pane.slideshow.generation;
+  const before = pane.previewId;
   let items = sortedItems();
   let index = items.findIndex(item => item.id === state.previewId);
   let next = items[index + delta];
   if (!next && delta > 0 && state.hasMore) {
-    await refresh({ reset: false, preserveScroll: true });
-    items = sortedItems();
-    index = items.findIndex(item => item.id === state.previewId);
+    await refresh({ reset: false, preserveScroll: true, paneId });
+    if (paneById(paneId) !== pane || pane.previewToken !== token || (fromSlideshow && pane.slideshow.generation !== slideshowGeneration)) return false;
+    items = withActivePane(paneId, () => sortedItems());
+    index = items.findIndex(item => item.id === pane.previewId);
     next = items[index + delta];
   }
-  const before = state.previewId;
-  if (next) await openPreview(next.id);
+  if (next) await withActivePane(paneId, () => openPreview(next.id));
   // Stepping by hand during a slideshow restarts the dwell, so the picture you
   // just asked for gets its full turn rather than a leftover sliver of one.
-  if (!fromSlideshow && slideshowPlaying()) scheduleSlideshowStep();
+  if (paneById(paneId) !== pane) return false;
+  withActivePane(paneId, () => {
+    if (!fromSlideshow && slideshowPlaying()) scheduleSlideshowStep();
+  });
   // Report whether the preview actually moved, not merely whether a neighbour
   // existed: openPreview can be refused (an unsaved TXT prompts first), and a
   // slideshow that treated that as success would reopen the same prompt every
   // few seconds.
-  return Boolean(next) && state.previewId !== before;
+  return Boolean(next) && pane.previewId !== before;
 }
 
 function previewDirectionalItemId(key) {
@@ -3706,15 +4102,19 @@ function previewDirectionalItemId(key) {
 }
 
 async function movePreviewVertically(key) {
+  const pane = activePane();
+  const token = pane.previewToken;
+  const before = pane.previewId;
   let nextId = previewDirectionalItemId(key);
   if (!nextId && key === 'ArrowDown' && state.hasMore) {
-    await refresh({ reset: false, preserveScroll: true });
-    nextId = previewDirectionalItemId(key);
+    await refresh({ reset: false, preserveScroll: true, paneId: pane.id });
+    if (paneById(pane.id) !== pane || pane.previewToken !== token) return false;
+    nextId = withActivePane(pane.id, () => previewDirectionalItemId(key));
   }
-  const before = state.previewId;
-  if (nextId) await openPreview(nextId);
-  if (slideshowPlaying()) scheduleSlideshowStep();
-  return Boolean(nextId) && state.previewId !== before;
+  if (nextId) await withActivePane(pane.id, () => openPreview(nextId));
+  if (paneById(pane.id) !== pane) return false;
+  withActivePane(pane.id, () => { if (slideshowPlaying()) scheduleSlideshowStep(); });
+  return Boolean(nextId) && pane.previewId !== before;
 }
 
 // --- Preview view options --------------------------------------------------
@@ -3792,17 +4192,26 @@ function renderSlideshow() {
 function stopSlideshow() {
   if (state.slideshow.timer) clearTimeout(state.slideshow.timer);
   state.slideshow.timer = null;
+  state.slideshow.generation = (state.slideshow.generation || 0) + 1;
   renderSlideshow();
 }
 
 function scheduleSlideshowStep() {
+  const pane = activePane();
+  const paneId = pane.id;
+  const generation = (pane.slideshow.generation || 0) + 1;
+  pane.slideshow.generation = generation;
   if (state.slideshow.timer) clearTimeout(state.slideshow.timer);
   state.slideshow.timer = setTimeout(async () => {
-    state.slideshow.timer = null;
-    if (!state.previewId) return renderSlideshow();
-    const advanced = await advanceSlideshow();
-    if (advanced && state.previewId) scheduleSlideshowStep();
-    else stopSlideshow();
+    if (paneById(paneId) !== pane || pane.slideshow.generation !== generation) return;
+    pane.slideshow.timer = null;
+    if (!pane.previewId) return withActivePane(paneId, () => renderSlideshow());
+    const advanced = await withActivePane(paneId, () => advanceSlideshow());
+    if (paneById(paneId) !== pane || pane.slideshow.generation !== generation) return;
+    withActivePane(paneId, () => {
+      if (advanced && state.previewId) scheduleSlideshowStep();
+      else stopSlideshow();
+    });
   }, state.slideshow.intervalMs);
   renderSlideshow();
 }
@@ -3810,11 +4219,15 @@ function scheduleSlideshowStep() {
 // Forward one, wrapping to the first item once the list (and its remaining
 // pages) run out. A single-item view has nowhere to go and ends the show.
 async function advanceSlideshow() {
+  const pane = activePane();
+  const token = pane.previewToken;
+  const generation = pane.slideshow.generation;
   const before = state.previewId;
   if (await movePreview(1, { fromSlideshow: true })) return true;
-  const items = sortedItems();
+  if (paneById(pane.id) !== pane || pane.previewToken !== token || pane.slideshow.generation !== generation) return false;
+  const items = withActivePane(pane.id, () => sortedItems());
   if (items.length < 2 || items[0].id === before) return false;
-  return openPreview(items[0].id);
+  return withActivePane(pane.id, () => openPreview(items[0].id));
 }
 
 function toggleSlideshow() {
@@ -3957,6 +4370,7 @@ function navigateHistory(delta) {
     return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.HISTORY, reason: 'unsaved-edit' };
   }
   const target = readHistoryEntry(state.history[next]);
+  if (state.historyIndex >= 0) state.history[state.historyIndex] = createHistoryEntry(state.currentView, cloneQuery(state.query));
   const previousQuery = state.query;
   state.query = target.hasQuery ? cloneQuery(target.query) : createQuery();
   state.historyIndex = next;
@@ -4257,6 +4671,19 @@ function locateCurrentFolder() {
   }
 }
 
+function importResultMessage(result, pending = 0) {
+  const unknown = result.unknown?.length || 0;
+  const notSubmitted = result.notSubmitted?.length || 0;
+  const issues = result.rejected?.length || 0;
+  const duplicateFailed = Number(result.duplicateFailed) || 0;
+  return `已确认接收 ${result.count || 0} 个素材${pending ? ` · ${pending} 个仍由 Eagle 后台处理` : ''}`
+    + (unknown ? ` · ${unknown} 个提交结果待核对，请勿直接重复导入` : '')
+    + (notSubmitted ? ` · ${notSubmitted} 个尚未提交` : '')
+    + (issues ? ` · ${issues} 项路径或处理异常` : '')
+    + (duplicateFailed ? ` · ${duplicateFailed} 个重复素材处理失败，请核对目标文件夹` : '')
+    + (result.error?.message ? ` · ${result.error.message}` : '');
+}
+
 function importTargetFolderId() {
   return state.currentView.kind === 'folder' ? state.currentView.id : null;
 }
@@ -4283,14 +4710,13 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
       if (result.canceled) return;
     }
     if (!result.count) {
-      toast(source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 3800);
+      toast(result.error || result.duplicateFailed ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
       return;
     }
     await window.eagleMV.focusWindow().catch(() => {});
     await refreshAllPanes({ reset: true, preserveScroll: true });
     const pending = Math.max(0, result.count - result.ready);
-    const rejected = (result.rejected?.length || 0) + (result.duplicateFailed || 0);
-    toast(`已接收 ${result.count} 个素材${pending ? ` · ${pending} 个仍由 Eagle 后台处理` : ''}${rejected ? ` · ${rejected} 个未完成` : ''}`, 4200);
+    toast(importResultMessage(result, pending), result.partial || result.duplicateFailed ? 6500 : 4200);
     if (pending) {
       const refreshPaneIds = new Set([targetPaneId]);
       if (folderId && Array.isArray(state.panes)) {
@@ -4774,6 +5200,60 @@ function closeFolderDialog(name = null) {
   if (resolve) resolve(name);
 }
 
+// Shared modal focus boundary. aria-modal alone does not remove background
+// controls from keyboard navigation. Business-specific Escape/submit handlers
+// remain responsible for closing; the observer restores the invoking focus.
+function bindModalFocusBoundary() {
+  const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')];
+  const previousFocus = new Map();
+  const inertBefore = new Map();
+  let stack = [];
+  const focusable = dialog => [...dialog.querySelectorAll('button, input, textarea, select, a[href], [tabindex]')]
+    .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length && !element.closest('.hidden'));
+  const sync = () => {
+    const visible = dialogs.filter(dialog => !dialog.classList.contains('hidden'));
+    const closed = stack.filter(dialog => !visible.includes(dialog));
+    for (const dialog of visible) if (!stack.includes(dialog)) {
+      previousFocus.set(dialog, document.activeElement);
+      stack.push(dialog);
+    }
+    stack = stack.filter(dialog => visible.includes(dialog));
+    for (const [element, inert] of inertBefore) element.inert = inert;
+    inertBefore.clear();
+    const current = stack.at(-1);
+    if (current) {
+      for (const child of document.body.children) if (child !== current && !child.contains(current)) {
+        inertBefore.set(child, child.inert);
+        child.inert = true;
+      }
+      if (!current.contains(document.activeElement)) (focusable(current)[0] || current).focus({ preventScroll: true });
+    } else if (closed.length) {
+      const previous = previousFocus.get(closed[0]);
+      const target = previous?.isConnected && !previous.closest('.hidden') ? previous : paneRoot();
+      target?.focus({ preventScroll: true });
+    }
+    for (const dialog of closed) previousFocus.delete(dialog);
+  };
+  const observer = new MutationObserver(sync);
+  dialogs.forEach(dialog => observer.observe(dialog, { attributes: true, attributeFilter: ['class'] }));
+  document.addEventListener('keydown', event => {
+    const current = stack.at(-1);
+    if (!current || event.key !== 'Tab') return;
+    const targets = focusable(current);
+    if (!targets.length) { event.preventDefault(); return; }
+    const index = targets.indexOf(document.activeElement);
+    if (event.shiftKey ? index <= 0 : index < 0 || index === targets.length - 1) {
+      event.preventDefault();
+      (event.shiftKey ? targets.at(-1) : targets[0]).focus();
+    }
+  }, true);
+  document.addEventListener('focusin', event => {
+    const current = stack.at(-1);
+    if (current && !current.contains(event.target)) (focusable(current)[0] || current).focus({ preventScroll: true });
+  });
+  sync();
+}
+
 function requestNameDialog({ title, initialValue = '', submitLabel = '确认', fieldLabel = '名称', placeholder = '' }) {
   if (state.folderDialogResolve) closeFolderDialog();
   $('#folderDialogTitle').textContent = title;
@@ -5127,18 +5607,22 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
   const folderId = pane.currentView.kind === 'folder' ? pane.currentView.id : null;
   const preserveFolders = pane.currentView.kind !== 'folder';
   const libraryPath = state.library?.path;
+  const sourceContext = JSON.stringify({ view: pane.currentView, query: pane.query });
+  const sameContext = () => paneById(paneId) === pane && state.library?.path === libraryPath
+    && JSON.stringify({ view: pane.currentView, query: pane.query }) === sourceContext;
   return runForegroundOperation('正在创建副本…', { key: `duplicate:${paneId}` }, async () => {
     const result = await window.eagleMV.duplicateFiles({ ids: uniqueIds, folderId, preserveFolders, libraryPath });
     if (!result?.count) {
-      toast(result?.message || '没有可创建副本的原文件', 4000);
+      toast(result?.error ? importResultMessage(result) : result?.message || '没有可创建副本的原文件', 4000);
       return false;
     }
     const createdItems = (await Promise.all((result.ids || []).map(id => window.eagleMV.getItem(id).catch(() => null)))).filter(Boolean);
     const mergeCreatedItems = () => {
       const sourcePane = paneById(paneId);
-      if (!sourcePane || state.library?.path !== libraryPath || !createdItems.length) return;
+      if (!sameContext() || !createdItems.length || queryFiltersActive(pane.query) || !['folder', 'all', 'root', 'unfiled'].includes(pane.currentView.kind)) return;
       const known = new Set(sourcePane.items.map(item => item.id));
-      const additions = createdItems.filter(item => !known.has(item.id));
+      const additions = createdItems.filter(item => !known.has(item.id)
+        && (folderId ? (item.folders || []).includes(folderId) : pane.currentView.kind === 'all' || !(item.folders || []).length));
       if (!additions.length) return;
       sourcePane.items = [...additions, ...sourcePane.items];
       sourcePane.total = Math.max(sourcePane.items.length, sourcePane.total + additions.length);
@@ -5148,13 +5632,14 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
         renderResultCount();
       });
     };
-    await refresh({ reset: true, preserveScroll: true, paneId });
+    if (sameContext()) await refresh({ reset: true, preserveScroll: true, paneId });
     mergeCreatedItems();
     for (const delay of [1600, 4200]) setTimeout(async () => {
+      if (!sameContext()) return;
       await refresh({ reset: true, preserveScroll: true, paneId }).catch(() => {});
       mergeCreatedItems();
     }, delay);
-    toast(`已创建 ${result.count} 个副本${result.missing ? ` · ${result.missing} 个原文件缺失` : ''}${result.folderAssignmentFailed ? ` · ${result.folderAssignmentFailed} 个未能保留原文件夹` : ''}`, 4200);
+    toast(result.partial ? importResultMessage(result) : `已创建 ${result.count} 个副本${result.missing ? ` · ${result.missing} 个原文件缺失` : ''}${result.folderAssignmentFailed ? ` · ${result.folderAssignmentFailed} 个未能保留原文件夹` : ''}`, 4200);
     return true;
   });
 }
@@ -6502,6 +6987,7 @@ function bindEvents() {
   // Rotating a tablet between drawer and column modes re-renders the panels.
   compactLayoutQuery.addEventListener?.('change', () => renderPanels());
   window.addEventListener('resize', () => {
+    applyLayoutSplitRatios($('#paneLayout'), state.splitRatios);
     renderPanels();
     scheduleGridResize();
   });
@@ -7366,6 +7852,17 @@ function bindWebAccessDialog() {
 }
 
 function bindHubEvents() {
+  bindModalFocusBoundary();
+  let approvedWindowClose = false;
+  window.addEventListener('beforeunload', event => {
+    captureInspectorDraft();
+    for (const pane of state.panes) persistTextDraft(pane.textSession);
+    if (!approvedWindowClose && (state.inspectorDirty || state.inspectorSaving || inspectorDrafts.size
+      || state.panes.some(pane => pane.textSession?.dirty || pane.textSession?.saving))) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
   window.eagleMV.onItemDragState(payload => {
     if (payload?.active) {
       state.internalDrag = payload;
@@ -7387,9 +7884,10 @@ function bindHubEvents() {
   });
   window.eagleMV.onRequestClose(async () => {
     const pendingOperations = blockingForegroundOperations();
-    if (state.inspectorSaving || state.textSaving || pendingOperations.length) {
+    const anyTextSaving = state.panes.some(pane => pane.textSession?.saving);
+    if (state.inspectorSaving || anyTextSaving || pendingOperations.length) {
       window.eagleMV.cancelClose();
-      const message = state.textSaving
+      const message = anyTextSaving
         ? 'TXT 仍在保存'
         : state.inspectorSaving
           ? '素材信息仍在保存'
@@ -7401,16 +7899,30 @@ function bindHubEvents() {
     // flush for a very recent edit instead of a discard prompt.
     if (state.inspectorDirty) {
       window.eagleMV.cancelClose();
-      if (!await saveInspector()) return;
+      await saveInspector();
     }
-    const hasUnsavedText = Boolean(state.textSession?.dirty);
-    if (hasUnsavedText && !confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并关闭窗口；按“取消”继续编辑。')) {
+    const failedDrafts = [...inspectorDrafts.values()].filter(draft => Object.keys(inspectorDraftPatch(draft)).length);
+    const failedDraft = failedDrafts[0];
+    if (failedDraft) {
+      window.eagleMV.cancelClose();
+      if (!failedDrafts.every(draft => persistInspectorDraft(draft))) return;
+      if (!confirm(`有 ${failedDrafts.length} 个素材信息草稿尚未提交，已保存在本机。\n\n按“确定”保留草稿并关闭，下次打开原素材可恢复；按“取消”继续编辑。`)) {
+        if (failedDraft.libraryPath === state.library?.path && paneById(failedDraft.paneId)) {
+          activatePane(failedDraft.paneId);
+          const pane = paneById(failedDraft.paneId);
+          if (pane.items.some(item => item.id === failedDraft.id)) { pane.selected = new Set([failedDraft.id]); renderInspector(); }
+        }
+        return;
+      }
+    }
+    if (!confirmTextSessionsLeave(state.panes)) {
       window.eagleMV.cancelClose();
       return;
     }
     state.inspectorDirty = false;
-    if (state.textSession) state.textSession.dirty = false;
     saveSessionState();
+    approvedWindowClose = true;
+    setTimeout(() => { approvedWindowClose = false; }, 1000);
     window.eagleMV.confirmClose();
   });
   window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
@@ -7452,32 +7964,46 @@ function bindHubEvents() {
     if (payload.libraryPath !== state.library?.path) return;
     state.localPins = payload.pins || {};
     for (const pane of state.panes) withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
-    renderInspector();
+    queueChangedInspectorRender(false);
   });
   window.eagleMV.onTagDataChanged(async payload => {
     if (payload?.libraryPath !== state.library?.path) return;
     await loadLibraryExtras();
+    if (payload.libraryPath !== state.library?.path) return;
+    // Recolor existing chips in place, keeping partially typed tag text,
+    // caret positions, metadata drafts and current focus intact.
+    for (const chip of document.querySelectorAll('.tag-chip')) {
+      const name = chip.querySelector('span[title]')?.title;
+      if (name) chip.style.setProperty('--tag-color', state.tagColors[name] || '');
+    }
     renderFolderTree();
     for (const pane of state.panes) {
       if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
     }
+    queueChangedInspectorRender(false);
   });
   window.eagleMV.onTextChanged(payload => {
-    if (payload.origin === state.windowId || payload.id !== state.textSession?.id) return;
-    if (state.textSession.dirty) {
-      $('#textStatus').textContent = '另一个窗口已修改此 TXT；保存时会检查冲突';
-      return;
+    if (payload.libraryPath && payload.libraryPath !== state.library?.path) return;
+    for (const pane of state.panes) {
+      const session = pane.textSession;
+      if (!session || payload.id !== session.id) continue;
+      if (session.dirty || session.saving) {
+        textSessionStatus(session, '另一个编辑会话已修改此 TXT；保存时会检查冲突');
+        continue;
+      }
+      withActivePane(pane.id, () => openPreview(payload.id, { forceReload: true }));
     }
-    openPreview(payload.id, { forceReload: true });
   });
   window.eagleMV.onStatus(payload => setConnection(payload.connected, payload.message));
   window.eagleMV.onItemsChanged(payload => {
+    if (payload.libraryPath && payload.libraryPath !== state.library?.path) return;
     let touchedSelection = false;
     for (const pane of state.panes) {
       for (const changed of payload.items || []) {
         const index = pane.items.findIndex(item => item.id === changed.id);
         if (index >= 0) {
           pane.items[index] = changed;
+          pane.itemMap.set(changed.id, changed);
           schedulePaneGridRender(pane.id);
         }
         if (pane.id === state.activePaneId && pane.selected.has(changed.id)) touchedSelection = true;
@@ -7487,7 +8013,10 @@ function bindHubEvents() {
     setSyncStatus(payload.source === 'multiview' ? '所有窗口已同步' : '已接收 Eagle 的外部修改');
   });
   window.eagleMV.onLibraryChanged(payload => scheduleLibraryChange(payload));
-  window.eagleMV.onQueryInvalidated(() => scheduleRefresh());
+  window.eagleMV.onQueryInvalidated(payload => {
+    if (payload?.libraryPath && payload.libraryPath !== state.library?.path) return;
+    scheduleRefresh();
+  });
 }
 
 function scheduleLibraryChange(payload) {
@@ -7640,7 +8169,11 @@ async function confirmMissingCurrentFolders(folderIds, payload) {
 async function applyLibraryChange(payload) {
   if (!payload?.library || libraryChangeIsSuperseded(payload)) return;
   const pathChanged = state.library?.path && state.library.path !== payload.library.path;
-  const hadUnsaved = state.inspectorDirty || state.textSession?.dirty;
+  const hadUnsaved = state.inspectorDirty || state.panes.some(pane => pane.textSession?.dirty);
+  if (pathChanged) {
+    captureInspectorDraft();
+    for (const pane of state.panes) persistTextDraft(pane.textSession);
+  }
   state.library = payload.library;
   recordAppliedLibrarySnapshot(payload);
   $('#windowTitle').textContent = 'Eagle MultiView';
@@ -7672,7 +8205,7 @@ async function applyLibraryChange(payload) {
     renderQueryControls();
     renderFolderTree();
     await refreshAllPanes({ reset: true, preserveScroll: false });
-    toast(hadUnsaved ? 'Eagle 已切换资料库；旧资料库的未保存修改已取消' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
+    toast(hadUnsaved ? 'Eagle 已切换资料库；旧库草稿已保留，返回原库后可继续编辑' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
     return;
   }
 

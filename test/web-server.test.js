@@ -456,7 +456,9 @@ test('export downloads one file directly and zips several (verified via ditto)',
   assert.match(String(single.headers['content-disposition']), /attachment/);
   assert.match(String(single.headers['content-disposition']), new RegExp(encodeURIComponent('图片一.png')));
 
-  const multi = await request(port, { path: '/export?ids=one,two,missing', headers: authed });
+  const missing = await request(port, { path: '/export?ids=one,two,missing', headers: authed });
+  assert.equal(missing.status, 404, 'do not silently omit missing files');
+  const multi = await request(port, { path: '/export?ids=one,two', headers: authed });
   assert.equal(multi.status, 200);
   assert.equal(multi.headers['content-type'], 'application/zip');
   const zipPath = path.join(mediaDir, 'out.zip');
@@ -473,4 +475,113 @@ test('export downloads one file directly and zips several (verified via ditto)',
   await server.stop();
   fs.rmSync(srcDir, { recursive: true, force: true });
   fs.rmSync(mediaDir, { recursive: true, force: true });
+});
+
+test('UW-03: exports reject 501 items explicitly and prepare a verified unique manifest', async t => {
+  const srcDir = makeFixtureDir();
+  const resolved = [];
+  const server = createWebServer({ srcDir, invoke: async () => null,
+    resolveMediaPath: async (_kind, id) => { resolved.push(id); return id === 'missing' ? null : path.join(srcDir, 'media.bin'); },
+    accessKey: ACCESS_KEY, loginFailureDelayMs: 0 });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const login = await request(port, { path: '/login', method: 'POST' }, JSON.stringify({ key: ACCESS_KEY }));
+  const headers = { Cookie: String(login.headers['set-cookie'][0]).split(';')[0] };
+  const ids = Array.from({ length: 501 }, (_, i) => `item-${i}`);
+  const excess = await request(port, { path: `/export?ids=${ids.join(',')}`, headers });
+  assert.equal(excess.status, 400);
+  assert.match(JSON.parse(excess.body).message, /500/);
+  assert.equal(resolved.length, 0, 'an oversized request must not resolve a truncated subset');
+  const prepare = selected => request(port, { path: '/export/prepare', method: 'POST', headers }, JSON.stringify({ ids: selected }));
+  assert.equal((await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['one'] }))).status, 401);
+  for (const count of [499, 500]) {
+    const prepared = await prepare(ids.slice(0, count).concat(ids[0]));
+    assert.equal(prepared.status, 200);
+    const plan = JSON.parse(prepared.body);
+    assert.equal(plan.count, count);
+    const download = await request(port, { path: plan.url, headers });
+    assert.equal(download.status, 200);
+    assert.equal(download.body.readUInt16LE(download.body.length - 12), count, 'ZIP central-directory count matches preparation');
+  }
+  const partial = await prepare(['one', 'missing']);
+  assert.equal(partial.status, 404);
+  assert.deepEqual(JSON.parse(partial.body).missingIds, ['missing']);
+  assert.equal((await prepare(['missing'])).status, 404);
+  assert.equal((await prepare(ids)).status, 400);
+});
+
+test('UW-03: export preparation stops on library changes and frozen downloads do not resolve IDs again', async t => {
+  const srcDir = makeFixtureDir();
+  let library = '/A';
+  let switchOnResolve = false;
+  const resolved = [];
+  const server = createWebServer({ srcDir, invoke: async () => null,
+    ensureLibraryPath: async expected => { if (expected && expected !== library) throw new Error('资料库已切换'); },
+    resolveMediaPath: async (_kind, id) => { resolved.push(id); if (switchOnResolve) library = '/B'; return path.join(srcDir, 'media.bin'); },
+    accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const prepare = ids => request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids, libraryPath: '/A' }));
+  for (const ids of [['one', 'two'], ['last']]) {
+    library = '/A'; switchOnResolve = true; resolved.length = 0;
+    const stopped = await prepare(ids);
+    assert.notEqual(stopped.status, 200);
+    assert.match(JSON.parse(stopped.body).message, /资料库已切换/);
+    assert.equal(resolved.length, 1);
+  }
+  library = '/A'; switchOnResolve = false;
+  const plan = JSON.parse((await prepare(['one'])).body);
+  resolved.length = 0;
+  assert.equal((await request(port, { path: plan.url })).body.toString(), '0123456789');
+  assert.equal(resolved.length, 0, 'download uses the prepared paths, not another active-library ID lookup');
+  fs.writeFileSync(path.join(srcDir, 'media.bin'), 'changed');
+  assert.equal((await request(port, { path: plan.url })).status, 409, 'changed source is not mislabeled as the prepared export');
+});
+
+test('UW-03: oversized bytes are rejected before streaming', async t => {
+  const srcDir = makeFixtureDir();
+  const sparse = path.join(srcDir, 'oversized.bin');
+  const fd = fs.openSync(sparse, 'w');
+  fs.ftruncateSync(fd, 4 * 1024 * 1024 * 1024); fs.closeSync(fd);
+  const server = createWebServer({ srcDir, invoke: async () => null,
+    resolveMediaPath: async () => sparse, accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const response = await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['large'] }));
+  assert.equal(response.status, 400);
+  assert.match(JSON.parse(response.body).message, /3\.5GB/);
+  assert.ok(response.body.length < 1000, 'no file payload is streamed');
+});
+
+test('TXT Web draft transport accepts a 5 MB body after worst-case JSON escaping, without enlarging other RPCs', async t => {
+  const { TextDraftStore } = require('../lib/text-draft-store');
+  const srcDir = makeFixtureDir();
+  const store = new TextDraftStore(path.join(srcDir, 'drafts'));
+  const calls = [];
+  const server = createWebServer({ srcDir, accessKey: ACCESS_KEY, requireKey: false, resolveMediaPath: async () => null,
+    invoke: async (method, [data]) => {
+      calls.push(method);
+      if (method === 'text-draft:put') {
+        const saved = await store.put(data);
+        return { bytes: Buffer.byteLength(saved.content) };
+      }
+      if (method === 'text:save') return { bytes: Buffer.byteLength(data.content) };
+      return true;
+    } });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const content = '\u0001'.repeat(5 * 1024 * 1024);
+  const data = { libraryPath: path.join(srcDir, 'fixture.library'), id: 'TXT', draftId: 'WINDOW', revision: 1, content };
+  const rpc = (method, args) => request(port, { path: '/rpc', method: 'POST' }, JSON.stringify({ method, args }));
+  for (const method of ['text-draft:put', 'text:save']) {
+    const response = await rpc(method, [data]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.body), { ok: true, result: { bytes: 5 * 1024 * 1024 } });
+  }
+  assert.equal((await store.get(data)).content, content);
+  const oversized = await rpc('text-draft:put', [{ ...data, revision: 2, content: content + 'x' }]);
+  assert.equal(JSON.parse(oversized.body).ok, false, 'decoded 5 MB store limit is still enforced');
+  const other = await rpc('test:other', ['x'.repeat(9 * 1024 * 1024)]);
+  assert.equal(other.status, 413);
+  assert.ok(!calls.includes('test:other'), 'non-text requests retain their original 8 MB boundary');
 });

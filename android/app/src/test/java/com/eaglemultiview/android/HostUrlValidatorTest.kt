@@ -8,6 +8,34 @@ import org.junit.Test
 
 class HostUrlValidatorTest {
     @Test
+    fun `encoded and unicode host paths preserve identity through repeated restores`() {
+        val paths = mapOf(
+            "/folder%20name/" to "/folder%20name/",
+            "/资料/" to "/%E8%B5%84%E6%96%99/",
+            "/literal%25value/" to "/literal%25value/",
+            "/encoded%2Fsegment/" to "/encoded%2Fsegment/",
+        )
+        for ((input, expectedPath) in paths) {
+            var restored = "https://EXAMPLE.test:443$input"
+            repeat(4) {
+                restored = HostUrlValidator.normalize(restored)!!
+                assertEquals("https://example.test$expectedPath", restored)
+            }
+        }
+    }
+
+    @Test
+    fun `port zero is rejected while implicit and valid boundary ports are accepted`() {
+        for (port in listOf(0, 65536)) {
+            assertEquals(HostInputError.INVALID_PORT,
+                (HostUrlValidator.validate("http://example.test:$port/") as HostInputResult.Invalid).error)
+        }
+        for (url in listOf("http://example.test/", "http://example.test:1/", "http://example.test:65535/")) {
+            assertEquals(url, HostUrlValidator.normalize(url))
+        }
+    }
+
+    @Test
     fun `adds http scheme to a local host and keeps its port`() {
         assertEquals(
             "http://192.168.1.20:41596/",

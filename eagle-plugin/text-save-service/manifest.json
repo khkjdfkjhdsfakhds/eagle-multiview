@@ -1,0 +1,12 @@
+{
+  "id": "EAGLEMVREVIEWTXT20260905",
+  "version": "1.0.0",
+  "platform": "mac",
+  "arch": "arm64",
+  "name": "MultiView Review TXT 后台保存",
+  "logo": "/logo.png",
+  "description": "仅为 Eagle MultiView Review 的 TXT 编辑提供官方后台保存，不打开或激活素材窗口。",
+  "keywords": [],
+  "devTools": false,
+  "main": { "serviceMode": true, "show": false, "url": "index.html", "width": 360, "height": 160 }
+}

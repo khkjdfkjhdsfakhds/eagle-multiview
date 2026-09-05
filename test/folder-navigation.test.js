@@ -14,6 +14,13 @@ const folders = [{
   }]
 }];
 
+test('updates the entry being left with its latest search and takes an immutable snapshot', () => {
+  const current = { kind: 'folder', id: 'top', query: { search: 'latest', tags: ['cat'] } };
+  const result = recordViewNavigation([{ kind: 'root' }, { kind: 'folder', id: 'top', query: { search: '' } }], 1, current, { kind: 'all' });
+  current.query.tags.push('dog');
+  assert.deepEqual(result.history[1].query, { search: 'latest', tags: ['cat'] });
+});
+
 test('moves from a deep folder to its immediate parent', () => {
   assert.deepEqual(parentView(folders, { kind: 'folder', id: 'deep' }), {
     kind: 'folder',
@@ -109,4 +116,3 @@ test('overlayFolder updates folder in place preserving nested children and untou
   assert.equal(updated[0].children[1].children[0].id, 'd');
   assert.equal(updated[1].name, '原名称E');
 });
-

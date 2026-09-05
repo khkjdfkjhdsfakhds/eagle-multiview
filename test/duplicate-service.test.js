@@ -10,8 +10,7 @@ const { DuplicateIndex, findDuplicateImports, mapWithConcurrency, pairImportedId
 test('pairs imported copies with their original folder memberships', () => {
   assert.deepEqual(pairImportedIdsWithFolders(['copy-a', 'copy-b'], [
     { item: { folders: ['folder-a', 'folder-a', null] } },
-    { item: { folders: [] } },
-    { item: { folders: ['folder-c'] } }
+    { item: { folders: [] } }
   ]), [{ id: 'copy-a', folders: ['folder-a'] }]);
 });
 

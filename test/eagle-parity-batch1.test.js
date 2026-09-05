@@ -15,7 +15,7 @@ const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
 test('number keys 0-5 set the selection rating like Eagle', () => {
-  const start = renderer.indexOf('document.addEventListener(\'keydown\'');
+  const start = renderer.indexOf('document.addEventListener(\'keydown\'', renderer.indexOf('function bindEvents()'));
   assert.ok(start >= 0);
   const handler = renderer.slice(start, renderer.indexOf('\n  });', start));
   // digit branch guarded against text fields, preview, and modifier keys

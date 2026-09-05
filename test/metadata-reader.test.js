@@ -123,3 +123,31 @@ test('parses NovelAI metadata bundle from WebP EXIF UserComment', () => {
 test('returns null for an image without supported generation metadata', () => {
   assert.equal(readMetadataBuffer(pngWithText([]), 'png'), null);
 });
+
+test('DA-19: ordinary image descriptions and comments do not claim NovelAI provenance', () => {
+  for (const entries of [
+    [{ key: 'Description', value: 'A family photograph' }],
+    [{ key: 'Comment', value: 'Edited and exported by a camera app' }],
+    [{ key: 'Description', value: 'Notes' }, { key: 'Comment', value: '{"steps":3}' }]
+  ]) assert.equal(readMetadataBuffer(pngWithText(entries), 'png'), null);
+  assert.equal(readMetadataBuffer(pngWithText([
+    { key: 'Software', value: 'NovelAI' }, { key: 'Description', value: 'a landscape' }
+  ]), 'png').format, 'NovelAI');
+  assert.equal(readMetadataBuffer(jpegWithExifComment(JSON.stringify({ Description: 'ordinary notes', Comment: 'camera' })), 'jpg'), null);
+});
+
+test('DA-20: LoRA zero and negative weights survive every supported metadata format', () => {
+  const expected = [0, -0.5, 1];
+  const a1111 = parseA1111('<lora:off:0> <lora:negative:-0.5> <lora:default:invalid>\nSteps: 20');
+  assert.deepEqual(a1111.loras.map(lora => lora.weight), expected);
+  const comfy = readMetadataBuffer(pngWithText([{ key: 'prompt', value: JSON.stringify({
+    1: { class_type: 'LoraLoader', inputs: { lora_name: 'off', strength_model: 0 } },
+    2: { class_type: 'LoraLoader', inputs: { lora_name: 'negative', strength_model: -0.5 } },
+    3: { class_type: 'LoraLoader', inputs: { lora_name: 'default' } }
+  }) }]), 'png');
+  assert.deepEqual(comfy.loras.map(lora => lora.weight), expected);
+  const invoke = readMetadataBuffer(pngWithText([{ key: 'invokeai_metadata', value: JSON.stringify({
+    loras: [{ name: 'off', weight: 0 }, { name: 'negative', strength: -0.5 }, { name: 'default', weight: 'invalid' }]
+  }) }]), 'png');
+  assert.deepEqual(invoke.loras.map(lora => lora.weight), expected);
+});

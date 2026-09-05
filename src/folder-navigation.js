@@ -47,11 +47,13 @@
     let entries = [...(history || [])];
     let index = Number.isInteger(historyIndex) ? historyIndex : -1;
     if (index < 0) {
-      entries = [{ ...currentView }];
+      entries = [structuredClone(currentView)];
       index = 0;
+    } else {
+      entries[index] = structuredClone(currentView);
     }
     entries = entries.slice(0, index + 1);
-    entries.push({ ...nextView });
+    entries.push(structuredClone(nextView));
     return { history: entries, historyIndex: entries.length - 1 };
   }
 

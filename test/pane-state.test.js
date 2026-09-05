@@ -236,16 +236,15 @@ test('inspector saves use an immutable source pane snapshot and a single conflic
   const start = source.indexOf('async function saveInspector(');
   const end = source.indexOf('\nasync function setPinned', start);
   const handler = source.slice(start, end);
-  assert.ok(handler.includes('const paneId = state.activePaneId;'));
+  assert.ok(handler.includes('const { paneId, id, libraryPath } = draft;'));
   assert.ok(handler.includes('const pane = paneById(paneId);'));
-  assert.ok(handler.includes('const base = structuredClone(pane.selectedBase || {});'));
-  assert.ok(handler.includes('const libraryPath = state.library?.path;'));
+  assert.ok(handler.includes('let base = structuredClone(draft.base);'));
   assert.ok(handler.includes('while (true)'));
-  assert.ok(handler.includes('pane.items.findIndex'));
-  assert.ok(handler.includes('if (state.activePaneId === paneId)'));
+  assert.ok(handler.includes('pane?.items.findIndex'));
+  assert.ok(handler.includes('state.activePaneId === paneId'));
   assert.equal(handler.includes('return saveInspector(true)'), false);
   assert.ok(handler.includes('setInspectorSaving(true)'));
-  assert.ok(handler.includes('setInspectorSaving(false)'));
+  assert.ok(handler.includes('setInspectorSaving([...inspectorDrafts.values()]'));
 });
 
 test('inspector metadata auto-saves after a quiet edit and on field exit', () => {
@@ -270,7 +269,7 @@ test('inspector metadata auto-saves after a quiet edit and on field exit', () =>
 test('inspector auto-save stays behind the live editor and queues in-flight typing', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const savingStart = source.indexOf('function setInspectorSaving(');
-  const savingEnd = source.indexOf('\nasync function saveInspector', savingStart);
+  const savingEnd = source.indexOf('\nconst inspectorDrafts', savingStart);
   const savingHandler = source.slice(savingStart, savingEnd);
   assert.equal(savingHandler.includes('control.disabled'), false);
   assert.equal(savingHandler.includes('#itemAnnotation'), false);
@@ -282,10 +281,11 @@ test('inspector auto-save stays behind the live editor and queues in-flight typi
   const successEnd = saveHandler.indexOf("toast('修改已同步到所有窗口')", successStart);
   const successHandler = saveHandler.slice(successStart, successEnd);
   assert.ok(successStart >= 0);
-  assert.ok(successHandler.includes('pane.selectedBase = structuredClone(result.item)'));
+  assert.ok(successHandler.includes('pane.selectedBase = structuredClone(draft.base)'));
   assert.ok(successHandler.includes('state.inspectorDirty = Object.keys(collectPatch()).length > 0'));
   assert.equal(successHandler.includes('renderInspector()'), false);
-  assert.ok(saveHandler.includes('if (queueFollowUp) queueInspectorAutoSave()'));
+  assert.ok(saveHandler.includes('patch = inspectorDraftPatch(draft);'));
+  assert.ok(saveHandler.includes('base = structuredClone(draft.base);'));
 
   const scheduleStart = source.indexOf('const scheduleChangedInspectorRender');
   const scheduleEnd = source.indexOf('\nfunction queueChangedInspectorRender', scheduleStart);
@@ -302,18 +302,19 @@ test('window close waits for an inspector save instead of abandoning an in-fligh
   const handler = source.slice(start, end);
   const pendingWrites = handler.indexOf('blockingForegroundOperations()');
   const savingGuard = handler.indexOf('state.inspectorSaving');
-  const unsavedCheck = handler.indexOf('const hasUnsavedText');
+  const unsavedCheck = handler.indexOf('confirmTextSessionsLeave(state.panes)');
   assert.ok(pendingWrites >= 0);
   assert.ok(savingGuard > pendingWrites);
   assert.ok(savingGuard < unsavedCheck);
   assert.ok(handler.includes('window.eagleMV.cancelClose();'));
   assert.ok(handler.includes('if (state.inspectorDirty)'));
-  assert.ok(handler.includes('if (!await saveInspector()) return;'));
+  assert.ok(handler.includes('await saveInspector();'));
+  assert.ok(handler.includes('failedDrafts.every(draft => persistInspectorDraft(draft))'));
 });
 
 test('high-risk writes register and release a close-blocking foreground operation', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-  for (const functionName of ['saveInspector', 'setPinned', 'applyTrash', 'mutateSelectionSet', 'moveSelectionToFolder', 'setSelectionRating', 'saveTextPreview', 'importFiles', 'addItemsToFolder', 'handlePaneItemDrop']) {
+  for (const functionName of ['saveInspectorDraft', 'setPinned', 'applyTrash', 'mutateSelectionSet', 'moveSelectionToFolder', 'setSelectionRating', 'importFiles', 'addItemsToFolder', 'handlePaneItemDrop']) {
     const start = source.indexOf(`async function ${functionName}`);
     const nextFunction = source.indexOf('\nfunction ', start + 10);
     const nextAsyncFunction = source.indexOf('\nasync function ', start + 10);
@@ -323,6 +324,9 @@ test('high-risk writes register and release a close-blocking foreground operatio
     assert.ok(handler.includes('beginForegroundOperation('), `${functionName} registers an operation`);
     assert.ok(handler.includes('endForegroundOperation(operationToken)'), `${functionName} releases its operation`);
   }
+  // TXT is now a per-session background queue; close protection checks every
+  // session's in-flight marker rather than foregrounding a save operation.
+  assert.ok(source.includes('state.panes.some(pane => pane.textSession?.saving)'));
 });
 
 test('comment writes only reload the inspector context that initiated them', () => {
@@ -343,13 +347,12 @@ test('TXT saves freeze their snapshot, avoid recursive conflicts, and survive pr
   const start = source.indexOf('async function saveTextPreview(');
   const end = source.indexOf('\nfunction closePreview', start);
   const handler = source.slice(start, end);
-  assert.ok(handler.includes('if (state.textSaving) return false;'));
-  assert.ok(handler.includes('const content = session.content;'));
-  assert.ok(handler.includes('const base = structuredClone(session.fingerprint);'));
-  assert.ok(handler.includes('const libraryPath = state.library?.path;'));
-  assert.ok(handler.includes('while (true)'));
+  assert.ok(handler.includes('if (session.saving) return session.saving;'));
+  assert.ok(handler.includes('const { id, libraryPath, content } = session;'));
+  assert.ok(handler.includes('base: structuredClone(session.fingerprint)'));
+  assert.ok(handler.includes('while (session.dirty'));
   assert.equal(handler.includes('return saveTextPreview(true)'), false);
-  assert.ok(handler.includes('if (state.textSession === session)'));
+  assert.ok(handler.includes('textSessionStatus(session,'));
   assert.ok(handler.includes('setTextSaving(false, session)'));
 });
 
@@ -416,7 +419,7 @@ test('delayed import refreshes stay attached to the pane that received the impor
 
 test('blocking dialogs consume Escape before workspace shortcuts can run', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-  const start = source.indexOf("document.addEventListener('keydown'");
+  const start = source.indexOf("document.addEventListener('keydown'", source.indexOf('function bindEvents()'));
   const end = source.indexOf('\n  });', start);
   const handler = source.slice(start, end);
   const escape = handler.indexOf("if (event.key === 'Escape')");
@@ -613,4 +616,3 @@ test('app initialization restores session layout, split ratios, and validates pa
   assert.ok(source.includes('if (!state.library) return;'), 'saveSessionState guards against early library null writes');
   assert.ok(source.includes('renderFolderTree();'), 'calls renderFolderTree during start and session restoration');
 });
-

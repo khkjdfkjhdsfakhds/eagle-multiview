@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-const keydownStart = renderer.indexOf("document.addEventListener('keydown'");
+const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
 const keydown = renderer.slice(keydownStart, renderer.indexOf('\n  });', keydownStart));
 
 test('F2 renames only a single, non-editing selection', () => {

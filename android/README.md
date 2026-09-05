@@ -26,6 +26,8 @@ Run commands from this `android/` directory:
 
 The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `connectedDebugAndroidTest` needs one booted API 26+ emulator or connected Android device with a working WebView provider.
 
+`python3 tools/run-host-url-probe.py` is an optional offline check of the original URL validator and trust policy, using existing JDK 17 / Kotlin 2.2.20 caches without downloads or Gradle changes. It checks encoded-path restore identity and port boundaries; it does not replace the project-locked JVM suite, Activity build, or device acceptance.
+
 ## Current host/WebView contract
 
 - The first screen accepts typing or pasting an HTTP/HTTPS MultiView host URL. Missing schemes are normalized to `http://` for LAN use.

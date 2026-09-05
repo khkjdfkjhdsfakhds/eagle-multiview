@@ -50,7 +50,7 @@ test('a missing image degrades to a message instead of a broken glyph', () => {
   // generated thumbnail at all.
   assert.ok(renderer.includes("image.addEventListener('error', () => {"), 'the preview image has an error path');
   assert.ok(renderer.includes('无法读取这个素材的图像'));
-  assert.ok(renderer.includes("if (token !== state.previewToken || !image.isConnected) return;"),
+  assert.ok(renderer.includes("if (!validOwner() || !image.isConnected) return;"),
     'a stale failure must not overwrite a newer preview');
   assert.ok(renderer.includes("image.addEventListener('error', () => image.closest('.thumb-wrap')?.classList.add('thumb-missing')"),
     'grid thumbnails mark themselves instead of sitting at opacity 0 forever');

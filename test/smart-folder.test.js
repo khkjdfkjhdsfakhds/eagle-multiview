@@ -4,6 +4,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildSmartFolderConditions } = require('../src/smart-folder');
 
+test('rejects active filters without a verified lossless Eagle rule conversion', () => {
+  for (const query of [{ color: '#ff0000' }, { size: { min: 10 } }, { added: { min: 10 } }, { pixels: { min: 10 } }, { search: 'cat', searchScope: 'name' }]) {
+    const result = buildSmartFolderConditions({ kind: 'folder', id: 'folder-1' }, query);
+    assert.ok(result.unsupported, JSON.stringify(query));
+    assert.deepEqual(result.conditions, []);
+  }
+});
+
 test('converts a folder-scoped structured query to Eagle smart-folder rules', () => {
   const result = buildSmartFolderConditions({ kind: 'folder', id: 'folder-1' }, {
     search: 'cat portrait', tags: ['reference'], ext: 'PNG', rating: 4, annotation: 'approved', url: 'example', shape: 'square'

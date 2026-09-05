@@ -12,6 +12,8 @@ const { DataHub } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
 const { SupplementalItemStore } = require('./lib/supplemental-item-store');
 const { readText, saveText } = require('./lib/text-file-service');
+const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
+const { TextDraftStore } = require('./lib/text-draft-store');
 const { createImportService } = require('./lib/import-service');
 const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 const { readMetadata } = require('./lib/metadata-reader');
@@ -32,6 +34,13 @@ const {
   nextAvailableName,
   createTemporaryNewFile
 } = require('./lib/new-file-service');
+
+// Review is a genuinely separate app/profile, not just a renamed .app folder.
+const reviewBuild = String(app.getVersion?.() || '').includes('-review.');
+if (reviewBuild) {
+  app.setName('Eagle MultiView Review');
+  app.setPath('userData', path.join(app.getPath('appData'), 'eagle-multiview-review-20260905'));
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'eaglemv', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -55,7 +64,25 @@ let quitting = false;
 let pinStore;
 let supplementalItemStore;
 let tagColorState;
+let tagColorLoading = null;
+let tagColorQueue = Promise.resolve();
+let supplementalHydrationRetry = null;
 let errorLog;
+let textPluginBridge;
+let textDraftStore;
+
+function getTextPluginBridge() {
+  textPluginBridge ||= createTextPluginBridge({
+    directory: path.join(app.getPath('userData'), 'TXT Bridge'),
+    stagingRoot: path.join(app.getPath('userData'), 'Text Backups', 'staging')
+  });
+  return textPluginBridge;
+}
+
+function getTextDraftStore() {
+  textDraftStore ||= new TextDraftStore(path.join(app.getPath('userData'), 'Text Drafts'));
+  return textDraftStore;
+}
 
 function errorLogDir() {
   return path.join(app.getPath('userData'), 'logs');
@@ -90,34 +117,45 @@ app.on('child-process-gone', (_event, details) => {
 
 async function loadTagColors() {
   if (tagColorState) return tagColorState;
-  tagColorState = { version: 1, libraries: {} };
-  try {
-    const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
-    const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
-    if (parsed?.version === 1 && parsed.libraries && typeof parsed.libraries === 'object') tagColorState = parsed;
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Unable to read tag colors:', error);
-  }
-  return tagColorState;
+  if (!tagColorLoading) tagColorLoading = (async () => {
+    let state = { version: 1, libraries: {} };
+    try {
+      const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
+      const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+      if (parsed?.version === 1 && parsed.libraries && typeof parsed.libraries === 'object') state = parsed;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    tagColorState = state;
+    return state;
+  })().finally(() => { tagColorLoading = null; });
+  return tagColorLoading;
 }
 
 async function getTagColors(libraryPath) {
-  const state = await loadTagColors();
+  await loadTagColors();
+  await tagColorQueue;
+  const state = tagColorState;
   return structuredClone(state.libraries[path.resolve(libraryPath)] || {});
 }
 
 async function setTagColor(libraryPath, tag, color) {
-  const state = await loadTagColors();
-  const key = path.resolve(libraryPath);
-  state.libraries[key] ||= {};
-  if (color) state.libraries[key][tag] = color;
-  else delete state.libraries[key][tag];
-  const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
-  await fsp.mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  await fsp.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  await fsp.rename(temporary, file);
-  return structuredClone(state.libraries[key]);
+  const operation = tagColorQueue.then(async () => {
+    const state = structuredClone(await loadTagColors());
+    const key = path.resolve(libraryPath);
+    state.libraries[key] ||= {};
+    if (color) state.libraries[key][tag] = color;
+    else delete state.libraries[key][tag];
+    const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    try {
+      await fsp.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+      await fsp.rename(temporary, file);
+    } finally { await fsp.rm(temporary, { force: true }).catch(() => {}); }
+    tagColorState = state;
+    return structuredClone(state.libraries[key]);
+  });
+  tagColorQueue = operation.catch(() => {});
+  return operation;
 }
 
 const importPaths = createImportService({
@@ -159,11 +197,13 @@ async function waitForImportedFile(id, libraryPath, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   let item = null;
   while (Date.now() < deadline) {
+    await hub.ensureLibraryPath(libraryPath);
     try {
       item = await client.getItem(id);
       const fileURL = await client.fileURLForItem(item, libraryPath);
+      await hub.ensureLibraryPath(libraryPath);
       if (fileURL) return { item, fileURL };
-    } catch {}
+    } catch (error) { if (error.code === 'LIBRARY_CHANGED') throw error; }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   return { item, fileURL: null };
@@ -184,19 +224,47 @@ function getSupplementalItemStore() {
   return supplementalItemStore;
 }
 
-async function hydrateSupplementalItems(libraryPath, { notify = false } = {}) {
+async function hydrateSupplementalItems(libraryPath, { notify = false, attempt = 0 } = {}) {
+  clearTimeout(supplementalHydrationRetry);
+  supplementalHydrationRetry = null;
   if (!libraryPath) {
     hub.setSupplementalItems(null, []);
     return [];
   }
+  const expectedPath = path.resolve(libraryPath);
+  const read = hub.captureItemRead();
+  const current = () => hub.itemReadIsCurrent(read) && hub.library?.path && path.resolve(hub.library.path) === expectedPath;
+  if (!current()) return [];
   const ids = await getSupplementalItemStore().get(libraryPath);
-  const loaded = await Promise.all(ids.map(id => client.getItem(id).catch(() => null)));
-  const items = loaded.filter(item => item?.id && !item.isDeleted);
-  hub.setSupplementalItems(libraryPath, items);
-  const validIds = items.map(item => item.id);
-  if (validIds.length !== ids.length) await getSupplementalItemStore().set(libraryPath, validIds);
-  if (notify) hub.emit('query-invalidated', { reason: 'supplemental-items-hydrated', ids: validIds });
-  return items;
+  const loaded = await Promise.all(ids.map(async id => {
+    try { return { id, item: await client.getItem(id) }; }
+    catch (error) { return { id, error }; }
+  }));
+  if (!current()) return [];
+  await hub.ensureLibraryPath(libraryPath);
+  if (!current()) return [];
+  const items = hub.supplementalLibraryPath === expectedPath ? new Map(hub.supplementalItems) : new Map();
+  const invalid = [];
+  let retry = false;
+  for (const result of loaded) {
+    if (hub.itemRevisions.get(result.id) !== read.revisions.get(result.id)) continue;
+    if (result.error) { retry = true; continue; }
+    if (!result.item?.id || result.item.isDeleted) {
+      invalid.push(result.id);
+      items.delete(result.id);
+    } else items.set(result.id, result.item);
+  }
+  hub.setSupplementalItems(libraryPath, [...items.values()]);
+  // Remove only positively invalid IDs; a concurrent add must survive.
+  if (invalid.length) await getSupplementalItemStore().remove(libraryPath, invalid);
+  if (notify && current()) hub.emit('query-invalidated', { reason: 'supplemental-items-hydrated', libraryPath, ids: [...items.keys()] });
+  if (retry && attempt < 3 && current()) {
+    supplementalHydrationRetry = setTimeout(() => {
+      if (current()) hydrateSupplementalItems(libraryPath, { notify: true, attempt: attempt + 1 }).catch(error => console.error('Supplemental retry failed:', error));
+    }, [1000, 3000, 10000][attempt]);
+    supplementalHydrationRetry.unref?.();
+  }
+  return [...items.values()];
 }
 
 function findFolder(nodes, id) {
@@ -228,7 +296,7 @@ function webAccessFile() {
 
 async function loadWebAccessState() {
   if (webAccessState) return webAccessState;
-  webAccessState = { version: 1, enabled: false, port: 41600, key: null, requireKey: true };
+  webAccessState = { version: 1, enabled: false, port: reviewBuild ? 41601 : 41600, key: null, requireKey: true };
   try {
     const parsed = JSON.parse(await fsp.readFile(webAccessFile(), 'utf8'));
     if (parsed?.version === 1) {
@@ -311,6 +379,7 @@ async function applyWebAccess() {
     accessKey: state.key,
     requireKey: state.requireKey !== false,
     uploadImport: importPaths,
+    ensureLibraryPath: libraryPath => hub.ensureLibraryPath(libraryPath),
     uploadDir: path.join(app.getPath('userData'), 'temp', 'web-uploads'),
     onClientGone: id => hub.removeWatcher(id),
     logError: (message, detail) => logFault('web', message, detail)
@@ -376,7 +445,7 @@ function createWindow(initialState = null) {
     height: 900,
     minWidth: 980,
     minHeight: 640,
-    title: 'Eagle MultiView',
+    title: reviewBuild ? 'Eagle MultiView Review' : 'Eagle MultiView',
     backgroundColor: '#111317',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 15 },
@@ -421,7 +490,7 @@ function createWindow(initialState = null) {
 function setupMenu() {
   const template = [
     {
-      label: 'Eagle MultiView',
+      label: reviewBuild ? 'Eagle MultiView Review' : 'Eagle MultiView',
       submenu: [
         { role: 'about' },
         { type: 'separator' },
@@ -536,9 +605,15 @@ async function resolveMediaURL(kind, id) {
 }
 
 async function itemFilePath(id) {
-  const item = hub.itemCache.get(id) || await client.getItem(id);
+  const read = hub.captureItemRead();
   const library = hub.library || await client.libraryInfo();
+  const item = hub.itemCache.get(id) || await client.getItem(id);
   const fileURL = await client.fileURLForItem(item, library.path);
+  if (!hub.itemReadIsCurrent(read)) {
+    const error = new Error('Eagle 已切换资料库，请重新选择素材');
+    error.code = 'LIBRARY_CHANGED';
+    throw error;
+  }
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
 }
 
@@ -816,12 +891,12 @@ function setupIPC() {
     const { id, libraryPath } = payload || {};
     if (!id) throw new Error('缺少素材 ID');
     await hub.ensureLibraryPath(libraryPath);
+    hub.markItemWrite(id);
     const result = await operation(id);
     await hub.ensureLibraryPath(libraryPath);
     const item = await client.getItem(id);
-    hub.itemCache.set(id, item);
-    broadcast('hub:items-changed', { items: [item], source: 'multiview', origin: event.sender.id });
-    broadcast('hub:query-invalidated', { reason, id });
+    await hub.ensureLibraryPath(libraryPath);
+    hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason });
     return result;
   };
   handleRPC('item:comments', async (_event, { id, libraryPath }) => {
@@ -852,27 +927,26 @@ function setupIPC() {
       filePath = chooser.filePaths[0];
     }
     await hub.ensureLibraryPath(libraryPath);
+    hub.markItemWrite(id);
     const result = await client.setCustomThumbnail(id, filePath, payload.width, payload.height);
     thumbnailCache.delete(id);
     await hub.ensureLibraryPath(libraryPath);
     const item = await client.getItem(id);
-    hub.itemCache.set(id, item);
-    broadcast('hub:items-changed', { items: [item], source: 'multiview', origin: event.sender.id });
-    broadcast('hub:query-invalidated', { reason: 'custom-thumbnail', id });
+    await hub.ensureLibraryPath(libraryPath);
+    hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason: 'custom-thumbnail' });
     return { canceled: false, result, item };
   });
   handleRPC('hub:tags', () => client.listTags());
   handleRPC('hub:tag-groups', () => client.listTagGroups());
   const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
-    await hub.ensureLibraryPath(libraryPath);
-    const result = await operation();
-    const [library, folders] = await Promise.all([client.libraryInfo(), client.folderTree()]);
-    library.folders = folders;
-    hub.library = library;
-    hub.lastModificationTime = library.modificationTime;
-    broadcast('hub:library-changed', { library, libraryChanged: false, source: 'multiview', origin: event.sender.id });
-    broadcast('hub:query-invalidated', { reason });
-    return result;
+    hub.beginSnapshotWrite();
+    try {
+      await hub.ensureLibraryPath(libraryPath);
+      const result = await operation();
+      await hub.connect({ notify: true, origin: event.sender.id });
+      broadcast('hub:query-invalidated', { reason, libraryPath });
+      return result;
+    } finally { hub.endSnapshotWrite(); }
   };
   handleRPC('smart-folder:create', (event, { libraryPath, ...payload }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.createSmartFolder(payload), 'smart-folder-create'));
@@ -881,7 +955,11 @@ function setupIPC() {
   handleRPC('smart-folder:remove', (event, { libraryPath, id }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
   handleRPC('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
-  handleRPC('tag-colors:set', (_event, { libraryPath, tag, color }) => setTagColor(libraryPath, tag, color));
+  handleRPC('tag-colors:set', async (event, { libraryPath, tag, color }) => {
+    const colors = await setTagColor(libraryPath, tag, color);
+    broadcast('tag-data:changed', { libraryPath, origin: event.sender.id, reason: 'tag-color', colors });
+    return colors;
+  });
   const mutateTagData = async (event, libraryPath, operation, reason) => {
     await hub.ensureLibraryPath(libraryPath);
     const result = await operation();
@@ -956,11 +1034,13 @@ function setupIPC() {
       if (parent && !findFolder(folders, parent)) throw new Error('目标文件夹已不存在，请刷新后重试');
       const availableName = nextAvailableName(requestedName, siblingFolders(folders, parent));
       const apiResult = await refreshLibraryAfterMutation(event, libraryPath, () => client.createFolder(availableName, parent), 'folder-create');
-      const createdFolder = siblingFolders(hub.library?.folders, parent).find(folder =>
+      const createdFolder = siblingFolders(hub.library?.path === libraryPath ? hub.library.folders : [], parent).find(folder =>
         String(folder?.name || '').trim().toLocaleLowerCase('zh-CN') === availableName.toLocaleLowerCase('zh-CN'));
       return {
         id: createdFolder?.id || apiResult?.id || null,
         name: availableName,
+        libraryPath,
+        libraryChanged: hub.library?.path !== libraryPath,
         renamed: availableName !== requestedName
       };
     });
@@ -1001,23 +1081,14 @@ function setupIPC() {
         const ready = await waitForImportedFile(id, libraryPath);
         if (!ready.fileURL) throw new Error(`Eagle 未能完成 ${type.toUpperCase()} 文件复制`);
         const item = ready.item;
-        if (item) hub.itemCache.set(id, item);
-        const currentLibrary = await client.libraryInfo().catch(() => null);
-        if (currentLibrary?.path === libraryPath) {
-          currentLibrary.folders = await client.folderTree();
-          hub.library = currentLibrary;
-          hub.lastModificationTime = currentLibrary.modificationTime;
-          broadcast('hub:library-changed', {
-            library: currentLibrary,
-            libraryChanged: false,
-            source: 'multiview',
-            origin: event.sender.id
-          });
-        }
+        await hub.connect({ notify: true, origin: event.sender.id });
+        await hub.ensureLibraryPath(libraryPath);
+        if (item) hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason: 'document-create' });
         broadcast('hub:items-changed', {
           items: item ? [item] : [],
           ids: [id],
           source: 'multiview',
+          libraryPath,
           origin: event.sender.id,
           reason: 'document-create'
         });
@@ -1031,8 +1102,15 @@ function setupIPC() {
         };
       } catch (error) {
         if (importedId) {
-          await client.updateItem(importedId, { isDeleted: true }).catch(() => {});
-          broadcast('hub:query-invalidated', { reason: 'document-create-rollback', id: importedId });
+          try {
+            await hub.ensureLibraryPath(libraryPath);
+            await client.updateItem(importedId, { isDeleted: true });
+            error.cleanup = { status: 'completed', id: importedId, libraryPath };
+          } catch (cleanupError) {
+            error.cleanup = { status: 'pending', id: importedId, libraryPath, message: cleanupError.message };
+            error.message += `；原资料库可能仍有新建素材 ${importedId}，本次未清理，请回到原库核对后处理`;
+          }
+          broadcast('hub:query-invalidated', { reason: 'document-create-rollback', libraryPath, id: importedId });
         }
         throw error;
       } finally {
@@ -1065,16 +1143,23 @@ function setupIPC() {
         ? await importPaths({ paths: importPathsToUse, folderId, libraryPath })
         : { count: 0, ready: 0, ids: [], rejected: [] };
       if (imported.count) duplicateIndex.invalidate(libraryPath);
-      let existingIds = existing.map(duplicate => duplicate.id);
+      let existingIds = [];
       let duplicateFailed = 0;
-      if (useExisting && existing.length && folderId) {
-        const assignments = await settleWithConcurrency(existing, duplicate => hub.mutateSet({
-          id: duplicate.id,
-          field: 'folders',
-          add: [folderId],
-          libraryPath,
-          origin: event.sender.id
-        }), 4);
+      if (useExisting && existing.length) {
+        const assignments = await settleWithConcurrency(existing, async duplicate => {
+          await hub.ensureLibraryPath(libraryPath);
+          const item = await client.getItem(duplicate.id);
+          if (!item?.id || item.isDeleted) throw new Error('重复素材已被删除，请重新导入此文件');
+          await hub.ensureLibraryPath(libraryPath);
+          if (!folderId) return item;
+          return hub.mutateSet({
+            id: duplicate.id,
+            field: 'folders',
+            add: [folderId],
+            libraryPath,
+            origin: event.sender.id
+          });
+        }, 4);
         existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
         duplicateFailed = assignments.length - existingIds.length;
       }
@@ -1128,6 +1213,18 @@ function setupIPC() {
     return message ? { ok: false, message } : { ok: true };
   });
   handleRPC('items:export', async (event, { ids, libraryPath }) => {
+    const exportLibraryPath = EagleClient.normalizeLibraryPath(libraryPath);
+    if (!exportLibraryPath) throw new Error('缺少导出素材所属的资料库');
+    const read = hub.captureItemRead();
+    const ensureExportLibrary = async () => {
+      await hub.ensureLibraryPath(exportLibraryPath);
+      if (!hub.itemReadIsCurrent(read) || EagleClient.normalizeLibraryPath(hub.library?.path) !== exportLibraryPath) {
+        const error = new Error('Eagle 已切换资料库，本次导出已取消，请重新选择素材');
+        error.code = 'LIBRARY_CHANGED';
+        throw error;
+      }
+    };
+    await ensureExportLibrary();
     const parent = BrowserWindow.fromWebContents(event.sender);
     const destination = await dialog.showOpenDialog(parent, {
       title: '导出素材到文件夹',
@@ -1135,12 +1232,24 @@ function setupIPC() {
       properties: ['openDirectory', 'createDirectory']
     });
     if (destination.canceled || !destination.filePaths[0]) return { canceled: true };
+    await ensureExportLibrary();
     const resolved = await resolveItemFiles(ids);
+    // resolveItemFiles intentionally preserves per-item errors for ordinary
+    // missing files. A library transition is not a missing-file partial
+    // success: cancel the entire old selection before touching a destination.
+    const switched = resolved.find(entry => entry.error?.code === 'LIBRARY_CHANGED');
+    if (switched) throw switched.error;
+    await ensureExportLibrary();
     const exported = await exportFiles({
       filePaths: resolved.map(entry => entry.filePath).filter(Boolean),
       destinationRoot: destination.filePaths[0],
-      libraryPath,
-      fs: { ...fsp, existsSync: candidate => fs.existsSync(candidate) }
+      libraryPath: exportLibraryPath,
+      fs: {
+        ...fsp,
+        existsSync: candidate => fs.existsSync(candidate),
+        mkdir: async (...args) => { await ensureExportLibrary(); return fsp.mkdir(...args); },
+        copyFile: async (...args) => { await ensureExportLibrary(); return fsp.copyFile(...args); }
+      }
     });
     return {
       canceled: false,
@@ -1179,12 +1288,15 @@ function setupIPC() {
     return { ok: true, count: files.length, missing: resolved.length - files.length };
   });
   handleRPC('items:duplicate', async (event, { ids, folderId, libraryPath, preserveFolders = false }) => {
+    await hub.ensureLibraryPath(libraryPath);
     const resolved = await resolveItemFiles(ids);
     const paths = resolved.map(entry => entry.filePath).filter(Boolean);
     if (!paths.length) return { count: 0, missing: resolved.length };
     const imported = await importPaths({ paths, folderId: folderId || null, libraryPath });
     if (preserveFolders && imported.ids?.length) {
-      const assignments = pairImportedIdsWithFolders(imported.ids, resolved.filter(entry => entry.filePath));
+      const sources = resolved.filter(entry => entry.filePath);
+      const identitiesComplete = imported.ids.length === sources.length && new Set(imported.ids).size === imported.ids.length && imported.ids.every(Boolean);
+      const assignments = pairImportedIdsWithFolders(imported.ids, sources);
       const folderAssignments = await settleWithConcurrency(assignments, ({ id, folders }) => hub.mutateSet({
         id,
         field: 'folders',
@@ -1193,14 +1305,35 @@ function setupIPC() {
         origin: event.sender.id
       }), 4);
       imported.folderAssignmentFailed = folderAssignments.filter(result => !result.ok).length;
+      if (!identitiesComplete) {
+        imported.folderAssignmentFailed += sources.filter(entry => entry.item?.folders?.length).length;
+        imported.partial = true;
+        imported.rejected ||= [];
+        imported.rejected.push({ code: 'DUPLICATE_IDENTITY_UNCERTAIN', message: '副本已提交，但返回的素材身份不完整；未自动设置原文件夹，请核对结果' });
+      }
     }
-    const supplementalItems = (await Promise.all((imported.ids || []).map(id => client.getItem(id).catch(() => null)))).filter(Boolean);
-    if (supplementalItems.length) {
-      await getSupplementalItemStore().add(libraryPath, supplementalItems.map(item => item.id));
-      hub.addSupplementalItems(libraryPath, supplementalItems);
-      for (const item of supplementalItems) hub.itemCache.set(item.id, item);
-      hub.emit('items-changed', { items: supplementalItems, source: 'multiview', origin: event.sender.id });
-      hub.emit('query-invalidated', { reason: 'duplicate-supplemental', ids: supplementalItems.map(item => item.id) });
+    if (imported.ids?.length) {
+      // Register confirmed IDs before best-effort readiness. A transient
+      // lookup failure must not make an unindexed duplicate vanish on restart.
+      try {
+        await getSupplementalItemStore().add(libraryPath, imported.ids);
+      } catch (error) {
+        imported.partial = true;
+        imported.rejected ||= [];
+        imported.rejected.push({ code: 'DUPLICATE_REGISTRATION', message: `副本已提交，但本地补充登记失败；请核对已创建素材，勿直接重复创建：${error.message}` });
+      }
+      try {
+        await hub.ensureLibraryPath(libraryPath);
+        const supplementalItems = (await Promise.all(imported.ids.map(id => client.getItem(id).catch(() => null)))).filter(item => item?.id && !item.isDeleted);
+        await hub.ensureLibraryPath(libraryPath);
+        if (hub.addSupplementalItems(libraryPath, supplementalItems)) {
+          for (const item of supplementalItems) hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason: 'duplicate-supplemental' });
+        }
+      } catch (error) {
+        imported.partial = true;
+        imported.rejected ||= [];
+        imported.rejected.push({ code: error.code || 'DUPLICATE_READBACK', message: `副本已提交到原库，显示结果待恢复连接后核对：${error.message}` });
+      }
     }
     return { ...imported, missing: resolved.length - paths.length };
   });
@@ -1272,8 +1405,13 @@ function setupIPC() {
   handleRPC('text:read', async (_event, { id, libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     const { item, filePath } = await itemFilePath(id);
+    await hub.ensureLibraryPath(libraryPath);
     return readText({ item, filePath, libraryPath });
   });
+  handleRPC('text-draft:put', (_event, data) => getTextDraftStore().put(data));
+  handleRPC('text-draft:get', (_event, data) => getTextDraftStore().get(data));
+  handleRPC('text-draft:list', (_event, data) => getTextDraftStore().list(data));
+  handleRPC('text-draft:remove', (_event, data) => getTextDraftStore().remove(data));
   handleRPC('web-access:get', () => webAccessStatus());
   handleRPC('web-access:set', async (_event, payload = {}) => {
     const state = await loadWebAccessState();
@@ -1304,12 +1442,15 @@ function setupIPC() {
       content,
       base,
       force,
-      backupRoot: path.join(app.getPath('userData'), 'Text Backups')
+      backupRoot: path.join(app.getPath('userData'), 'Text Backups'),
+      ensureLibraryPath: capturedPath => hub.ensureLibraryPath(capturedPath),
+      replaceFile: request => getTextPluginBridge().replaceFile(request)
     });
     if (!result.conflict) {
-      client.refreshThumbnail(id).catch(() => {});
-      broadcast('text:changed', { id, origin: _event.sender.id, fingerprint: result.fingerprint });
-      broadcast('hub:query-invalidated', { reason: 'text-saved' });
+      // The official plugin owns replacement AND refresh; do not schedule a
+      // second refresh against whichever library happens to be active now.
+      broadcast('text:changed', { id, libraryPath, origin: _event.sender.id, fingerprint: result.fingerprint });
+      broadcast('hub:query-invalidated', { reason: 'text-saved', libraryPath });
     }
     return result;
   });
@@ -1321,6 +1462,9 @@ if (!gotLock) {
 } else {
   app.on('before-quit', () => {
     quitting = true;
+  });
+  app.on('will-quit', () => {
+    clearTimeout(supplementalHydrationRetry);
     webServer?.stop().catch(() => {});
   });
   app.on('second-instance', () => {
@@ -1334,6 +1478,7 @@ if (!gotLock) {
     });
     setupMenu();
     setupIPC();
+    await getTextPluginBridge().start().catch(error => logFault('text-bridge', 'TXT 后台连接启动失败；草稿仍可保留', error));
     await installProtocol();
     createWindow(null);
     hub.startPolling();
@@ -1350,4 +1495,5 @@ if (!gotLock) {
     if (!webServer?.listening) hub.stopPolling();
     if (process.platform !== 'darwin') app.quit();
   });
+  app.on('will-quit', () => { textPluginBridge?.stop().catch(() => {}); });
 }

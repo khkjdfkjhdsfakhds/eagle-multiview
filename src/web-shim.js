@@ -207,6 +207,53 @@
   const unsupported = message => ({ ok: false, message });
   let dragToken = 0;
 
+  function manualCopy(text) {
+    return new Promise((resolve, reject) => {
+      const previousFocus = document.activeElement;
+      const dialog = document.createElement('dialog');
+      dialog.className = 'web-copy-dialog';
+      dialog.setAttribute('aria-label', '手动复制文本');
+      const explanation = document.createElement('p');
+      explanation.textContent = '浏览器未允许自动复制。请长按或使用系统复制命令复制下方已选中的文本。';
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.readOnly = true;
+      field.rows = 8;
+      field.setAttribute('aria-label', '待复制文本');
+      const done = document.createElement('button');
+      done.textContent = '已手动复制';
+      const cancel = document.createElement('button');
+      cancel.textContent = '取消';
+      let settled = false;
+      const finish = copied => {
+        if (settled) return;
+        settled = true;
+        dialog.remove();
+        previousFocus?.focus?.({ preventScroll: true });
+        if (copied) resolve(true);
+        else reject(new Error('已取消复制'));
+      };
+      done.addEventListener('click', () => finish(true));
+      cancel.addEventListener('click', () => finish(false));
+      dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
+      dialog.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+        if (event.key === 'Tab') {
+          const elements = [field, done, cancel];
+          const index = elements.indexOf(document.activeElement);
+          event.preventDefault();
+          elements[(index + (event.shiftKey ? -1 : 1) + elements.length) % elements.length].focus();
+        }
+      });
+      dialog.append(explanation, field, done, cancel);
+      document.body.appendChild(dialog);
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else { dialog.setAttribute('open', ''); dialog.setAttribute('aria-modal', 'true'); }
+      field.focus();
+      field.select();
+    });
+  }
+
   // --- uploads --------------------------------------------------------------
   function pickBrowserFiles({ multiple = true } = {}) {
     return new Promise(resolve => {
@@ -371,21 +418,46 @@
       // multiple as a store-zip streamed by the host.
       const ids = [...new Set(data?.ids || [])].filter(Boolean);
       if (!ids.length) return { canceled: true };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+      let plan;
+      try {
+        const response = await fetch('/export/prepare', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, libraryPath: data?.libraryPath }), signal: controller.signal
+        });
+        if (response.status === 401) {
+          location.replace('/login');
+          throw new Error('登录已过期');
+        }
+        plan = await response.json().catch(() => null);
+        if (!plan?.ok || !/^\/export\?token=/.test(plan.url) || plan.count !== ids.length) {
+          throw new Error(plan?.message || '下载准备失败，请重试');
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') throw new Error('下载准备超时，本次未开始下载，请重试');
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
       const anchor = document.createElement('a');
-      anchor.href = `/export?ids=${ids.map(encodeURIComponent).join(',')}`;
+      anchor.href = plan.url;
       anchor.download = '';
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      return { canceled: false, count: ids.length, missing: 0, downloaded: true };
+      return { canceled: false, count: plan.count, missing: 0, downloaded: true };
     },
     openOther: async () => ({ canceled: true, ...unsupported('网页版无法在主机上打开文件') }),
     shareFiles: async () => unsupported('网页版不支持系统分享'),
     duplicateFiles: data => invoke('items:duplicate', [data]),
     copyFiles: async () => ({ count: 0, missing: 0, message: '网页版不支持复制文件到剪贴板' }),
     copyText: async text => {
-      await navigator.clipboard.writeText(String(text || ''));
-      return true;
+      const value = String(text ?? '');
+      if (typeof navigator.clipboard?.writeText === 'function') {
+        try { await navigator.clipboard.writeText(value); return true; } catch {}
+      }
+      return manualCopy(value);
     },
     logError: entry => send('log:renderer-error', [entry]),
     openExternal: async url => {
@@ -417,6 +489,10 @@
     setPins: data => invoke('pins:set', [data]),
     readText: data => invoke('text:read', [data]),
     saveText: data => invoke('text:save', [data]),
+    putTextDraft: data => invoke('text-draft:put', [data]),
+    getTextDraft: data => invoke('text-draft:get', [data]),
+    listTextDrafts: data => invoke('text-draft:list', [data]),
+    removeTextDraft: data => invoke('text-draft:remove', [data]),
     onStatus: callback => on('hub:status', callback),
     onLibraryChanged: callback => on('hub:library-changed', callback),
     onItemsChanged: callback => on('hub:items-changed', callback),

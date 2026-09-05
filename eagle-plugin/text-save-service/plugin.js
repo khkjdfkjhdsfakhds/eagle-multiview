@@ -1,0 +1,66 @@
+'use strict';
+
+// Node networking avoids browser Origin/CORS and never opens an Eagle item.
+const http = require('node:http');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { createSaveHandler } = require('./save-handler');
+const profile = path.join(os.homedir(), 'Library', 'Application Support', 'eagle-multiview-review-20260905');
+const connectionFile = path.join(profile, 'TXT Bridge', 'connection.json');
+const stagingRoot = path.join(profile, 'Text Backups', 'staging');
+const save = createSaveHandler({ eagle, stagingRoot });
+const sessionId = crypto.randomUUID();
+let stopped = false;
+let active = false;
+
+function request(config, route, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request({
+      host: '127.0.0.1', port: config.port, path: route, method: payload ? 'POST' : 'GET',
+      headers: { authorization: `Bearer ${config.token}`, 'x-eaglemv-session': sessionId, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) }
+    }, res => {
+      const chunks = [];
+      let bytes = 0;
+      res.on('data', chunk => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) req.destroy(new Error('Reply too large')); else chunks.push(chunk); });
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error(`Bridge response ${res.statusCode}`));
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { reject(error); }
+      });
+      res.on('error', reject);
+    });
+    req.setTimeout(2500, () => req.destroy(new Error('Bridge connection timed out')));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+async function tick() {
+  if (stopped || active) return;
+  active = true;
+  try {
+    const config = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
+    if (config.version !== 1 || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535
+      || !/^[a-f0-9]{64}$/.test(config.token || '') || path.resolve(config.stagingRoot || '.') !== stagingRoot) return;
+    const job = await request(config, '/next');
+    if (!job) return;
+    let reply;
+    try { reply = { requestId: job.requestId, leaseId: job.leaseId, result: await save(job) }; }
+    catch (error) { reply = { requestId: job.requestId, leaseId: job.leaseId, error: { message: error.message || 'Eagle TXT 保存失败' } }; }
+    // Retry only a result receipt, never execute the save job twice.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await request(config, '/result', reply); break; }
+      catch { if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250)); }
+    }
+  } catch {
+    // Review not running/disconnected: keep quiet, no modal or window focus.
+  } finally {
+    active = false;
+    if (!stopped) setTimeout(tick, 250);
+  }
+}
+
+eagle.onPluginCreate(() => { tick(); });
+window.addEventListener('beforeunload', () => { stopped = true; });

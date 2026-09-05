@@ -32,7 +32,7 @@ test('a running show cannot outlive its preview', () => {
   // Every timer is cleared before a new one is set, so a stray schedule cannot
   // leave two running at once.
   assert.ok(renderer.includes('if (state.slideshow.timer) clearTimeout(state.slideshow.timer);\n  state.slideshow.timer = setTimeout'));
-  assert.ok(renderer.includes('if (!state.previewId) return renderSlideshow();'), 'a closed preview ends the step');
+  assert.ok(renderer.includes('if (!pane.previewId) return withActivePane(paneId, () => renderSlideshow());'), 'a closed owner preview ends the step');
   assert.ok(renderer.includes('else stopSlideshow();'), 'running out of items ends the show');
 });
 
@@ -40,15 +40,15 @@ test('a refused preview ends the show instead of reprompting forever', () => {
   // openPreview can be refused — an unsaved TXT asks first. Reporting "moved"
   // on a refusal would make the slideshow reopen that confirm every few
   // seconds, so movePreview reports whether the preview actually changed.
-  assert.ok(renderer.includes('return Boolean(next) && state.previewId !== before;'));
-  assert.ok(renderer.includes('  const before = state.previewId;\n  if (next) await openPreview(next.id);'));
-  assert.ok(renderer.includes('    if (advanced && state.previewId) scheduleSlideshowStep();\n    else stopSlideshow();'));
+  assert.ok(renderer.includes('return Boolean(next) && pane.previewId !== before;'));
+  assert.ok(renderer.includes('if (next) await withActivePane(paneId, () => openPreview(next.id));'));
+  assert.match(renderer, /if \(advanced && state.previewId\) scheduleSlideshowStep\(\);\s+else stopSlideshow\(\);/);
 });
 
 test('the end of the list wraps instead of stalling', () => {
   const advance = renderer.slice(renderer.indexOf('async function advanceSlideshow()'), renderer.indexOf('function toggleSlideshow()'));
   assert.ok(advance.includes('if (items.length < 2 || items[0].id === before) return false;'), 'a one-item view has nowhere to wrap to');
-  assert.ok(advance.includes('return openPreview(items[0].id);'));
+  assert.ok(advance.includes('return withActivePane(pane.id, () => openPreview(items[0].id));'));
 });
 
 test('stepping by hand restarts the dwell', () => {

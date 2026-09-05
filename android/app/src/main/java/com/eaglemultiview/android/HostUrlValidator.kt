@@ -79,7 +79,7 @@ object HostUrlValidator {
         if (parsed.rawQuery != null || parsed.rawFragment != null) {
             return HostInputResult.Invalid(HostInputError.QUERY_OR_FRAGMENT_NOT_ALLOWED)
         }
-        if (parsed.port !in -1..65535) {
+        if (parsed.port != -1 && parsed.port !in 1..65535) {
             return HostInputResult.Invalid(HostInputError.INVALID_PORT)
         }
 
@@ -90,8 +90,10 @@ object HostUrlValidator {
         }
         val path = parsed.rawPath.takeUnless { it.isNullOrBlank() } ?: "/"
         return try {
-            val startUri = URI(scheme, null, host, normalizedPort, path, null, null).normalize()
             val originUri = URI(scheme, null, host, normalizedPort, null, null, null)
+            // rawPath already contains escapes. A multi-component URI constructor
+            // would quote its percent signs again and corrupt persisted addresses.
+            val startUri = URI(originUri.toASCIIString() + path).normalize()
             HostInputResult.Valid(
                 HostEndpoint(
                     startUrl = startUri.toASCIIString(),
