@@ -164,6 +164,30 @@
   assert(source.currentView.kind === 'root', 'async completion navigated the source');
   window.eagleMV.query = queryItems;
   hideContextMenu();
+  // Consolidation must keep both menu entries, rather than resolving the
+  // adjacent additions by dropping either the move or the reveal action.
+  window.eagleMV.moveFolder = async () => { writes++; };
+  for (const kind of ['folder', 'sidebar']) {
+    show({ kind, folderId: 'mv-folder', targetFolderId: 'mv-folder', ids: [], paneId: source.id });
+    assert(targets().length === 1 && menu.querySelector('[data-context-action="move-folder-node"]'), 'folder move and pane reveal must coexist');
+    hideContextMenu();
+  }
+  // A manually ordered destination can have loaded metadata beyond its
+  // rendered range. The revealed card must become visible as well as selected.
+  withActivePane(target.id, () => {
+    navigate({ kind: 'root' }, { refreshView: false, query: createQuery() });
+    sortMemory.remember(state.library.path, descriptorKey(target.currentView), 'manual', 'auto', Date.now());
+    target.sort = 'manual';
+    target.manualRenderLimit = 1;
+  });
+  activatePane(source.id);
+  const manualSnapshot = { ...capturePaneReveal({ kind: 'workspace', paneId: source.id }), ids: ['fixture-350'], loadedCount: items.length };
+  assert(await revealInPane(manualSnapshot, target.id), 'manual destination reveal failed');
+  await wait(40);
+  assert(target.sort === 'manual' && target.selected.has('fixture-350'), 'manual order or selection was lost');
+  assert(paneRoot(target.id).querySelector('.item-card[data-id="fixture-350"]'), 'manual destination selected an unrendered card');
+  assert(document.activeElement?.dataset.id === 'fixture-350', 'manual destination failed to focus the revealed card');
+  hideContextMenu();
   assert(writes === 0, 'pane reveal wrote to Eagle or opened an OS window');
 
   renderPaneLayout('leftStack', { refresh: false });

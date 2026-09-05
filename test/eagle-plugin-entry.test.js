@@ -61,7 +61,7 @@ test('entry startup failure stays offline, is visible without private details, a
   assert.equal(f.timerCount, 0, 'A destroyed page cannot be revived by a late create event');
 });
 
-test('plugin entry reconnects after Review bridge port/token rotation without replaying the saved job', async t => {
+test('plugin entry reconnects after candidate bridge port/token rotation without replaying the saved job', async t => {
   const f = await fixture(t);
   f.load(); f.create();
   await waitFor(() => f.bridge.connected);

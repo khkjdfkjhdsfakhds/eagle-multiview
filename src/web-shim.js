@@ -276,6 +276,39 @@
     });
   }
 
+  const thumbnailJobs = new Map();
+  async function thumbnailOperation(data) {
+    const job = { canceled: false, submitted: false };
+    thumbnailJobs.set(data.requestId, job);
+    try {
+    const payload = { operation: data.operation, ids: [...data.ids], libraryPath: data.libraryPath, requestId: data.requestId };
+    if (data.operation === 'refresh') { job.submitted = true; return await invoke('item:thumbnail-operation', [payload]); }
+    let blob;
+    if (data.operation === 'clipboard') {
+      if (!navigator.clipboard?.read) throw new Error('当前浏览器未开放图片剪贴板，请使用“从文件设置”');
+      const entries = await navigator.clipboard.read();
+      for (const entry of entries) {
+        const type = entry.types.find(value => ['image/png', 'image/jpeg', 'image/webp'].includes(value));
+        if (type) { blob = await entry.getType(type); break; }
+      }
+      if (!blob) throw new Error('当前设备剪贴板中没有支持的图片');
+    } else if (data.operation === 'file') {
+      [blob] = await pickBrowserFiles({ multiple: false });
+      if (!blob) return { canceled: true };
+    } else throw new Error('尚无受支持的取消自定义缩略图接口');
+    if (job.canceled) return { canceled: true };
+    if (blob.size > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) throw new Error('请选择 5 MB 以内的 PNG、JPEG 或 WebP 图片');
+    payload.imageData = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('读取所选图片失败'));
+      reader.readAsDataURL(blob);
+    });
+    if (job.canceled) return { canceled: true };
+    job.submitted = true;
+    return await invoke('item:thumbnail-operation', [payload]);
+    } finally { thumbnailJobs.delete(data.requestId); }
+  }
+
   async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
     const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [] };
     for (const file of files) {
@@ -341,7 +374,7 @@
       share: false,
       export: true,
       importLocal: true,
-      customThumbnail: false,
+      customThumbnail: true,
       copyPath: false,
       webAccess: false
     },
@@ -358,7 +391,13 @@
     addComment: data => invoke('item:add-comment', [data]),
     updateComment: data => invoke('item:update-comment', [data]),
     removeComment: data => invoke('item:remove-comment', [data]),
-    setCustomThumbnail: async () => ({ canceled: true, ...unsupported('网页版不支持设置自定义缩略图') }),
+    setCustomThumbnail: data => thumbnailOperation({ ...data, ids: data.ids || [data.id], operation: 'file' }),
+    thumbnailOperation: data => thumbnailOperation(data),
+    cancelThumbnailOperation: data => {
+      const job = thumbnailJobs.get(data.requestId);
+      if (job) job.canceled = true;
+      return job && !job.submitted ? Promise.resolve({ canceled: true }) : invoke('item:thumbnail-cancel', [data]);
+    },
     getTags: () => invoke('hub:tags'),
     getTagGroups: () => invoke('hub:tag-groups'),
     createSmartFolder: data => invoke('smart-folder:create', [data]),
@@ -398,6 +437,12 @@
     createFolder: data => invoke('folder:create', [data]),
     createDocument: data => invoke('document:create', [data]),
     mutateFolder: data => invoke('folder:mutate', [data]),
+    startSiteImport: data => invoke('site:start', [data]),
+    nextSiteImport: data => invoke('site:next', [data]),
+    retrySiteImport: data => invoke('site:retry', [data]),
+    cancelSiteImport: data => invoke('site:cancel', [data]),
+    importSiteSelection: data => invoke('site:import', [data]),
+    moveFolder: data => invoke('folder:move', [data]),
     markFolderUsed: data => send('folder:used', [data]),
     importItems: async (data = {}) => {
       // Dropped/pasted browser File objects arrive via `paths`; without them
@@ -490,6 +535,8 @@
       emit('item:drag-state', { active: false, token });
     },
     getPins: data => invoke('pins:get', [data]),
+    getManualOrders: data => invoke('manual-order:get', [data]),
+    moveManualOrder: data => invoke('manual-order:move', [data]),
     setPins: data => invoke('pins:set', [data]),
     readText: data => invoke('text:read', [data]),
     saveText: data => invoke('text:save', [data]),
@@ -524,11 +571,13 @@
     resetWebAccessKey: async () => unsupported('Web 访问设置只能在桌面版修改'),
     onWebAccessRequest: callback => on('command:web-access', callback),
     onImportRequest: callback => on('command:import', callback),
+    onSiteImportRequest: callback => on('command:site-import', callback),
     onCreateFolderRequest: callback => on('command:create-folder', callback),
     onCreateDocumentRequest: callback => on('command:create-document', callback),
     onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
     onNewWindowRequest: callback => on('command:new-window', callback),
     onPinsChanged: callback => on('pins:changed', callback),
+    onManualOrdersChanged: callback => on('manual-order:changed', callback),
     onTagDataChanged: callback => on('tag-data:changed', callback),
     onFolderUsed: callback => on('folder:used', callback),
     onTextChanged: callback => on('text:changed', callback),

@@ -7,6 +7,7 @@ const os = require('node:os');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { createTextPluginBridge } = require('../lib/text-plugin-bridge');
+const candidateIdentity = require('./candidate-identity.cjs');
 
 const pluginPath = path.resolve(__dirname, '../eagle-plugin/text-save-service');
 const entry = fs.readFileSync(path.join(pluginPath, 'plugin.js'), 'utf8');
@@ -32,7 +33,7 @@ async function waitFor(predicate, message = 'Plugin entry did not become ready')
 
 async function fixture(t, { wrapper = loaderContract, initialPath = true, interceptRequire } = {}) {
   const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'eaglemv-plugin-entry-')));
-  const profile = path.join(root, 'Library', 'Application Support', 'eagle-multiview-review-20260905');
+  const profile = path.join(root, 'Library', 'Application Support', candidateIdentity.profile);
   const stagingRoot = path.join(profile, 'Text Backups', 'staging');
   const directory = path.join(profile, 'TXT Bridge');
   const libraryPath = path.join(root, 'Synthetic.library');

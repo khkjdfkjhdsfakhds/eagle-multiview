@@ -110,7 +110,7 @@ test('capability tables agree between preload and the shim', () => {
   assert.ok(preloadCapabilities.every(match => match[2] === 'true'), '桌面版能力应全为 true');
   // importLocal is true on the web too: imports go through the /upload
   // pipeline (file picker, drops, pastes) instead of host paths.
-  const webTrueAllowed = new Set(['importLocal', 'export']);
+  const webTrueAllowed = new Set(['importLocal', 'export', 'customThumbnail']);
   for (const [, name, value] of shimCapabilities) {
     assert.equal(value === 'true', webTrueAllowed.has(name), `web 能力 ${name} 期望 ${webTrueAllowed.has(name) ? 'true' : 'false'}`);
   }
@@ -119,7 +119,7 @@ test('capability tables agree between preload and the shim', () => {
 
 test('renderer mints media addresses only through mediaURL()', () => {
   assert.ok(!/["'`]eaglemv:\/\/|src="eaglemv:/.test(renderer), 'renderer 不应再出现 eaglemv:// 字符串字面量');
-  assert.ok(renderer.includes("const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id);"));
+  assert.ok(renderer.includes("const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id)"));
   assert.ok(preload.includes('eaglemv://${kind}/'), 'preload 铸造协议地址');
   assert.ok(shim.includes('/media/'), 'shim 铸造同源媒体地址');
 });

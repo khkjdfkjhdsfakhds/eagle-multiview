@@ -2793,3 +2793,24 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .web-access-qr { grid-column: 1 / -1; display: flex; justify-content: center; padding: 8px 0 4px; }
 .web-access-qr svg { width: 168px; height: 168px; border-radius: 8px; }
 .preview-modal.image-gesture { touch-action: none; }
+/* Isolated feature dialogs are scrollable and bounded on narrow displays. */
+.feature-dialog { color: #ddd; background: #292929; border: 1px solid #555; border-radius: 12px; padding: 20px; width: min(580px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; }
+.feature-dialog::backdrop { background: #0008; }
+.feature-dialog h2 { margin: 0 0 16px; font-size: 18px; }
+.feature-dialog p { overflow-wrap: anywhere; }
+.feature-dialog label { display: grid; gap: 8px; }
+.feature-dialog select, .feature-dialog input:not([type=checkbox]) { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; background: #202020; color: #eee; border: 1px solid #555; border-radius: 5px; }
+.feature-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.feature-dialog button { color: #eee; background: #414141; border: 1px solid #555; padding: 8px 14px; border-radius: 5px; white-space: normal; }
+.feature-dialog button:disabled { opacity: .5; }
+.feature-status { color: #b8cde4; font-size: 13px; min-height: 18px; }
+[data-folder-node-drop="allowed"] { outline: 2px solid #488cdd; outline-offset: -2px; }
+[data-folder-node-drop="blocked"] { outline: 2px solid #bc7070; outline-offset: -2px; }
+[data-manual-drop="horizontal-before"] { box-shadow: inset 4px 0 #488cdd !important; }
+[data-manual-drop="horizontal-after"] { box-shadow: inset -4px 0 #488cdd !important; }
+[data-manual-drop="vertical-before"] { box-shadow: inset 0 4px #488cdd !important; }
+[data-manual-drop="vertical-after"] { box-shadow: inset 0 -4px #488cdd !important; }
+.site-asset-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+.site-asset-list .site-asset { display: grid; grid-template-columns: 22px 1fr; gap: 5px; align-items: start; border: 1px solid #555; padding: 8px; min-width: 0; }
+.site-asset img { width: 100%; aspect-ratio: 1; object-fit: contain; grid-column: 2; }
+.site-asset span { grid-column: 1 / -1; overflow-wrap: anywhere; font-size: 12px; }

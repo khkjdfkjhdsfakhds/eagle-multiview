@@ -13,6 +13,7 @@ const { readText, saveText } = require('../lib/text-file-service');
 const { createTextPluginBridge } = require('../lib/text-plugin-bridge');
 const { createSaveHandler } = require('../eagle-plugin/text-save-service/save-handler');
 const { TextDraftStore } = require('../lib/text-draft-store');
+const candidateIdentity = require('../test-support/candidate-identity.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function bridgeClock() {
@@ -51,9 +52,9 @@ function bridgeWithClock(clock, options) {
   return context.module.exports.createTextPluginBridge(options);
 }
 
-async function fixture(t, { bridgeTimeoutMs = 500, clock } = {}) {
+async function fixture(t, { bridgeTimeoutMs = 500, clock, profileName = candidateIdentity.profile } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-text-crosscheck-'));
-  const profile = path.join(root, 'Library', 'Application Support', 'eagle-multiview-review-20260905');
+  const profile = path.join(root, 'Library', 'Application Support', profileName);
   const libraryPath = path.join(root, 'synthetic-store');
   const filePath = path.join(libraryPath, 'images', 'I.info', 'document.txt');
   const backupRoot = path.join(profile, 'Text Backups');
@@ -115,6 +116,34 @@ test('TXT crosscheck: actual plugin polling protocol completes service → loopb
   assert.deepEqual(await fs.readdir(path.join(f.backupRoot, 'staging')), []);
 });
 
+test('TXT candidate identity: the unified Review plugin never connects to the retired Features profile or adopts its draft', async t => {
+  const oldIdentity = { profile: 'eagle-multiview-features-20260905' };
+  assert.notEqual(candidateIdentity.profile, oldIdentity.profile);
+  const f = await fixture(t, { profileName: oldIdentity.profile });
+  const connectionPath = path.join(f.profile, 'TXT Bridge', 'connection.json');
+  const draftPath = path.join(f.profile, 'old-draft-fixture.json');
+  await fs.writeFile(draftPath, '{"content":"old features draft"}');
+  const before = await fs.readFile(connectionPath, 'utf8');
+  const runtime = pluginRuntime(f);
+  await runtime.tick();
+  assert.equal(f.bridge.connected, false);
+  assert.equal(await fs.readFile(connectionPath, 'utf8'), before);
+  assert.equal(await fs.readFile(draftPath, 'utf8'), '{"content":"old features draft"}');
+  assert.equal(await fs.readFile(f.filePath, 'utf8'), 'base');
+});
+
+test('TXT candidate identity: a copied old-profile staging binding is rejected even under the current connection filename', async t => {
+  const f = await fixture(t);
+  const connectionPath = path.join(f.profile, 'TXT Bridge', 'connection.json');
+  const connection = JSON.parse(await fs.readFile(connectionPath, 'utf8'));
+  connection.stagingRoot = path.join(f.root, 'Library', 'Application Support', 'eagle-multiview-features-20260905', 'Text Backups', 'staging');
+  await fs.writeFile(connectionPath, JSON.stringify(connection));
+  const runtime = pluginRuntime(f);
+  await runtime.tick();
+  assert.equal(f.bridge.connected, false);
+  assert.equal(await fs.readFile(f.filePath, 'utf8'), 'base');
+});
+
 test('TXT crosscheck: confirmed content with a missing refresh event still permits the next revision to save', async t => {
   const f = await fixture(t), runtime = pluginRuntime(f);
   f.item.replaceFile = async stage => { await fs.copyFile(stage, f.filePath); await new Promise(() => {}); };
@@ -155,7 +184,8 @@ test('TXT crosscheck: bridge stop/restart clears an unknown lease without replay
 });
 
 for (const written of [false, true]) test(`TXT crosscheck: ${written ? 'lost result receipt' : 'plugin restart before execution'} is reconciled read-only and permits a fresh save`, async t => {
-  const f = await fixture(t, { bridgeTimeoutMs: 30 });
+  const clock = bridgeClock();
+  const f = await fixture(t, { bridgeTimeoutMs: 30, clock });
   await fetch(`${f.baseURL}/next`, { headers: f.headers });
   const base = (await readText(f)).fingerprint, stagedPath = path.join(f.backupRoot, 'staging', 'lost.txt');
   await fs.mkdir(path.dirname(stagedPath), { recursive: true }); await fs.writeFile(stagedPath, 'lost request');
@@ -168,10 +198,11 @@ for (const written of [false, true]) test(`TXT crosscheck: ${written ? 'lost res
     assert.equal((await save(job)).status, 'saved');
     // Simulate all result receipts being lost; the bridge never sees success.
   }
+  clock.advance(30);
   assert.match((await pending).message, /回执超时/);
   await fs.unlink(stagedPath);
   const restarted = pluginRuntime(f);
-  await pause(35); await restarted.tick();
+  clock.advance(35); await restarted.tick();
   assert.equal((await readText(f)).content, written ? 'lost request' : 'base', 'reconciliation never executes an old write');
   const current = (await readText(f)).fingerprint;
   const next = await throughPlugin(f, restarted, 'fresh request', current);

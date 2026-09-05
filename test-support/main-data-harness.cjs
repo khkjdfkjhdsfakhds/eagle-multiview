@@ -13,7 +13,7 @@ function loadMain(root, { dialog = {} } = {}) {
   const electron = { app, dialog, protocol: { registerSchemesAsPrivileged() {} }, BrowserWindow: { fromWebContents: () => null }, ipcMain: { on() {}, handle() {} } };
   const realRequire = createRequire(path.join(ROOT, 'main.js'));
   const context = { require: name => name === 'electron' ? electron : realRequire(name), module: { exports: {} }, __dirname: ROOT,
-    process: { on() {}, platform: 'darwin', pid: process.pid, env: {} }, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, structuredClone, URL, Buffer };
+    process: { on() {}, platform: 'darwin', pid: process.pid, env: {} }, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, structuredClone, URL, Buffer, AbortController };
   const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
     'setWebServer: value => { webServer = value; }, setWaitForImportedFile: value => { waitForImportedFile = value; }, ' +
     'addFakeWindow: value => windows.add(value), getQuitting: () => quitting };';

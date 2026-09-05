@@ -117,7 +117,8 @@ window.addEventListener('storage', event => {
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
-const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id);
+let thumbnailRevision = 0;
+const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id) + (kind === 'thumb' && thumbnailRevision ? `?v=${thumbnailRevision}` : '');
 // Host-bound entry points (Finder, native drag, host dialogs…) check this
 // table; the web shim serves the same keys with false so they hide cleanly.
 const caps = window.eagleMV.capabilities || {};
@@ -191,6 +192,8 @@ const state = {
   scrollTop: 0,
   query: createQuery(),
   localPins: {},
+  localOrders: {},
+  manualOrdersReady: false,
   expandedFolders: new Set(),
   availableTags: [],
   tagGroups: [],
@@ -1265,9 +1268,99 @@ function compareItemsForView(a, b) {
     const right = pinTimestamp(b);
     if (left && !right) return -1;
     if (!left && right) return 1;
-    if (left !== right) return right - left;
+    if (left !== right && state.sort !== 'manual') return right - left;
   }
+  if (state.sort === 'manual') return window.EagleMVManualOrder.compare(manualOrder(state.currentView, 'items'), a.id, b.id);
   return compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed });
+}
+
+function manualScope(view) { return view.id ? `${view.kind}:${view.id}` : view.kind; }
+function supportsManual(view) { return ['root','folder','all','unfiled','untagged','smart'].includes(view.kind); }
+function manualOrder(view, kind) { return state.localOrders[window.EagleMVManualOrder.key(manualScope(view),kind)]; }
+function acceptManualOrders(payload) {
+  if (payload.libraryPath !== state.library?.path) return;
+  const changedKey=window.EagleMVManualOrder.key(payload.scope,'items');
+  const adopt=payload.kind==='items' && (payload.orders?.[changedKey]?.revision || 0) > (state.localOrders[changedKey]?.revision || 0);
+  for (const [key, order] of Object.entries(payload.orders || {})) {
+    if ((state.localOrders[key]?.revision || 0) <= order.revision) state.localOrders[key] = order;
+  }
+  for (const pane of state.panes) withActivePane(pane.id, () => {
+    if (adopt && manualScope(pane.currentView)===payload.scope && pane.sort===payload.startSort) {
+      pane.sort='manual';pane.sortDir='auto';
+      sortMemory.remember(state.library.path,descriptorKey(pane.currentView),'manual','auto',Date.now());
+    }
+    renderSortControls();renderGrid({preserveScroll:true});
+  });
+  if (adopt) saveSessionState();
+  renderFolderTree();
+}
+let manualDragAttached = false;
+function attachManualDrag() {
+  if (manualDragAttached) return;
+  manualDragAttached = true;
+  window.EagleMVManualOrder.attach({
+    context: (node, snapshot = false) => {
+      const paneId = node.closest('.content-pane')?.dataset.paneId || state.activePaneId;
+      const pane = paneById(paneId); if (!pane) return null;
+      return withActivePane(paneId, () => {
+        const kind = node.matches('.item-card') ? 'items' : 'folders';
+        const id = kind === 'items' ? node.dataset.id : node.dataset.folderNodeId;
+        let view = pane.currentView, parentId = view.kind === 'folder' ? view.id : null;
+        let known = snapshot ? (kind === 'items' ? sortedItems() : visibleChildFolders()) : [];
+        if (node.matches('.folder-row')) {
+          const trail = findFolderPath(state.library?.folders, id);
+          if (!trail.length) return null;
+          parentId = trail.at(-2)?.id || null;
+          view = parentId ? {kind:'folder',id:parentId} : {kind:'root'};
+          if (snapshot) known = window.EagleMVManualOrder.sort(parentId ? trail.at(-2).children : state.library.folders, manualOrder(view,'folders'));
+        }
+        const order = manualOrder(view,kind);
+        return {id,kind,parentId,paneId,scope:manualScope(view),libraryPath:state.library?.path,
+          enabled:supportsManual(view),
+          ready:state.manualOrdersReady && (kind==='folders' || (!pane.loading && !pane.errorMessage)),
+          knownIds:known.map(item=>item.id),revision:order?.revision || 0,
+          sourceView:descriptorKey(pane.currentView),refreshToken:pane.refreshToken,startSort:pane.sort,
+          windowId:state.windowId,pinned:kind==='items' && itemIsPinned(itemById(id) || {})};
+      });
+    },
+    begin: (node,ctx) => {
+      if (!activatePane(ctx.paneId) || !confirmDiscardChanges()) return [];
+      if (ctx.kind === 'folders') return state.connected ? [ctx.id] : [];
+      if (!state.selected.has(ctx.id) && !selectItem(ctx.id)) return [];
+      const ids=ctx.knownIds.filter(id=>state.selected.has(id));
+      ctx.mixedPinned=ids.some(id=>itemIsPinned(itemById(id))!==ctx.pinned);
+      state.draggingItemIds=ids;state.dragSourcePaneId=ctx.paneId;
+      state.internalDrag={active:true,ids,sourceFolderId:ctx.parentId,sourcePaneId:ctx.paneId,sourceWindowId:state.windowId,libraryPath:ctx.libraryPath};
+      return ids;
+    },
+    submit: async (source,target,position) => {
+      if (source.libraryPath!==state.library?.path) throw new Error('资料库已切换，请重新拖动');
+      if (source.windowId===state.windowId) {
+        const pane=paneById(source.paneId);
+        if (!pane || descriptorKey(pane.currentView)!==source.sourceView || (source.kind==='items' && source.ids.some(id=>!pane.itemMap.has(id)))) throw new Error('来源视图已变化，请重新拖动');
+      }
+      const knownIds=[...new Set([...source.knownIds,...target.knownIds])];
+      const result=await window.eagleMV.moveManualOrder({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,ids:source.ids,
+        anchorId:target.id,position,knownIds,revision:source.revision,rebase:source.kind==='items' && source.startSort!=='manual',startSort:source.startSort});
+      acceptManualOrders({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,startSort:source.startSort,orders:result.orders});
+      clearDragUI();
+      if (result.conflict) throw new Error('其他窗口已调整顺序，已同步最新顺序，请重新拖动');
+      if (!result.ok) throw new Error('本地排序未保存，请重试');
+      toast('顺序已保存到 MultiView，不改动 Eagle');
+    },notify:toast,finish:clearDragUI,
+    nativeSource: () => state.internalDrag?.active ? state.internalDrag.orderContext : null,
+    nativeStart: hasCapability('nativeDrag') ? source => {
+      state.internalDrag.orderContext=source;
+      window.eagleMV.startDrag({ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+        sourceWindowId:source.windowId,libraryPath:source.libraryPath,orderContext:source});
+    } : null,
+    forward: source => {
+      if (source.kind!=='items') return;
+      if (state.internalDrag?.orderContext===source) return;
+      state.internalDrag={active:true,ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+        sourceWindowId:source.windowId,libraryPath:source.libraryPath};
+    }
+  });
 }
 
 function sortedItems() {
@@ -1309,6 +1402,7 @@ function setPaneViewMode(mode, paneId = state.activePaneId) {
 
 const sortOptionLabels = {
   default: 'Eagle 顺序',
+  manual: '自定义顺序',
   name: '名称',
   added: '添加日期',
   newest: '最近修改',
@@ -1323,15 +1417,17 @@ function renderSortControls() {
   renderViewModeControls();
   const sortKey = state.sort || 'default';
   const select = $('#sortSelect');
-  if (select) select.value = sortKey;
+  if (select) select.value = sortKey==='manual' ? 'default' : sortKey;
   const label = $('#sortSelectLabel');
   if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
+  if ($('#sortSelectButton')) $('#sortSelectButton').title = '可直接拖动调整本地顺序；文件夹中央仍可移入';
   const popover = $('#sortPopover');
   if (popover) {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
       btn.classList.toggle('active', btn.dataset.sort === sortKey);
+      if (btn.dataset.sort === 'manual') btn.disabled = !supportsManual(state.currentView) || !state.manualOrdersReady;
     }
-    const sortable = Boolean(state.sort) && state.sort !== 'default' && state.sort !== 'random';
+    const sortable = Boolean(state.sort) && !['default','random','manual'].includes(state.sort);
     const currentDir = effectiveSortDir(state.sort, state.sortDir);
     for (const btn of popover.querySelectorAll('[data-sort-dir]')) {
       btn.disabled = !sortable;
@@ -1352,6 +1448,7 @@ function commitSortChange() {
   sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
   renderSortControls();
   renderGrid({ preserveScroll: true });
+  renderFolderTree();
   saveSessionState();
 }
 
@@ -1395,9 +1492,10 @@ function currentFolder() {
 function visibleChildFolders() {
   if (!state.library) return [];
   if (state.currentView.kind === 'recent') return state.recentFolders || [];
-  const folders = state.currentView.kind === 'root'
+  let folders = state.currentView.kind === 'root'
     ? (state.library.folders || [])
     : (currentFolder()?.children || []);
+  folders = window.EagleMVManualOrder.sort(folders,manualOrder(state.currentView,'folders'));
   const keyword = state.query.search.trim().toLocaleLowerCase('zh-CN');
   return keyword ? folders.filter(folder => folder.name.toLocaleLowerCase('zh-CN').includes(keyword)) : folders;
 }
@@ -1992,7 +2090,7 @@ function moveCardFocus(key) {
 function folderCardMarkup(folder) {
   const childCount = (folder.children || []).length;
   const directCount = Number(folder.imageCount) || 0;
-  return `<article class="folder-card ${state.selectedFolderCard === folder.id ? 'selected' : ''}" data-open-folder="${escapeHTML(folder.id)}" tabindex="0">
+  return `<article class="folder-card ${state.selectedFolderCard === folder.id ? 'selected' : ''}" data-open-folder="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" tabindex="0">
     <div class="folder-thumbnail">
       <span class="folder-sheet folder-sheet-back" aria-hidden="true"></span>
       <span class="folder-sheet folder-sheet-middle" aria-hidden="true"></span>
@@ -2155,7 +2253,11 @@ function renderGrid({ preserveScroll = true } = {}) {
     if (updateSharedFooter) updateScrollUI();
     return;
   }
-  const items = sortedItems();
+  const orderedItems = sortedItems();
+  // Load complete metadata for a global order, but keep thumbnail DOM work
+  // scroll-driven in large libraries instead of creating tens of thousands
+  // of image elements as soon as the background sort backfill finishes.
+  const items = state.sort === 'manual' ? orderedItems.slice(0, activePane()?.manualRenderLimit || SORT_FETCH_CAP) : orderedItems;
   const folders = visibleChildFolders();
   const emptyState = $('#emptyState');
   emptyState.style.display = '';
@@ -2314,19 +2416,23 @@ function folderLockBadge(folder) {
 function renderFolderTree() {
   if (!state.library) return;
   const tree = $('#folderTree');
-  const folderHTML = folders => (folders || []).map(folder => {
+  const folderHTML = (folders, parentId = null) => {
+    const view=parentId ? {kind:'folder',id:parentId} : {kind:'root'};
+    const ordered=window.EagleMVManualOrder.sort(folders || [],manualOrder(view,'folders'));
+    return ordered.map(folder => {
     const children = folder.children || [];
     const expanded = state.expandedFolders.has(folder.id);
     const count = Number.isFinite(folder.descendantImageCount) ? folder.descendantImageCount : folder.imageCount;
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
         ${Number.isFinite(count) ? `<span class="folder-count">${count}</span>` : ''}
       </button>
-      ${children.length && expanded ? `<div class="folder-children">${folderHTML(children)}</div>` : ''}
+      ${children.length && expanded ? `<div class="folder-children">${folderHTML(children,folder.id)}</div>` : ''}
     </div>`;
-  }).join('');
+    }).join('');
+  };
   const smartFolderHTML = folders => (folders || []).map(folder => {
     const children = folder.children || [];
     const expanded = state.expandedFolders.has(folder.id);
@@ -2343,10 +2449,10 @@ function renderFolderTree() {
   const quickHTML = quickAccessEntries().map(folder => folder.quickType === 'smart'
     ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
-    : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
+    : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${Number.isFinite(folder.descendantImageCount) ? `<span class="folder-count">${folder.descendantImageCount}</span>` : ''}</button>`).join('');
   tree.innerHTML = `
-    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
+    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
     <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
     <button class="folder-row ${state.currentView.kind === 'unfiled' ? 'active' : ''}" data-special="unfiled"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-unfiled.svg')}</span><span class="folder-name">未分类</span></button>
     <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未加标签</span></button>
@@ -2377,6 +2483,8 @@ function handleFolderTargetDragOver(event, targetElement) {
 }
 
 function attachFolderDragTargets() {
+  attachManualDrag();
+  selectedFeatureUI().attachFolderDrag?.();
   for (const row of document.querySelectorAll('[data-folder-id]')) {
     row.addEventListener('dragover', event => {
       handleFolderTargetDragOver(event, row);
@@ -2555,7 +2663,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         const scroller = $('#gridScroller');
         const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
         const sortBackfillActive = state.sort !== 'default' && state.hasMore;
-        const continueBackfill = sortBackfillActive && state.items.length < SORT_FETCH_CAP;
+        const continueBackfill = sortBackfillActive && (state.sort === 'manual' || state.items.length < SORT_FETCH_CAP);
         const restoreTarget = pane.restoreScroll;
         const continueRestore = Boolean(restoreTarget) && state.hasMore && state.items.length < restoreTarget.count;
         if (needsViewportFill || continueBackfill || continueRestore) {
@@ -2615,6 +2723,13 @@ function selectItem(id, additive = false, range = false) {
   } else {
     state.selected.clear();
     state.selected.add(id);
+  }
+  if (state.sort === 'manual') {
+    const index=sortedItems().findIndex(item=>item.id===id);
+    if (index >= (activePane().manualRenderLimit || SORT_FETCH_CAP)) {
+      activePane().manualRenderLimit=index+1;
+      renderGrid({preserveScroll:true});
+    }
   }
   updateCardSelectionStyles();
   renderInspector();
@@ -2914,6 +3029,7 @@ async function removeComment(commentId) {
 }
 
 async function setCustomThumbnail() {
+  if (window.eagleMV.thumbnailOperation) return thumbnailFeatureUI().run('file');
   const id = [...state.selected][0];
   if (!id || !state.connected) return;
   const libraryPath = state.library?.path;
@@ -3320,7 +3436,7 @@ function closeDuplicateDialog(choice = null) {
 }
 
 function blockingSurfaceOpen() {
-  return Boolean(document.querySelector('.web-copy-dialog[open]')) ||
+  return Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) ||
     ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
     .some(selector => !$(selector).classList.contains('hidden'));
 }
@@ -4324,6 +4440,7 @@ function normalizeView(view) {
 
 function applyView(view) {
   view = normalizeView(view);
+  if (descriptorKey(view)!==descriptorKey(state.currentView)) activePane().manualRenderLimit=SORT_FETCH_CAP;
   state.currentView = view;
   if (view.kind === 'folder') {
     const folder = findFolder(state.library?.folders, view.id);
@@ -4906,6 +5023,10 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
     // Phones have no menu bar and no right-click: this row is the touch
     // entry point for imports (desktop keeps it too — same pipeline).
     ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', shortcut: '⌘ ⇧ O', action: 'import', disabled: !state.connected || state.importing })] : []),
+    ...(window.eagleMV.startSiteImport ? [contextMenuRow({ icon: 'import', label: '站点导入', submenu: [
+      contextMenuRow({ label: 'ArtStation 作品挑选…', action: 'site-import', disabled: !state.connected }),
+      contextMenuRow({ label: 'Pinterest 导入说明', action: 'pinterest-help' })
+    ].join('') })] : []),
     contextMenuRow({ icon: 'window', label: '新建窗口', shortcut: '⌘ ⌥ N', action: 'new-window' })
   ].join('');
 }
@@ -5007,7 +5128,16 @@ async function revealInPane(context, targetPaneId) {
   if (context.ids.length) {
     const available = new Set(target.items.map(item => item.id));
     target.selected = new Set(context.ids.filter(id => available.has(id)));
-    withActivePane(target.id, () => updateCardSelectionStyles());
+    withActivePane(target.id, () => {
+      if (target.sort === 'manual') {
+        const selectedEnd = sortedItems().reduce((end, item, index) => target.selected.has(item.id) ? index + 1 : end, 0);
+        if (selectedEnd > (target.manualRenderLimit || SORT_FETCH_CAP)) {
+          target.manualRenderLimit = selectedEnd;
+          renderGrid({ preserveScroll: true });
+        }
+      }
+      updateCardSelectionStyles();
+    });
     if (state.activePaneId === target.id) renderInspector();
     if (target.selected.size !== context.ids.length) toast('部分素材已变化或不在当前结果中，请刷新来源窗格后重试');
   }
@@ -5090,6 +5220,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'sidebar') {
     return [
       revealInPaneMenuMarkup(data),
+      ...(data.targetFolderId && window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.targetFolderId } })] : []),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : [])
@@ -5098,6 +5229,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'folder') {
     return [
       revealInPaneMenuMarkup(data),
+      ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.folderId } })] : []),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
       contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } })
@@ -5123,6 +5255,12 @@ function contextMenuMarkup(data) {
   const moveEntries = currentFolder ? contextFolderPicker('move-folder') : '';
   const ratingEntries = [0, 1, 2, 3, 4, 5].map(rating => contextMenuRow({ icon: 'more', label: rating ? `${'★'.repeat(rating)}（${rating} 星）` : '未评分', action: 'rating', payload: { rating } })).join('');
   const moreEntries = [
+    ...(window.eagleMV.thumbnailOperation ? [contextMenuRow({ icon: 'refresh', label: '缩略图', submenu: [
+      contextMenuRow({ icon: 'refresh', label: '刷新缩略图', action: 'thumbnail-refresh' }),
+      contextMenuRow({ icon: 'image', label: '从文件设置…', action: 'thumbnail-file' }),
+      contextMenuRow({ icon: 'copy', label: '从剪贴板设置…', action: 'thumbnail-clipboard' }),
+      contextMenuRow({ label: '取消自定义：接口尚不支持', action: 'thumbnail-clear' })
+    ].join('') })] : []),
     contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename', disabled: !one }),
     contextMenuRow({ icon: 'copy', label: one ? '复制素材名称' : `复制 ${data.ids.length} 个素材名称`, action: 'copy-name' }),
     contextMenuRow({ icon: 'tag', label: '添加标签', submenu: contextTagPicker('add-tag', '搜索或输入标签…') }),
@@ -5288,6 +5426,9 @@ async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
   if (action === 'reveal-in-pane') return revealInPane(data.paneReveal, payload.paneId);
+  if (action === 'site-import') return siteFeatureUI().open();
+  if (action === 'pinterest-help') return window.eagleMV.openExternal('https://docs-cn.eagle.cool/article/828-import-from-pinterest');
+  if (action === 'move-folder-node') return selectedFeatureUI().moveFolder(payload.folderId);
   if (action === 'save-smart-folder') return saveCurrentViewAsSmartFolder();
   if (action === 'rename-smart-folder') return renameSmartFolder(payload.id);
   if (action === 'remove-smart-folder') return removeSmartFolder(payload.id);
@@ -5310,6 +5451,7 @@ async function executeContextAction(action, payload) {
   if (action === 'select-all') { selectAllItems(); return; }
   if (action === 'clear-selection') { clearSelection(); return; }
   const ids = data.ids || [];
+  if (action.startsWith('thumbnail-')) return thumbnailFeatureUI().run(action.slice('thumbnail-'.length), ids);
   const firstId = ids[0];
   if (action === 'open-window') return openSelectionInNewWindow(ids);
   if (action === 'open-default') return openWithDefault(firstId);
@@ -5627,6 +5769,45 @@ async function renameItem(item) {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
+}
+
+let selectedFeatureController;
+let siteFeatureController;
+function siteFeatureUI() {
+  siteFeatureController ||= window.createSiteImportUI({
+    api: window.eagleMV,
+    context: () => ({ libraryPath: state.library?.path, folders: state.library?.folders || [],
+      folderId: state.currentView.kind === 'folder' ? state.currentView.id : null }),
+    canStart: () => state.connected && confirmDiscardChanges(),
+    refresh: () => refreshAllPanes({ reset: true, preserveScroll: true }),
+    notify: toast
+  });
+  return siteFeatureController;
+}
+
+let thumbnailFeatureController;
+function thumbnailFeatureUI() {
+  thumbnailFeatureController ||= window.createThumbnailUI({
+    api: window.eagleMV,
+    context: () => ({ libraryPath: state.library?.path, paneId: state.activePaneId, ids: [...state.selected] }),
+    canStart: () => state.connected && confirmDiscardChanges(),
+    refresh: () => refreshAllPanes({ reset: true, preserveScroll: true }),
+    notify: toast
+  });
+  return thumbnailFeatureController;
+}
+
+function selectedFeatureUI() {
+  selectedFeatureController ||= window.createSelectedFeatureUI({
+    api: window.eagleMV,
+    context: () => ({ libraryPath: state.library?.path, folders: state.library?.folders || [],
+      folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
+      paneId: state.activePaneId, ids: [...state.selected] }),
+    canStart: () => state.connected && confirmDiscardChanges(),
+    refresh: () => refreshAllPanes({ reset: true, preserveScroll: true }),
+    notify: toast
+  });
+  return selectedFeatureController;
 }
 
 async function renameFolderById(folderId) {
@@ -6565,6 +6746,7 @@ function bindPaneEvents(paneId) {
   });
   query('#sortSelect').addEventListener('change', event => {
     activatePane(paneId);
+    if (event.target.value==='manual' && (!supportsManual(state.currentView) || !state.manualOrdersReady)) {renderSortControls();return;}
     state.sort = event.target.value;
     state.sortDir = 'auto';
     // Picking 随机 deals a new order; re-picking it from the dropdown fires no
@@ -6847,6 +7029,10 @@ function bindPaneEvents(paneId) {
     if (!pane) return;
     pane.scrollTop = element.scrollTop;
     if (state.activePaneId === paneId) updateScrollUI();
+    if (pane.sort==='manual' && pane.items.length>(pane.manualRenderLimit || SORT_FETCH_CAP) && element.scrollTop+element.clientHeight>element.scrollHeight-500) {
+      pane.manualRenderLimit=(pane.manualRenderLimit || SORT_FETCH_CAP)+state.pageSize;
+      withActivePane(paneId,()=>renderGrid({preserveScroll:true}));
+    }
     if (!pane.loading && pane.hasMore && element.scrollTop + element.clientHeight > element.scrollHeight - 500) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#scrollTopButton').addEventListener('click', () => {
@@ -7679,7 +7865,7 @@ function bindEvents() {
     // event.target is the most reliable source; activeElement is retained for
     // synthetic/app-menu events. inspectorEditing is a final safety net if a
     // browser or future render unexpectedly blurs the editor between keys.
-    if (document.querySelector('.web-copy-dialog[open]')) return;
+    if (document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) return;
     const editable = isEditableElement(event.target) || isEditableElement() || state.inspectorEditing;
     const previewOpen = !$('#previewModal').classList.contains('hidden');
     if (event.key === 'Escape') {
@@ -8103,6 +8289,7 @@ function bindHubEvents() {
   });
   window.eagleMV.onRenameRequest(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000)));
   window.eagleMV.onImportRequest(() => importFiles());
+  window.eagleMV.onSiteImportRequest?.(() => siteFeatureUI().open());
   window.eagleMV.onWebAccessRequest(() => openWebAccessDialog());
   window.eagleMV.onCreateFolderRequest(() => {
     const paneId = state.activePaneId;
@@ -8128,6 +8315,7 @@ function bindHubEvents() {
     for (const pane of state.panes) withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
     queueChangedInspectorRender(false);
   });
+  window.eagleMV.onManualOrdersChanged?.(acceptManualOrders);
   window.eagleMV.onTagDataChanged(async payload => {
     if (payload?.libraryPath !== state.library?.path) return;
     await loadLibraryExtras();
@@ -8177,6 +8365,7 @@ function bindHubEvents() {
   window.eagleMV.onLibraryChanged(payload => scheduleLibraryChange(payload));
   window.eagleMV.onQueryInvalidated(payload => {
     if (payload?.libraryPath && payload.libraryPath !== state.library?.path) return;
+    if (payload?.thumbnailRevision) thumbnailRevision = payload.thumbnailRevision;
     scheduleRefresh();
   });
 }
@@ -8411,15 +8600,22 @@ async function applyLibraryChange(payload) {
 async function loadLibraryExtras() {
   const libraryPath = state.library?.path;
   if (!libraryPath) return;
-  const [pins, tags, tagGroups, recentFolders, tagColors] = await Promise.all([
+  state.manualOrdersReady = false;
+  if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;}
+  const [pins, tags, tagGroups, recentFolders, tagColors, orders] = await Promise.all([
     window.eagleMV.getPins({ libraryPath }).catch(() => ({})),
     window.eagleMV.getTags().catch(() => []),
     window.eagleMV.getTagGroups().catch(() => []),
     window.eagleMV.getRecentFolders().catch(() => []),
-    window.eagleMV.getTagColors({ libraryPath }).catch(() => ({}))
+    window.eagleMV.getTagColors({ libraryPath }).catch(() => ({})),
+    window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null
   ]);
   if (state.library?.path !== libraryPath) return;
   state.localPins = pins || {};
+  for (const [key,order] of Object.entries(orders || {})) {
+    if ((state.localOrders[key]?.revision || 0) <= order.revision) state.localOrders[key]=order;
+  }
+  state.manualOrdersReady = Boolean(orders);
   state.availableTags = tags || [];
   state.tagGroups = tagGroups || [];
   state.recentFolders = recentFolders || [];

@@ -8,8 +8,13 @@ const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
+const { buildIdentity } = require('./lib/app-identity');
+const { ThumbnailOperations } = require('./lib/thumbnail-operations');
+const { createSiteImportService } = require('./lib/site-import');
+const { SiteImportSessions } = require('./lib/site-import-session');
 const { DataHub } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
+const { ManualOrderStore } = require('./lib/manual-order-store');
 const { SupplementalItemStore } = require('./lib/supplemental-item-store');
 const { readText, saveText } = require('./lib/text-file-service');
 const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
@@ -36,10 +41,10 @@ const {
 } = require('./lib/new-file-service');
 
 // Review is a genuinely separate app/profile, not just a renamed .app folder.
-const reviewBuild = String(app.getVersion?.() || '').includes('-review.');
-if (reviewBuild) {
-  app.setName('Eagle MultiView Review');
-  app.setPath('userData', path.join(app.getPath('appData'), 'eagle-multiview-review-20260905'));
+const identity = buildIdentity(app.getVersion?.());
+if (identity.profile) {
+  app.setName(identity.name);
+  app.setPath('userData', path.join(app.getPath('appData'), identity.profile));
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -62,6 +67,7 @@ const dragCleanupTimers = new Map();
 const trashScans = createTrashScanService({ fs: fsp });
 let quitting = false;
 let pinStore;
+let manualOrderStore;
 let supplementalItemStore;
 let tagColorState;
 let tagColorLoading = null;
@@ -296,7 +302,7 @@ function webAccessFile() {
 
 async function loadWebAccessState() {
   if (webAccessState) return webAccessState;
-  webAccessState = { version: 1, enabled: false, port: reviewBuild ? 41601 : 41600, key: null, requireKey: true };
+  webAccessState = { version: 1, enabled: false, port: identity.webPort, key: null, requireKey: true };
   try {
     const parsed = JSON.parse(await fsp.readFile(webAccessFile(), 'utf8'));
     if (parsed?.version === 1) {
@@ -445,7 +451,7 @@ function createWindow(initialState = null) {
     height: 900,
     minWidth: 980,
     minHeight: 640,
-    title: reviewBuild ? 'Eagle MultiView Review' : 'Eagle MultiView',
+    title: identity.name,
     backgroundColor: '#111317',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 15 },
@@ -490,7 +496,7 @@ function createWindow(initialState = null) {
 function setupMenu() {
   const template = [
     {
-      label: reviewBuild ? 'Eagle MultiView Review' : 'Eagle MultiView',
+      label: identity.name,
       submenu: [
         { role: 'about' },
         { type: 'separator' },
@@ -522,6 +528,7 @@ function setupMenu() {
           click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
         },
         { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
+        { label: 'ArtStation 站点导入…', click: (_item, window) => window?.webContents.send('command:site-import') },
         { type: 'separator' },
         { role: 'close', label: '关闭窗口' }
       ]
@@ -801,6 +808,7 @@ async function installProtocol() {
 // the shell, or window chrome; the web shim implements them locally or hides
 // the entry points via its capabilities table, and the web RPC rejects them.
 const HOST_ONLY_CHANNELS = new Set([
+  'item:thumbnail-file', 'item:thumbnail-clipboard',
   'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard',
   'item:show-in-finder', 'item:open-default', 'items:export', 'items:open-other',
   'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
@@ -829,6 +837,100 @@ async function invokeWebRPC(method, args, sender) {
 }
 
 function setupIPC() {
+  const discovery = createSiteImportService();
+  const siteSessions = new SiteImportSessions({
+    discover: options => discovery.discover(options),
+    ensureLibraryPath: value => hub.ensureLibraryPath(value),
+    ensureDestination: async ({ libraryPath, folderId }) => {
+      await hub.ensureLibraryPath(libraryPath);
+      if (folderId) {
+        const contains = folders => (folders || []).some(folder => folder.id === folderId || contains(folder.children));
+        if (!contains(await client.folderTree())) throw new Error('目标文件夹已不存在，请重新识别并选择目标');
+      }
+      await hub.ensureLibraryPath(libraryPath);
+    },
+    addAsset: ({ asset, folderId }) => client.addSiteAsset(asset, folderId),
+    refresh: async ({ libraryPath }) => {
+      await hub.ensureLibraryPath(libraryPath);
+      await hub.connect({ notify: true });
+      broadcast('hub:query-invalidated', { reason: 'site-import', libraryPath });
+    }
+  });
+  handleRPC('site:start', (event, payload) => siteSessions.start({ ...payload, owner: event.sender.id }));
+  handleRPC('site:next', (event, payload) => siteSessions.next({ ...payload, owner: event.sender.id }));
+  handleRPC('site:retry', (event, payload) => siteSessions.retry({ ...payload, owner: event.sender.id }));
+  handleRPC('site:cancel', (event, payload) => siteSessions.cancel({ ...payload, owner: event.sender.id }));
+  handleRPC('site:import', (event, payload) => siteSessions.importSelected({ ...payload, owner: event.sender.id }));
+  const thumbnailOperations = new ThumbnailOperations({
+    client, ensureLibraryPath: value => hub.ensureLibraryPath(value),
+    enqueue: (id, operation) => hub.enqueue(id, operation),
+    invalidateThumbnail: id => thumbnailCache.delete(id),
+    publishItemMutation: (item, context) => hub.publishItemMutation(item, context)
+  });
+  const thumbnailTasks = new Map();
+  const thumbnailTask = handler => async (event, payload = {}) => {
+    if (payload.requestId !== undefined && (typeof payload.requestId !== 'string' || !payload.requestId || payload.requestId.length > 200)) throw new Error('缩略图任务身份无效');
+    const key = payload.requestId ? `${event.sender.id}:${payload.requestId}` : Symbol();
+    if (thumbnailTasks.has(key) || thumbnailTasks.size >= 30) throw new Error('缩略图任务正在执行，请等待后再操作');
+    const controller = new AbortController();
+    thumbnailTasks.set(key, controller);
+    try { return await handler(event, { ...payload, signal: controller.signal }); }
+    finally { thumbnailTasks.delete(key); }
+  };
+  handleRPC('item:thumbnail-cancel', (event, { requestId } = {}) => {
+    const controller = thumbnailTasks.get(`${event.sender.id}:${requestId}`);
+    controller?.abort();
+    return { canceled: Boolean(controller) };
+  });
+  const runThumbnails = async (event, payload) => {
+    const result = await thumbnailOperations.run({ ...payload, origin: event.sender.id });
+    const invalidate = () => {
+      if (EagleClient.normalizeLibraryPath(hub.library?.path) !== EagleClient.normalizeLibraryPath(payload.libraryPath)) return;
+      for (const outcome of result.outcomes) thumbnailCache.delete(outcome.id);
+      broadcast('hub:query-invalidated', { reason: 'thumbnail', libraryPath: payload.libraryPath, thumbnailRevision: Date.now() });
+    };
+    invalidate();
+    if (result.counts.accepted || result.counts.unknown) {
+      // The HTTP refresh receipt is not a completion event. Repaint later,
+      // without replaying the write or claiming generation has completed.
+      for (const delay of [1800, 6000, 12000]) setTimeout(invalidate, delay).unref?.();
+    }
+    return result;
+  };
+  const runThumbnailImage = async (event, payload, image) => {
+    if (!image || image.isEmpty()) throw new Error('请选择有效图片，或先复制图片到当前设备剪贴板');
+    const size = image.getSize();
+    if (size.width * size.height > 32000000) throw new Error('缩略图图片超过 3200 万像素');
+    const bytes = image.toPNG();
+    if (bytes.length > 5 * 1024 * 1024) throw new Error('缩略图图片超过 5 MB，请选择较小图片');
+    await hub.ensureLibraryPath(payload.libraryPath);
+    const root = path.join(app.getPath('userData'), 'temp', 'thumbnails');
+    await fsp.mkdir(root, { recursive: true });
+    const dir = await fsp.mkdtemp(path.join(root, 'image-'));
+    const filePath = path.join(dir, 'thumbnail.png');
+    await fsp.writeFile(filePath, bytes, { mode: 0o600 });
+    try { return await runThumbnails(event, { ...payload, filePath }); }
+    finally { setTimeout(() => fsp.rm(dir, { recursive: true, force: true }).catch(() => {}), 60000).unref?.(); }
+  };
+  handleRPC('item:thumbnail-operation', thumbnailTask((event, payload) => {
+    const { operation, ids, libraryPath, imageData, signal } = payload;
+    if (operation === 'refresh') return runThumbnails(event, { operation, ids, libraryPath, signal });
+    if (!['file', 'clipboard'].includes(operation) || typeof imageData !== 'string'
+      || imageData.length > 7 * 1024 * 1024 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(imageData)) {
+      throw new Error('此操作需要当前设备明确选择的图片；取消自定义尚无受支持接口');
+    }
+    return runThumbnailImage(event, { operation, ids, libraryPath, signal }, nativeImage.createFromDataURL(imageData));
+  }));
+  handleRPC('item:thumbnail-clipboard', thumbnailTask((event, payload) =>
+    runThumbnailImage(event, { ids: payload.ids, libraryPath: payload.libraryPath, signal: payload.signal, operation: 'clipboard' }, clipboard.readImage())));
+  handleRPC('item:thumbnail-file', thumbnailTask(async (event, payload) => {
+    const chooser = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: '选择自定义缩略图', buttonLabel: '使用缩略图', properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff'] }]
+    });
+    if (chooser.canceled || !chooser.filePaths[0]) return { canceled: true };
+    return runThumbnailImage(event, { ids: payload.ids, libraryPath: payload.libraryPath, signal: payload.signal, operation: 'file' }, nativeImage.createFromPath(chooser.filePaths[0]));
+  }));
   onRPC('log:renderer-error', (event, entry) => {
     getErrorLog().write({
       level: entry?.level === 'warn' ? 'warn' : 'error',
@@ -929,6 +1031,7 @@ function setupIPC() {
     await hub.ensureLibraryPath(libraryPath);
     hub.markItemWrite(id);
     const result = await client.setCustomThumbnail(id, filePath, payload.width, payload.height);
+    if (result !== true) throw new Error('Eagle 尚未确认缩略图生成结果，请先刷新核对，不要重复提交');
     thumbnailCache.delete(id);
     await hub.ensureLibraryPath(libraryPath);
     const item = await client.getItem(id);
@@ -984,6 +1087,7 @@ function setupIPC() {
   handleRPC('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
   handleRPC('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:move', (event, mutation) => hub.moveFolder({ ...mutation, origin: event.sender.id }));
   onRPC('folder:used', (event, payload = {}) => {
     broadcast('folder:used', {
       folderId: payload.folderId || null,
@@ -1371,6 +1475,7 @@ function setupIPC() {
       sourceFolderId: payload.sourceFolderId || null,
       sourcePaneId: payload.sourcePaneId || null,
       sourceWindowId: payload.sourceWindowId || null,
+      orderContext: payload.orderContext || null,
       libraryPath: payload.libraryPath || hub.library?.path || null
     });
     try {
@@ -1395,6 +1500,18 @@ function setupIPC() {
   handleRPC('pins:get', async (_event, { libraryPath }) => {
     await hub.ensureLibraryPath(libraryPath);
     return getPinStore().get(libraryPath);
+  });
+  handleRPC('manual-order:get', async (_event, {libraryPath}) => {
+    await hub.ensureLibraryPath(libraryPath);
+    manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
+    return manualOrderStore.get(libraryPath);
+  });
+  handleRPC('manual-order:move', async (_event, payload) => {
+    await hub.ensureLibraryPath(payload.libraryPath);
+    manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
+    const result = await manualOrderStore.move(payload);
+    if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:result.orders,scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
+    return result;
   });
   handleRPC('pins:set', async (_event, { libraryPath, folderId, ids, pinned }) => {
     await hub.ensureLibraryPath(libraryPath);

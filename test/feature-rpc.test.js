@@ -1,0 +1,55 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { loadMain } = require('../test-support/main-data-harness.cjs');
+test('manual ordering RPC persists locally, broadcasts across windows and never invokes an Eagle write', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-manual-rpc-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const main = loadMain(root), messages=[];
+  main.hub.ensureLibraryPath = async p => assert.equal(p,'/fixture.library');
+  main.addFakeWindow({isDestroyed:()=>false, webContents:{send:(...args)=>messages.push(args)}});
+  const move = main.rpcRegistry.get('manual-order:move');
+  assert.equal(typeof move,'function');
+  const payload={libraryPath:'/fixture.library',scope:'root',kind:'items',knownIds:['a','b'],ids:['b'],anchorId:'a',position:'before',revision:0,startSort:'default'};
+  const result=await move({sender:{id:1}},payload);
+  assert.deepEqual(result.order.ids,['b','a']);
+  assert.ok(messages.some(([event])=>event==='manual-order:changed'));
+  const broadcast=messages.find(([event])=>event==='manual-order:changed')[1];
+  assert.equal(broadcast.scope,'root');assert.equal(broadcast.startSort,'default');
+  assert.deepEqual(await main.rpcRegistry.get('manual-order:get')({}, {libraryPath:payload.libraryPath}),result.orders);
+  assert.equal((await move({sender:{id:2}},payload)).conflict,true);
+});
+test('thumbnail RPC reports regeneration accepted, not custom-thumbnail removal or completion', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-feature-rpc-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const main = loadMain(root);
+  main.hub.ensureLibraryPath = async p => assert.equal(p, '/mock.library');
+  const writes=[];
+  main.client.refreshThumbnail = async id => {writes.push(id);return true;};
+  const rpc = main.rpcRegistry.get('item:thumbnail-operation');
+  assert.equal(typeof rpc, 'function');
+  const result = await rpc({sender:{id:1}}, {operation:'refresh', ids:['a','b'], libraryPath:'/mock.library'});
+  assert.deepEqual(writes,['a','b']);
+  assert.equal(result.counts.accepted,2);
+  assert.equal(result.counts.completed,0);
+  await assert.rejects(async () => rpc({sender:{id:1}}, {operation:'clear', ids:['a'], libraryPath:'/mock.library'}));
+});
+
+test('thumbnail cancellation stops remaining items without undoing the in-flight request', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-thumb-cancel-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const main = loadMain(root); main.hub.ensureLibraryPath = async()=>{};
+  const writes=[];let release;
+  main.client.refreshThumbnail=async id=>{writes.push(id);await new Promise(r=>{release=r;});return true;};
+  const pending=main.rpcRegistry.get('item:thumbnail-operation')({sender:{id:1}}, {requestId:'cancel-test',operation:'refresh',ids:['a','b'],libraryPath:'/mock.library'});
+  while(!release) await new Promise(r=>setImmediate(r));
+  const cancel=main.rpcRegistry.get('item:thumbnail-cancel');
+  assert.equal(typeof cancel,'function');
+  assert.equal((await cancel({sender:{id:2}}, {requestId:'cancel-test'})).canceled,false);
+  assert.equal((await cancel({sender:{id:1}}, {requestId:'cancel-test'})).canceled,true);
+  release();const result=await pending;
+  assert.deepEqual(writes,['a']);assert.equal(result.counts.accepted,1);assert.equal(result.counts.canceled,1);
+});

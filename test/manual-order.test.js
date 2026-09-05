@@ -1,0 +1,43 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { ManualOrderStore } = require('../lib/manual-order-store');
+test('local manual order moves a selection as a block and survives restart without changing another library or section', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mv-order-'));
+  t.after(() => fs.rm(dir, {recursive:true,force:true}));
+  const file = path.join(dir, 'state', 'manual-order.json');
+  const store = new ManualOrderStore(file);
+  const payload = {libraryPath:'/fixture.library',scope:'folder:one',kind:'items',knownIds:['a','b','c','d','e'],ids:['d','b'],anchorId:'a',position:'before',revision:0};
+  const result = await store.move(payload);
+  assert.deepEqual(result.order.ids, ['b','d','a','c','e']);
+  const reopened = new ManualOrderStore(file);
+  assert.deepEqual(await reopened.get('/fixture.library'), result.orders);
+  assert.deepEqual(await reopened.get('/other.library'), {});
+  assert.equal(Object.keys(result.orders).length, 1);
+});
+test('two windows cannot overwrite a newer order; filtered reorders preserve hidden IDs and reset is versioned', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mv-order-'));
+  t.after(() => fs.rm(dir, {recursive:true,force:true}));
+  const store = new ManualOrderStore(path.join(dir,'order.json'));
+  const base = {libraryPath:'/fixture.library',scope:'root',kind:'folders',knownIds:['a','b','c','d'],ids:['d'],anchorId:'a',position:'before',revision:0};
+  const results = await Promise.all([store.move(base),store.move({...base,ids:['c']})]);
+  assert.deepEqual(results[0].order.ids,['d','a','b','c']);assert.equal(results[1].conflict,true);
+  const filtered = await store.move({...base,knownIds:['a','c'],ids:['c'],anchorId:'a',revision:1});
+  assert.deepEqual(filtered.order.ids,['d','c','a','b']);
+  const reset = await store.move({...base,reset:true,revision:2});
+  assert.deepEqual(reset.order.ids,[]);assert.equal(reset.order.revision,3);
+  await assert.rejects(store.move({...base,ids:['missing'],revision:3}),/失效/);
+  assert.equal((await store.move({...base,revision:3})).ok,true,'failed write blocks following operation');
+});
+test('dragging from an automatic sort rebases visible order without restoring an older custom arrangement', async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mv-rebase-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const store=new ManualOrderStore(path.join(dir,'order.json'));
+  const base={libraryPath:'/fixture.library',scope:'root',kind:'items',knownIds:['a','b','c','d'],ids:['d'],anchorId:'a',position:'before',revision:0};
+  await store.move(base);
+  const next=await store.move({...base,ids:['c'],anchorId:'b',revision:1,rebase:true});
+  assert.deepEqual(next.order.ids,['a','c','b','d']);
+});
