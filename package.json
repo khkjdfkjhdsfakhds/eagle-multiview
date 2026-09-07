@@ -1,7 +1,7 @@
 {
   "name": "eagle-multiview",
   "version": "1.8.0",
-  "description": "Multi-window Eagle client for browsing, organizing, previewing, importing, editing, and synchronizing one library",
+  "description": "Eagle client for macOS, multi-pane workspaces, and local-network web access on phones and tablets",
   "main": "main.js",
   "author": "Eagle MultiView contributors",
   "license": "MIT",
@@ -9,8 +9,7 @@
     "start": "electron .",
     "test": "node --test",
     "pack:mac": "electron-builder --mac dir --arm64",
-    "dist:mac": "electron-builder --mac dmg --arm64",
-    "dist:win": "electron-builder --win nsis --x64"
+    "dist:mac": "electron-builder --mac dmg --arm64"
   },
   "devDependencies": {
     "electron": "43.2.0",
@@ -43,11 +42,6 @@
       "target": ["dmg"],
       "artifactName": "Eagle-MultiView-${version}-${arch}.${ext}",
       "identity": "-"
-    },
-    "win": {
-      "icon": "assets/icon.ico",
-      "target": ["nsis"],
-      "artifactName": "Eagle-MultiView-${version}-Setup.${ext}"
     }
   }
 }

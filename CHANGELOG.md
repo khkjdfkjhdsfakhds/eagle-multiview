@@ -2,6 +2,41 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.8.0 - 2026-09-07
+
+This public release includes the intervening 1.7.0 changes below. The previous GitHub release was 1.6.0.
+
+### Workspace and organization
+
+- Added moving folders themselves, with destination checks and library-switch protection.
+- Added direct local manual ordering of folders and items without rewriting Eagle's order.
+- Added reveal-in-another-pane context menus for items, folders and the current path.
+- Unified the twelve pane layout icons and added a refresh-all-panes toolbar action.
+- Added thumbnail refresh and custom-thumbnail operations from files or the clipboard, with per-item results.
+- Added selective ArtStation author-page imports with paging, duplicate handling and fixed import destinations.
+
+### TXT and metadata
+
+- Added the bundled official Eagle Plugin API background service for TXT replacement, without direct library writes as a fallback.
+- Added persistent drafts, content-version checks, save recovery and protection against uncertain or late save results.
+- Stabilized TXT status to “editing” and “saved”; detailed failure information remains available without repeatedly shifting the editor.
+- Added independently copyable NovelAI character-positive captions alongside global prompts, including WebP EXIF metadata.
+
+### Preview, Web and reliability
+
+- Added Shift-S to toggle fullscreen preview synchronization, with a fading status notice; normal grid selection and scrolling stay independent.
+- Fixed navigation/sort inheritance, stale asynchronous replies, draft preservation and tag-color synchronization across panes and windows.
+- Improved browser clipboard fallback, upload/download result handling, session recovery and modal keyboard isolation.
+- Hardened export/library-switch handling, ZIP names, import and duplicate flows, and Android host-address validation.
+
+### Distribution and documentation
+
+- Consolidated the reviewed changes into the formal macOS app and its bundled TXT plugin.
+- Discontinued Windows desktop packaging; macOS Apple silicon is the desktop release target. Other devices can connect to the Mac through a browser.
+- Rewrote the project introduction around desktop workspaces and local-network phone/tablet access, with fresh public-demo screenshots and source attribution.
+
+See [the complete 1.8.0 release guide](docs/release-notes-v1.8.0.md) for upgrade instructions and limits.
+
 ## 1.7.0 - 2026-09-05
 
 ### Metadata
