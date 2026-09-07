@@ -10,7 +10,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 
 > Eagle MultiView 不是 Eagle 官方产品。使用时需要先启动 Eagle 并打开资料库；常规操作通过本机 Eagle HTTP API，TXT 正文保存通过配套的 Eagle 官方 Plugin API 后台服务。
 
-当前版本：**1.8.0**。桌面安装包仅提供 **macOS Apple silicon**；从本版起停止构建和维护 Windows 桌面版。Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机浏览器无需安装 Eagle 或额外客户端。
+当前主线源码：**1.8.0**。1.8.0 安装包尚未发布，Releases 最新安装包暂为 1.6.0；本页描述当前主线功能。后续桌面安装包仅提供 **macOS Apple silicon**，从本版起停止构建和维护 Windows 桌面版。Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机浏览器无需安装 Eagle 或额外客户端。
 
 ## 手机、平板和网页端：核心功能
 
