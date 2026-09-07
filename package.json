@@ -1,6 +1,6 @@
 {
-  "name": "eagle-multiview-review-20260905",
-  "version": "1.8.0-review.10",
+  "name": "eagle-multiview",
+  "version": "1.8.0",
   "description": "Multi-window Eagle client for browsing, organizing, previewing, importing, editing, and synchronizing one library",
   "main": "main.js",
   "author": "Eagle MultiView contributors",
@@ -17,8 +17,8 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "local.eagle.multiview.review.20260905",
-    "productName": "Eagle MultiView Review",
+    "appId": "local.eagle.multiview",
+    "productName": "Eagle MultiView",
     "asar": true,
     "files": [
       "main.js",

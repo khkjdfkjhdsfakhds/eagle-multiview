@@ -6,7 +6,7 @@ Eagle MultiView 是一个通过 Eagle 本地 HTTP API 工作的非官方多窗�
 
 > Eagle MultiView 不是 Eagle 官方产品。使用时需要先启动 Eagle 并打开资料库；常规操作通过本机 Eagle HTTP API，TXT 正文保存通过配套的 Eagle 官方 Plugin API 后台服务。
 
-本分支交付并存的 **Eagle MultiView Review**，独立应用身份与数据目录，不替换正式版。TXT 配套服务及启用步骤见 [后台保存插件说明](eagle-plugin/text-save-service/README.md)。
+当前主线已整合 Review 的全部更新，交付正式 **Eagle MultiView**；Review 分支仅保留备份，后续开发在 main 进行。TXT 配套服务及启用步骤见 [后台保存插件说明](eagle-plugin/text-save-service/README.md)。
 
 ## 适合做什么
 

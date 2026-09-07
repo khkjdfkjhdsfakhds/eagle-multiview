@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const profile = path.join(os.homedir(), 'Library', 'Application Support', 'eagle-multiview-review-20260905');
+const profile = path.join(os.homedir(), 'Library', 'Application Support', 'eagle-multiview');
 const connectionFile = path.join(profile, 'TXT Bridge', 'connection.json');
 const stagingRoot = path.join(profile, 'Text Backups', 'staging');
 let save;
@@ -61,7 +61,7 @@ async function tick() {
       catch { if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250)); }
     }
   } catch {
-    // Review not running/disconnected: keep quiet, no modal or window focus.
+    // MultiView not running/disconnected: keep quiet, no modal or window focus.
   } finally {
     active = false;
     if (!stopped) timer = setTimeout(tick, 250);
