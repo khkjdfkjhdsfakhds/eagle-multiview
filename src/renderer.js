@@ -277,13 +277,34 @@ try {
   syncPanesEnabled = localStorage.getItem('eaglemv.syncPanes') === 'true';
 } catch {}
 
-function setSyncPanesEnabled(enabled) {
+function setSyncPanesEnabled(enabled, { notify = false } = {}) {
   syncPanesEnabled = Boolean(enabled);
   try {
     localStorage.setItem('eaglemv.syncPanes', String(syncPanesEnabled));
   } catch {}
   const checkbox = $('#syncPanesCheckbox');
   if (checkbox) checkbox.checked = syncPanesEnabled;
+  if (notify) showPreviewSyncNotice();
+}
+
+let previewSyncNoticeAnimation;
+function showPreviewSyncNotice() {
+  const notice = $('#previewSyncNotice');
+  previewSyncNoticeAnimation?.cancel();
+  notice.textContent = syncPanesEnabled ? '预览同步已开启' : '预览同步已关闭';
+  notice.classList.remove('hidden');
+  const animation = notice.animate([
+    { opacity: 1, offset: 0 },
+    { opacity: 1, offset: .625, easing: 'ease-out' },
+    { opacity: 0, offset: 1 }
+  ], { duration: 2400, fill: 'forwards' });
+  previewSyncNoticeAnimation = animation;
+  animation.finished.then(() => {
+    if (previewSyncNoticeAnimation !== animation) return;
+    notice.classList.add('hidden');
+    previewSyncNoticeAnimation = null;
+    animation.cancel();
+  }).catch(() => {}); // Repeated toggles replace, rather than stack, notices.
 }
 
 function broadcastPaneAction(actionFn) {
@@ -3073,6 +3094,7 @@ function renderGenerationMetadata(metadata) {
     section.classList.add('hidden');
     section.dataset.positive = '';
     section.dataset.negative = '';
+    $('#generationMetadata').replaceChildren();
     return;
   }
   section.dataset.positive = metadata.positive || '';
@@ -3085,7 +3107,10 @@ function renderGenerationMetadata(metadata) {
   </div>` : '';
   const loraHTML = metadata.loras?.length ? `<div class="metadata-block"><span class="metadata-label">LoRA</span><div class="metadata-loras">${metadata.loras.map(lora => `<span class="metadata-lora">${escapeHTML(lora.name)} · ${escapeHTML(lora.weight)}</span>`).join('')}</div></div>` : '';
   const workflowHTML = metadata.workflow ? `<details class="metadata-workflow-details"><summary>工作流 JSON</summary><pre class="metadata-text metadata-workflow-json">${escapeHTML(JSON.stringify(metadata.workflow, null, 2))}</pre></details>` : '';
-  $('#generationMetadata').innerHTML = `${metadataPromptBlock('正向提示词', metadata.positive, 'positive')}${metadataPromptBlock('负向提示词', metadata.negative, 'negative')}${parameterHTML}${loraHTML}${workflowHTML}`;
+  const characterHTML = (Array.isArray(metadata.characters) ? metadata.characters : []).map(character =>
+    metadataPromptBlock(`角色 ${escapeHTML(character.index)} 提示词`, character.positive, 'character')
+  ).join('');
+  $('#generationMetadata').innerHTML = `${metadataPromptBlock('正向提示词', metadata.positive, 'positive')}${characterHTML}${metadataPromptBlock('负向提示词', metadata.negative, 'negative')}${parameterHTML}${loraHTML}${workflowHTML}`;
   section.classList.remove('hidden');
 }
 
@@ -7390,7 +7415,7 @@ function bindEvents() {
   $('#generationMetadata').addEventListener('click', async event => {
     const button = event.target.closest('[data-metadata-copy]');
     if (!button) return;
-    const value = $('#generationMetadataSection').dataset[button.dataset.metadataCopy] || '';
+    const value = button.closest('.metadata-block')?.querySelector('.metadata-prompt-text')?.textContent || '';
     if (!value) return;
     await copyTextWithFeedback(value, '提示词已复制');
   });
@@ -7463,7 +7488,7 @@ function bindEvents() {
     for (const option of popover.querySelectorAll('[data-layout]')) option.classList.toggle('active', option.dataset.layout === $('#paneLayout').dataset.layout);
   });
   $('#syncPanesCheckbox')?.addEventListener('change', event => {
-    setSyncPanesEnabled(event.target.checked);
+    setSyncPanesEnabled(event.target.checked, { notify: true });
   });
   $('#paneLayoutPopover').addEventListener('click', event => {
     const option = event.target.closest('[data-layout]');
@@ -7907,6 +7932,15 @@ function bindEvents() {
     if (document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) return;
     const editable = isEditableElement(event.target) || isEditableElement() || state.inspectorEditing;
     const previewOpen = !$('#previewModal').classList.contains('hidden');
+    if (!editable && !blockingSurfaceOpen() && !event.defaultPrevented &&
+        event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey &&
+        (event.code === 'KeyS' || event.key.toLowerCase() === 's')) {
+      event.preventDefault();
+      if (!event.repeat && !event.isComposing && event.keyCode !== 229) {
+        setSyncPanesEnabled(!syncPanesEnabled, { notify: true });
+      }
+      return;
+    }
     if (event.key === 'Escape') {
       if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }
       if (!$('#folderDialog').classList.contains('hidden')) { event.preventDefault(); closeFolderDialog(); return; }

@@ -137,8 +137,9 @@
                 </div>
                 <div class="pane-layout-footer">
                   <label class="pane-sync-option" title="开启后，全屏预览图片的打开、切换和关闭会在其他分栏同步">
-                    <input type="checkbox" id="syncPanesCheckbox">
+                    <input type="checkbox" id="syncPanesCheckbox" aria-keyshortcuts="Shift+S">
                     <span>全屏预览同步</span>
+                    <kbd class="pane-sync-shortcut">⇧S</kbd>
                   </label>
                 </div>
               </div>
@@ -309,6 +310,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+  <div id="previewSyncNotice" class="toast preview-sync-notice hidden" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="素材操作菜单"></div>
   <div id="trashDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="trashDialogTitle">
     <div class="trash-dialog-card">

@@ -2404,6 +2404,17 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   color: #e8edf4;
   backdrop-filter: blur(12px);
 }
+.pane-sync-shortcut { margin-left: auto; color: var(--muted); font: inherit; }
+.preview-sync-notice {
+  z-index: 90;
+  top: calc(78px + env(safe-area-inset-top));
+  bottom: auto !important;
+  max-width: calc(100vw - 32px);
+  width: max-content;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
 .trash-dialog {
   position: fixed;
   z-index: 35;

@@ -124,6 +124,41 @@ test('returns null for an image without supported generation metadata', () => {
   assert.equal(readMetadataBuffer(pngWithText([]), 'png'), null);
 });
 
+test('NovelAI character captions survive PNG, JPEG and WebP in their original order', () => {
+  const data = { uc: 'global negative', steps: 28, seed: 42, v4_prompt: { caption: {
+    base_caption: 'global positive', char_captions: [
+      { char_caption: 'blue jacket, standing', centers: [{ x: 0.2, y: 0.5 }] },
+      { char_caption: 'red hat, sitting' }
+    ]
+  } }, v4_negative_prompt: { caption: { char_captions: [{ char_caption: 'character negative' }] } } };
+  const comment = JSON.stringify(data);
+  const bundle = JSON.stringify({ Software: 'NovelAI', Comment: comment });
+  for (const [buffer, ext] of [
+    [pngWithText([{ key: 'Software', value: 'NovelAI' }, { key: 'Comment', value: comment }]), 'png'],
+    [jpegWithExifComment(bundle), 'jpg'], [webpWithExifComment(bundle), 'webp']
+  ]) {
+    const metadata = readMetadataBuffer(buffer, ext);
+    assert.equal(metadata.positive, 'global positive');
+    assert.equal(metadata.negative, 'global negative');
+    assert.deepEqual(metadata.characters, [
+      { index: 1, positive: 'blue jacket, standing' },
+      { index: 2, positive: 'red hat, sitting' }
+    ]);
+  }
+});
+
+test('NovelAI empty or malformed characters are ignored without renumbering later characters', () => {
+  for (const characters of [null, {}, [null, { char_caption: 7 }, { char_caption: '' }, { char_caption: 'valid' }]]) {
+    const metadata = readMetadataBuffer(pngWithText([
+      { key: 'Software', value: 'NovelAI' },
+      { key: 'Comment', value: JSON.stringify({ prompt: 'fallback prompt', v4_prompt: { caption: { char_captions: characters } }, v4_negative_prompt: { caption: { base_caption: 'fallback negative' } } }) }
+    ]), 'png');
+    assert.equal(metadata.positive, 'fallback prompt');
+    assert.equal(metadata.negative, 'fallback negative');
+    assert.deepEqual(metadata.characters, Array.isArray(characters) ? [{ index: 4, positive: 'valid' }] : []);
+  }
+});
+
 test('DA-19: ordinary image descriptions and comments do not claim NovelAI provenance', () => {
   for (const entries of [
     [{ key: 'Description', value: 'A family photograph' }],
