@@ -1,6 +1,6 @@
 {
   "name": "eagle-multiview",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Eagle client for macOS, multi-pane workspaces, and local-network web access on phones and tablets",
   "main": "main.js",
   "author": "Eagle MultiView contributors",

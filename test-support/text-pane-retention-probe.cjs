@@ -1,0 +1,72 @@
+'use strict';
+const { app, BrowserWindow } = require('electron');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-text-retention-'));
+app.setPath('userData', profile);
+app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
+(async () => {
+  await app.whenReady();
+  const win = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
+    sandbox: false, contextIsolation: false, backgroundThrottling: false,
+    preload: path.join(__dirname, 'renderer-ui-preload.cjs')
+  } });
+  await win.loadFile(path.join(process.env.EAGLEMV_UI_SOURCE_ROOT || path.resolve(__dirname, '..'), 'src/index.html'));
+  const result = await win.webContents.executeJavaScript(`(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const assert = (value, message) => { if (!value) throw Error(message); };
+    for (let n = 0; n < 150 && !state.connected; n++) await wait(20);
+    document.querySelector('#paneLayoutPopover [data-layout="vertical2"]').click();
+    await wait(100);
+    syncPanesEnabled = true;
+    const [textPane, otherPane] = state.panes;
+    activatePane(textPane.id);
+    const item = { id: 'retention-txt', ext: 'txt', name: 'TXT retention fixture' };
+    textPane.items = [item]; textPane.itemMap.set(item.id, item);
+    window.eagleMV.readText = async () => ({ content: 'fixture body', fingerprint: { size: 12, hash: 'base' } });
+    await openPreview(item.id);
+    const session = textPane.textSession;
+    const editor = paneQuery(textPane.id, '#textEditor');
+    assert(!paneQuery(textPane.id, '#saveTextButton') && !paneQuery(textPane.id, '#reloadTextButton'), 'Removed TXT buttons still exist');
+    editor.setSelectionRange(3, 7);
+    activatePane(otherPane.id);
+    navigate({ kind: 'folder', id: 'mv-folder' }, { refreshView: false });
+    assert(textPane.previewId === item.id, 'Other-pane folder navigation closed the TXT preview');
+    assert(textPane.textSession === session && editor.isConnected, 'Other-pane navigation replaced the TXT session/editor');
+    assert(editor.value === 'fixture body' && editor.selectionStart === 3 && editor.selectionEnd === 7, 'Other-pane navigation lost TXT contents or selection');
+    const checkRetained = () => {
+      assert(textPane.previewId === item.id && textPane.textSession === session && editor.isConnected, 'Other-pane change closed or replaced the TXT editor');
+      assert(editor.value === 'unsaved body' && editor.selectionStart === 2 && editor.selectionEnd === 6, 'Other-pane change lost draft contents or selection');
+      assert(!paneQuery(textPane.id, '#previewModal').classList.contains('hidden'), 'TXT is no longer visible');
+    };
+    editor.value = 'unsaved body'; editor.dispatchEvent(new Event('input', { bubbles: true }));
+    clearTimeout(session.autoSaveTimer);
+    editor.setSelectionRange(2, 6);
+    let confirmations = 0;
+    window.confirm = () => { confirmations++; return false; };
+    navigate({ kind: 'folder', id: 'eagle-folder' }, { refreshView: false });
+    checkRetained();
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+    checkRetained();
+    let releaseSave;
+    window.eagleMV.saveText = payload => new Promise(resolve => { releaseSave = () => resolve({ status: 'saved', fingerprint: { size: payload.content.length, hash: 'saved' } }); });
+    const saving = saveTextPreview(false, { session });
+    await wait(0);
+    navigate({ kind: 'folder', id: 'mv-folder' }, { refreshView: false });
+    checkRetained();
+    assert(confirmations === 0, 'Unrelated navigation asked to discard a TXT draft');
+    releaseSave(); await saving;
+    checkRetained();
+    assert(!session.dirty, 'TXT save did not finish after other-pane navigation');
+    activatePane(textPane.id);
+    editor.value = 'close protection'; editor.dispatchEvent(new Event('input', { bubbles: true }));
+    clearTimeout(session.autoSaveTimer);
+    assert(closePreview() === false && confirmations === 1 && editor.isConnected, 'Explicit close no longer protects an unsaved draft');
+    discardTextSession(session);
+    assert(closePreview() === true && !editor.isConnected, 'Explicit TXT close failed');
+    return { retained: true };
+  })()`);
+  console.log('TEXT_RETENTION_RESULT ' + JSON.stringify(result));
+  win.destroy(); app.quit();
+})().catch(error => { console.error(error.stack || error); app.exit(1); });

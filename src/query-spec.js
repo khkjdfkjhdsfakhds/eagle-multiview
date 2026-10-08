@@ -97,8 +97,11 @@
       key: 'folderId',
       normalize: value => value || null,
       isActive: Boolean,
-      match: (item, value) => (item.folders || []).includes(value),
-      applyBody: (value, body) => { body.folders = [value]; }
+      match: (item, value, context) => {
+        const ids = Array.isArray(context?.query?.folderIds) && context.query.folderIds.length ? context.query.folderIds : [value];
+        return (item.folders || []).some(folderId => ids.includes(folderId));
+      },
+      applyBody: (value, body) => { body.folders = Array.isArray(body._folderIds) ? body._folderIds : [value]; }
     },
     {
       key: 'smartFolderId',
@@ -286,11 +289,13 @@
 
   function itemQueryBody(query) {
     const body = {};
+    if (Array.isArray(query?.folderIds) && query.folderIds.length) body._folderIds = query.folderIds;
     for (const entry of spec) {
       if (!entry.applyBody) continue;
       const value = query?.[entry.key];
       if (entry.isActive(value, query)) entry.applyBody(value, body);
     }
+    delete body._folderIds;
     return body;
   }
 

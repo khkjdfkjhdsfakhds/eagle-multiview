@@ -181,6 +181,15 @@
     }
     connectEvents();
   });
+  // Phones stop the page while another app (the system file picker, say) is
+  // in front; on return, reconnect at once instead of waiting out a backoff
+  // that grew while hidden.
+  window.addEventListener('visibilitychange', () => {
+    if (disposed || document.visibilityState === 'hidden') return;
+    if (socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN) return;
+    retryDelay = 1000;
+    connectEvents();
+  });
   window.addEventListener('pagehide', () => {
     disposed = true;
     transportGeneration += 1;
@@ -443,6 +452,7 @@
     cancelSiteImport: data => invoke('site:cancel', [data]),
     importSiteSelection: data => invoke('site:import', [data]),
     moveFolder: data => invoke('folder:move', [data]),
+    copyFolder: data => invoke('folder:copy', [data]),
     markFolderUsed: data => send('folder:used', [data]),
     importItems: async (data = {}) => {
       // Dropped/pasted browser File objects arrive via `paths`; without them
@@ -535,6 +545,9 @@
       emit('item:drag-state', { active: false, token });
     },
     getPins: data => invoke('pins:get', [data]),
+    getFolderCovers: data => invoke('folder-covers:get', [data]),
+    setFolderCover: data => invoke('folder-covers:set', [data]),
+    onFolderCoversChanged: callback => on('folder-covers:changed', callback),
     getManualOrders: data => invoke('manual-order:get', [data]),
     moveManualOrder: data => invoke('manual-order:move', [data]),
     setPins: data => invoke('pins:set', [data]),
@@ -549,6 +562,23 @@
     onItemsChanged: callback => on('hub:items-changed', callback),
     onQueryInvalidated: callback => on('hub:query-invalidated', callback),
     onTrashSelection: callback => on('command:trash-selection', callback),
+    // The desktop binds ⌘/Ctrl+Z through its 编辑 → 撤销 menu; a browser has no
+    // application menu, so the same accelerator is bound here. Text fields keep
+    // their native text undo, and the primary key follows the platform (⌘ on
+    // Apple, Ctrl elsewhere — the Android shell first of all).
+    onUndoDelete: callback => {
+      const handler = event => {
+        if (event.defaultPrevented || event.isComposing || event.repeat) return;
+        if (event.code !== 'KeyZ' && String(event.key).toLowerCase() !== 'z') return;
+        const keyboard = window.EagleMVKeyboardPlatform?.createKeyboardPlatform(navigator);
+        if (!keyboard?.primaryKey(event) || keyboard.otherKey(event) || event.shiftKey || event.altKey) return;
+        if (event.target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+        event.preventDefault();
+        callback();
+      };
+      document.addEventListener('keydown', handler);
+      return () => document.removeEventListener('keydown', handler);
+    },
     onPinSelection: callback => on('command:pin-selection', callback),
     onAddToFolder: callback => on('command:add-to-folder', callback),
     onMoveToFolder: callback => on('command:move-to-folder', callback),
@@ -576,6 +606,7 @@
     onCreateDocumentRequest: callback => on('command:create-document', callback),
     onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
     onNewWindowRequest: callback => on('command:new-window', callback),
+    onOpenView: () => () => {},
     onPinsChanged: callback => on('pins:changed', callback),
     onManualOrdersChanged: callback => on('manual-order:changed', callback),
     onTagDataChanged: callback => on('tag-data:changed', callback),

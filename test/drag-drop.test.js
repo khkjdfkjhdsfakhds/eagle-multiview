@@ -135,11 +135,27 @@ test('cross-window drag context carries the source library, pane, folder and win
 
 test('folder drops enforce move semantics from folder view and remove items from current view', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-  assert.ok(source.includes('const move = Boolean(sourceFolderId || event.altKey);'));
+  assert.ok(source.includes('const move = Boolean(sourceFolderId && !event.altKey);'));
+  assert.ok(source.includes('move: Boolean(sourceFolderId && !event.altKey)'));
+  assert.ok(source.includes("dropEffect = dropKind === 'internal-items' && sourceFolderId && !event.altKey ? 'move' : 'copy'"));
+  assert.ok(source.includes("event.dataTransfer.dropEffect = sourceFolderId && !event.altKey ? 'move' : 'copy'"));
   assert.ok(source.includes('pane.items = pane.items.filter(item => !movedIds.has(item.id));'));
   assert.ok(source.includes('movedIds.forEach(id => { pane.itemMap?.delete(id); });'));
   assert.ok(source.includes('pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);'));
   assert.ok(source.includes('movedIds.forEach(id => pane.selected.delete(id));'));
+});
+
+test('folder drags advertise copy for Option and move otherwise on every drop target', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'feature-ui.js'), 'utf8');
+  assert.ok(source.includes("event.dataTransfer.dropEffect = valid ? (event.altKey ? 'copy' : 'move') : 'none';"),
+    'dragover advertises copy with Option and move otherwise');
+  assert.ok(source.includes("const copy = event.altKey;"), 'drop reads the Option modifier');
+  assert.ok(source.includes("? copyFolder(payload.id, target.parentId, ctx)"),
+    'Option drop copies the folder subtree');
+  assert.ok(source.includes(": moveFolder(payload.id, target.parentId, { ...ctx, sourceId: payload.id,"),
+    'plain drop moves the folder');
+  assert.ok(source.includes("const parentId = context().paneDestination?.(pane.dataset.paneId);"),
+    'content-area drops resolve the destination from the pane they land on');
 });
 
 test('folderMoveDelta calculates move vs add semantics correctly', () => {

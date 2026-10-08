@@ -1,0 +1,63 @@
+'use strict';
+const { app, BrowserWindow } = require('electron');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-placement-')));
+(async () => {
+  await app.whenReady();
+  const win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: {
+    contextIsolation: false, nodeIntegration: false, sandbox: false, preload: path.join(__dirname, 'feature-ui-preload.cjs')
+  } });
+  await win.loadFile(path.join(process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '..'), 'src/index.html'));
+  await win.webContents.executeJavaScript(`(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const until = async fn => { for (let i=0;i<150;i++) { if(fn()) return; await wait(20); } throw Error('placement timeout'); };
+    const assert = (value, message) => { if (!value) throw Error(message); };
+    await until(() => document.querySelector('[data-toggle-folder="eagle-folder"]'));
+    document.querySelector('[data-toggle-folder="eagle-folder"]').click();
+    await until(() => document.querySelector('.folder-row[data-folder-node-id="same-one"]'));
+    const count = () => window.__uiTestCalls.filter(call => call.kind === 'move-folder').length;
+    const drop = async (target, edge, expected) => {
+      const source = document.querySelector('.folder-row[data-folder-node-id="mv-folder"]');
+      const dataTransfer = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', {bubbles:true, cancelable:true, dataTransfer}));
+      const box = target.getBoundingClientRect();
+      const point = {clientX:box.left+box.width*.7, clientY:box.top+box.height*edge};
+      const before = count();
+      target.dispatchEvent(new DragEvent('dragover', {bubbles:true,cancelable:true,dataTransfer,...point}));
+      assert(count()===before, 'hover wrote');
+      assert(target.dataset.manualDrop === 'vertical-'+expected.position, 'missing insertion line');
+      target.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer,...point}));
+      await until(() => count()===before+1);
+      const payload = window.__uiTestCalls.filter(call=>call.kind==='move-folder').at(-1).payload;
+      assert(payload.parentId==='eagle-folder' && payload.anchorId==='same-one' && payload.position===expected.position, 'wrong parent or insertion slot');
+      assert(JSON.stringify(payload.targetSiblingIds)==='["same-one"]', 'missing sibling conflict snapshot');
+      await wait(100);
+      assert(!document.querySelector('[data-manual-drop]'), 'insertion line stuck');
+    };
+    await drop(document.querySelector('.folder-row[data-folder-node-id="same-one"]'), .1, {position:'before'});
+    await drop(document.querySelector('.folder-row[data-folder-node-id="same-one"]'), .9, {position:'after'});
+    document.querySelector('.folder-card[data-open-folder="eagle-folder"]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));
+    await until(() => document.querySelector('[data-crumb-folder-id="eagle-folder"]'));
+    let crumb = document.querySelector('[data-crumb-folder-id="eagle-folder"]');
+    const dataTransfer = new DataTransfer();
+    document.querySelector('.folder-row[data-folder-node-id="mv-folder"]').dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer}));
+    crumb.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer}));
+    assert(crumb.dataset.folderNodeDrop==='allowed','breadcrumb cannot accept folder');
+    const before=count();
+    crumb.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer}));
+    await until(()=>count()===before+1);
+    assert(window.__uiTestCalls.filter(call=>call.kind==='move-folder').at(-1).payload.parentId==='eagle-folder','breadcrumb folder destination wrong');
+    await wait(100);
+    const itemData=new DataTransfer();
+    crumb = document.querySelector('[data-crumb-folder-id="eagle-folder"]');
+    itemData.setData('application/x-eagle-multiview-items','["test-item"]');
+    crumb.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:itemData}));
+    assert(crumb.classList.contains('drop-target'),'breadcrumb item feedback missing');
+    crumb.dispatchEvent(new DragEvent('dragleave',{bubbles:true,dataTransfer:itemData}));
+    assert(!crumb.classList.contains('drop-target'),'breadcrumb item feedback stuck');
+  })()`);
+  console.log('FOLDER_PLACEMENT_UI_OK');
+  win.destroy(); app.quit();
+})().catch(error => { console.error(error); app.exit(1); });

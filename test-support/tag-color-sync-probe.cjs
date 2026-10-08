@@ -11,6 +11,7 @@ const { TextDraftStore } = require('../lib/text-draft-store');
 const source = path.resolve(__dirname, '..');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-tag-sync-'));
 app.setPath('userData', path.join(directory, 'profile'));
+app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP eaglemv-tag-sync.test 127.0.0.1');
 app.on('window-all-closed', () => {});
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

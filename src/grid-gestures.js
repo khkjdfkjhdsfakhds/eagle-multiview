@@ -12,7 +12,7 @@
   const PULL_TRIGGER = 64;
   const PULL_MAX = 96;
   // Thumbnail bounds mirror the size slider's min/max in index.html.
-  const THUMB_MIN = 110;
+  const THUMB_MIN = 64;
   const THUMB_MAX = 260;
   const THUMB_DEFAULT = 168;
   // Keyboard Cmd/Ctrl +/- steps the middle-grid thumbnail size by a fixed

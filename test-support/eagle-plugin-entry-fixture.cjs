@@ -31,7 +31,7 @@ async function waitFor(predicate, message = 'Plugin entry did not become ready')
   }
 }
 
-async function fixture(t, { wrapper = loaderContract, initialPath = true, interceptRequire } = {}) {
+async function fixture(t, { wrapper = loaderContract, initialPath = true, interceptRequire, currentView = null } = {}) {
   const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'eaglemv-plugin-entry-')));
   const profile = path.join(root, 'Library', 'Application Support', candidateIdentity.profile);
   const stagingRoot = path.join(profile, 'Text Backups', 'staging');
@@ -41,11 +41,17 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   await fsp.mkdir(stagingRoot, { recursive: true });
   await fsp.writeFile(filePath, 'original');
-  let bridge = createTextPluginBridge({ directory, stagingRoot, timeoutMs: 3000 });
+  const bridgeOptions = { directory, stagingRoot, timeoutMs: 3000 };
+  if (currentView) bridgeOptions.currentView = currentView;
+  let bridge = createTextPluginBridge(bridgeOptions);
   await bridge.start();
   const callbacks = {};
   const events = {};
   const errors = [];
+  const openedFolders = [];
+  const hides = [];
+  const elements = new Map();
+  let folderOpenResult = true;
   let replacements = 0;
   const item = { id: 'ENTRY', ext: 'txt', filePath, replaceFile: async staged => {
     if (!staged.startsWith(`${stagingRoot}${path.sep}`)) throw new Error('Fixture staging boundary');
@@ -54,7 +60,10 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
   } };
   const eagle = {
     plugin: initialPath ? { path: pluginPath } : undefined,
-    library: { path: libraryPath }, item: { getById: async id => id === item.id ? item : null },
+    library: { path: libraryPath },
+    item: { getById: async id => id === item.id ? item : null },
+    folder: { open: async id => { openedFolders.push(id); return folderOpenResult; } },
+    window: { hide: async () => { hides.push(Date.now()); } },
     onPluginCreate: callback => { callbacks.create = callback; },
     log: { error: value => errors.push(value) }
   };
@@ -70,6 +79,7 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
   };
   const context = vm.createContext({
     eagle, lexicalRequire, Buffer, TextDecoder,
+    document: { querySelector: selector => elements.get(selector) || null },
     console: { error: (...args) => errors.push(args), log() {} },
     window: { addEventListener: (name, callback) => { events[name] = callback; } },
     setTimeout: (callback, delay) => {
@@ -88,11 +98,22 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
     await fsp.rm(root, { recursive: true, force: true });
   });
   return {
-    root, profile, stagingRoot, directory, libraryPath, filePath, item, eagle, errors,
+    root, profile, stagingRoot, directory, libraryPath, filePath, item, eagle, errors, openedFolders, hides,
+    setFolderOpenResult: value => { folderOpenResult = value; },
+    mount: selector => {
+      const element = {
+        listeners: {},
+        textContent: '',
+        addEventListener(name, callback) { this.listeners[name] = callback; }
+      };
+      elements.set(selector, element);
+      return element;
+    },
+    text: selector => elements.get(selector)?.textContent || '',
     get bridge() { return bridge; },
     restartBridge: async () => {
       await bridge.stop();
-      bridge = createTextPluginBridge({ directory, stagingRoot, timeoutMs: 3000 });
+      bridge = createTextPluginBridge(bridgeOptions);
       await bridge.start();
     },
     load: () => vm.runInContext(entry, context, { filename: 'Eagle TXT plugin.js' }),

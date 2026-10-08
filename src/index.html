@@ -35,7 +35,7 @@
       <section class="toolbar">
         <div class="search-box">
           <img class="search-icon" src="eagle-assets/ic_search.svg" alt="">
-          <input id="searchInput" type="search" placeholder="搜索名称、标签、备注…">
+          <input id="searchInput" type="search" placeholder="搜索名称、标签、备注、正向提示词…">
           <kbd>⌘F</kbd>
         </div>
         <div class="filter-control">
@@ -44,7 +44,7 @@
             <div class="filter-popover-heading"><strong>筛选素材</strong><button id="closeFilterButton" type="button" class="popover-close" aria-label="关闭筛选器">×</button></div>
             <label>搜索范围
               <select id="searchScopeFilter" title="限定搜索框匹配的字段">
-                <option value="">全部字段</option>
+                <option value="">全部字段（含正向提示词）</option>
                 <option value="name">仅名称</option>
                 <option value="tags">仅标签</option>
                 <option value="annotation">仅备注</option>
@@ -122,8 +122,8 @@
               </button>
               <div id="paneLayoutPopover" class="pane-layout-popover hidden" role="menu" aria-label="分栏布局">
                 <div class="pane-layout-options">
-                  <button type="button" class="pane-layout-option" data-layout="single" title="单栏" aria-label="单栏"><span class="layout-icon layout-icon-single"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span></button>
-                  <button type="button" class="pane-layout-option" data-layout="vertical2" title="左右两栏" aria-label="左右两栏"><span class="layout-icon layout-icon-vertical2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20"/></svg></span></button>
+                  <button type="button" class="pane-layout-option" data-layout="single" title="单栏（⌘1）" aria-label="单栏"><span class="layout-icon layout-icon-single"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span></button>
+                  <button type="button" class="pane-layout-option" data-layout="vertical2" title="左右两栏（⌘2）" aria-label="左右两栏"><span class="layout-icon layout-icon-vertical2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="horizontal2" title="上下两栏" aria-label="上下两栏"><span class="layout-icon layout-icon-horizontal2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M2 12h20"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="grid4" title="四格" aria-label="四格"><span class="layout-icon layout-icon-grid4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20M2 12h20"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="leftStack" title="左大右上下" aria-label="左大右上下"><span class="layout-icon layout-icon-leftStack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20M12 12h10"/></svg></span></button>
@@ -131,8 +131,8 @@
                   <button type="button" class="pane-layout-option" data-layout="topStack" title="上大下左右" aria-label="上大下左右"><span class="layout-icon layout-icon-topStack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M2 12h20M12 12v10"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="bottomStack" title="上左右下大" aria-label="上左右下大"><span class="layout-icon layout-icon-bottomStack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M2 12h20M12 2v10"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="horizontal3" title="三行" aria-label="三行"><span class="layout-icon layout-icon-horizontal3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M2 8.667h20M2 15.333h20"/></svg></span></button>
-                  <button type="button" class="pane-layout-option" data-layout="vertical3" title="三栏" aria-label="三栏"><span class="layout-icon layout-icon-vertical3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M8.667 2v20M15.333 2v20"/></svg></span></button>
-                  <button type="button" class="pane-layout-option" data-layout="vertical4" title="四栏" aria-label="四栏"><span class="layout-icon layout-icon-vertical4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M7 2v20M12 2v20M17 2v20"/></svg></span></button>
+                  <button type="button" class="pane-layout-option" data-layout="vertical3" title="三栏（⌘3）" aria-label="三栏"><span class="layout-icon layout-icon-vertical3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M8.667 2v20M15.333 2v20"/></svg></span></button>
+                  <button type="button" class="pane-layout-option" data-layout="vertical4" title="四栏（⌘4）" aria-label="四栏"><span class="layout-icon layout-icon-vertical4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M7 2v20M12 2v20M17 2v20"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="horizontal4" title="四行" aria-label="四行"><span class="layout-icon layout-icon-horizontal4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M2 7h20M2 12h20M2 17h20"/></svg></span></button>
                 </div>
                 <div class="pane-layout-footer">
@@ -166,7 +166,7 @@
           </div>
         </div>
         <span class="toolbar-control-divider" aria-hidden="true"></span>
-        <label class="size-control" title="缩略图大小">小<input id="sizeSlider" type="range" min="110" max="260" value="168">大</label>
+        <label class="size-control" title="缩略图大小">小<input id="sizeSlider" type="range" min="64" max="260" value="168">大</label>
         </div>
       </section>
       <div id="paneLayout" class="pane-layout" data-layout="single"></div>
@@ -229,6 +229,7 @@
             <span id="generationMetadataFormat" class="metadata-format"></span>
           </div>
           <div id="generationMetadata" class="generation-metadata"></div>
+          <div id="metadataResizeHandle" class="metadata-resize-handle" role="separator" aria-orientation="horizontal" aria-valuemin="148" aria-valuemax="720" aria-label="调整生成元数据查看器高度" tabindex="0" title="拖动调整查看器高度"></div>
         </section>
         <div class="inspector-actions">
           <button id="pinButton" class="secondary-button" title="素材置顶只在普通文件夹中生效">置顶</button>
@@ -390,10 +391,13 @@
   <script src="window-target.js"></script>
   <script src="window-actions.js"></script>
   <script src="window-router.js"></script>
+  <script src="keyboard-platform.js"></script>
   <script src="feature-ui.js"></script>
   <script src="manual-order-ui.js"></script>
   <script src="thumbnail-ui.js"></script>
   <script src="site-import-ui.js"></script>
+  <script src="novelai-metadata.js"></script>
+  <script src="stealth-metadata.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

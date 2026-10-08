@@ -149,7 +149,21 @@
       return ids;
     }
 
-    return { recall, recallFolderSort, remember, rememberCascade, invalidate };
+    function cloneFolders(libraryPath, folderMap, now = 0) {
+      if (!libraryPath || !folderMap || typeof folderMap !== 'object') return;
+      const data = read();
+      const source = data[String(libraryPath)];
+      if (!source) return;
+      const timestamp = Number(now) || Date.now();
+      const library = data[String(libraryPath)] = { ...source };
+      for (const [sourceId, targetId] of Object.entries(folderMap)) {
+        const entry = library[`folder:${sourceId}`];
+        if (entry) library[`folder:${targetId}`] = { ...entry, at: timestamp };
+      }
+      write(data);
+    }
+
+    return { recall, recallFolderSort, remember, rememberCascade, cloneFolders, invalidate };
   }
 
   function rememberCascade(storageOrMemory, libraryPath, parentFolderId, foldersTree, sort, sortDir, now = 0) {

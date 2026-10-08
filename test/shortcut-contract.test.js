@@ -236,7 +236,7 @@ test('history and folder navigation support Control and Option arrow shortcuts',
   assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowLeft'"));
   assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowRight'"));
   assert.ok(handler.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowUp'"));
-  assert.match(renderer, /id="backButton"[^>]+title="返回（⌥← \/ ⌃←）"/);
-  assert.match(renderer, /id="forwardButton"[^>]+title="前进（⌥→ \/ ⌃→）"/);
-  assert.match(renderer, /id="upButton"[^>]+title="上一级（⌥↑ \/ ⌃↑）"/);
+  assert.match(renderer, /id="backButton"[^>]+title="\$\{keyboardPlatform\.shortcutText\('返回（⌥← \/ ⌃←）'\)\}"/);
+  assert.match(renderer, /id="forwardButton"[^>]+title="\$\{keyboardPlatform\.shortcutText\('前进（⌥→ \/ ⌃→）'\)\}"/);
+  assert.match(renderer, /id="upButton"[^>]+title="\$\{keyboardPlatform\.shortcutText\('上一级（⌥↑ \/ ⌃↑）'\)\}"/);
 });

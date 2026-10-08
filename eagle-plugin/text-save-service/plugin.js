@@ -16,6 +16,46 @@ let active = false;
 let timer;
 const requests = new Set();
 
+async function openMultiViewCurrentView() {
+  const status = document.querySelector('#status');
+  try {
+    const config = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
+    const result = await request(config, '/open-current', {});
+    if (!result?.ok) throw new Error(result?.error || 'MultiView 当前界面不可用');
+    status.textContent = '已打开 MultiView 当前界面';
+    await eagle.window.hide();
+  } catch (error) {
+    status.textContent = error.message || '无法连接 MultiView';
+  }
+}
+
+// Reverse of MultiView's own "Eagle 路径" button: Eagle follows the folder the
+// foreground MultiView pane shows. Only ordinary folders and the library root
+// can be located; Eagle's plugin API has no way to open smart folders, tags or
+// the trash.
+async function openMultiViewFolderInEagle() {
+  const status = document.querySelector('#status');
+  try {
+    const config = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
+    const result = await request(config, '/current-view');
+    if (!result?.ok) throw new Error(result?.error || 'MultiView 当前界面不可用');
+    const view = result.view || {};
+    if (view.kind === 'folder' && typeof view.id === 'string' && view.id) {
+      if (!(await eagle.folder.open(view.id))) throw new Error('Eagle 未确认打开该文件夹，请刷新后重试');
+      status.textContent = '已在 Eagle 打开 MultiView 当前文件夹';
+      await eagle.window.hide();
+      return;
+    }
+    if (view.kind === 'root') {
+      status.textContent = 'MultiView 当前在资料库根目录；Eagle 插件无法回到根目录，请在 Eagle 中点击资料库。';
+      return;
+    }
+    status.textContent = 'MultiView 当前界面不是普通文件夹，无法在 Eagle 中打开。';
+  } catch (error) {
+    status.textContent = error.message || '无法连接 MultiView';
+  }
+}
+
 function request(config, route, body) {
   return new Promise((resolve, reject) => {
     if (stopped) return reject(new Error('Plugin stopped'));
@@ -83,6 +123,9 @@ eagle.onPluginCreate(plugin => {
     try { eagle.log.error(message); } catch { console.error(message); }
   }
 });
+
+if (typeof document !== 'undefined') document.querySelector('#openMultiView')?.addEventListener('click', openMultiViewCurrentView);
+if (typeof document !== 'undefined') document.querySelector('#openInEagle')?.addEventListener('click', openMultiViewFolderInEagle);
 window.addEventListener('beforeunload', () => {
   stopped = true;
   clearTimeout(timer);

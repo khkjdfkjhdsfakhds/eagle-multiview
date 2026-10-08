@@ -7,6 +7,24 @@ const path = require('node:path');
 const { loadMain } = require('../test-support/main-data-harness.cjs');
 async function fixture(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-main-regression-')); t.after(() => fs.rm(root, { recursive: true, force: true })); return root; }
 
+test('new documents lead existing local manual orders without changing older item positions', async t => {
+  const main = loadMain(await fixture(t)), libraryPath = '/A.library';
+  main.hub.library = {path:libraryPath,folders:[{id:'F'}]};
+  main.client.libraryInfo = async () => main.hub.library;
+  main.client.folderTree = async () => main.hub.library.folders;
+  main.client.queryItems = async () => ({data:[{id:'old-a'},{id:'old-b'}],hasMore:false});
+  main.client.addItems = async () => ['NEW'];
+  main.client.getItems = async () => [{id:'NEW'}];
+  main.hub.connect = async () => {};
+  main.setWaitForImportedFile(async () => ({item:{id:'NEW',folders:['F']},fileURL:'file:///synthetic.txt'}));
+  const event = {sender:{id:1}};
+  await main.rpcRegistry.get('manual-order:move')(event, {libraryPath,scope:'folder:F',kind:'items',ids:['old-b'],anchorId:'old-a',position:'before',knownIds:['old-a','old-b'],revision:0});
+  const result = await main.rpcRegistry.get('document:create')(event,{type:'txt',name:'fixture',folderId:'F',libraryPath});
+  assert.equal(result.orderWarning,null);
+  const orders = await main.rpcRegistry.get('manual-order:get')(event,{libraryPath});
+  assert.deepEqual(Array.from(orders['["folder:F","items"]'].ids),['NEW','old-b','old-a']);
+});
+
 test('DA-02: failed creation never rolls back another library and reports the residual item', async t => {
   const main = loadMain(await fixture(t)); let library = '/A.library';
   main.hub.library = { path: library, folders: [] };
@@ -105,14 +123,49 @@ test('DA-13: late hydration cannot replace a newer library supplemental snapshot
   assert.deepEqual(await main.getSupplementalItemStore().get('/A.library'), ['old']);
 });
 
-test('DA-10: root use-existing rechecks deleted state after duplicate discovery', async t => {
+async function duplicateFixture(t, { cachedDeleted = false } = {}) {
   const root = await fixture(t), main = loadMain(path.join(root, 'user-data'));
   const libraryPath = path.join(root, 'synthetic-store'), dir = path.join(libraryPath, 'images', 'I.info'), input = path.join(root, 'input.txt');
   await fs.mkdir(dir, { recursive: true }); await fs.writeFile(input, 'same'); await fs.writeFile(path.join(dir, 'item.txt'), 'same');
-  await fs.writeFile(path.join(dir, 'metadata.json'), JSON.stringify({ id: 'I', name: 'item', ext: 'txt', size: 4, isDeleted: false }));
+  await fs.writeFile(path.join(dir, 'metadata.json'), JSON.stringify({ id: 'I', name: 'item', ext: 'txt', size: 4, isDeleted: cachedDeleted }));
   main.hub.library = { path: libraryPath, folders: [] };
   main.client.libraryInfo = async () => main.hub.library;
+  const imports = [];
+  main.client.addItems = async items => { imports.push(items); return ['NEW']; };
+  main.client.getItems = async () => [{ id: 'NEW' }];
+  return { main, libraryPath, input, imports };
+}
+
+test('DA-10: a duplicate Eagle has trashed is imported as a new item, like Eagle ignores trashed duplicates', async t => {
+  const { main, libraryPath, input, imports } = await duplicateFixture(t);
   main.client.getItem = async () => ({ id: 'I', isDeleted: true });
-  const result = await main.rpcRegistry.get('items:import')({ sender: { id: 1 } }, { paths: [input], libraryPath, duplicateChoice: 'use-existing' });
-  assert.equal(result.count, 0); assert.equal(result.ready, 0); assert.equal(result.duplicateFailed, 1); assert.equal(result.ids.length, 0);
+  const event = { sender: { id: 1 } };
+  const asked = await main.rpcRegistry.get('items:import')(event, { paths: [input], libraryPath });
+  assert.equal(asked.needsDuplicateDecision, undefined, 'trashed item still reported as a duplicate');
+  assert.equal(imports.length, 1); assert.equal(asked.count, 1); assert.deepEqual(Array.from(asked.ids), ['NEW']);
+  const chosen = await main.rpcRegistry.get('items:import')(event, { paths: [input], libraryPath, duplicateChoice: 'use-existing' });
+  assert.equal(chosen.count, 1); assert.equal(chosen.duplicateFailed, 0); assert.deepEqual(Array.from(chosen.ids), ['NEW']);
+});
+
+test('DA-10: a duplicate whose trashed copy was emptied from Eagle is imported as a new item', async t => {
+  const { main, libraryPath, input, imports } = await duplicateFixture(t);
+  main.client.getItem = async () => { throw new Error('素材不存在或已不在当前资料库'); };
+  const result = await main.rpcRegistry.get('items:import')({ sender: { id: 1 } }, { paths: [input], libraryPath });
+  assert.equal(result.needsDuplicateDecision, undefined); assert.equal(imports.length, 1); assert.equal(result.count, 1);
+});
+
+test('DA-10: an item restored from the trash is a duplicate again even when cached metadata says trashed', async t => {
+  const { main, libraryPath, input, imports } = await duplicateFixture(t, { cachedDeleted: true });
+  main.client.getItem = async () => ({ id: 'I', isDeleted: false });
+  const result = await main.rpcRegistry.get('items:import')({ sender: { id: 1 } }, { paths: [input], libraryPath });
+  assert.equal(result.needsDuplicateDecision, true); assert.equal(result.duplicates[0].id, 'I'); assert.equal(imports.length, 0);
+});
+
+test('DA-10: use-existing imports the file when the duplicate is trashed after the prompt', async t => {
+  const { main, libraryPath, input, imports } = await duplicateFixture(t);
+  let reads = 0;
+  main.client.getItem = async () => ({ id: 'I', isDeleted: ++reads > 1 });
+  main.hub.mutateSet = async () => { throw new Error('trashed duplicate must not be re-filed'); };
+  const result = await main.rpcRegistry.get('items:import')({ sender: { id: 1 } }, { paths: [input], libraryPath, folderId: 'F', duplicateChoice: 'use-existing' });
+  assert.equal(imports.length, 1); assert.equal(result.count, 1); assert.equal(result.duplicateFailed, 0); assert.deepEqual(Array.from(result.ids), ['NEW']);
 });

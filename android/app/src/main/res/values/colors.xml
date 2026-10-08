@@ -2,7 +2,8 @@
 <resources>
     <color name="brand_blue">#1769E0</color>
     <color name="surface_background">#F4F5F7</color>
-    <color name="toolbar_background">#FFFFFF</color>
+    <!-- The web client's page background (styles.css bg), shown behind the system bars while the page fills the window. -->
+    <color name="page_background">#18191D</color>
     <color name="panel_background">#FFFFFF</color>
     <color name="panel_border">#D9DDE5</color>
     <color name="text_primary">#20242B</color>

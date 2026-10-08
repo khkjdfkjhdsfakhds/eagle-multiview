@@ -104,6 +104,31 @@ test('plugin entry unload during discovery never connects or starts a late save'
   assert.equal(f.timerCount, 0);
 });
 
+test('the plugin button makes Eagle follow the folder MultiView currently shows', async t => {
+  let view = null;
+  const f = await fixture(t, { currentView: async () => view });
+  const button = f.mount('#openInEagle');
+  f.mount('#status');
+  f.load();
+  f.create();
+  view = { ok: true, libraryPath: f.libraryPath, view: { kind: 'folder', id: 'FOLDER-CHILD' } };
+  await button.listeners.click();
+  assert.deepEqual(f.openedFolders, ['FOLDER-CHILD']);
+  assert.equal(f.hides.length, 1, 'the plugin window hides once Eagle has followed the folder');
+  assert.match(f.text('#status'), /已在 Eagle 打开/);
+  // A non-folder view cannot be located through Eagle's plugin API and must not
+  // pretend otherwise.
+  view = { ok: true, libraryPath: f.libraryPath, view: { kind: 'root' } };
+  await button.listeners.click();
+  assert.deepEqual(f.openedFolders, ['FOLDER-CHILD']);
+  assert.match(f.text('#status'), /根目录/);
+  // Eagle refusing to open the folder is reported rather than shown as success.
+  view = { ok: true, libraryPath: f.libraryPath, view: { kind: 'folder', id: 'FOLDER-MISSING' } };
+  f.setFolderOpenResult(false);
+  await button.listeners.click();
+  assert.match(f.text('#status'), /未确认打开/);
+});
+
 const archive = '/Applications/Eagle.app/Contents/Resources/app.asar';
 test('installed Eagle loader wrapper: unchanged first-party entry contract connects and saves synthetic TXT', { skip: !fs.existsSync(archive) }, async t => {
   const asar = require('../node_modules/.pnpm/@electron+asar@3.4.1/node_modules/@electron/asar');

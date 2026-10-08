@@ -6,15 +6,15 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
-const ROOT = path.resolve(__dirname, '..');
-function loadMain(root, { dialog = {} } = {}) {
+const ROOT = process.env.EAGLEMV_UI_SOURCE_ROOT || path.resolve(__dirname, '..');
+function loadMain(root, { dialog = {}, clipboard = {} } = {}) {
   const app = new EventEmitter();
   Object.assign(app, { getPath: () => root, setPath() {}, setName() {}, getName: () => 'Review fixture', requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }), quit() {} });
-  const electron = { app, dialog, protocol: { registerSchemesAsPrivileged() {} }, BrowserWindow: { fromWebContents: () => null }, ipcMain: { on() {}, handle() {} } };
+  const electron = { app, dialog, clipboard, protocol: { registerSchemesAsPrivileged() {} }, BrowserWindow: { fromWebContents: () => null }, ipcMain: { on() {}, handle() {} } };
   const realRequire = createRequire(path.join(ROOT, 'main.js'));
   const context = { require: name => name === 'electron' ? electron : realRequire(name), module: { exports: {} }, __dirname: ROOT,
     process: { on() {}, platform: 'darwin', pid: process.pid, env: {} }, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, structuredClone, URL, Buffer, AbortController };
-  const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
+  const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, copyFolderTree, resolveMediaURL, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
     'setWebServer: value => { webServer = value; }, setWaitForImportedFile: value => { waitForImportedFile = value; }, ' +
     'addFakeWindow: value => windows.add(value), getQuitting: () => quitting };';
   vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8') + expose, context, { filename: path.join(ROOT, 'main.js') });

@@ -92,7 +92,7 @@ function createHarness({ healthStatus = 200, healthResponse } = {}) {
   };
   window.window = window;
   vm.runInNewContext(source, context, { filename: 'web-shim.js' });
-  return { window, sockets, fetches, timers, windowListeners, replacements };
+  return { window, document: context.document, sockets, fetches, timers, windowListeners, replacements };
 }
 
 async function flushPromises() {
@@ -179,4 +179,35 @@ test('a health 401 from an older reconnect attempt cannot replace a recovered we
   await flushPromises();
 
   assert.deepEqual(harness.replacements, []);
+});
+
+test('returning to a visible page reconnects at once instead of waiting out the grown backoff', async () => {
+  const harness = createHarness();
+  harness.sockets[0].hello(41);
+  harness.sockets[0].close();
+  harness.timers.find(timer => timer.delay === 1000 && !timer.cleared).callback();
+  harness.sockets[1].close();
+  const grown = harness.timers.find(timer => timer.delay === 2000 && !timer.cleared);
+  assert.ok(grown, 'backoff grew while the page was away');
+
+  // Still hidden (another app such as the system file picker is in front).
+  harness.document.visibilityState = 'hidden';
+  harness.windowListeners.get('visibilitychange')();
+  assert.equal(harness.sockets.length, 2);
+
+  harness.document.visibilityState = 'visible';
+  harness.windowListeners.get('visibilitychange')();
+  assert.equal(harness.sockets.length, 3);
+  assert.equal(grown.cleared, true);
+  harness.sockets[2].hello(42);
+  await flushPromises();
+  harness.sockets[2].close();
+  assert.ok(harness.timers.some(timer => timer.delay === 1000 && !timer.cleared), 'backoff starts over');
+
+  // An open socket is left alone.
+  const before = harness.sockets.length;
+  harness.timers.filter(timer => !timer.cleared).at(-1).callback();
+  harness.sockets.at(-1).hello(43);
+  harness.windowListeners.get('visibilitychange')();
+  assert.equal(harness.sockets.length, before + 1);
 });

@@ -9,7 +9,6 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
-import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso.closeSoftKeyboard
@@ -111,7 +110,7 @@ class MainActivityWebViewTest {
 
             connect(server.url("/").toString())
             assertWebText("persisted host")
-            onView(withId(R.id.changeHostButton)).perform(click())
+            changeHost()
             waitForDisplayed(R.id.hostPanel)
 
             scenario.recreate()
@@ -154,7 +153,7 @@ class MainActivityWebViewTest {
 
                 connect(firstServer.url("/").toString())
                 assertWebText("persisted host")
-                onView(withId(R.id.changeHostButton)).perform(click())
+                changeHost()
                 waitForEnabled(R.id.connectButton)
                 connect(secondServer.url("/").toString())
                 assertTrue(secondPageStarted.await(5, TimeUnit.SECONDS))
@@ -251,14 +250,14 @@ class MainActivityWebViewTest {
             server.start()
 
             connect(server.url("/").toString())
-            onView(withId(R.id.authBanner)).check(matches(isDisplayed()))
+            waitForDisplayed(R.id.authBanner)
             onWebView()
                 .withElement(findElement(Locator.ID, "key"))
                 .perform(webKeys("test-key"))
             onWebView()
                 .withElement(findElement(Locator.ID, "login"))
                 .perform(webClick())
-            waitForStatus(R.string.connected_host)
+            waitForConnectedPage()
             assertWebText("authenticated")
 
             dispatcher.revoked = true
@@ -269,13 +268,13 @@ class MainActivityWebViewTest {
 
             dispatcher.revoked = false
             onView(withId(R.id.authRetryButton)).perform(click())
-            waitForStatus(R.string.connected_host)
+            waitForConnectedPage()
             assertWebText("authenticated")
 
             dispatcher.sawSessionCookie = false
             scenario.close()
             scenario = ActivityScenario.launch(MainActivity::class.java)
-            waitForStatus(R.string.connected_host)
+            waitForConnectedPage()
             assertWebText("authenticated")
             assertTrue(dispatcher.sawSessionCookie)
         }
@@ -328,9 +327,7 @@ class MainActivityWebViewTest {
                 assertWebText("first host")
                 setTestCookie(firstServer.url("/").toString(), "old_host_session=private")
 
-                scenario.onActivity { activity ->
-                    activity.findViewById<Button>(R.id.changeHostButton).performClick()
-                }
+                changeHost()
                 onView(withId(R.id.hostPanel)).check(matches(isDisplayed()))
                 waitForEnabled(R.id.connectButton)
                 connect(secondServer.url("/").toString())
@@ -356,8 +353,8 @@ class MainActivityWebViewTest {
                 val staleClient = AtomicReference<WebViewClient>()
                 scenario.onActivity { activity ->
                     staleClient.set(activity.findViewById<WebView>(R.id.webView).webViewClient)
-                    activity.findViewById<Button>(R.id.changeHostButton).performClick()
                 }
+                changeHost()
                 waitForDisplayed(R.id.hostPanel)
                 waitForEnabled(R.id.connectButton)
                 connect(secondServer.url("/").toString())
@@ -370,7 +367,7 @@ class MainActivityWebViewTest {
                     staleClient.get().onPageCommitVisible(currentView, staleUrl)
                 }
 
-                onView(withId(R.id.statusText)).check(matches(withText(R.string.connected_host)))
+                waitForConnectedPage()
                 assertWebText("replacement host")
             }
         }
@@ -439,22 +436,38 @@ class MainActivityWebViewTest {
             .check(webMatches(getText(), containsString(text)))
     }
 
-    private fun waitForStatus(expectedResId: Int) {
-        val expected = ApplicationProvider.getApplicationContext<Context>().getString(expectedResId)
-        onView(withId(R.id.statusText)).perform(object : ViewAction {
-            override fun getConstraints() = isAssignableFrom(TextView::class.java)
+    /** Connected: only the page is showing, with no login banner, failure overlay, or host entry. */
+    private fun waitForConnectedPage() {
+        onView(withId(R.id.webView)).perform(object : ViewAction {
+            override fun getConstraints() = isAssignableFrom(WebView::class.java)
 
-            override fun getDescription() = "wait for status text $expected"
+            override fun getDescription() = "wait for the connected page"
 
             override fun perform(uiController: UiController, view: View) {
+                val root = view.rootView
                 val deadline = SystemClock.uptimeMillis() + 5_000
                 do {
-                    if ((view as TextView).text.toString() == expected) return
+                    if (view.isShown &&
+                        !root.findViewById<View>(R.id.authBanner).isShown &&
+                        !root.findViewById<View>(R.id.stateOverlay).isShown &&
+                        !root.findViewById<View>(R.id.hostPanel).isShown
+                    ) return
                     uiController.loopMainThreadForAtLeast(50)
                 } while (SystemClock.uptimeMillis() < deadline)
-                throw AssertionError("Timed out waiting for status text $expected")
+                throw AssertionError("Timed out waiting for the connected page")
             }
         })
+    }
+
+    /**
+     * Like a browser tab, the connected page has no native toolbar, so there is no visible
+     * change-host control while connected; this runs the same action the failure overlay and the
+     * login banner offer.
+     */
+    private fun changeHost() {
+        scenario.onActivity { activity ->
+            activity.findViewById<Button>(R.id.stateChangeHostButton).performClick()
+        }
     }
 
     private fun waitForDisplayed(viewId: Int) {

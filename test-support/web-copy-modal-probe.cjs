@@ -8,6 +8,7 @@ const source = process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '
 const { createWebServer } = require(path.join(source, 'lib/web-server'));
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-copy-modal-'));
 app.setPath('userData', directory);
+app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP eaglemv-copy.test 127.0.0.1');
 app.on('window-all-closed', () => {});
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

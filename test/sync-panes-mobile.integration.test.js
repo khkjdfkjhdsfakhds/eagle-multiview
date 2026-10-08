@@ -52,10 +52,12 @@ test('sync panes only while previewing; grid selection and mutations stay pane-l
   assert.equal(result.afterPreviewOpen.pane1.preview, 'item-2', 'active pane opened preview');
   assert.equal(result.afterPreviewNext.pane0.preview, 'item-3', 'sibling pane synced preview navigation');
   assert.equal(result.afterPreviewNext.pane1.preview, 'item-3', 'active pane advanced preview');
+  assert.deepEqual(result.afterPreviewNext.pane0.selected, ['item-3'], 'sibling selection follows while preview remains open');
+  assert.deepEqual(result.afterPreviewNext.pane1.selected, ['item-3'], 'active selection follows while preview remains open');
   assert.equal(result.previewRating.pane0, 4, 'shared item state reflected the preview rating');
   assert.equal(result.previewRating.pane1, 4, 'active preview applied the rating');
   assert.equal(result.afterPreviewClose.pane0.preview, null, 'sibling pane synced preview close');
   assert.equal(result.afterPreviewClose.pane1.preview, null, 'active pane closed preview');
-  assert.deepEqual(result.afterPreviewClose.pane0.selected, ['item-4'], 'sibling pane retained item A');
-  assert.deepEqual(result.afterPreviewClose.pane1.selected, ['item-3'], 'active pane alone selected the final preview item');
+  assert.deepEqual(result.afterPreviewClose.pane0.selected, ['item-3'], 'sibling pane retains the final preview selection');
+  assert.deepEqual(result.afterPreviewClose.pane1.selected, ['item-3'], 'active pane retains the final preview selection');
 });

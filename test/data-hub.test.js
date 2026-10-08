@@ -302,6 +302,24 @@ test('a queued mutation is cancelled if Eagle changed libraries', async () => {
   assert.equal(updateCalls, 0);
 });
 
+test('a stale library snapshot is re-read before a finished write is abandoned', async () => {
+  const client = new FakeClient({ id: 'A', name: 'unchanged', modificationTime: 1 });
+  let reads = 0;
+  client.libraryInfo = async () => (++reads <= 2
+    ? { path: '/library-rewriting', modificationTime: 5 }
+    : { path: '/library', modificationTime: 5 });
+  const hub = new DataHub(client);
+  await hub.ensureLibraryPath('/library');
+  assert.equal(reads, 3, 'the mismatch must be re-read until the snapshot settles');
+});
+
+test('a library that stays switched still cancels the queued write', async () => {
+  const client = new FakeClient({ id: 'A', name: 'unchanged', modificationTime: 1 });
+  client.libraryInfo = async () => ({ path: '/somewhere-else', modificationTime: 5 });
+  const hub = new DataHub(client);
+  await assert.rejects(hub.ensureLibraryPath('/library'), error => error.code === 'LIBRARY_CHANGED');
+});
+
 test('connect broadcasts a library switch so already-open windows cannot remain on the old library', async () => {
   const client = new FakeClient({ id: 'A' });
   client.appInfo = async () => ({ version: '4.0' });
@@ -396,4 +414,25 @@ test('renaming a nested parent folder retains its children hierarchy and updates
   assert.equal(changes[0].library.folders[0].name, '新父文件夹');
   assert.equal(changes[0].library.folders[0].children[0].id, 'child-1');
   assert.equal(changes[0].library.folders[0].children[1].children[0].id, 'grandchild-1');
+});
+
+test('default search uses the ready metadata index while preserving Eagle constraints', async () => {
+  class QueryClient {
+    static matchesSearchConstraints(item, query) { return !query.folderId || item.folders?.includes(query.folderId); }
+    async queryItems() { throw new Error('Eagle text search should not run when metadata index is ready'); }
+  }
+  const metadataSearchIndex = {
+    ready: true,
+    libraryPath: '/library',
+    async search(text, options) {
+      assert.equal(text, 'artist:reoen');
+      return { data: [{ id: 'match', folders: ['F'], name: 'old' }], total: 1, nextOffset: 1, hasMore: false, metadataIndexed: true };
+    },
+    on() { return () => {}; }
+  };
+  const hub = new DataHub(new QueryClient(), { metadataSearchIndex });
+  hub.library = { path: '/library' };
+  const page = await hub.query({ search: 'artist:reoen', folderId: 'F', offset: 0, limit: 20 });
+  assert.deepEqual(page.data.map(item => item.id), ['match']);
+  assert.equal(page.metadataIndexed, true);
 });

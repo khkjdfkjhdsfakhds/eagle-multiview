@@ -106,5 +106,18 @@
     return changed ? next : nodes;
   }
 
-  return { findFolder, findFolderPath, overlayFolder, normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders };
+  function itemFolderLocations(item, nodes) {
+    if (!item) return [];
+    const folderIds = Array.isArray(item.folders) ? item.folders : [];
+    const list = [];
+    for (const folderId of folderIds) {
+      const folder = findFolder(nodes, folderId);
+      if (folder) {
+        list.push({ id: folder.id, name: folder.name, password: Boolean(folder.password) });
+      }
+    }
+    return list;
+  }
+
+  return { findFolder, findFolderPath, overlayFolder, normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, itemFolderLocations };
 });

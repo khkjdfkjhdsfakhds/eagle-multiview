@@ -259,6 +259,7 @@ test('inspector metadata auto-saves after a quiet edit and on field exit', () =>
   const queueHandler = source.slice(queueStart, queueEnd);
   assert.ok(queueHandler.includes('setTimeout'));
   assert.ok(queueHandler.includes('saveInspector()'));
+  assert.ok(queueHandler.includes('INSPECTOR_AUTOSAVE_DELAY'));
   const bindStart = source.indexOf('function bindEvents()');
   const bindEnd = source.indexOf('\nfunction bindHubEvents()', bindStart);
   const bindings = source.slice(bindStart, bindEnd);
@@ -278,7 +279,7 @@ test('inspector auto-save stays behind the live editor and queues in-flight typi
   const saveEnd = source.indexOf('\nasync function setPinned', saveStart);
   const saveHandler = source.slice(saveStart, saveEnd);
   const successStart = saveHandler.indexOf('const contextStillActive');
-  const successEnd = saveHandler.indexOf("toast('修改已同步到所有窗口')", successStart);
+  const successEnd = saveHandler.indexOf('\n  } catch (error)', successStart);
   const successHandler = saveHandler.slice(successStart, successEnd);
   assert.ok(successStart >= 0);
   assert.ok(successHandler.includes('pane.selectedBase = structuredClone(draft.base)'));
@@ -459,6 +460,16 @@ test('bulk folder, rating, and trash operations use bounded batches with partial
     assert.ok(handler.includes('runItemBatch('), `${functionName} batches Eagle writes`);
   }
   assert.ok(source.includes('pane.selected = new Set(outcome.failed);'));
+});
+
+test('trash deletion records an inverse operation and Control+Z restores it through the conflict-safe mutation path', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  assert.ok(source.includes('const trashUndoStack = [];'));
+  assert.ok(source.includes('trashUndoStack.push({ ids: outcome.succeeded'));
+  assert.ok(source.includes('async function undoLastTrash()'));
+  assert.ok(source.includes("patch: { isDeleted: false }"));
+  assert.ok(source.includes("event.key.toLowerCase() === 'z'"));
+  assert.ok(source.includes("onUndoDelete?.(() => undoLastTrash())"));
 });
 
 test('one pane query failure stays local and offers a retry instead of disabling the app', () => {

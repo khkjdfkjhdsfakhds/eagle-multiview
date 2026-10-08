@@ -33,6 +33,16 @@ test('remembers and recalls the sort per library and view', () => {
   assert.equal(memory.recall('', 'folder:F1'), null);
 });
 
+test('clones folder sort preferences onto copied folder ids', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  memory.remember('/A.library', 'folder:source', 'rating', 'desc', 111);
+  memory.remember('/A.library', 'folder:source-child', 'name', 'asc', 112);
+  memory.cloneFolders('/A.library', { source: 'copy', 'source-child': 'copy-child' }, 200);
+  assert.deepEqual(memory.recall('/A.library', 'folder:copy'), { sort: 'rating', sortDir: 'desc' });
+  assert.deepEqual(memory.recall('/A.library', 'folder:copy-child'), { sort: 'name', sortDir: 'asc' });
+});
+
 test('resetting a view to Eagle order removes its entry', () => {
   const storage = fakeStorage();
   const memory = createSortMemory(storage);

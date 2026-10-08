@@ -52,3 +52,21 @@ test('partial duplicate identity response reports skipped folder preservation wi
   assert.equal(result.folderAssignmentFailed,2);
   assert.ok(result.rejected.some(entry=>entry.code==='DUPLICATE_IDENTITY_UNCERTAIN'));
 });
+
+test('creating a copy resolves only its accepted native duplicate before assigning folders', async t => {
+  const {main,payload} = await setup(t);
+  let confirmed = false;
+  main.client.getItems = async ids => confirmed ? ids.map(id => ({id})) : [];
+  main.client.request = async (url, {body}) => {
+    assert.equal(url, '/api/script/inject');
+    assert.match(body.script, /copy-0/);
+    assert.ok(body.script.includes(JSON.stringify(payload.libraryPath)));
+    confirmed = true;
+  };
+  const assignments = [];
+  main.hub.mutateSet = async value => { assert(confirmed); assignments.push(value); };
+  const result = await main.rpcRegistry.get('items:duplicate')({sender:{id:1}}, {...payload,preserveFolders:true});
+  assert.equal(result.ready, 1);
+  assert.equal(result.nativeDecisionPending, false);
+  assert.equal(assignments[0].id, 'copy-0');
+});

@@ -196,7 +196,7 @@
   show({ kind: 'workspace', ids: [], paneId: last.id }, innerWidth - 15, 170);
   await wait(40);
   const parent = menu.querySelector('.pane-target-options').parentElement.parentElement;
-  parent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+  parent.click();
   await wait(30);
   const submenuBox = menu.querySelector('.pane-target-options').parentElement.getBoundingClientRect();
   assert(submenuBox.width > 0 && submenuBox.right <= innerWidth && submenuBox.left >= 0, 'positional submenu clips at right edge');

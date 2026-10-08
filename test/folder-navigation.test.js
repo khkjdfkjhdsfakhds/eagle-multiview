@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, overlayFolder } = require('../src/folder-navigation');
+const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, overlayFolder, itemFolderLocations } = require('../src/folder-navigation');
 
 const folders = [{
   id: 'top',
@@ -115,4 +115,18 @@ test('overlayFolder updates folder in place preserving nested children and untou
   assert.equal(updated[0].children.length, 2);
   assert.equal(updated[0].children[1].children[0].id, 'd');
   assert.equal(updated[1].name, '原名称E');
+});
+
+test('itemFolderLocations resolves known folders preserving order and flags passwords', () => {
+  const tree = [
+    { id: 'f1', name: 'Folder 1', children: [{ id: 'f2', name: 'Sub 2', password: 'secret', children: [] }] },
+    { id: 'f3', name: 'Folder 3', children: [] }
+  ];
+  assert.deepEqual(itemFolderLocations(null, tree), []);
+  assert.deepEqual(itemFolderLocations({ folders: [] }, tree), []);
+  assert.deepEqual(itemFolderLocations({ folders: ['f1', 'f2', 'f3', 'non-existent'] }, tree), [
+    { id: 'f1', name: 'Folder 1', password: false },
+    { id: 'f2', name: 'Sub 2', password: true },
+    { id: 'f3', name: 'Folder 3', password: false }
+  ]);
 });

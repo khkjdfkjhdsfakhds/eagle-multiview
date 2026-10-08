@@ -45,10 +45,10 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
     }
     if (frozen?.sourceId === id && Object.hasOwn(frozen, 'sourceParentId')) source.parent = frozen.sourceParentId;
     const excluded = new Set(walk([source.folder]).map(entry => entry.folder.id));
-    if (target !== undefined && (target === source.parent || excluded.has(target))) return;
+    if (target !== undefined && ((!frozen?.placement && target === source.parent) || excluded.has(target))) return;
     const executeMove = async parentId => {
       if (context().libraryPath !== ctx.libraryPath) throw new Error('资料库已切换，请重新选择。');
-      const result = await api.moveFolder({ id, parentId, baseParentId: source.parent, libraryPath: ctx.libraryPath });
+      const result = await api.moveFolder({ id, parentId, baseParentId: source.parent, libraryPath: ctx.libraryPath, ...frozen?.placement });
       if (context().libraryPath !== ctx.libraryPath) throw new Error('资料库已切换；移动请求针对原库，请回到原库核对结果。');
       if (result?.conflict) throw new Error('文件夹已在其他窗口移动，请刷新后重新选择目标。');
       if (!result?.ok) throw new Error('Eagle 尚未确认移动结果，请先刷新核对。');
@@ -115,23 +115,82 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       } finally { moving = false; }
     };
   }
+  async function copyFolder(id, target, frozen = null) {
+    if (!api.copyFolder || !canStart() || moving || activeDialog || target === undefined) return;
+    const ctx = { ...(frozen || context()) };
+    const entries = walk(ctx.folders);
+    const source = entries.find(entry => entry.folder.id === id);
+    if (!source || (target !== null && !entries.some(entry => entry.folder.id === target))) return;
+    if (walk([source.folder]).some(entry => entry.folder.id === target)) {
+      notify('不能复制到自身或其子文件夹。'); return;
+    }
+    moving = true;
+    try {
+      notify('正在复制文件夹…');
+      const result = await api.copyFolder({ sourceId: id, parentId: target, libraryPath: ctx.libraryPath });
+      if (!result?.ok) throw new Error('Eagle 尚未确认复制结果，请先刷新核对。');
+      window.EagleMVSortMemory?.cloneFolders?.(ctx.libraryPath, result.folderMap);
+      try { await refresh(); }
+      catch (error) { notify(`文件夹已复制，但视图刷新失败：${error.message}。请刷新核对。`, 6000); return; }
+      notify(`已复制 ${result.folderCount} 个文件夹和 ${result.copiedItems} 个素材`);
+    } catch (error) { notify(error.message, 6000); }
+    finally { moving = false; }
+  }
   const FOLDER_TYPE = 'application/x-eagle-multiview-folder-node';
   let dragAttached = false;
   let activeFolderDrag = null;
   let highlighted = null;
-  const clearFeedback = () => { highlighted?.removeAttribute('data-folder-node-drop'); highlighted = null; };
+  const clearFeedback = () => {
+    highlighted?.removeAttribute('data-folder-node-drop');
+    highlighted?.removeAttribute('data-manual-drop');
+    highlighted = null;
+  };
   function attachFolderDrag() {
     if (dragAttached) return;
     dragAttached = true;
     const isFolderDrag = event => Array.from(event.dataTransfer?.types || []).includes(FOLDER_TYPE);
-    const destination = event => event.target.closest?.('[data-folder-node-id], [data-folder-node-root]');
-    const targetId = node => node.hasAttribute('data-folder-node-root') ? null : node.dataset.folderNodeId;
-    const allowed = (payload, target, ctx) => {
+    const destination = event => {
+      let node = event.target.closest?.('[data-folder-node-id], [data-folder-node-root], [data-crumb-folder-id], [data-crumb-root]');
+      // The space immediately below the final visible child is its after slot.
+      if (!node && event.target.closest?.('#folderTree')) {
+        node = [...document.querySelectorAll('#folderTree .folder-row[data-folder-node-id]')].reverse().find(row => {
+          const rect = row.getBoundingClientRect();
+          return rect.height && event.clientY >= rect.bottom && event.clientY <= rect.bottom + 20;
+        });
+      }
+      if (!node) {
+        const pane = event.target.closest?.('.content-pane[data-pane-id]');
+        if (!pane) return null;
+        const parentId = context().paneDestination?.(pane.dataset.paneId);
+        return parentId === undefined ? null : { node: pane, parentId };
+      }
+      const parentId = node.hasAttribute('data-folder-node-root') || node.hasAttribute('data-crumb-root')
+        ? null : node.dataset.crumbFolderId || node.dataset.folderNodeId;
+      if (node.matches('.folder-row[data-folder-node-id]')) {
+        const rect = node.getBoundingClientRect();
+        const point = (event.clientY - rect.top) / rect.height;
+        if (point <= .25 || point >= .75) {
+          const entries = walk(context().folders);
+          const entry = entries.find(entry => entry.folder.id === parentId);
+          if (!entry) return null;
+          const ctx = context();
+          const rawSiblings = entry.parent === null ? ctx.folders : entries.find(item => item.folder.id === entry.parent)?.folder.children || [];
+          const siblings = ctx.folderOrder ? ctx.folderOrder(entry.parent, rawSiblings) : rawSiblings;
+          return { node, parentId: entry.parent, placement: { anchorId: parentId,
+            position: point <= .25 ? 'before' : 'after', targetSiblingIds: siblings.map(folder => folder.id),
+            baseSiblingIds: rawSiblings.map(folder => folder.id) } };
+        }
+      }
+      return { node, parentId };
+    };
+    const allowed = (payload, destination, ctx, { copy = false } = {}) => {
+      const target = destination.parentId;
       if (!payload || payload.libraryPath !== ctx.libraryPath) return false;
       const entries = walk(ctx.folders);
       if (target !== null && !entries.some(entry => entry.folder.id === target)) return false;
       const source = entries.find(entry => entry.folder.id === payload.id);
-      if (!source || target === payload.baseParentId) return false;
+      if (!source || (!copy && !destination.placement && target === payload.baseParentId)
+        || destination.placement?.anchorId === payload.id) return false;
       return !walk([source.folder]).some(entry => entry.folder.id === target);
     };
     document.addEventListener('dragstart', event => {
@@ -142,7 +201,7 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       if (!source || !ctx.libraryPath || activeDialog || moving || !canStart()) { event.preventDefault(); return; }
       activeFolderDrag = { id: source.folder.id, libraryPath: ctx.libraryPath, baseParentId: source.parent };
       event.dataTransfer.setData(FOLDER_TYPE, JSON.stringify(activeFolderDrag));
-      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.effectAllowed = 'copyMove';
       // Only logical-folder drags are captured. Existing item/native-file
       // drag and import handlers receive all their original events unchanged.
       event.stopImmediatePropagation();
@@ -151,14 +210,15 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       if (!isFolderDrag(event)) return;
       event.preventDefault(); event.stopImmediatePropagation();
       clearFeedback();
-      const node = destination(event);
-      if (!node) { event.dataTransfer.dropEffect = 'none'; return; }
+      const target = destination(event);
+      if (!target) { event.dataTransfer.dropEffect = 'none'; return; }
       // Cross-window drag data can be protected until drop, so validate it
       // there; same-window drags can already exclude self and descendants.
-      const valid = !moving && !activeDialog && canStart() && (!activeFolderDrag || allowed(activeFolderDrag, targetId(node), context()));
-      highlighted = node;
-      node.dataset.folderNodeDrop = valid ? 'allowed' : 'blocked';
-      event.dataTransfer.dropEffect = valid ? 'move' : 'none';
+      const valid = !moving && !activeDialog && canStart() && (!activeFolderDrag || allowed(activeFolderDrag, target, context(), { copy: event.altKey }));
+      highlighted = target.node;
+      if (valid && target.placement) target.node.dataset.manualDrop = `vertical-${target.placement.position}`;
+      else target.node.dataset.folderNodeDrop = valid ? 'allowed' : 'blocked';
+      event.dataTransfer.dropEffect = valid ? (event.altKey ? 'copy' : 'move') : 'none';
     }, true);
     document.addEventListener('dragleave', event => {
       if (!isFolderDrag(event)) return;
@@ -172,14 +232,18 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       let payload;
       try { payload = JSON.parse(event.dataTransfer.getData(FOLDER_TYPE)); } catch { activeFolderDrag = null; return; }
       activeFolderDrag = null;
-      const node = destination(event), ctx = context();
-      if (!node || typeof payload?.id !== 'string' ||
+      const target = destination(event), ctx = context();
+      if (!target || typeof payload?.id !== 'string' ||
           !(payload.baseParentId === null || typeof payload.baseParentId === 'string') ||
-          !allowed(payload, targetId(node), ctx)) return;
+          !allowed(payload, target, ctx, { copy: event.altKey })) return;
       // Release submits once; hover never writes. The source parent remains
       // frozen from dragstart rather than silently rebasing a concurrent move.
-      moveFolder(payload.id, targetId(node), { ...ctx, sourceId: payload.id, sourceParentId: payload.baseParentId })
-        .catch(error => notify(error.message));
+      const copy = event.altKey;
+      setTimeout(() => (copy
+        ? copyFolder(payload.id, target.parentId, ctx)
+        : moveFolder(payload.id, target.parentId, { ...ctx, sourceId: payload.id,
+          sourceParentId: payload.baseParentId, placement: target.placement }))
+        .catch(error => notify(error.message)), 0);
     }, true);
     document.addEventListener('dragend', event => {
       if (!activeFolderDrag && !isFolderDrag(event)) return;
@@ -187,5 +251,5 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       event.stopImmediatePropagation();
     }, true);
   }
-  return { moveFolder, attachFolderDrag };
+  return { moveFolder, copyFolder, attachFolderDrag };
 };

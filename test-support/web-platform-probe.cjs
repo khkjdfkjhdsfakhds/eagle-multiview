@@ -9,6 +9,7 @@ const root = process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '..
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-web-platform-'));
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
+app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP eaglemv-fixture.test 127.0.0.1');
 app.on('window-all-closed', () => {});
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));

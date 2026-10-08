@@ -134,6 +134,12 @@ test('itemQueryBody produces the historical API body', () => {
   assert.deepEqual(itemQueryBody({ rating: 0 }), { rating: 0 });
 });
 
+test('folder search expands the API folder constraint to descendant ids', () => {
+  assert.deepEqual(itemQueryBody({ folderId: 'parent', folderIds: ['parent', 'child', 'deep'], search: 'needle' }), {
+    folders: ['parent', 'child', 'deep'], keywords: ['needle']
+  });
+});
+
 test('every spec row is fully declared', () => {
   for (const entry of spec) {
     assert.equal(typeof entry.key, 'string');

@@ -1,21 +1,30 @@
 package com.eaglemultiview.android
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewGroup.MarginLayoutParams
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -30,7 +39,12 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : AppCompatActivity() {
     private lateinit var hostPanel: LinearLayout
@@ -38,19 +52,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hostInput: EditText
     private lateinit var hostErrorText: TextView
     private lateinit var connectButton: Button
-    private lateinit var changeHostButton: Button
     private lateinit var retryButton: Button
     private lateinit var stateChangeHostButton: Button
     private lateinit var authRetryButton: Button
     private lateinit var authChangeHostButton: Button
-    private lateinit var statusText: TextView
     private lateinit var authBanner: LinearLayout
     private lateinit var progressBar: ProgressBar
     private lateinit var stateOverlay: LinearLayout
     private lateinit var stateProgress: ProgressBar
     private lateinit var stateTitle: TextView
     private lateinit var stateMessage: TextView
-    private lateinit var webView: WebView
+    private lateinit var webView: ShellWebView
 
     private val connectionCoordinator by lazy {
         HostConnectionCoordinator(SharedPreferencesRecentHostStore(this))
@@ -72,6 +84,11 @@ class MainActivity : AppCompatActivity() {
     private var backTimeoutRequestId: Long? = null
     private var backTimeoutRunnable: Runnable? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val fileChooserCoordinator = FileChooserCoordinator<Uri>()
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+        ::handleFileChooserResult,
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,12 +99,10 @@ class MainActivity : AppCompatActivity() {
         hostInput = findViewById(R.id.hostInput)
         hostErrorText = findViewById(R.id.hostErrorText)
         connectButton = findViewById(R.id.connectButton)
-        changeHostButton = findViewById(R.id.changeHostButton)
         retryButton = findViewById(R.id.retryButton)
         stateChangeHostButton = findViewById(R.id.stateChangeHostButton)
         authRetryButton = findViewById(R.id.authRetryButton)
         authChangeHostButton = findViewById(R.id.authChangeHostButton)
-        statusText = findViewById(R.id.statusText)
         authBanner = findViewById(R.id.authBanner)
         progressBar = findViewById(R.id.progressBar)
         stateOverlay = findViewById(R.id.stateOverlay)
@@ -96,6 +111,7 @@ class MainActivity : AppCompatActivity() {
         stateMessage = findViewById(R.id.stateMessage)
         webView = findViewById(R.id.webView)
 
+        applySystemInsets()
         configureWebView()
         bindHostEntryActions()
         bindBrowserActions()
@@ -159,6 +175,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Rotation, split screen, and freeform resizing are handled in place (see the manifest's
+     * configChanges) so the web client keeps its folder, preview, and drafts instead of reloading.
+     * Only the width-qualified native paddings need refreshing.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyWindowSizeDimensions()
+    }
+
+    private fun applyWindowSizeDimensions() {
+        val screenPadding = resources.getDimensionPixelSize(R.dimen.screen_padding)
+        val panelPadding = resources.getDimensionPixelSize(R.dimen.panel_padding)
+        authBanner.setPaddingRelative(screenPadding, authBanner.paddingTop, screenPadding, authBanner.paddingBottom)
+        stateOverlay.setPadding(panelPadding, panelPadding, panelPadding, panelPadding)
+        hostPanel.setPadding(panelPadding, panelPadding, panelPadding, panelPadding)
+        (hostPanel.layoutParams as? MarginLayoutParams)?.let { params ->
+            params.marginStart = screenPadding
+            params.marginEnd = screenPadding
+            hostPanel.layoutParams = params
+        }
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         val session = activeHostSession
         outState.putString(
@@ -204,9 +243,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bindBrowserActions() {
-        changeHostButton.setOnClickListener {
-            enterHostEntryAndClearTrust()
-        }
         stateChangeHostButton.setOnClickListener {
             enterHostEntryAndClearTrust()
         }
@@ -229,7 +265,8 @@ class MainActivity : AppCompatActivity() {
 
             // The web client owns its own transient/preview/history state. There is no native
             // visual state to animate, so predictive-back progress is intentionally not mapped
-            // to a fabricated page transition. The committed gesture still arrives here.
+            // (and with enableOnBackInvokedCallback="false", kept so ShellWebView can see a
+            // remapped keyboard Esc, it is not delivered). The committed Back still arrives here.
             override fun handleOnBackStarted(backEvent: BackEventCompat) = Unit
 
             override fun handleOnBackProgressed(backEvent: BackEventCompat) = Unit
@@ -255,13 +292,150 @@ class MainActivity : AppCompatActivity() {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, false)
         }
+        // Keyboard focus stays in the page: Tab traversal leaving the document and focus searches
+        // resolve back to the WebView instead of native controls.
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.nextFocusUpId = webView.id
+        webView.nextFocusDownId = webView.id
+        webView.nextFocusLeftId = webView.id
+        webView.nextFocusRightId = webView.id
+        webView.nextFocusForwardId = webView.id
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressBar.progress = newProgress
                 progressBar.visibility = if (newProgress in 0..99) View.VISIBLE else View.GONE
             }
+
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean = showFileChooser(view, filePathCallback, fileChooserParams)
+        }
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            startHostDownload(url, userAgent, contentDisposition, mimeType)
         }
     }
+
+    private fun showFileChooser(
+        view: WebView?,
+        filePathCallback: ValueCallback<Array<Uri>>?,
+        params: WebChromeClient.FileChooserParams?,
+    ): Boolean {
+        if (filePathCallback == null) return false
+        if (view !== webView || !webViewAvailable || !trustedPageReady) {
+            filePathCallback.onReceiveValue(null)
+            return true
+        }
+        fileChooserCoordinator.begin { uris -> filePathCallback.onReceiveValue(uris?.toTypedArray()) }
+        val mimeTypes = FileChooserMimeTypes.resolve(params?.acceptTypes?.toList().orEmpty()) { extension ->
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+        }
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mimeTypes.singleOrNull() ?: "*/*"
+            if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+            putExtra(
+                Intent.EXTRA_ALLOW_MULTIPLE,
+                params?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE,
+            )
+        }
+        try {
+            fileChooserLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            fileChooserCoordinator.cancel()
+            Toast.makeText(this, R.string.file_chooser_unavailable, Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    private fun handleFileChooserResult(result: ActivityResult) {
+        val data = result.data
+        val clipItems = data?.clipData?.let { clip -> List(clip.itemCount) { clip.getItemAt(it).uri } }.orEmpty()
+        fileChooserCoordinator.complete(
+            FileChooserResult.collect(result.resultCode == Activity.RESULT_OK, clipItems, data?.data),
+        )
+        focusWebViewIfBrowsing()
+    }
+
+    private fun startHostDownload(
+        url: String?,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+    ) {
+        val endpoint = connectionCoordinator.activeEndpoint.takeIf { trustedPageReady && webViewAvailable }
+        val plan = DownloadRequestPlanner.plan(endpoint, url, contentDisposition, mimeType) { mime ->
+            MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+        }
+        val accepted = when (plan) {
+            is DownloadPlan.Rejected -> {
+                Toast.makeText(
+                    this,
+                    when (plan.reason) {
+                        DownloadRejection.UNTRUSTED_ORIGIN -> R.string.download_untrusted
+                        DownloadRejection.UNSUPPORTED_URL -> R.string.download_unsupported
+                    },
+                    Toast.LENGTH_SHORT,
+                ).show()
+                return
+            }
+            is DownloadPlan.Accepted -> plan
+        }
+        try {
+            val request = DownloadManager.Request(Uri.parse(accepted.url)).apply {
+                // The host authenticates downloads with the same HttpOnly session cookie as the page.
+                CookieManager.getInstance().getCookie(accepted.url)?.let { addRequestHeader("Cookie", it) }
+                userAgent?.takeIf { it.isNotBlank() }?.let { addRequestHeader("User-Agent", it) }
+                accepted.mimeType?.let(::setMimeType)
+                setTitle(accepted.fileName)
+                setDescription(getString(R.string.download_description))
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, accepted.fileName)
+                } else {
+                    // Before Android 10 the shared Downloads folder needs a storage permission the
+                    // shell intentionally does not request; keep the file in app-scoped Downloads.
+                    setDestinationInExternalFilesDir(
+                        this@MainActivity,
+                        Environment.DIRECTORY_DOWNLOADS,
+                        accepted.fileName,
+                    )
+                }
+            }
+            getSystemService(DownloadManager::class.java).enqueue(request)
+            Toast.makeText(this, getString(R.string.download_started, accepted.fileName), Toast.LENGTH_SHORT)
+                .show()
+        } catch (_: RuntimeException) {
+            Toast.makeText(this, R.string.download_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun focusWebViewIfBrowsing() {
+        if (!webViewAvailable || isFinishing || isDestroyed) return
+        if (browserContainer.visibility != View.VISIBLE || webView.visibility != View.VISIBLE) return
+        // Native retry/change-host actions keep focus while the failure overlay is shown.
+        if (stateOverlay.visibility == View.VISIBLE) return
+        if (!webView.hasFocus()) webView.requestFocus()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Returning from background, the file picker, or a system dialog.
+        if (hasFocus) focusWebViewIfBrowsing()
+    }
+
+    /** Returns true when the shell owned the key; false leaves Android's default handling. */
+    private fun handleUnhandledWebKey(event: KeyEvent): Boolean =
+        when (UnhandledWebKeyPolicy.decide(event.toHardwareKey())) {
+            UnhandledKeyDecision.REQUEST_BACK -> {
+                dispatchBackCommand(backRequestCoordinator.begin(currentBackAvailability()))
+                true
+            }
+            UnhandledKeyDecision.CONSUME -> true
+            UnhandledKeyDecision.DEFAULT -> false
+        }
 
     private fun connectFromInput() {
         if (trustClearInProgress) return
@@ -336,6 +510,7 @@ class MainActivity : AppCompatActivity() {
     /** Clears WebView cookies/storage/cache before a different host is trusted. */
     private fun clearWebViewTrust(onComplete: () -> Unit) {
         invalidateTrustedPage()
+        fileChooserCoordinator.cancel()
         trustClearInProgress = true
         setConnectionControlsEnabled(false)
         mainFrameFailed = false
@@ -359,7 +534,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun setConnectionControlsEnabled(enabled: Boolean) {
         connectButton.isEnabled = enabled
-        changeHostButton.isEnabled = enabled
         retryButton.isEnabled = enabled
         stateChangeHostButton.isEnabled = enabled
         authRetryButton.isEnabled = enabled
@@ -370,6 +544,7 @@ class MainActivity : AppCompatActivity() {
         invalidateTrustedPage()
         hostPanel.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
+        applySystemBarColors(pageShowing = false)
         clearHostInputError()
     }
 
@@ -390,7 +565,7 @@ class MainActivity : AppCompatActivity() {
         when (state) {
             HostConnectionState.HostEntry -> showHostEntry()
             is HostConnectionState.Connecting -> {
-                statusText.text = getString(R.string.loading_host)
+                applySystemBarColors(pageShowing = false)
                 authBanner.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 stateOverlay.visibility = View.VISIBLE
@@ -400,20 +575,21 @@ class MainActivity : AppCompatActivity() {
                 retryButton.isEnabled = false
             }
             is HostConnectionState.Connected -> {
-                statusText.text = getString(R.string.connected_host)
+                applySystemBarColors(pageShowing = true)
                 authBanner.visibility = View.GONE
                 stateOverlay.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 retryButton.isEnabled = true
             }
             is HostConnectionState.LoginRequired -> {
-                statusText.text = getString(R.string.state_login_title)
+                applySystemBarColors(pageShowing = true)
                 authBanner.visibility = View.VISIBLE
                 stateOverlay.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 retryButton.isEnabled = true
             }
             is HostConnectionState.Failed -> {
+                applySystemBarColors(pageShowing = false)
                 authBanner.visibility = View.GONE
                 stateOverlay.visibility = View.VISIBLE
                 stateProgress.visibility = View.GONE
@@ -421,17 +597,14 @@ class MainActivity : AppCompatActivity() {
                 retryButton.isEnabled = !trustClearInProgress
                 when (state.kind) {
                     ConnectionFailureKind.OFFLINE -> {
-                        statusText.text = getString(R.string.state_offline_title)
                         stateTitle.text = getString(R.string.state_offline_title)
                         stateMessage.text = getString(R.string.state_offline_message)
                     }
                     ConnectionFailureKind.UNREACHABLE -> {
-                        statusText.text = getString(R.string.state_unreachable_title)
                         stateTitle.text = getString(R.string.state_unreachable_title)
                         stateMessage.text = getString(R.string.state_unreachable_message)
                     }
                     ConnectionFailureKind.HTTP_ERROR -> {
-                        statusText.text = getString(R.string.state_http_error_title)
                         stateTitle.text = getString(R.string.state_http_error_title)
                         stateMessage.text = getString(
                             R.string.state_http_error_message,
@@ -439,17 +612,50 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                     ConnectionFailureKind.TLS_ERROR -> {
-                        statusText.text = getString(R.string.state_tls_error_title)
                         stateTitle.text = getString(R.string.state_tls_error_title)
                         stateMessage.text = getString(R.string.state_tls_error_message)
                     }
                     ConnectionFailureKind.RENDERER_CRASHED -> {
-                        statusText.text = getString(R.string.state_renderer_crashed_title)
                         stateTitle.text = getString(R.string.state_renderer_crashed_title)
                         stateMessage.text = getString(R.string.state_renderer_crashed_message)
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * targetSdk 35 is drawn edge-to-edge on Android 15+, where adjustResize no
+     * longer shrinks the window either. Opt in on every version and pad the
+     * root by the system bars, cutout and soft keyboard so the native bars and
+     * the page never sit under them.
+     */
+    private fun applySystemInsets() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val root = findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            WindowInsetsCompat.CONSUMED
+        }
+    }
+
+    /**
+     * There is no native toolbar over the page (a browser tab has none either), so the system bar
+     * strips take the colour of whatever fills the window: the dark MultiView page, or the light
+     * native connection screens.
+     */
+    private fun applySystemBarColors(pageShowing: Boolean) {
+        val root = findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+        root.setBackgroundColor(
+            getColor(if (pageShowing) R.color.page_background else R.color.surface_background),
+        )
+        WindowCompat.getInsetsController(window, root).apply {
+            isAppearanceLightStatusBars = !pageShowing
+            isAppearanceLightNavigationBars = !pageShowing
         }
     }
 
@@ -616,6 +822,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun replaceWebViewAfterRendererGone(deadWebView: WebView) {
         activeHostWebViewClient = null
+        fileChooserCoordinator.cancel()
         val parent = deadWebView.parent as? ViewGroup
         val index = parent?.indexOfChild(deadWebView) ?: -1
         val layoutParams = deadWebView.layoutParams
@@ -627,7 +834,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        webView = WebView(this).apply {
+        webView = ShellWebView(this).apply {
             id = R.id.webView
             this.layoutParams = layoutParams
             contentDescription = getString(R.string.webview_description)
@@ -668,7 +875,9 @@ class MainActivity : AppCompatActivity() {
         }
         networkCallback = null
         mainHandler.removeCallbacksAndMessages(null)
+        fileChooserCoordinator.cancel()
         webView.stopLoading()
+        webView.setDownloadListener(null)
         webView.webChromeClient = null
         activeHostWebViewClient = null
         webView.webViewClient = WebViewClient()
@@ -715,9 +924,6 @@ class MainActivity : AppCompatActivity() {
             trustedPageReady = false
             backRequestCoordinator.cancelPending()
             cancelBackTimeout(backTimeoutRequestId)
-            if (TrustedNavigationPolicy.classify(endpoint, url).isTrusted) {
-                statusText.text = getString(R.string.loading_host)
-            }
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -728,7 +934,13 @@ class MainActivity : AppCompatActivity() {
             if (committedTrustedPage) {
                 recoveryCoordinator.pageCommitted(navigationAttempt)
                 renderState(connectionCoordinator.state)
+                focusWebViewIfBrowsing()
             }
+        }
+
+        override fun onUnhandledKeyEvent(view: WebView?, event: KeyEvent?) {
+            if (event == null || !isCurrentCallback(view)) return
+            if (!handleUnhandledWebKey(event)) super.onUnhandledKeyEvent(view, event)
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {

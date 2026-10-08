@@ -8,7 +8,7 @@ let results;
 async function probe() {
   if (!results) results = (async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=inspectorOwnSaveEcho', '--scenario=inspectorPollEchoAndExternalConflict', '--scenario=inspectorResolvedConflict', '--scenario=inspectorResolvedThenLateConflict'], { env, timeout: 16000 });
+  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=inspectorOwnSaveEcho', '--scenario=inspectorPollEchoAndExternalConflict', '--scenario=inspectorResolvedConflict', '--scenario=inspectorResolvedThenLateConflict'], { env, timeout: 35000 });
   return Object.fromEntries(stdout.split('\n').filter(row => row.startsWith('INTERACTION_AUDIT ')).map(line => {
     const result = JSON.parse(line.slice(18));
     assert.ok(!result.error, result.error);
@@ -18,7 +18,7 @@ async function probe() {
   return results;
 }
 
-test('own metadata save and equivalent query echo do not claim another window edited the item', { timeout: 20000 }, async () => {
+test('own metadata save and equivalent query echo do not claim another window edited the item', { timeout: 40000 }, async () => {
   assert.deepEqual((await probe()).inspectorOwnSaveEcho, { value: 'own annotation', stored: 'own annotation', dirty: false, stale: false, focused: true, caret: 4 });
 });
 test('watched-item timestamp echoes stay quiet, while real external tags and notes retain warnings and conflict protection', async () => {

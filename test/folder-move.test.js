@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DataHub } = require('../lib/data-hub');
+const vm = require('node:vm');
 
 function locate(nodes, id, parent = null) {
   for (const folder of nodes) {
@@ -25,6 +26,13 @@ class FolderAdapter {
   async appInfo() { return { version: 'fixture' }; }
   async libraryInfo() { return { path: this.libraryPath, modificationTime: 1 }; }
   async folderTree() { return structuredClone(this.tree); }
+  async request(endpoint, options) {
+    assert.equal(endpoint, '/api/script/inject');
+    this.calls.push({ script: true });
+    const scope = { libraryPath: this.libraryPath, folders: this.tree,
+      saveFolder() {}, updateSidebarList() {}, calculateImageBinding() {} };
+    vm.runInNewContext(options.body.script, { $bodyScope: scope });
+  }
   async updateFolder(id, patch) {
     Object.assign(locate(this.tree, id).folder, structuredClone(patch));
     return structuredClone(locate(this.tree, id).folder);
@@ -71,6 +79,36 @@ test('moving a folder preserves its identity, child tree and metadata and broadc
   assert.deepEqual(changed[0].library.folders[0].children, []);
   assert.deepEqual(changed[0].library.folders[1].children.map(folder => folder.id), ['E', 'C']);
   assert.equal(invalidated[0].reason, 'folder-move');
+});
+
+test('dropping between siblings reparents and inserts in Eagle order without losing descendants', async () => {
+  const { adapter, hub } = await fixture();
+  adapter.tree[1].children.push({ id: 'F', name: '1', children: [] });
+  const result = await hub.moveFolder(move({ anchorId: 'F', position: 'before', targetSiblingIds: ['E', 'F'] }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(locate(await hub.client.folderTree(), 'B').folder.children.map(folder => folder.id), ['E', 'C', 'F']);
+  assert.equal(locate(await hub.client.folderTree(), 'C').folder.children[0].id, 'D');
+  assert.equal(adapter.calls.length, 1);
+  const after = await hub.moveFolder(move({ baseParentId: 'B', anchorId: 'F', position: 'after', targetSiblingIds: ['E', 'C', 'F'] }));
+  assert.equal(after.ok, true);
+  assert.deepEqual(locate(await hub.client.folderTree(), 'B').folder.children.map(folder => folder.id), ['E', 'F', 'C']);
+});
+
+test('placement preserves the visible sibling order while checking the Eagle baseline', async () => {
+  const { adapter, hub } = await fixture();
+  adapter.tree[1].children.push({ id: 'F', children: [] }, { id: 'G', children: [] });
+  const result = await hub.moveFolder(move({ anchorId: 'E', position: 'before',
+    targetSiblingIds: ['G', 'E', 'F'], baseSiblingIds: ['E', 'F', 'G'] }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(locate(adapter.tree, 'B').folder.children.map(folder => folder.id), ['G', 'C', 'E', 'F']);
+});
+
+test('a changed target sibling list rejects placement before writing', async () => {
+  const { adapter, hub } = await fixture();
+  const result = await hub.moveFolder(move({ anchorId: 'E', position: 'after', targetSiblingIds: [] }));
+  assert.equal(result.conflict, true);
+  assert.equal(adapter.calls.length, 0);
+  assert.equal(locate(await hub.client.folderTree(), 'C').parent, 'A');
 });
 
 test('moving to root uses explicit null; dropping on the current parent performs no write', async () => {

@@ -25,6 +25,64 @@ const snapshot = () => window.state.panes.map(p => ({id:p.id, preview:p.previewI
 await until(() => window.state?.library && window.state.panes.length && window.state.panes.every(p => !p.loading && p.items.length));
 `;
 const scenarios = {
+  paneCountShortcuts: `
+const press=(number,options={})=>document.dispatchEvent(new KeyboardEvent('keydown',{key:String(number),code:'Digit'+number,metaKey:true,bubbles:true,cancelable:true,...options}));
+const layouts=[];
+for(const [number,layout,count] of [[1,'single',1],[2,'vertical2',2],[3,'vertical3',3],[4,'vertical4',4]]) {
+  press(number);
+  await until(()=>document.querySelector('#paneLayout').dataset.layout===layout && window.state.panes.length===count);
+  layouts.push({layout,count:window.state.panes.length});
+}
+const input=document.querySelector('#searchInput');input.focus();
+press(1);
+const editingLayout=document.querySelector('#paneLayout').dataset.layout;
+input.blur();
+press(1,{shiftKey:true});press(1,{altKey:true});press(1,{ctrlKey:true});press(1,{repeat:true});press(1,{isComposing:true});
+const guardedLayout=document.querySelector('#paneLayout').dataset.layout;
+press(1);await until(()=>window.state.panes.length===1);
+return {layouts,editingLayout,guardedLayout,final:document.querySelector('#paneLayout').dataset.layout};`,
+  inspectorPauseBeforeAutosave: `
+click(pane(0).querySelector('[data-id="item-1"]'));
+const input=document.querySelector('#itemAnnotation');input.focus();
+input.value='thinking pause';input.dispatchEvent(new Event('input',{bubbles:true}));
+await wait(1600);
+const during={mutations:window.__audit.calls.filter(call=>call.kind==='mutate').length,dirty:window.state.inspectorDirty,focused:document.activeElement===input};
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);
+return {during,mutations:window.__audit.calls.filter(call=>call.kind==='mutate').length,stored:window.__audit.snapshotItem('item-1').annotation};`,
+  inspectorComposition: `
+click(pane(0).querySelector('[data-id="item-1"]'));
+const input=document.querySelector('#itemName');input.focus();
+window.__audit.mutationDelay=true;
+input.value='before';input.dispatchEvent(new Event('input',{bubbles:true}));
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));
+input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+input.value='before zhong ';input.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));input.setSelectionRange(8,8);
+window.__audit.mutationDelay=false;window.__audit.resolveMutation();
+await until(()=>!window.state.inspectorSaving);await wait(500);
+const pending={value:input.value,caret:input.selectionStart,count:window.__audit.calls.filter(call=>call.kind==='mutate').length};
+input.value='before 中文';input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));input.dispatchEvent(new InputEvent('input',{bubbles:true}));
+await until(()=>!window.state.inspectorDirty&&!window.state.inspectorSaving);
+return {pending,stored:window.__audit.snapshotItem('item-1').name,focused:document.activeElement===input};`,
+  inspectorQuietTyping: `
+window.__audit.externalItemChange('item-1',{folders:['folder-a','folder-b']});
+await split();
+await withActivePane(window.state.panes[1].id,()=>navigate({kind:'folder',id:'folder-b'}));
+await until(()=>window.state.panes[1].items.some(item=>item.id==='item-1'));
+activatePane(window.state.panes[0].id);
+click(pane(0).querySelector('[data-id="item-1"]'));
+const notices=[];const originalToast=toast;toast=(message,...args)=>{notices.push(message);originalToast(message,...args);};
+const checks=[];
+for(const selector of ['#itemAnnotation','#itemName','#itemURL']) {
+  const input=document.querySelector(selector);input.focus();
+  for(let n=0;n<2;n++) {
+    input.value=selector==='#itemURL'?'https://example.com/'+n:'连续输入 '+selector+' '+n;
+    input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(2,2);
+    await until(()=>!window.state.inspectorDirty&&!window.state.inspectorSaving);
+    await wait(500);
+    checks.push({selector,focused:document.activeElement===input,caret:input.selectionStart,value:input.value});
+  }
+}
+return {notices,checks,mutations:window.__audit.calls.filter(call=>call.kind==='mutate').length};`,
   inspectorResolvedConflict: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 window.__audit.externalItemChange('item-1',{annotation:'outside note'});
@@ -96,7 +154,7 @@ return messages;`,
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 let editor=pane(0).querySelector('#textEditor');
 for(let n=0;n<11;n++){editor.value='saved text '+n;editor.dispatchEvent(new Event('input',{bubbles:true}));}
-click(pane(0).querySelector('#saveTextButton')); await until(()=>!window.state.textSession.dirty&&!window.state.textSession.saving);
+editor.dispatchEvent(new KeyboardEvent('keydown',{key:'s',metaKey:true,bubbles:true})); await until(()=>!window.state.textSession.dirty&&!window.state.textSession.saving);
 const previousId=window.state.textSession.draftId;
 await window.eagleMV.getTextDraft(window.state.textSession);
 document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
@@ -145,12 +203,21 @@ editor.value='second text'; editor.dispatchEvent(new Event('input',{bubbles:true
 click(pane(1).querySelector('[data-id="item-2"]'));
 window.__audit.textSaveDelay=false; window.__audit.resolveTextSave(); await until(()=>!window.state.panes[0].textSession.dirty);
 return {text:window.__audit.snapshotText(),editableDuringSave,maxInFlight:window.__audit.maxTextSavesInFlight,panes:snapshot(),sameEditor:editor===pane(0).querySelector('#textEditor'),caret:editor.selectionStart};`,
+  textSaveDoesNotRefreshOtherPane: `
+await split(); dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
+const otherGrid=pane(1).querySelector('#itemGrid'); let mutations=0;
+const observer=new MutationObserver(() => { mutations += 1; }); observer.observe(otherGrid,{childList:true,subtree:true});
+const editor=pane(0).querySelector('#textEditor'); editor.value='quiet autosave'; editor.dispatchEvent(new Event('input',{bubbles:true}));
+await until(()=>!window.state.panes[0].textSession.dirty&&!window.state.panes[0].textSession.saving); await wait(400);
+const before=mutations;
+await window.__audit.emit('onQueryInvalidated',{reason:'text-saved',id:'text-1',libraryPath:window.state.library.path}); await wait(450);
+observer.disconnect(); return {before,after:mutations,otherItems:window.state.panes[1].items.length};`,
   textConflictAndEmpty: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); window.__audit.textSaveMode='conflict';
 editor.value='my conflicting draft'; editor.dispatchEvent(new Event('input',{bubbles:true})); await wait(650);
 const conflict={text:editor.value,dirty:window.state.textSession.dirty,confirmations:window.__audit.confirmations.length,status:pane(0).querySelector('#textStatus').textContent};
-window.__audit.textSaveMode='normal'; editor.value=''; editor.dispatchEvent(new Event('input',{bubbles:true})); click(pane(0).querySelector('#saveTextButton')); await wait(100);
+window.__audit.textSaveMode='normal'; editor.value=''; editor.dispatchEvent(new Event('input',{bubbles:true})); editor.dispatchEvent(new KeyboardEvent('keydown',{key:'s',metaKey:true,bubbles:true})); await wait(100);
 return {conflict,empty:{text:editor.value,dirty:window.state.textSession.dirty,status:pane(0).querySelector('#textStatus').textContent,detail:pane(0).querySelector('#textStatus').title},stored:window.__audit.snapshotText(),calls:window.__audit.calls.filter(c=>c.kind==='save-text')};`,
   textImeAndPending: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
@@ -164,7 +231,7 @@ click(pane(0).querySelector('[data-id="item-1"]')); window.__audit.failIds=['ite
 const input=document.querySelector('#itemAnnotation'); input.value='recover failed draft'; input.dispatchEvent(new Event('input',{bubbles:true}));
 click(pane(0).querySelector('[data-id="item-2"]')); await wait(100);
 click(pane(0).querySelector('[data-id="item-1"]')); const restored=input.value;
-window.__audit.failIds=[]; input.dispatchEvent(new Event('input',{bubbles:true})); await wait(600);
+window.__audit.failIds=[]; input.dispatchEvent(new Event('input',{bubbles:true})); await wait(3200);
 return {restored,stored:window.__audit.snapshotItem('item-1').annotation};`,
   modalFocus: `
 const origin=document.querySelector('#newButton'); origin.focus();
@@ -222,7 +289,7 @@ click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation'); input.value='UNSAVED BEFORE PIN EVENT'; input.dispatchEvent(new Event('input',{bubbles:true}));
 const before={dirty:window.state.inspectorDirty,value:input.value};
 window.__audit.emit('onPinsChanged',{libraryPath:window.state.library.path,pins:{}});
-await wait(500); return {before,after:{dirty:window.state.inspectorDirty,value:input.value},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
+await wait(3200); return {before,after:{dirty:window.state.inspectorDirty,value:input.value},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   inFlightDraftNavigation: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 window.__audit.mutationDelay=true;
@@ -273,16 +340,14 @@ return {immediate,stored:window.__audit.snapshotItem('item-1').annotation,mutati
   activeTextCancelControls: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); editor.focus(); editor.value='cancel keeps draft'; editor.dispatchEvent(new Event('input',{bubbles:true}));
-click(pane(0).querySelector('#reloadTextButton'));
-const afterReloadCancel=snapshot();
 document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
 const afterPreviewCancel=snapshot();
 await window.__audit.emit('onRequestClose');
-return {afterReloadCancel,afterPreviewCancel,afterWindowCancel:snapshot(),confirmations:window.__audit.confirmations,calls:window.__audit.calls};`,
+return {afterPreviewCancel,afterWindowCancel:snapshot(),confirmations:window.__audit.confirmations,calls:window.__audit.calls};`,
   savedTextCloseControl: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); editor.focus(); editor.value='normally saved text'; editor.dispatchEvent(new Event('input',{bubbles:true}));
-click(pane(0).querySelector('#saveTextButton')); await until(()=>!window.state.textSaving&&!window.state.textSession.dirty);
+editor.dispatchEvent(new KeyboardEvent('keydown',{key:'s',metaKey:true,bubbles:true})); await until(()=>!window.state.textSaving&&!window.state.textSession.dirty);
 await window.__audit.emit('onRequestClose');
 return {panes:snapshot(),confirmations:window.__audit.confirmations,calls:window.__audit.calls};`,
   nativeCommentPrompt: `
@@ -342,7 +407,7 @@ async function run() {
     const windowOptions = { show:false, width:1440, height:900, webPreferences:{ backgroundThrottling:false, contextIsolation:false, nodeIntegration:false, preload:path.join(__dirname,'interaction-regression-preload.cjs'), partition:`audit-${name}` } };
     if (name === 'webHttpBootstrap') windowOptions.webPreferences.additionalArguments = ['--eaglemv-http-capabilities'];
     if (name === 'textStoreLifecycle') windowOptions.webPreferences.additionalArguments = ['--eaglemv-real-drafts'];
-    const realMutationEvents = ['inspectorOwnSaveEcho', 'inspectorPollEchoAndExternalConflict', 'inspectorResolvedConflict', 'inspectorResolvedThenLateConflict'].includes(name);
+    const realMutationEvents = ['inspectorQuietTyping', 'inspectorOwnSaveEcho', 'inspectorPollEchoAndExternalConflict', 'inspectorResolvedConflict', 'inspectorResolvedThenLateConflict'].includes(name);
     if (realMutationEvents || ['inspectorRemoteRebase', 'inspectorRemoteLateIntent', 'inspectorExplicitFieldRevert', 'inspectorLateIntentNoRemote'].includes(name)) {
       windowOptions.webPreferences.sandbox = false;
       windowOptions.webPreferences.additionalArguments = [realMutationEvents ? '--eaglemv-real-mutation-events' : '--eaglemv-real-mutation-hub'];

@@ -1,12 +1,12 @@
 {
   "id": "EAGLEMVTXT20260907",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "platform": "mac",
   "arch": "arm64",
   "name": "MultiView TXT 后台保存",
   "logo": "/logo.png",
-  "description": "为 Eagle MultiView 正式版的 TXT 编辑提供官方后台保存，不打开或激活素材窗口。",
+  "description": "为 Eagle MultiView 正式版提供 TXT 后台保存，并可从 Eagle 打开 MultiView 当前界面。",
   "keywords": [],
   "devTools": false,
-  "main": { "serviceMode": true, "show": false, "url": "index.html", "width": 360, "height": 160 }
+  "main": { "serviceMode": true, "show": true, "url": "index.html", "width": 360, "height": 190 }
 }

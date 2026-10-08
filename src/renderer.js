@@ -28,7 +28,8 @@ const {
   parentView: resolveParentView,
   recordViewNavigation,
   folderMoveDelta,
-  searchFolders
+  searchFolders,
+  itemFolderLocations
 } = window.EagleMVFolderNavigation;
 const { formatEaglePath, resolveEaglePath } = window.EagleMVLogicalPath;
 const { paneLayoutPopoverPosition } = window.EagleMVLayoutPopover;
@@ -81,6 +82,8 @@ const {
   readHistoryEntry,
   installBackRouter
 } = window.EagleMVWindowRouter;
+// ⌘ on Apple keyboards, Ctrl elsewhere (Android shell, non-Mac browsers).
+const keyboardPlatform = window.EagleMVKeyboardPlatform.createKeyboardPlatform(navigator);
 const sortMemory = window.EagleMVSortMemory.createSortMemory(window.localStorage);
 const SORT_CASCADE_KEY = window.EagleMVSortMemory?.SORT_CASCADE_KEY || 'eaglemv.sortCascade';
 let sortCascadeEnabled = false;
@@ -141,7 +144,7 @@ const paneScopedSelectors = new Set([
   '#sortSelectButton', '#sortSelectLabel', '#sortPopover', '#sortCascadeDivider', '#sortCascadeItem', '#sortCascadeCheck',
   '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay',
   '#previewModal', '#modalMedia', '#closePreview', '#prevPreview', '#nextPreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
-  '#previewBackground', '#previewGrayscale', '#modalRating', '#modalCaption', '#textEditor', '#textStatus', '#reloadTextButton', '#saveTextButton'
+  '#previewBackground', '#previewGrayscale', '#modalRating', '#modalCaption', '#textEditor', '#textStatus'
 ]);
 const $ = selector => {
   if (typeof state !== 'undefined' && state.panes?.length) {
@@ -194,6 +197,9 @@ const state = {
   localPins: {},
   localOrders: {},
   manualOrdersReady: false,
+  localFolderCovers: { revision: 0, covers: {} },
+  folderCoversReady: false,
+  folderCoversLibrary: null,
   expandedFolders: new Set(),
   availableTags: [],
   tagGroups: [],
@@ -202,6 +208,7 @@ const state = {
   viewMemory: new Map(),
   restoreScroll: null,
   activePaneId: 'pane-1',
+  paneActivationHistory: ['pane-1'],
   splitRatios: null,
   windowId: null,
   previewId: null,
@@ -234,6 +241,46 @@ const state = {
   viewMemory: new Map(),
   restoreScroll: null
 };
+
+// Eagle has no client-side undo history for metadata mutations. Keep a small
+// in-memory record of the latest trash operation so Control+Z can safely send
+// the inverse API patch while this window remains open.
+const trashUndoStack = [];
+let trashMutationInFlight = 0;
+
+async function undoLastTrash() {
+  if (trashMutationInFlight) { toast('删除操作尚未完成，请稍后再试', 2600); return; }
+  const entry = trashUndoStack.at(-1);
+  if (!entry?.ids?.length) { toast('没有可撤销的删除操作', 2200); return; }
+  const paneId = paneById(entry.paneId) ? entry.paneId : state.activePaneId;
+  const pane = paneById(paneId);
+  const libraryPath = state.library?.path;
+  if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资料库已切换', 3500); return; }
+  const operationToken = beginForegroundOperation('正在撤销删除…', { key: `trash-undo:${paneId}` });
+  if (!operationToken) return;
+  trashMutationInFlight += 1;
+  setSyncStatus('正在撤销删除…');
+  try {
+    const outcome = await runItemBatch(entry.ids, async id => {
+      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: item, libraryPath });
+      if (result?.conflict) throw new Error('素材已在其他窗口发生变化，请刷新后重试');
+      return result;
+    }, 'Eagle 撤销请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成撤销');
+    entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
+    if (!entry.ids.length) trashUndoStack.pop();
+    pane.selected = new Set(outcome.failed);
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    toast(outcome.failed.length ? `已撤销 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败` : `已撤销删除 ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4200 : 2400);
+  } catch (error) {
+    toast(`撤销删除失败：${error.message}`, 4000);
+  } finally {
+    trashMutationInFlight -= 1;
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
 window.state = state;
 
 // Each shuffle needs an order that survives re-renders and lazy pages but
@@ -550,6 +597,13 @@ function activatePane(id) {
     withActivePane(previousPaneId, () => cancelBreadcrumbEdit(previousBreadcrumb, previousPaneId));
   }
   state.activePaneId = id;
+  // An editor left focused in another pane (TXT, path edit) would otherwise
+  // keep receiving typing and ⌘V meant for this pane: blank-area marquee
+  // presses and macOS button clicks do not move focus on their own.
+  const focused = document.activeElement;
+  if (isEditableElement(focused) && focused.closest('.content-pane') && !paneRoot(id)?.contains(focused)) focused.blur();
+  state.paneActivationHistory = [id, previousPaneId, ...state.paneActivationHistory]
+    .filter((value, index, ids) => paneById(value) && ids.indexOf(value) === index);
   for (const pane of document.querySelectorAll('.content-pane')) pane.classList.toggle('active', pane.dataset.paneId === id);
   renderQueryControls();
   renderFolderTree();
@@ -582,6 +636,7 @@ function uiIcon(name, className = 'tree-icon-svg') {
     pin: '<path d="m7 3 6 6-1.9 1.9 3.3 3.3-1.2 1.2-3.3-3.3L8 14 6 12l1.9-1.9-3.3-3.3L7 3Z"></path><path d="m6.8 13.2-3.3 3.3"></path>',
     open: '<path d="M4 4.5h5l1.5 2H16a1.8 1.8 0 0 1 1.8 1.8v6.2a1.8 1.8 0 0 1-1.8 1.8H4A1.8 1.8 0 0 1 2.2 14.5V6.3A1.8 1.8 0 0 1 4 4.5Z"></path><path d="m9.5 12 5-5M11 7h3.5v3.5"></path>',
     finder: '<path d="M3 3.5h14v13H3z"></path><path d="M6 7h8M6 10h5M6 13h3"></path>',
+    openLocation: '<path d="M3.5 4h7l4 4v2.5M3.5 4v12a1.5 1.5 0 0 0 1.5 1.5h5.5"></path><path d="M10.5 4v4h4"></path><circle cx="14.5" cy="14.5" r="2.5"></circle><path d="m16.5 16.5 2 2"></path>',
     copy: '<rect x="6" y="6" width="10" height="11" rx="1.7"></rect><path d="M4 13H3.8A1.8 1.8 0 0 1 2 11.2V4.8A1.8 1.8 0 0 1 3.8 3h6.4A1.8 1.8 0 0 1 12 4.8V5"></path>',
     path: '<path d="M4 3.5h8l4 4v9H4z"></path><path d="M12 3.5v4h4M6.5 11h7M6.5 14h5"></path>',
     tag: '<path d="M3.5 5.5V3.8h7.3l5.7 5.7-6 6-7-7V5.5Z"></path><circle cx="7.2" cy="6.4" r="1"></circle>',
@@ -652,9 +707,9 @@ function paneMarkup(id, index) {
       </div>
       <div class="heading-main-row">
         <div class="navigation-controls">
-          <button id="backButton" class="nav-button" title="返回（⌥← / ⌃←）" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-          <button id="forwardButton" class="nav-button" title="前进（⌥→ / ⌃→）" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
-          <button id="upButton" class="nav-button up" title="上一级（⌥↑ / ⌃↑）" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
+          <button id="backButton" class="nav-button" title="${keyboardPlatform.shortcutText('返回（⌥← / ⌃←）')}" disabled aria-label="返回"><img class="nav-image-icon" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="forwardButton" class="nav-button" title="${keyboardPlatform.shortcutText('前进（⌥→ / ⌃→）')}" disabled aria-label="前进"><img class="nav-image-icon mirror-x" src="eagle-assets/ic-modal-back.svg" alt=""></button>
+          <button id="upButton" class="nav-button up" title="${keyboardPlatform.shortcutText('上一级（⌥↑ / ⌃↑）')}" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
         </div>
         <div class="location-block">
           <h1 id="viewTitle">资料库</h1>
@@ -1015,6 +1070,7 @@ function serializeSessionState() {
 
 function saveSessionState() {
   if (!state.library) return;
+  window.__eagleMVCurrentView = { libraryPath: state.library.path, view: structuredClone(activePane()?.currentView || state.currentView) };
   try {
     const session = serializeSessionState();
     localStorage.setItem('eaglemv.sessionState', JSON.stringify(session));
@@ -1142,6 +1198,44 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
   syncPaneLayoutButton(layout);
   if (refresh && state.connected) refreshAllPanes({ reset: true, preserveScroll: true });
   return true;
+}
+
+function recentPanePair() {
+  return [...new Set([state.activePaneId, ...state.paneActivationHistory, ...state.panes.map(pane => pane.id)])]
+    .filter(id => paneById(id)).slice(0, 2);
+}
+
+function swapRecentPanes(ids = recentPanePair()) {
+  const [first, second] = ids.map(id => state.panes.findIndex(pane => pane.id === id));
+  if (first == null || second == null || first < 0 || second < 0 || first === second) return false;
+  const root = $('#paneLayout');
+  const nodes = state.panes.map(pane => paneRoot(pane.id));
+  if (nodes.some(node => !node)) return false;
+  savePaneScrollPositions();
+  [state.panes[first], state.panes[second]] = [state.panes[second], state.panes[first]];
+  // Move live panes, preserving media, TXT sessions, selection and focus.
+  // moveBefore is state-preserving in current Electron and Chromium.
+  const focused = document.activeElement;
+  const boundary = root.querySelector('.pane-splitter');
+  for (const pane of state.panes) {
+    const node = nodes.find(node => node.dataset.paneId === pane.id);
+    if (root.moveBefore) root.moveBefore(node, boundary);
+    else root.insertBefore(node, boundary);
+  }
+  if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  for (const pane of state.panes) {
+    const scroller = paneQuery(pane.id, '#gridScroller');
+    if (scroller) scroller.scrollTop = pane.scrollTop || 0;
+  }
+  updateSplitterPositions();
+  saveSessionState();
+  return true;
+}
+
+function swapPanesMenuMarkup() {
+  return state.panes.length < 2 ? '' : contextMenuRow({ icon: 'layoutGrid',
+    label: state.panes.length === 2 ? '交换双栏' : '交换最近激活的两栏',
+    action: 'swap-panes', payload: { paneIds: recentPanePair() } });
 }
 
 function syncPaneLayoutButton(layout) {
@@ -1362,12 +1456,13 @@ function attachManualDrag() {
       }
       const knownIds=[...new Set([...source.knownIds,...target.knownIds])];
       const result=await window.eagleMV.moveManualOrder({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,ids:source.ids,
+        syncToEagle: true,
         anchorId:target.id,position,knownIds,revision:source.revision,rebase:source.kind==='items' && source.startSort!=='manual',startSort:source.startSort});
       acceptManualOrders({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,startSort:source.startSort,orders:result.orders});
       clearDragUI();
       if (result.conflict) throw new Error('其他窗口已调整顺序，已同步最新顺序，请重新拖动');
       if (!result.ok) throw new Error('本地排序未保存，请重试');
-      toast('顺序已保存到 MultiView，不改动 Eagle');
+      toast(result.syncedToEagle ? '顺序已同步到 Eagle' : '此视图的顺序仅保存在 MultiView');
     },notify:toast,finish:clearDragUI,
     nativeSource: () => state.internalDrag?.active ? state.internalDrag.orderContext : null,
     nativeStart: hasCapability('nativeDrag') ? source => {
@@ -1441,7 +1536,7 @@ function renderSortControls() {
   if (select) select.value = sortKey==='manual' ? 'default' : sortKey;
   const label = $('#sortSelectLabel');
   if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
-  if ($('#sortSelectButton')) $('#sortSelectButton').title = '可直接拖动调整本地顺序；文件夹中央仍可移入';
+  if ($('#sortSelectButton')) $('#sortSelectButton').title = '可直接拖动调整顺序；普通文件夹内同步到 Eagle，拖到文件夹中央可移入';
   const popover = $('#sortPopover');
   if (popover) {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
@@ -2000,7 +2095,7 @@ function renderPanels() {
   $('#toggleSidebarButton').classList.toggle('active', compact ? state.openDrawer === 'sidebar' : state.sidebarVisible);
   $('#toggleInspectorButton').classList.toggle('active', compact ? state.openDrawer === 'inspector' : state.inspectorVisible);
   // The full placeholder is cut off in a phone-width search box.
-  $('#searchInput').placeholder = compact ? '搜索…' : '搜索名称、标签、备注…';
+  $('#searchInput').placeholder = compact ? '搜索…' : '搜索名称、标签、备注、正向提示词…';
   // Rotating into or out of compact mode changes whether the selection strip
   // belongs on screen at all.
   renderSelectionBar();
@@ -2108,6 +2203,60 @@ function moveCardFocus(key) {
   });
 }
 
+function folderCoverURL(folderId) {
+  return mediaURL('folder', folderId) + `?cover=${state.localFolderCovers.covers[folderId]?.revision || 0}&thumb=${thumbnailRevision}`;
+}
+
+function hasFolderCover(folder) {
+  return !folder.password && (state.localFolderCovers.covers[folder.id]?.itemId || folder.coverId || folder.covers?.length);
+}
+
+function acceptFolderCovers(payload) {
+  if (payload?.libraryPath !== state.library?.path || payload.revision < state.localFolderCovers.revision) return;
+  state.localFolderCovers = { revision: payload.revision, covers: payload.covers || {} };
+  state.folderCoversReady = true;
+  // Replace only cover images; selection, scroll, drag state and focus stay put.
+  for (const card of document.querySelectorAll('.folder-card[data-open-folder]')) {
+    const folder = findFolder(state.library?.folders, card.dataset.openFolder);
+    const container = card.querySelector('.folder-cover');
+    if (!folder || !container) continue;
+    const url = folderCoverURL(folder.id);
+    if (hasFolderCover(folder)) {
+      if (container.querySelector('img')?.getAttribute('src') === url) continue;
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = '';
+      img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+      img.src = url;
+      container.replaceChildren(img);
+    } else container.replaceChildren();
+  }
+}
+
+async function setFolderCover(folderId, itemId, data) {
+  const libraryPath = data.libraryPath;
+  if (!state.folderCoversReady || libraryPath !== state.library?.path) return;
+  const operationToken = beginForegroundOperation('正在保存文件夹封面…', { key: `folder-cover:${libraryPath}:${folderId}` });
+  if (!operationToken) return;
+  try {
+    const result = await window.eagleMV.setFolderCover({ libraryPath, folderId, itemId,
+      syncToEagle: true, eagleCoverId: data.eagleCoverIds?.[folderId] || null,
+      revision: data.coverRevisions?.[folderId]?.revision || 0 });
+    acceptFolderCovers({ libraryPath, ...result });
+    if (state.library?.path !== libraryPath) return;
+    toast(result.conflict ? '此封面已在其他窗口修改，请重新选择后再试'
+      : itemId ? '已设为文件夹封面，并同步到 Eagle' : '已恢复默认封面，并同步到 Eagle');
+  } catch (error) {
+    toast(`封面设置失败：${error.message}`, 4000);
+  } finally { endForegroundOperation(operationToken); }
+}
+
+function restoreFolderCoverMenu(folderId) {
+  if (!window.eagleMV.setFolderCover || !(state.localFolderCovers.covers[folderId]?.itemId || findFolder(state.library?.folders, folderId)?.coverId)) return '';
+  return contextMenuRow({ icon: 'refresh', label: '恢复 Eagle 默认封面', action: 'reset-folder-cover',
+    payload: { folderId }, disabled: !state.connected || !state.folderCoversReady });
+}
+
 function folderCardMarkup(folder) {
   const childCount = (folder.children || []).length;
   const directCount = Number(folder.imageCount) || 0;
@@ -2116,7 +2265,7 @@ function folderCardMarkup(folder) {
       <span class="folder-sheet folder-sheet-back" aria-hidden="true"></span>
       <span class="folder-sheet folder-sheet-middle" aria-hidden="true"></span>
       <div class="folder-cover">
-        ${folder.covers?.length ? `<img loading="lazy" src="${mediaURL('folder', folder.id)}" alt="">` : ''}
+        ${hasFolderCover(folder) ? `<img loading="lazy" src="${folderCoverURL(folder.id)}" alt="">` : ''}
       </div>
     </div>
     <div class="folder-name" title="${escapeHTML(folder.name)}">${folderColorDot(folder, 'inline')}${escapeHTML(folder.name)}${folderLockBadge(folder)}</div>
@@ -2498,7 +2647,9 @@ function handleFolderTargetDragOver(event, targetElement) {
   if (dropKind === 'unsupported') return false;
   event.preventDefault();
   const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-  event.dataTransfer.dropEffect = dropKind === 'internal-items' && (sourceFolderId || event.altKey) ? 'move' : 'copy';
+  // A plain drag follows Eagle's move semantics when the source is a folder.
+  // Holding Option changes the same drop into a copy (add membership only).
+  event.dataTransfer.dropEffect = dropKind === 'internal-items' && sourceFolderId && !event.altKey ? 'move' : 'copy';
   targetElement.classList.add('drop-target');
   return true;
 }
@@ -2531,7 +2682,7 @@ function attachFolderDragTargets() {
       const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
       const folderName = row.dataset.folderName;
       const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-      const move = Boolean(sourceFolderId || event.altKey);
+      const move = Boolean(sourceFolderId && !event.altKey);
       const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
       scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
     });
@@ -2554,10 +2705,21 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
     ...cloneQuery(pane.query),
     folderId: currentView.kind === 'folder' ? currentView.id : null,
     smartFolderId: currentView.kind === 'smart' ? currentView.id : null,
-    unfiled: currentView.kind === 'root' || currentView.kind === 'unfiled',
+    unfiled: currentView.kind === 'unfiled' || (currentView.kind === 'root' && !String(pane.query.search || '').trim()),
     isUntagged: currentView.kind === 'untagged',
     random: currentView.kind === 'random'
   };
+  if (query.folderId && String(query.search || '').trim()) {
+    const folderIds = [];
+    const visit = nodes => (nodes || []).forEach(folder => {
+      if (folder.id === query.folderId) {
+        const collect = branch => (branch || []).forEach(child => { folderIds.push(child.id); collect(child.children); });
+        folderIds.push(folder.id); collect(folder.children);
+      } else visit(folder.children);
+    });
+    visit(state.library?.folders);
+    if (folderIds.length) query.folderIds = folderIds;
+  }
   try {
     const page = currentView.kind === 'tags'
       ? { data: [], total: 0, nextOffset: 0, hasMore: false }
@@ -2767,7 +2929,7 @@ function renderItemPalette(item) {
     const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
     const ratio = Number(entry.ratio) || 0;
     const pct = ratio > 1 ? Math.round(ratio) : Math.round(ratio * 100);
-    return `<button type="button" class="palette-swatch" style="background:rgb(${rgb.join(',')})" data-color="${hex}" title="${hex} · ${pct}% · 点击复制，⌥点击筛选同色" aria-label="主色 ${hex}"></button>`;
+    return `<button type="button" class="palette-swatch" style="background:rgb(${rgb.join(',')})" data-color="${hex}" title="${hex} · ${pct}% · 点击复制，${keyboardPlatform.shortcutText('⌥')}点击筛选同色" aria-label="主色 ${hex}"></button>`;
   }).join('');
   box.classList.toggle('hidden', !box.innerHTML);
 }
@@ -3077,6 +3239,120 @@ function metadataPromptBlock(label, text, kind) {
   </div>`;
 }
 
+const METADATA_ZOOM_MIN = 80;
+const METADATA_ZOOM_MAX = 200;
+const METADATA_ZOOM_STEP = 10;
+const METADATA_ZOOM_DEFAULT = 100;
+const METADATA_HEIGHT_MIN = 148;
+const METADATA_HEIGHT_MAX = 720;
+const METADATA_ZOOM_KEY = 'eaglemv.metadataViewerZoom';
+const METADATA_HEIGHT_KEY = 'eaglemv.metadataViewerHeight';
+let metadataViewerFocused = false;
+let metadataViewerZoom = METADATA_ZOOM_DEFAULT;
+
+function metadataViewerSection() { return $('#generationMetadataSection'); }
+
+function metadataViewerIsFocused(event = null) {
+  const section = metadataViewerSection();
+  if (!section || section.classList.contains('hidden')) return false;
+  return metadataViewerFocused || section.contains(document.activeElement) || Boolean(event?.target && section.contains(event.target));
+}
+
+function clampMetadataZoom(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return METADATA_ZOOM_DEFAULT;
+  return Math.max(METADATA_ZOOM_MIN, Math.min(METADATA_ZOOM_MAX, Math.round(number / METADATA_ZOOM_STEP) * METADATA_ZOOM_STEP));
+}
+
+function applyMetadataZoom(value, { persist = true } = {}) {
+  const clamped = clampMetadataZoom(value);
+  const section = metadataViewerSection();
+  section?.style.setProperty('--metadata-zoom', String(clamped / 100));
+  metadataViewerZoom = clamped;
+  if (persist) {
+    try { localStorage.setItem(METADATA_ZOOM_KEY, String(clamped)); } catch {}
+  }
+  return clamped;
+}
+
+function changeMetadataZoom(direction) {
+  const current = metadataViewerZoom;
+  return applyMetadataZoom(current + Math.sign(Number(direction) || 0) * METADATA_ZOOM_STEP);
+}
+
+function resetMetadataZoom() { return applyMetadataZoom(METADATA_ZOOM_DEFAULT); }
+
+function clampMetadataHeight(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(METADATA_HEIGHT_MIN, Math.min(METADATA_HEIGHT_MAX, Math.round(number)));
+}
+
+function applyMetadataViewerHeight(value, { persist = true } = {}) {
+  const clamped = clampMetadataHeight(value);
+  const section = metadataViewerSection();
+  if (!section || clamped === null) return null;
+  section.style.setProperty('--metadata-viewer-height', `${clamped}px`);
+  const handle = $('#metadataResizeHandle');
+  handle?.setAttribute('aria-valuenow', String(clamped));
+  if (persist) {
+    try { localStorage.setItem(METADATA_HEIGHT_KEY, String(clamped)); } catch {}
+  }
+  return clamped;
+}
+
+function bindMetadataViewerControls() {
+  const section = metadataViewerSection();
+  const handle = $('#metadataResizeHandle');
+  if (!section || !handle) return;
+  section.addEventListener('pointerdown', event => {
+    metadataViewerFocused = true;
+    state.inspectorEditing = false;
+    if (event.target === section) event.preventDefault();
+  });
+  handle.addEventListener('keydown', event => {
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = section.getBoundingClientRect().height;
+    const next = event.key === 'Home' ? METADATA_HEIGHT_MIN
+      : event.key === 'End' ? METADATA_HEIGHT_MAX
+        : current + (event.key === 'ArrowDown' ? 24 : -24);
+    applyMetadataViewerHeight(next);
+  });
+  handle.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    metadataViewerFocused = true;
+    state.inspectorEditing = false;
+    const startY = event.clientY;
+    const startHeight = section.getBoundingClientRect().height;
+    handle.classList.add('dragging');
+    try { handle.setPointerCapture?.(event.pointerId); } catch {}
+    const move = moveEvent => applyMetadataViewerHeight(startHeight + moveEvent.clientY - startY, { persist: false });
+    const end = () => {
+      handle.classList.remove('dragging');
+      try { handle.releasePointerCapture?.(event.pointerId); } catch {}
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      applyMetadataViewerHeight(section.getBoundingClientRect().height);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  });
+  try {
+    const storedZoom = localStorage.getItem(METADATA_ZOOM_KEY);
+    const zoom = Number(storedZoom);
+    applyMetadataZoom(storedZoom !== null && Number.isFinite(zoom) ? zoom : METADATA_ZOOM_DEFAULT, { persist: false });
+    const storedHeight = localStorage.getItem(METADATA_HEIGHT_KEY);
+    const height = Number(storedHeight);
+    if (storedHeight !== null && Number.isFinite(height)) applyMetadataViewerHeight(height, { persist: false });
+  } catch {
+    applyMetadataZoom(METADATA_ZOOM_DEFAULT, { persist: false });
+  }
+}
+
 function resizeAnnotation() {
   const annotation = $('#itemAnnotation');
   if (!annotation) return;
@@ -3092,6 +3368,7 @@ function renderGenerationMetadata(metadata) {
   const section = $('#generationMetadataSection');
   if (!metadata) {
     section.classList.add('hidden');
+    metadataViewerFocused = false;
     section.dataset.positive = '';
     section.dataset.negative = '';
     $('#generationMetadata').replaceChildren();
@@ -3111,18 +3388,42 @@ function renderGenerationMetadata(metadata) {
     metadataPromptBlock(`角色 ${escapeHTML(character.index)} 提示词`, character.positive, 'character')
   ).join('');
   $('#generationMetadata').innerHTML = `${metadataPromptBlock('正向提示词', metadata.positive, 'positive')}${characterHTML}${metadataPromptBlock('负向提示词', metadata.negative, 'negative')}${parameterHTML}${loraHTML}${workflowHTML}`;
+  applyMetadataZoom(metadataViewerZoom, { persist: false });
   section.classList.remove('hidden');
 }
 
+let generationMetadataAbort = null;
+const stealthMetadataCache = new Map();
 async function loadGenerationMetadata(item) {
+  generationMetadataAbort?.abort();
+  const controller = new AbortController();
+  generationMetadataAbort = controller;
   state.metadataToken = (Number.isFinite(state.metadataToken) ? state.metadataToken : 0) + 1;
   const token = state.metadataToken;
   $('#generationMetadataSection').classList.add('hidden');
+  metadataViewerFocused = false;
   if (!isImageItem(item)) return;
   try {
     const result = await window.eagleMV.readMetadata(item.id);
     if (token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
-    renderGenerationMetadata(result?.metadata || null);
+    let metadata = result?.metadata || null;
+    if (!metadata && ['png', 'webp'].includes(String(item.ext).toLowerCase())) {
+      const url = mediaURL('original', item.id);
+      const key = JSON.stringify([state.library?.path, url, item.modificationTime, item.size]);
+      if (stealthMetadataCache.has(key)) metadata = stealthMetadataCache.get(key);
+      else {
+        const imageURL = url + `?metadata=${encodeURIComponent(JSON.stringify([item.modificationTime, item.size]))}`;
+        const text = await window.EagleMVStealthMetadata.readImage(imageURL, { signal: controller.signal });
+        if (controller.signal.aborted || token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
+        metadata = window.EagleMVNovelAIMetadata.parseNovelAIExif(text);
+        if (metadata) {
+          if (stealthMetadataCache.size >= 16) stealthMetadataCache.delete(stealthMetadataCache.keys().next().value);
+          stealthMetadataCache.set(key, metadata);
+        }
+      }
+    }
+    if (token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
+    renderGenerationMetadata(metadata);
   } catch {
     if (token === state.metadataToken) renderGenerationMetadata(null);
   }
@@ -3141,9 +3442,13 @@ function clearInspectorAutoSave() {
   state.inspectorAutoSaveTimer = null;
 }
 
+const inspectorComposingControls = new Set();
+
+const INSPECTOR_AUTOSAVE_DELAY = 3000;
+
 function queueInspectorAutoSave({ immediate = false } = {}) {
   clearInspectorAutoSave();
-  if (!state.inspectorDirty || !state.connected || state.inspectorSaving) return;
+  if (!state.inspectorDirty || !state.connected || state.inspectorSaving || inspectorComposingControls.size) return;
   if (immediate) {
     saveInspector();
     return;
@@ -3151,7 +3456,7 @@ function queueInspectorAutoSave({ immediate = false } = {}) {
   state.inspectorAutoSaveTimer = setTimeout(() => {
     state.inspectorAutoSaveTimer = null;
     if (state.inspectorDirty && !state.inspectorSaving) saveInspector();
-  }, 420);
+  }, INSPECTOR_AUTOSAVE_DELAY);
 }
 
 function collectPatch() {
@@ -3247,6 +3552,7 @@ function captureInspectorDraft() {
     }
   }
   draft.values = values;
+  draft.composing = inspectorComposingControls.size > 0;
   draft.revision += 1;
   persistInspectorDraft(draft);
   return draft;
@@ -3293,6 +3599,7 @@ function showInspectorDraftConflict(draft) {
 }
 
 async function saveInspector(force = false) {
+  if (inspectorComposingControls.size) return false;
   const draft = captureInspectorDraft();
   if (!draft) return true;
   if (draft.error === 'conflict' && !force) {
@@ -3364,6 +3671,7 @@ async function saveInspectorDraft(draft, force = false) {
         pane.selectedBase = structuredClone(draft.base);
         for (const [field, selector] of Object.entries({ name: '#itemName', star: '#itemRating', annotation: '#itemAnnotation', url: '#itemURL' })) {
           const control = $(selector);
+          if (inspectorComposingControls.has(control)) continue;
           const displayedValue = field === 'name' || field === 'url' ? control.value.trim() : control.value;
           if (displayedValue !== String(draft.values[field])) control.value = String(draft.values[field]);
         }
@@ -3383,6 +3691,12 @@ async function saveInspectorDraft(draft, force = false) {
         schedulePaneGridRender(paneId);
       }
       patch = inspectorDraftPatch(draft);
+      // An earlier save can finish while the user is choosing an IME
+      // candidate. Keep that draft, but never send its uncommitted text.
+      if (draft.composing) {
+        persistInspectorDraft(draft);
+        return true;
+      }
       if (Object.keys(patch).length) {
         persistInspectorDraft(draft);
         base = structuredClone(draft.base);
@@ -3402,7 +3716,6 @@ async function saveInspectorDraft(draft, force = false) {
       }
       inspectorDrafts.delete(draft.key);
       persistInspectorDraft(draft, true);
-      toast('修改已同步到所有窗口');
       return true;
     }
   } catch (error) {
@@ -3433,12 +3746,14 @@ async function setPinned(ids, pinned, paneId = state.activePaneId) {
       libraryPath,
       folderId,
       ids,
-      pinned
+      pinned,
+      syncToEagle: true,
+      eaglePins: Object.fromEntries(ids.map(id => [id, pane.itemMap.get(id)?.pinned?.[folderId] ?? null]))
     });
     if (state.library?.path !== libraryPath) return;
     if (paneById(paneId)) schedulePaneGridRender(paneId);
     if (state.activePaneId === paneId) renderInspector();
-    toast(pinned ? `已在当前文件夹置顶 ${ids.length} 个素材` : `已取消 ${ids.length} 个素材的置顶`);
+    toast(pinned ? `已置顶 ${ids.length} 个素材，并同步到 Eagle` : `已取消置顶，并同步到 Eagle`);
   } catch (error) {
     toast(`置顶操作失败：${error.message}`, 4000);
   } finally {
@@ -3506,6 +3821,7 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   const action = deleted ? '移入废纸篓' : '恢复';
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
   if (!operationToken) return;
+  trashMutationInFlight += 1;
   setSyncStatus(`正在${action}…`);
   try {
     const outcome = await runItemBatch(ids, async id => {
@@ -3520,6 +3836,15 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
       return result;
     }, `Eagle ${action}请求超时`);
     if (!outcome.succeeded.length) throw outcome.firstError || new Error(`没有素材完成${action}`);
+    if (deleted) {
+      trashUndoStack.push({ ids: outcome.succeeded, libraryPath, paneId, viewKey: descriptorKey(pane.currentView) });
+      if (trashUndoStack.length > 20) trashUndoStack.shift();
+    } else {
+      for (const entry of trashUndoStack) entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
+      for (let index = trashUndoStack.length - 1; index >= 0; index -= 1) {
+        if (!trashUndoStack[index].ids.length) trashUndoStack.splice(index, 1);
+      }
+    }
     pane.selected = new Set(outcome.failed);
     if (state.activePaneId === paneId) renderInspector();
     await refresh({ reset: true, preserveScroll: true, paneId });
@@ -3529,6 +3854,7 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
   } finally {
+    trashMutationInFlight -= 1;
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
@@ -4003,7 +4329,6 @@ function textSessionStatus(session, message) {
   const pane = textSessionPane(session);
   if (!pane) return;
   const status = paneQuery(pane.id, '#textStatus');
-  const save = paneQuery(pane.id, '#saveTextButton');
   if (status && message) {
     const detail = session.storageError && session.dirty
       ? '即时草稿备份失败；请保持窗口开启直至保存成功，或复制正文'
@@ -4013,7 +4338,6 @@ function textSessionStatus(session, message) {
     if (status.textContent !== next) status.textContent = next;
     if (status.title !== detail) status.title = detail;
   }
-  if (save) save.disabled = Boolean(session.saving) || !session.dirty || !state.connected;
 }
 function textSavedStatus(session, message, automatic) {
   if (!automatic) { textSessionStatus(session, message); return; }
@@ -4055,8 +4379,6 @@ function renderTextPreview(session) {
   $('#modalMedia').innerHTML = `<div class="text-preview">
     <div class="text-toolbar">
       <span id="textStatus" class="text-status" title="UTF-8 · ${formatBytes(session.fingerprint?.size || 0)}">${session.dirty ? '编辑中' : '已保存'}</span>
-      <button id="reloadTextButton" type="button">重新载入</button>
-      <button id="saveTextButton" class="primary" type="button" disabled>保存 ⌘S</button>
     </div>
     ${session.recoveryDrafts?.length ? `<div class="text-toolbar"><select id="textDraftSelect" aria-label="选择可恢复草稿"><option value="">可恢复草稿（${session.recoveryDrafts.length}）</option>${session.recoveryDrafts.map((draft, index) => `<option value="${index}">${escapeHTML(new Date(draft.updatedAt || Date.now()).toLocaleString('zh-CN'))} · ${escapeHTML(draft.content.slice(0, 24) || '空白正文')}</option>`).join('')}</select><button id="restoreTextDraft" type="button" disabled>恢复所选草稿</button></div>` : ''}
     <textarea id="textEditor" class="text-editor" spellcheck="false" aria-label="TXT 内容"></textarea>
@@ -4079,7 +4401,7 @@ function renderTextPreview(session) {
     // This is a copy into this window's own draft, not a claim on or deletion
     // of the source window's record. Saving still compares the source base.
     editor.value = session.content;
-    textSessionStatus(session, '草稿已恢复；请核对正文，编辑或点击保存后提交');
+    textSessionStatus(session, keyboardPlatform.shortcutText('草稿已恢复；请核对正文，编辑或按 ⌘S 后提交'));
   });
   editor.addEventListener('input', () => {
     session.lastInputAt = Date.now();
@@ -4109,15 +4431,32 @@ function renderTextPreview(session) {
       saveTextPreview(false, { session });
     }
   });
-  $('#saveTextButton').addEventListener('click', () => saveTextPreview(false, { session }));
-  $('#reloadTextButton').addEventListener('click', async () => {
-    if (session.saving) return;
-    if (session.dirty && !confirm('重新载入会放弃当前 TXT 修改，是否继续？')) return;
-    discardTextSession(session);
-    if (paneById(paneId)) await withActivePane(paneId, () => openPreview(session.id, { forceReload: true }));
-  });
-  $('#reloadTextButton').disabled = Boolean(session.saving);
   textSessionStatus(session, session.dirty ? (session.blocked ? '外部版本已变化；恢复的草稿已保留，请核对内容' : '已恢复未保存草稿 · 编辑后自动保存') : null);
+}
+
+function followPreviewInGrid(id, ownsResult) {
+  const pane = activePane();
+  // Touch preview starts without a selection; keep its tap-to-preview mode.
+  if (state.selected.size && (state.selected.size !== 1 || !state.selected.has(id))) {
+    state.selectedFolderCard = null;
+    state.selected = new Set([id]);
+    if (state.sort === 'manual') {
+      const index = sortedItems().findIndex(item => item.id === id);
+      if (index >= (pane.manualRenderLimit || SORT_FETCH_CAP)) {
+        pane.manualRenderLimit = index + 1;
+        renderGrid({ preserveScroll: true });
+      }
+    }
+    updateCardSelectionStyles();
+    renderInspector();
+  }
+  requestAnimationFrame(() => {
+    if (!ownsResult()) return;
+    const card = paneRoot(pane.id)?.querySelector(`.item-card[data-id="${CSS.escape(id)}"]`);
+    card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    pane.scrollTop = paneQuery(pane.id, '#gridScroller')?.scrollTop || 0;
+    if (state.activePaneId === pane.id) updateScrollUI();
+  });
 }
 
 async function openPreview(id, { forceReload = false } = {}) {
@@ -4133,6 +4472,7 @@ async function openPreview(id, { forceReload = false } = {}) {
   state.previewId = id;
   $('#previewModal').classList.remove('hidden');
   updatePreviewChrome(item);
+  followPreviewInGrid(id, ownsResult);
   if (String(item.ext || '').toLowerCase() !== 'txt') {
     clearTimeout(pane.textSession?.autoSaveTimer);
     state.textSession = null;
@@ -4186,8 +4526,6 @@ function setTextSaving(saving, session = state.textSession) {
   const pane = textSessionPane(session);
   if (!pane) return;
   pane.textSaving = Boolean(saving);
-  const reload = paneQuery(pane.id, '#reloadTextButton');
-  if (reload) reload.disabled = Boolean(saving);
   // Do not disable or replace the editor: input, IME, selection and focus stay
   // untouched while an immutable snapshot is being committed.
   textSessionStatus(session);
@@ -4580,7 +4918,8 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   applyView(view);
   if (view.kind === 'folder') revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
-  closePreview({ commitSelection: false, skipDiscard: true });
+  // Leaving this pane's folder is local navigation, not a preview-close gesture.
+  closePreview({ commitSelection: false, skipDiscard: true, syncBroadcast: false });
   state.selected.clear();
   state.selectedFolderCard = null;
   const restoring = Boolean(state.restoreScroll);
@@ -4636,6 +4975,17 @@ function closeTopTransientSurface() {
     cancelMarquee({ restoreSelection: true });
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'marquee' };
   }
+  // Native modal <dialog>s (feature, thumbnail, site import, web copy) own
+  // their Escape handling through the cancel event; back goes the same way,
+  // so a busy dialog that refuses to close blocks instead of navigating the
+  // obscured workspace.
+  const modal = [...document.querySelectorAll('dialog[open]')].at(-1);
+  if (modal) {
+    modal.dispatchEvent(new Event('cancel', { cancelable: true }));
+    return modal.open && modal.isConnected
+      ? { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'dialog-busy' }
+      : { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'dialog' };
+  }
   if (!$('#folderDialog').classList.contains('hidden')) {
     closeFolderDialog();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'folder-dialog' };
@@ -4655,6 +5005,11 @@ function closeTopTransientSurface() {
   if (!$('#contextMenu').classList.contains('hidden')) {
     hideContextMenu();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'context-menu' };
+  }
+  if (document.querySelector('.sort-popover:not(.hidden)')) {
+    for (const popover of document.querySelectorAll('.sort-popover:not(.hidden)')) popover.classList.add('hidden');
+    for (const button of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) button.setAttribute('aria-expanded', 'false');
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'sort-popover' };
   }
   for (const kind of Object.keys(tagEditors)) {
     const popover = ensureTagSuggestionPopover(kind);
@@ -4684,6 +5039,16 @@ function closeTopTransientSurface() {
   if (state.openDrawer) {
     closeDrawers();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'drawer' };
+  }
+  // The compact selection strip is a selection mode: back leaves it first,
+  // like Escape. A preview on top is closed by the preview step instead.
+  if (isCompactLayout() && state.selected.size && $('#previewModal').classList.contains('hidden')) {
+    if (!confirmDiscardChanges()) return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'unsaved-edit' };
+    state.selected.clear();
+    state.selectedFolderCard = null;
+    updateCardSelectionStyles();
+    renderInspector();
+    return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'selection' };
   }
   return null;
 }
@@ -4783,7 +5148,8 @@ function beginBreadcrumbEdit(breadcrumb, paneId = state.activePaneId) {
 
 function breadcrumbButtonMarkup(crumb, index, { current = false, extraClass = '' } = {}) {
   const classes = ['breadcrumb-segment', extraClass, current ? 'breadcrumb-current' : ''].filter(Boolean).join(' ');
-  return `<button type="button" class="${classes}" data-crumb-index="${index}" title="${escapeHTML(crumb.label)}"${current ? ' disabled aria-current="page"' : ''}>${escapeHTML(crumb.label)}</button>`;
+  const dropTarget = crumb.view.kind === 'folder' ? ` data-crumb-folder-id="${escapeHTML(crumb.view.id)}"` : crumb.view.kind === 'root' ? ' data-crumb-root' : '';
+  return `<button type="button" class="${classes}" data-crumb-index="${index}"${dropTarget} title="${escapeHTML(crumb.label)}"${current ? ' disabled aria-current="page"' : ''}>${escapeHTML(crumb.label)}</button>`;
 }
 
 function breadcrumbSeparatorMarkup() {
@@ -4946,22 +5312,26 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
   state.importing = true;
   setSyncStatus('正在导入到 Eagle…');
   try {
-    const payload = { folderId, libraryPath };
+    const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}) };
     let result = source === 'clipboard'
       ? await window.eagleMV.importClipboard(payload)
       : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
     if (result.canceled) return;
     if (result.needsDuplicateDecision) {
+      const rejected = result.rejected || [];
       const choice = await chooseDuplicateAction(result.duplicates || [], result.paths?.length || paths?.length || 0);
       if (!choice || choice === 'cancel') return;
       result = await window.eagleMV.importItems({ ...payload, paths: result.paths, duplicateChoice: choice });
+      result.rejected = [...rejected, ...(result.rejected || [])];
       if (result.canceled) return;
     }
     if (!result.count) {
       toast(result.error || result.duplicateFailed ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
       return;
     }
-    await window.eagleMV.focusWindow().catch(() => {});
+    if (result.nativeDecisionPending) {
+      toast('Eagle 尚未完成重复确认，请在 Eagle 核对；本次不会重复提交文件', 6500);
+    } else await window.eagleMV.focusWindow().catch(() => {});
     await refreshAllPanes({ reset: true, preserveScroll: true });
     const pending = Math.max(0, result.count - result.ready);
     toast(importResultMessage(result, pending), result.partial || result.duplicateFailed ? 6500 : 4200);
@@ -5018,6 +5388,7 @@ function bindTagEditor(kind) {
         popover.querySelector(`[data-tag-suggestion="${CSS.escape(suggestions[next].name)}"]`)?.scrollIntoView({ block: 'nearest' });
       }
     } else if (event.key === 'Escape') {
+      if (popover && !popover.classList.contains('hidden')) event.preventDefault();
       closeTagSuggestions(kind);
     } else if (event.key === 'Enter' && activeIndex >= 0 && suggestions[activeIndex]) {
       event.preventDefault();
@@ -5064,7 +5435,7 @@ function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payl
   const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}`;
   const child = submenu ? `<span class="context-menu-arrow">›</span><div class="context-submenu">${submenu}</div>` : '';
   return `<div class="${className}" role="menuitem"${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
-    <span class="context-menu-leading">${uiIcon(icon, 'context-menu-icon')}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(shortcut)}</span>` : ''}${child}
+    <span class="context-menu-leading">${uiIcon(icon, 'context-menu-icon')}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(keyboardPlatform.shortcutText(shortcut))}</span>` : ''}${child}
   </div>`;
 }
 
@@ -5220,6 +5591,88 @@ async function revealInPane(context, targetPaneId) {
   return true;
 }
 
+async function openItemLocation(id, folderId = null, { paneId = state.activePaneId } = {}) {
+  const pane = paneById(paneId) || activePane();
+  if (!pane) return false;
+  if (!state.connected) {
+    toast('Eagle 未连接，请连接后重试');
+    return false;
+  }
+  if (state.inspectorSaving || state.operationTracker.size || pane.textSaving) {
+    toast('正在保存或处理操作，请稍候再切换位置');
+    return false;
+  }
+  let targetView = { kind: 'all' };
+  if (folderId) {
+    const folder = findFolder(state.library?.folders, folderId);
+    if (!folder) {
+      toast('目标文件夹不存在或已被删除');
+      return false;
+    }
+    if (folder.password) {
+      toast('该文件夹已加密，MultiView 无法解锁（Eagle API 限制）', 3600);
+      return false;
+    }
+    targetView = { kind: 'folder', id: folder.id, name: folder.name };
+  }
+  if (state.activePaneId !== pane.id && !activatePane(pane.id)) return false;
+
+  const libraryPath = state.library?.path;
+  const freshQuery = createQuery();
+  if (!navigate(targetView, { query: freshQuery, refreshView: false, restoreScroll: false })) {
+    return false;
+  }
+
+  const viewKey = descriptorKey(pane.currentView);
+  const queryKey = JSON.stringify(pane.query);
+  const refreshToken = pane.refreshToken + 1;
+  const stillCurrent = () => paneById(pane.id) === pane &&
+    state.library?.path === libraryPath && pane.refreshToken === refreshToken &&
+    descriptorKey(pane.currentView) === viewKey && JSON.stringify(pane.query) === queryKey;
+
+  await refresh({ paneId: pane.id, reset: true, preserveScroll: false });
+  if (!stillCurrent() || pane.errorMessage) return false;
+
+  let itemIndex = pane.items.findIndex(item => item.id === id);
+  let pageLimit = 10;
+  while (itemIndex === -1 && pane.hasMore && pageLimit > 0) {
+    pageLimit--;
+    await refresh({ reset: false, preserveScroll: true, paneId: pane.id });
+    if (!stillCurrent() || pane.errorMessage) return false;
+    itemIndex = pane.items.findIndex(item => item.id === id);
+  }
+
+  if (itemIndex !== -1) {
+    pane.selectedFolderCard = null;
+    pane.selected = new Set([id]);
+    withActivePane(pane.id, () => {
+      if (pane.sort === 'manual') {
+        const selectedEnd = sortedItems().reduce((end, item, index) => pane.selected.has(item.id) ? index + 1 : end, 0);
+        if (selectedEnd > (pane.manualRenderLimit || SORT_FETCH_CAP)) {
+          pane.manualRenderLimit = selectedEnd;
+          renderGrid({ preserveScroll: true });
+        }
+      }
+      updateCardSelectionStyles();
+    });
+    if (state.activePaneId === pane.id) renderInspector();
+    saveSessionState();
+    requestAnimationFrame(() => {
+      if (!stillCurrent() || state.activePaneId !== pane.id) return;
+      const card = paneRoot(pane.id)?.querySelector('.item-card[data-id="' + CSS.escape(id) + '"]');
+      if (card) {
+        card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        card.focus({ preventScroll: true });
+        pane.scrollTop = paneQuery(pane.id, '#gridScroller')?.scrollTop || 0;
+        if (state.activePaneId === pane.id) updateScrollUI();
+      }
+    });
+  } else {
+    saveSessionState();
+  }
+  return true;
+}
+
 function contextFolderEntries(action, query = '') {
   const search = searchFolders(state.library?.folders, query, { excludeId: state.contextMenu?.folderId, limit: 100 });
   const searching = Boolean(String(query || '').trim());
@@ -5266,6 +5719,29 @@ function contextTagPicker(action, placeholder = '搜索标签…') {
   </div>`;
 }
 
+function openItemLocationMenuMarkup(id, paneId = state.activePaneId) {
+  const pane = paneById(paneId) || activePane();
+  const item = (pane?.items || []).find(candidate => candidate?.id === id) || itemById(id);
+  const locations = itemFolderLocations(item, state.library?.folders);
+  const allRow = contextMenuRow({
+    icon: 'all',
+    label: '全部',
+    action: 'open-item-location',
+    payload: { id, folderId: null }
+  });
+  const folderRows = locations.map(folder => contextMenuRow({
+    icon: 'folder',
+    label: folder.name,
+    action: 'open-item-location',
+    payload: { id, folderId: folder.id }
+  })).join('');
+  return contextMenuRow({
+    icon: 'openLocation',
+    label: '打开文件所在的位置',
+    submenu: allRow + folderRows
+  });
+}
+
 function contextMenuMarkup(data) {
   if (data.kind === 'new-menu') return newCreationMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
@@ -5284,6 +5760,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'sidebar') {
     return [
       revealInPaneMenuMarkup(data),
+      restoreFolderCoverMenu(data.targetFolderId),
       ...(data.targetFolderId && window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.targetFolderId } })] : []),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
@@ -5293,6 +5770,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'folder') {
     return [
       revealInPaneMenuMarkup(data),
+      restoreFolderCoverMenu(data.folderId),
       ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.folderId } })] : []),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
@@ -5302,6 +5780,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'workspace') {
     return [
       revealInPaneMenuMarkup(data),
+      restoreFolderCoverMenu(data.folderId),
       contextMenuRow({ icon: 'all', label: '全选', shortcut: '⌘ A', action: 'select-all', disabled: !state.items.length }),
       ...(state.selected.size ? [contextMenuRow({ icon: 'remove', label: '取消选择', action: 'clear-selection' })] : []),
       '<div class="context-menu-separator"></div>',
@@ -5339,9 +5818,9 @@ function contextMenuMarkup(data) {
     ...(hasCapability('openDefault') ? [contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one })] : []),
     ...(hasCapability('openOther') ? [contextMenuRow({ icon: 'open', label: '在其它应用打开…', action: 'open-other', disabled: !one })] : []),
     ...(hasCapability('finder') ? [
-      contextMenuRow({ icon: 'finder', label: finderLabel, shortcut: '⌘ Enter', action: 'finder' }),
-      contextMenuRow({ icon: 'path', label: '打开文件所在的位置', submenu: contextMenuRow({ label: finderLabel, action: 'finder' }) })
+      contextMenuRow({ icon: 'finder', label: finderLabel, shortcut: '⌘ Enter', action: 'finder' })
     ] : []),
+    ...(one ? [openItemLocationMenuMarkup(data.ids[0], data.paneId)] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'folder', label: '添加至上次使用的文件夹…', shortcut: '⇧ D', action: 'last-folder', disabled: !state.recentFolders?.length }),
     contextMenuRow({ icon: 'folder', label: '添加至文件夹…', shortcut: '⌘ ⇧ J', submenu: folderEntries }),
@@ -5350,6 +5829,12 @@ function contextMenuMarkup(data) {
     ...(hasCapability('share') ? [contextMenuRow({ icon: 'share', label: '分享', action: 'share' })] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'pin', label: data.allPinned ? '取消置顶' : '置顶', action: 'pin', disabled: !currentFolder }),
+    ...(window.eagleMV.setFolderCover && one && isImageItem(itemById(data.ids[0])) && !data.allDeleted ? [contextMenuRow({
+      icon: 'image', label: '设为文件夹封面',
+      ...(currentFolder ? { action: 'set-folder-cover', payload: { folderId: currentFolder } }
+        : { submenu: contextFolderPicker('set-folder-cover') }),
+      disabled: !state.connected || !state.folderCoversReady
+    })] : []),
     ...(hasCapability('clipboardFiles') ? [contextMenuRow({ icon: 'copy', label: one ? '复制文件' : `复制 ${data.ids.length} 个文件`, shortcut: '⌘ C', action: 'copy-files' })] : []),
     ...(hasCapability('copyPath') ? [contextMenuRow({ icon: 'path', label: '复制文件路径', shortcut: '⌘ ⌥ C', action: 'copy-path', disabled: !one })] : []),
     contextMenuRow({ icon: 'copy', label: '创建副本', shortcut: '⌘ D', action: 'duplicate' }),
@@ -5429,11 +5914,18 @@ function openSelectionInNewWindow(ids = []) {
   });
 }
 
+function folderCoverSnapshot(folders) {
+  return (folders || []).flatMap(folder => [[folder.id, folder.coverId || null], ...folderCoverSnapshot(folder.children)]);
+}
+
 function showContextMenuAt(x, y, data) {
-  state.contextMenu = { ...data, x, y, paneReveal: capturePaneReveal(data) };
+  state.contextMenu = { ...data, x, y, paneReveal: capturePaneReveal(data),
+    eagleCoverIds: Object.fromEntries(folderCoverSnapshot(state.library?.folders)),
+    libraryPath: state.library?.path, coverRevisions: state.localFolderCovers.covers };
   const menu = $('#contextMenu');
   menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind));
-  menu.innerHTML = contextMenuMarkup(state.contextMenu);
+  menu.innerHTML = contextMenuMarkup(state.contextMenu)
+    + ((!data.kind || ['workspace', 'folder', 'sidebar', 'smart-folder', 'items', 'item'].includes(data.kind)) ? swapPanesMenuMarkup() : '');
   menu.classList.remove('hidden');
   // Narrow screens get a bottom sheet instead of a cursor-anchored panel: the
   // menu is 294px wide and its submenus fly out another 270px, which on a
@@ -5489,6 +5981,9 @@ function openSidebarContextMenu(target, point) {
 async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
+  if (action === 'swap-panes') return swapRecentPanes(payload.paneIds);
+  if (action === 'set-folder-cover') return setFolderCover(payload.folderId, data.ids?.[0], data);
+  if (action === 'reset-folder-cover') return setFolderCover(payload.folderId, null, data);
   if (action === 'reveal-in-pane') return revealInPane(data.paneReveal, payload.paneId);
   if (action === 'site-import') return siteFeatureUI().open();
   if (action === 'pinterest-help') return window.eagleMV.openExternal('https://docs-cn.eagle.cool/article/828-import-from-pinterest');
@@ -5526,6 +6021,7 @@ async function executeContextAction(action, payload) {
     });
   }
   if (action === 'finder') return showItemInFileManager(firstId);
+  if (action === 'open-item-location') return openItemLocation(payload.id || firstId, payload.folderId ?? null, { paneId: data.paneId });
   if (action === 'copy-files') return copySelectedFiles(ids);
   if (action === 'export') {
     return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
@@ -5667,6 +6163,12 @@ async function revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id 
   pane.selected.clear();
   pane.selectedFolderCard = id;
   withActivePane(paneId, () => {
+    // The ordering reconciliation emits a second library snapshot. Its
+    // refresh preserves the old viewport (often the bottom of a long list),
+    // but a newly-created folder is inserted at the top and must be revealed
+    // from the top rather than leaving the user stranded at the old offset.
+    const scroller = paneQuery(paneId, '#gridScroller');
+    if (scroller) { scroller.scrollTop = 0; pane.scrollTop = 0; }
     renderGrid({ preserveScroll: true });
     renderInspector();
   });
@@ -5674,6 +6176,13 @@ async function revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id 
     const card = paneQuery(paneId, `.folder-card[data-open-folder="${CSS.escape(id)}"]`);
     card?.focus({ preventScroll: true });
     card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // A queued Eagle refresh may render once more after this frame; reassert
+    // the top anchor briefly so that late ordering snapshots cannot restore
+    // the pre-creation bottom offset.
+    for (const delay of [80, 260, 700]) setTimeout(() => {
+      const current = paneQuery(paneId, '#gridScroller');
+      if (current && pane.selectedFolderCard === id) { current.scrollTop = 0; pane.scrollTop = 0; }
+    }, delay);
   });
   return true;
 }
@@ -5716,9 +6225,9 @@ async function createFolder(parentId = null, subfolder = false, paneId = state.a
     if (!revealed && state.library?.path === libraryPath) {
       setTimeout(() => revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id: result.id }).catch(() => {}), 900);
     }
-    toast(result.renamed
+    toast(result.orderWarning || (result.renamed
       ? `已创建 ${result.name}（同名文件夹已自动编号）`
-      : `已创建 ${result.name}`, result.renamed ? 3800 : 2400);
+      : `已创建 ${result.name}`), result.orderWarning ? 6500 : result.renamed ? 3800 : 2400);
     return true;
   } finally {
     endForegroundOperation(operationToken);
@@ -5786,9 +6295,9 @@ async function createNewDocument(type, { folderId = null, paneId = state.activeP
       setTimeout(() => revealCreatedDocument({ paneId, viewKey, libraryPath, id: result.id, type }).catch(() => {}), 1400);
       setTimeout(() => refresh({ reset: true, preserveScroll: true, paneId }).catch(() => {}), 4200);
     }
-    toast(result.renamed
+    toast(result.orderWarning || (result.renamed
       ? `已创建 ${result.name}.${type}（同名文件已自动改名）`
-      : `已创建 ${result.name}.${type}`, result.renamed ? 4200 : 2800);
+      : `已创建 ${result.name}.${type}`), result.orderWarning ? 6500 : result.renamed ? 4200 : 2800);
     return true;
   } finally {
     state.importing = false;
@@ -5865,6 +6374,11 @@ function selectedFeatureUI() {
   selectedFeatureController ||= window.createSelectedFeatureUI({
     api: window.eagleMV,
     context: () => ({ libraryPath: state.library?.path, folders: state.library?.folders || [],
+      folderOrder: (parentId, folders) => window.EagleMVManualOrder.sort(folders || [], manualOrder(parentId ? { kind: 'folder', id: parentId } : { kind: 'root' }, 'folders')),
+      paneDestination: paneId => {
+        const view = paneById(paneId)?.currentView;
+        return view?.kind === 'folder' ? view.id : view?.kind === 'root' ? null : undefined;
+      },
       folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
       paneId: state.activePaneId, ids: [...state.selected] }),
     canStart: () => state.connected && confirmDiscardChanges(),
@@ -6037,6 +6551,10 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
       toast(result?.error ? importResultMessage(result) : result?.message || '没有可创建副本的原文件', 4000);
       return false;
     }
+    if (result.nativeDecisionPending) {
+      toast('副本已提交，但 Eagle 尚未完成重复确认，请到 Eagle 核对；请勿重复创建', 6000);
+      return false;
+    }
     const createdItems = (await Promise.all((result.ids || []).map(id => window.eagleMV.getItem(id).catch(() => null)))).filter(Boolean);
     const mergeCreatedItems = () => {
       const sourcePane = paneById(paneId);
@@ -6186,7 +6704,7 @@ async function runItemBatch(ids, worker, timeoutMessage) {
 
 async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourcePaneId = null } = {}) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
-  if (!uniqueIds.length || !folderId) return false;
+  if (!uniqueIds.length || (!folderId && !(move && sourceFolderId))) return false;
   if (!state.connected) {
     toast('Eagle 未连接，暂时无法修改归类', 3500);
     return true;
@@ -6197,7 +6715,7 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   }
   // Dragging out of "全部/未分类" has no source folder to leave, so an
   // ⌥-drop there degrades to a plain add, mirroring Eagle.
-  const delta = folderMoveDelta(move ? sourceFolderId : null, folderId);
+  const delta = folderId ? folderMoveDelta(move ? sourceFolderId : null, folderId) : { add: [], remove: [sourceFolderId] };
   const moving = delta.remove.length > 0;
   const verb = moving ? '移动' : '归类';
   const operationToken = beginForegroundOperation(`正在${verb} ${uniqueIds.length} 个素材…`, { key: `folder-${moving ? 'move' : 'add'}:${libraryPath}:${folderId}` });
@@ -6273,7 +6791,7 @@ function paneItemDropContext(targetPaneId, event) {
     targetFolderId: targetPane.currentView.kind === 'folder' ? targetPane.currentView.id : null,
     sourceFolderId,
     sourcePaneId,
-    move: Boolean(sourceFolderId || event.altKey)
+    move: Boolean(sourceFolderId && !event.altKey)
   };
 }
 
@@ -6708,6 +7226,38 @@ function bindPaneEvents(paneId) {
   query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
   const pathRow = root.querySelector('.heading-path-row');
   const breadcrumb = query('#breadcrumb');
+  const crumbDropTarget = event => event.target.closest('[data-crumb-folder-id], [data-crumb-root]');
+  if (breadcrumb) breadcrumb.addEventListener('dragover', event => {
+    const target = crumbDropTarget(event);
+    if (!target || classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'unsupported') return;
+    event.preventDefault(); event.stopPropagation();
+    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    event.dataTransfer.dropEffect = sourceFolderId && !event.altKey ? 'move' : 'copy';
+    target.classList.add('drop-target');
+  });
+  if (breadcrumb) breadcrumb.addEventListener('dragleave', event => {
+    const target = crumbDropTarget(event);
+    if (target && !target.contains(event.relatedTarget)) target.classList.remove('drop-target');
+  });
+  if (breadcrumb) breadcrumb.addEventListener('drop', event => {
+    const target = crumbDropTarget(event);
+    const kind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    if (!target || kind === 'unsupported') return;
+    event.preventDefault(); event.stopPropagation();
+    breadcrumb.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target'));
+    const folderId = target.dataset.crumbFolderId || null;
+    if (kind === 'external-files') {
+      scheduleExternalFolderImport(event.dataTransfer, folderId, paneId);
+      return;
+    }
+    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+    const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
+    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
+    const name = target.textContent;
+    const move = Boolean(sourceFolderId && !event.altKey);
+    scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourcePaneId }));
+  });
   pathRow?.addEventListener('pointerdown', event => {
     if (breadcrumb.classList.contains('is-editing')) return;
     if (event.target.closest('[data-crumb-expand]')) return;
@@ -6727,7 +7277,7 @@ function bindPaneEvents(paneId) {
       return;
     }
     const button = event.target.closest('[data-crumb-index]');
-    if (!button || button.disabled) {
+    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
       beginBreadcrumbEdit(breadcrumb, paneId);
       return;
     }
@@ -7041,7 +7591,7 @@ function bindPaneEvents(paneId) {
     const target = findFolder(state.library?.folders, folder.dataset.openFolder);
     const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    const move = Boolean(sourceFolderId || event.altKey);
+    const move = Boolean(sourceFolderId && !event.altKey);
     const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || paneId;
     scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourcePaneId }));
   });
@@ -7124,7 +7674,8 @@ function bindPaneEvents(paneId) {
     const dropKind = classifyDrop(event.dataTransfer, fallbackIds);
     if (dropKind === 'unsupported') return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = dropKind === 'internal-items' ? (event.altKey ? 'move' : 'copy') : 'copy';
+    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    event.dataTransfer.dropEffect = dropKind === 'internal-items' && sourceFolderId && !event.altKey ? 'move' : 'copy';
   });
   scroller.addEventListener('dragleave', () => {
     if ($('#dropOverlay').classList.contains('hidden')) return;
@@ -7367,6 +7918,7 @@ function bindPaneEvents(paneId) {
 function bindEvents() {
   bindWorkspaceResizers();
   bindToolbarWrapState();
+  bindMetadataViewerControls();
   document.addEventListener('dragend', clearDragUI, true);
   document.addEventListener('drop', () => setTimeout(clearDragUI, 0), true);
   $('#newButton').addEventListener('click', event => {
@@ -7649,6 +8201,18 @@ function bindEvents() {
     $(selector).addEventListener('input', markDirty);
     $(selector).addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   }
+  for (const selector of ['#itemName', '#itemURL', '#itemAnnotation']) {
+    const control = $(selector);
+    control.addEventListener('compositionstart', () => {
+      inspectorComposingControls.add(control);
+      clearInspectorAutoSave();
+      captureInspectorDraft();
+    });
+    control.addEventListener('compositionend', () => {
+      inspectorComposingControls.delete(control);
+      markDirty();
+    });
+  }
   $('#itemURL').addEventListener('input', updateURLActions);
   $('#openURLButton').addEventListener('click', async () => {
     // The button is disabled for non-http values and main re-checks the
@@ -7905,6 +8469,7 @@ function bindEvents() {
     if (!hasCapability('importLocal')) return;
     const clipboardFiles = [...(event.clipboardData?.files || [])];
     const paths = clipboardFiles.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    const clipboardText = event.clipboardData?.getData('text/plain') || '';
     if (window.eagleMV.platform === 'web') {
       // The web client can only upload files present in the browser paste
       // event; the host-clipboard fallback is meaningless remotely.
@@ -7914,15 +8479,17 @@ function bindEvents() {
       return;
     }
     event.preventDefault();
-    importFiles(paths.length ? paths : null, paths.length ? 'paste-files' : 'clipboard');
+    importFiles(paths.length ? paths : null, paths.length ? 'paste-files' : 'clipboard', { clipboardText });
   });
 
   document.addEventListener('focusin', event => {
     if (isInspectorEditor(event.target)) state.inspectorEditing = true;
+    else if (event.target.closest?.('#generationMetadataSection')) state.inspectorEditing = false;
     else if (!event.target.closest?.('#inspectorContent')) state.inspectorEditing = false;
   });
   document.addEventListener('pointerdown', event => {
     if (!event.target.closest?.('#inspectorContent')) state.inspectorEditing = false;
+    if (!event.target.closest?.('#generationMetadataSection')) metadataViewerFocused = false;
   }, true);
 
   document.addEventListener('keydown', event => {
@@ -7955,11 +8522,25 @@ function bindEvents() {
         return;
       }
       if (previewOpen) { event.preventDefault(); closePreview(); return; }
-      if (!editable && (state.selected.size || state.selectedFolderCard) && confirmDiscardChanges()) {
-        state.selected.clear();
-        state.selectedFolderCard = null;
-        updateCardSelectionStyles();
-        renderInspector();
+      // Off Apple platforms an unconsumed Esc in a text field reaches the
+      // Android shell as system Back and can close the app; leave the field
+      // instead (blur also autosaves TXT), so the next Esc goes back.
+      const field = isEditableElement(event.target) ? event.target : (isEditableElement() ? document.activeElement : null);
+      if (field && !keyboardPlatform.apple && !event.defaultPrevented) {
+        event.preventDefault();
+        field.blur();
+        return;
+      }
+      if (!editable && (state.selected.size || state.selectedFolderCard)) {
+        // Consumed even when the discard prompt declines: an unconsumed Esc
+        // becomes system Back in the Android shell and would also navigate.
+        event.preventDefault();
+        if (confirmDiscardChanges()) {
+          state.selected.clear();
+          state.selectedFolderCard = null;
+          updateCardSelectionStyles();
+          renderInspector();
+        }
       }
       return;
     }
@@ -7968,7 +8549,7 @@ function bindEvents() {
       requestBackAction();
       return;
     }
-    if (!editable && event.metaKey && event.key === '[') {
+    if (!editable && keyboardPlatform.primaryKey(event) && event.key === '[') {
       event.preventDefault();
       requestBackAction();
       return;
@@ -7977,6 +8558,14 @@ function bindEvents() {
     // particular, a second Delete while the trash prompt is open can replace
     // its resolver and leave the first operation waiting forever.
     if (blockingSurfaceOpen()) return;
+    if (!editable && keyboardPlatform.primaryKey(event) && !keyboardPlatform.otherKey(event) && !event.shiftKey && !event.altKey && !event.repeat && !event.isComposing) {
+      const layout = { Digit1: 'single', Digit2: 'vertical2', Digit3: 'vertical3', Digit4: 'vertical4' }[event.code];
+      if (layout) {
+        event.preventDefault();
+        renderPaneLayout(layout, { refresh: true });
+        return;
+      }
+    }
     const primaryKey = event.metaKey || event.ctrlKey;
     const selectedIds = selectedActionIds();
     const activeItemId = previewOpen && state.previewId ? state.previewId : selectedIds[0];
@@ -8025,12 +8614,22 @@ function bindEvents() {
       else removeSelectionFromFolder({ ids: selectedIds, folderId: state.currentView.id });
       return;
     }
+    if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      undoLastTrash();
+      return;
+    }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && deleteKey && selectedIds.length) {
       event.preventDefault();
       setTrash(selectedIds, true);
       return;
     }
-    if (!editable && (event.metaKey || event.ctrlKey) && !event.altKey) {
+    if ((!editable || metadataViewerIsFocused(event)) && (event.metaKey || event.ctrlKey) && !event.altKey) {
+      if (metadataViewerIsFocused(event) && (!event.shiftKey || event.code === 'Equal' || event.code === 'NumpadAdd')) {
+        if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeMetadataZoom(1); return; }
+        if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changeMetadataZoom(-1); return; }
+        if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); resetMetadataZoom(); return; }
+      }
       if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeThumbnailSize(1); return; }
       if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changeThumbnailSize(-1); return; }
       if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); resetThumbnailSize(); return; }
@@ -8059,8 +8658,8 @@ function bindEvents() {
       return;
     }
     if (primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') { event.preventDefault(); $('#searchInput').focus(); }
-    if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'l') { event.preventDefault(); togglePanel('sidebar'); }
-    if (!editable && event.metaKey && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); togglePanel('inspector'); }
+    if (!editable && keyboardPlatform.primaryKey(event) && event.shiftKey && event.key.toLowerCase() === 'l') { event.preventDefault(); togglePanel('sidebar'); }
+    if (!editable && keyboardPlatform.primaryKey(event) && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); togglePanel('inspector'); }
     if (!editable && event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) { event.preventDefault(); locateCurrentFolder(); }
     if (!editable && hasCapability('openDefault') && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'Enter' && (state.previewId || state.selected.size === 1)) {
       event.preventDefault();
@@ -8128,7 +8727,7 @@ function bindEvents() {
     }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
-    if (!editable && event.metaKey && event.key === ']') { event.preventDefault(); navigateHistory(1); }
+    if (!editable && keyboardPlatform.primaryKey(event) && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
       const scrollGrid = key => {
@@ -8347,6 +8946,7 @@ function bindHubEvents() {
     window.eagleMV.confirmClose();
   });
   window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
+  window.eagleMV.onUndoDelete?.(() => undoLastTrash());
   window.eagleMV.onPinSelection(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId));
   window.eagleMV.onAddToFolder(payload => addSelectionToFolder(payload));
   window.eagleMV.onMoveToFolder(payload => moveSelectionToFolder(payload));
@@ -8378,6 +8978,10 @@ function bindHubEvents() {
     createSmartFolderFromNewMenu().catch(error => toast(`智能文件夹创建失败：${error.message}`, 4200));
   });
   window.eagleMV.onNewWindowRequest(requestDefaultNewWindow);
+  window.eagleMV.onOpenView?.(view => {
+    if (!view || !state.library) return;
+    if (!navigate(view, { restoreScroll: true })) toast('无法打开 MultiView 当前路径', 3200);
+  });
   window.eagleMV.onFolderUsed(payload => {
     if (!payload?.folderId || payload.libraryPath !== state.library?.path) return;
     rememberRecentFolderUsage(payload.folderId);
@@ -8389,6 +8993,7 @@ function bindHubEvents() {
     queueChangedInspectorRender(false);
   });
   window.eagleMV.onManualOrdersChanged?.(acceptManualOrders);
+  window.eagleMV.onFolderCoversChanged?.(acceptFolderCovers);
   window.eagleMV.onTagDataChanged(async payload => {
     if (payload?.libraryPath !== state.library?.path) return;
     await loadLibraryExtras();
@@ -8439,6 +9044,10 @@ function bindHubEvents() {
   window.eagleMV.onQueryInvalidated(payload => {
     if (payload?.libraryPath && payload.libraryPath !== state.library?.path) return;
     if (payload?.thumbnailRevision) thumbnailRevision = payload.thumbnailRevision;
+    // TXT saves already have their own text:changed notification. Re-querying
+    // every pane here rebuilds both grids behind the editor and makes an
+    // unrelated pane visibly flash after each autosave.
+    if (payload?.reason === 'text-saved') return;
     scheduleRefresh();
   });
 }
@@ -8675,16 +9284,23 @@ async function loadLibraryExtras() {
   if (!libraryPath) return;
   state.manualOrdersReady = false;
   if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;}
-  const [pins, tags, tagGroups, recentFolders, tagColors, orders] = await Promise.all([
+  if (state.folderCoversLibrary !== libraryPath) {
+    state.localFolderCovers = { revision: 0, covers: {} };
+    state.folderCoversReady = false;
+    state.folderCoversLibrary = libraryPath;
+  }
+  const [pins, tags, tagGroups, recentFolders, tagColors, orders, covers] = await Promise.all([
     window.eagleMV.getPins({ libraryPath }).catch(() => ({})),
     window.eagleMV.getTags().catch(() => []),
     window.eagleMV.getTagGroups().catch(() => []),
     window.eagleMV.getRecentFolders().catch(() => []),
     window.eagleMV.getTagColors({ libraryPath }).catch(() => ({})),
-    window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null
+    window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null,
+    window.eagleMV.getFolderCovers?.({ libraryPath }).catch(error => {toast(`封面设置读取失败：${error.message}`,5000);return null;}) ?? null
   ]);
   if (state.library?.path !== libraryPath) return;
   state.localPins = pins || {};
+  if (covers) acceptFolderCovers({ libraryPath, ...covers });
   for (const [key,order] of Object.entries(orders || {})) {
     if ((state.localOrders[key]?.revision || 0) <= order.revision) state.localOrders[key]=order;
   }
@@ -8725,8 +9341,22 @@ function applyCapabilityVisibility() {
   hideWithout('customThumbnail', '#customThumbnailButton');
 }
 
+// Static index.html hints are written with Mac glyphs; spell them out with
+// the platform's own modifier names elsewhere.
+function localizeStaticShortcutHints() {
+  if (keyboardPlatform.apple) return;
+  for (const node of document.querySelectorAll('[title]')) {
+    const title = node.getAttribute('title');
+    if (/[⌘⌃⌥⇧⌫]/.test(title)) node.setAttribute('title', keyboardPlatform.shortcutText(title));
+  }
+  for (const node of document.querySelectorAll('kbd')) {
+    if (/[⌘⌃⌥⇧⌫]/.test(node.textContent)) node.textContent = keyboardPlatform.shortcutText(node.textContent);
+  }
+}
+
 async function start() {
   installBackRouter(backActionRouter);
+  localizeStaticShortcutHints();
   bindEvents();
   bindHubEvents();
   bindWebAccessDialog();

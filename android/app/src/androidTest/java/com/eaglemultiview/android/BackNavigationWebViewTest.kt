@@ -26,6 +26,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.hamcrest.CoreMatchers.allOf
 import org.hamcrest.CoreMatchers.containsString
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -232,7 +233,7 @@ class BackNavigationWebViewTest {
             server.enqueue(MockResponse().setResponseCode(503))
             server.start()
             connect(server.url("/").toString())
-            onView(withText(R.string.state_http_error_title)).check(matches(isDisplayed()))
+            onView(withId(R.id.stateTitle)).check(matches(allOf(isDisplayed(), withText(R.string.state_http_error_title))))
 
             dispatchBack()
 

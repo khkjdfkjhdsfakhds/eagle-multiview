@@ -36,7 +36,12 @@
       const middle = ctx.kind === 'folders' && point > .25 && point < .75;
       return {node,ctx,middle,position:point < .5 ? 'before' : 'after',vertical};
     }
+    // A card from another list (the other pane's folder, an item onto a folder
+    // card) is not a reorder target: leave the drop to the ordinary
+    // move/copy/import handlers instead of swallowing it.
+    const sameList = (source, ctx) => !source || (source.libraryPath===ctx.libraryPath && source.scope===ctx.scope && source.kind===ctx.kind);
     document.addEventListener('dragstart', event => {
+      if (event.target.closest?.('.folder-row[data-folder-node-id]')) return;
       const node = nodeFor(event), ctx = node && context(node, true);
       if (!ctx?.enabled || !event.dataTransfer) return;
       const native = ctx.kind === 'items' && nativeStart;
@@ -53,22 +58,30 @@
       event.stopImmediatePropagation();
     }, true);
     document.addEventListener('dragover', event => {
+      if (Array.from(event.dataTransfer?.types || []).includes(FOLDER_TYPE) && event.target.closest?.('#folderTree')) { clear(); return; }
       if (!isManual(event)) return;
       clear(); const target = destination(event);
       if (!target || target.middle) return;
+      const source = drag || nativeSource();
+      if (!sameList(source, target.ctx)) return;
       consume(event);
-      const allowed = !busy && target?.ctx.enabled && target.ctx.ready && (!drag ||
-        (drag.libraryPath===target.ctx.libraryPath && drag.scope===target.ctx.scope && drag.kind===target.ctx.kind && !drag.ids.includes(target.ctx.id) && drag.pinned===target.ctx.pinned));
+      const allowed = !busy && target?.ctx.enabled && target.ctx.ready && (!source ||
+        (!source.ids.includes(target.ctx.id) && source.pinned===target.ctx.pinned));
       event.dataTransfer.dropEffect = allowed ? 'move' : 'none';
       if (allowed) {feedback=target.node; feedback.dataset.manualDrop=`${target.vertical?'vertical':'horizontal'}-${target.position}`;}
     }, true);
     document.addEventListener('drop', event => {
+      if (Array.from(event.dataTransfer?.types || []).includes(FOLDER_TYPE) && event.target.closest?.('#folderTree')) { clear(); drag = null; return; }
       if (!isManual(event)) return;
       clear(); const target = destination(event, true);
       if (!target) return;
       let source;try {source=hasPayload(event) ? JSON.parse(event.dataTransfer.getData(TYPE)) : nativeSource();} catch {drag=null;consume(event);finish();return;}
       if (!source || typeof source!=='object') {drag=null;consume(event);finish();return;}
       drag=null;
+      if (!target.middle && !sameList(source, target.ctx)) {
+        if (source.libraryPath===target.ctx.libraryPath && Array.isArray(source.ids)) forward(source);
+        return;
+      }
       if (target?.middle) {
         if (busy || source.libraryPath!==target.ctx.libraryPath || !Array.isArray(source.ids)) {consume(event);finish();return;}
         forward(source);return;

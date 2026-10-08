@@ -5,8 +5,9 @@
         <item name="colorAccent">@color/brand_blue</item>
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">@color/surface_background</item>
-        <item name="android:statusBarColor">@color/surface_background</item>
+        <!-- Transparent so the root background, switched with the page, shows behind the bars. -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>
