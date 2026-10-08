@@ -2,6 +2,43 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## 1.8.1 - 2026-10-08
+
+### Android app
+
+- First Android APK (phones and tablets, Android 8.0+). The app connects to the Mac's Web Access service like a browser tab, without a native toolbar over the page; the system bars follow the page colour. Changing host is offered on the connection-failure and login screens.
+- System Back and edge gestures follow the web client's own order: close menus, dialogs and the preview, leave the phone selection bar, then go back through browsing history; only an empty history leaves the app.
+- Hardware keyboards: the page receives every key. Where macOS uses ⌘, Android uses Ctrl (Ctrl+1–4 layouts, Ctrl+[ / ], Ctrl+Shift+L / I and the rest), and shortcut hints read Ctrl/Alt/Shift. Arrows and Tab never move focus to native controls.
+- Esc works as on the desktop: it leaves a text field, closes a dialog or the preview and clears the selection; an Esc the page does not use goes back once. HyperOS, which turns a keyboard's Esc into Back before apps see it, is handled the same way.
+- Importing opens the system file picker (multi-select, any file type, no storage permission). "Download to this device" saves single files and ZIP bundles to Downloads through the system download manager with a completion notification.
+- Rotation, split screen, freeform windows and connecting a keyboard no longer reload the page. Large system font sizes no longer overlap folder-card titles and counts.
+- Returning from the background or the file picker reconnects live sync at once instead of after a growing back-off.
+- The APK is signed with a development (debug) key; a later formally signed build will need the debug build uninstalled first.
+
+### Desktop and web
+
+- Ctrl/⌘+Z undoes the last move to Trash (up to 20 batches per window), also from 编辑 → 撤销 and now in browsers and the Android app. Text fields keep their own text undo.
+- Re-importing a file whose earlier copy is in Trash imports it as new, matching Eagle, instead of reporting a failed duplicate.
+- Dropping items onto an item card in another pane moves (or with Option copies) them into that pane's folder; reordering within the same folder is unchanged.
+- Clicking another pane takes focus away from a TXT editor in the first pane (which autosaves), so pasting there no longer types file paths into the text.
+- Opening a synchronized preview collapses the selection to the previewed item and scrolls its pane to it.
+
+### Earlier in 1.8.1
+
+- Metadata Viewer now reads NovelAI generation information hidden in PNG and WebP alpha pixels, including global prompts, character prompts and generation parameters.
+- Added Metadata Viewer keyboard zoom and a bottom-right height resize handle. Cmd/Ctrl +/- affects the viewer only after clicking inside it; elsewhere the existing thumbnail zoom remains unchanged.
+- Removed TXT reload/save buttons while retaining autosave and the save shortcut. Folder navigation in one pane no longer closes another pane's TXT through preview synchronization.
+- Added context-menu pane swapping: two panes swap directly; larger layouts swap the two most recently activated panes while preserving open editors and scroll positions.
+- Duplicate imports from the clipboard and dropped directories now offer their choice in MultiView. Keeping both and creating copies resolve Eagle's confirmation for only the newly imported IDs.
+- New folders move to the top in both Eagle and MultiView, including nested folders.
+- Future pin, folder-cover and restore-default operations save through Eagle's native API execution path. Existing local settings are not bulk migrated.
+- Drag ordering now synchronizes folder siblings and items within ordinary folders to Eagle. Virtual item views such as All Items retain local ordering.
+- Copying a folder now reproduces the source exactly: folder name, item order, folder order, pins, cover, folder properties and item metadata (name, tags, annotation, URL, star, modification time, thumbnail flags) all match the original. Eagle permits same-named sibling folders, so a copy keeps the source name instead of being renamed to "Name (1)".
+- A copied folder's thumbnail now matches its source. Eagle derives a folder's default cover from the copied items' order and keeps that thumbnail cache in its renderer instead of the folder API, so a copy used to show whichever image the import landed last; the copy re-derives its covers once every item carries the source metadata, and pins the source cover image when Eagle cannot derive it.
+- Large folders copy in one pass. Imports aimed at the new folders skip Eagle's duplicate queue instead of waiting for a dialog that only appears after the whole batch, and an accepted but still invisible item is restored rather than reported as a failure.
+- Dragging a folder onto another pane moves it into that pane's folder; holding Option copies the whole subtree there with Eagle's "keep both" behaviour.
+- Added an Eagle-side "在 Eagle 打开 MultiView 当前文件夹" action to the MultiView TXT plugin, mirroring MultiView's existing "Eagle 路径" button in the opposite direction.
+
 ## 1.8.0 - 2026-09-07
 
 This public release includes the intervening 1.7.0 changes below. The previous GitHub release was 1.6.0.

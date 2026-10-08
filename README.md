@@ -4,13 +4,13 @@
 
 Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多分栏工作区**和**内置局域网 Web 访问**。电脑端与网页端共享浏览、搜索、筛选、预览、整理和编辑流程，各视图独立导航，素材修改通过主机同步。
 
-[下载 macOS 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.0 更新说明](docs/release-notes-v1.8.0.md)
+[下载 macOS / Android 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.1 更新说明](docs/release-notes-v1.8.1.md)
 
 ![Eagle MultiView 1.8.0 多分栏工作区](docs/screenshots/desktop-multipane.jpg)
 
 > Eagle MultiView 不是 Eagle 官方产品。使用时需要先启动 Eagle 并打开资料库；常规操作通过本机 Eagle HTTP API，TXT 正文保存通过配套的 Eagle 官方 Plugin API 后台服务。
 
-当前版本：**[1.8.0](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.0)**，可直接[下载 macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.0/Eagle-MultiView-1.8.0-arm64.dmg)。桌面安装包仅提供 **macOS Apple silicon**，从本版起停止构建和维护 Windows 桌面版。Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机浏览器无需安装 Eagle 或额外客户端。
+当前版本：**[1.8.1](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.1)**，可直接下载 [macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.1/Eagle-MultiView-1.8.1-arm64.dmg)或 [Android App](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.1/Eagle-MultiView-1.8.1-android.apk)。桌面安装包仅提供 **macOS Apple silicon**，不再构建和维护 Windows 桌面版；Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机和平板可直接用浏览器，也可安装 Android App。
 
 ## 手机、平板和网页端：核心功能
 
@@ -50,7 +50,19 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 - 浏览器端支持上传和下载；Finder 定位、原生文件拖出、系统默认应用打开等操作属于 Mac 桌面端。
 - HTTP 或剪贴板权限受限时，复制会显示可选中的原文，供手动复制；媒体预览取决于浏览器的格式支持。
 - Web TXT 保存同样需要主机启用[配套 TXT 后台插件](eagle-plugin/text-save-service/README.md)。
-- 仓库另含 [Android 客户端外壳源码](android/README.md)，用于连接同一 Web 主机；本次发布不提供 Android 安装包，日常移动访问直接使用浏览器。
+
+### Android App
+
+浏览器之外，1.8.1 起提供 Android App（手机和平板通用，Android 8.0 及以上）。它连接的就是上面的 Web 访问服务，界面和功能与浏览器一致，额外解决浏览器里系统操作和网页操作互相冲突的问题：
+
+- **系统返回键和边缘手势**按网页的层级逐步返回：先关菜单、弹窗和预览，再退出手机选择栏，然后沿浏览历史后退，没有历史时才退出 App。
+- **外接键盘快捷键**：Mac 上用 ⌘ 的快捷键在 Android 上改用 Ctrl，例如 Ctrl+1–4 切换分栏、Ctrl+[ / ] 后退前进、Ctrl+F 搜索；平板横屏宽度足够时可用多栏。Esc 与 Mac 一致：离开输入框、关闭弹窗和预览、清除选择。
+- **导入与下载**：导入使用系统文件选择器，可多选；“下载到此设备”保存到“下载”目录，并有系统通知。
+- 横竖屏切换、分屏、小窗和接拔键盘都不会重新加载页面。
+
+安装：从 Release 下载 `Eagle-MultiView-1.8.1-android.apk`，在手机上打开安装（需要允许当前来源安装应用）。打开后输入 Mac 上“Web 访问”窗口显示的地址（例如 `http://192.168.1.20:41600`），再输入访问密钥。需要换到另一台 Mac 时，在连接失败页或登录页点“更换主机”。
+
+当前 APK 使用开发（debug）签名，适合个人侧载使用；以后改为正式签名时，需要先卸载旧版再安装。源码和外壳约定见 [android/README.md](android/README.md)。
 
 ## 适合做什么
 
@@ -89,6 +101,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 - macOS 13 或更新版本，Apple silicon Mac（主要支持和验证平台）。
 - Eagle 4.0 Build 21 或更新版本。
 - Eagle 需要先启动并打开一个可用资料库。
+- 可选的 Android App：Android 8.0 或更新版本的手机或平板，与 Mac 处于同一局域网。
 
 ## 安装
 
@@ -183,4 +196,4 @@ pnpm dist:mac
 
 Eagle MultiView is an unofficial Eagle client for **Apple silicon macOS and local-network browsers**. Keep independent windows and up to four panes on your Mac, then browse, search, preview, organize, upload and download assets from a phone, tablet or another computer. Enable **View → Web Access** on the Mac, open its LAN address on the other device and sign in with the access key. Eagle and MultiView must remain running on the host. No cloud account or full-library copy is required. The built-in server uses HTTP and is intended for trusted local networks.
 
-Version 1.8.0 adds folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving, WebP/NovelAI character metadata and improved pane workflows. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued. Android shell source is available, while mobile browsers are the ready-to-use entry point.
+Version 1.8.1 adds an Android app for phones and tablets: it opens the same Web Access service with system Back and edge gestures that follow the page's own close/back order, Ctrl-based hardware-keyboard shortcuts (⌘ on macOS), desktop-like Esc, the system file picker for imports and system downloads. The APK is debug-signed for sideloading. Ctrl/⌘+Z now undoes moves to Trash on every client. Version 1.8.0 added folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving and WebP/NovelAI character metadata. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued.
