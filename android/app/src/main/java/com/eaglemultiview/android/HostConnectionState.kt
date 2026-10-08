@@ -32,6 +32,8 @@ interface RecentHostStore {
  */
 class HostConnectionCoordinator(
     private val recentHostStore: RecentHostStore,
+    /** Origins of remembered addresses, or null while "记住访问地址" is off. */
+    private val savedOrigins: () -> Set<String>? = { null },
 ) {
     var state: HostConnectionState = HostConnectionState.HostEntry
         private set
@@ -41,9 +43,13 @@ class HostConnectionCoordinator(
 
     fun restore(): HostEndpoint? = recentHostStore.read()?.also { beginConnection(it) }
 
-    /** Returns true when changing origin requires clearing WebView site data first. */
+    /** Returns true when the WebView's site data must be cleared before loading [endpoint]. */
     fun beginConnection(endpoint: HostEndpoint): Boolean {
-        val clearPreviousOrigin = activeEndpoint?.origin?.let { it != endpoint.origin } == true
+        val clearPreviousOrigin = SiteDataPolicy.clearBeforeConnecting(
+            activeEndpoint?.origin,
+            endpoint.origin,
+            savedOrigins(),
+        )
         activeEndpoint = endpoint
         state = HostConnectionState.Connecting(endpoint)
         return clearPreviousOrigin
@@ -72,9 +78,9 @@ class HostConnectionCoordinator(
 
     /** Returns whether trusted WebView data needs clearing before showing host entry. */
     fun showHostEntry(): Boolean {
-        val hadActiveHost = activeEndpoint != null
+        val clear = SiteDataPolicy.clearOnLeavingHost(activeEndpoint?.origin, savedOrigins())
         activeEndpoint = null
         state = HostConnectionState.HostEntry
-        return hadActiveHost
+        return clear
     }
 }

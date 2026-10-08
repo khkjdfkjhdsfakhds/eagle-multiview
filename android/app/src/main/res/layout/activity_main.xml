@@ -158,12 +158,14 @@
             android:textColor="@color/text_secondary"
             android:textSize="15sp" />
 
-        <EditText
+        <AutoCompleteTextView
             android:id="@+id/hostInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:autofillHints="url"
+            android:completionThreshold="1"
+            android:dropDownHeight="wrap_content"
             android:hint="@string/host_url_hint"
             android:imeOptions="actionGo"
             android:importantForAutofill="yes"
@@ -179,6 +181,24 @@
             android:textColor="@android:color/holo_red_dark"
             android:textSize="13sp"
             android:visibility="gone" />
+
+        <CheckBox
+            android:id="@+id/rememberHostsCheck"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:text="@string/remember_hosts"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/rememberHostsHelp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/remember_hosts_help"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp" />
 
         <LinearLayout
             android:layout_width="match_parent"
