@@ -2594,6 +2594,22 @@ function folderLockBadge(folder) {
   return folder?.password ? `<span class="folder-lock" title="加密文件夹">${uiIcon('lock', 'folder-lock-svg')}</span>` : '';
 }
 
+// Eagle's sidebar badge: thousands separators, and no badge at all for zero.
+function folderCountBadge(count) {
+  return Number.isFinite(count) && count > 0 ? `<span class="folder-count">${count.toLocaleString('en-US')}</span>` : '';
+}
+
+// Eagle shows the subtree total on a collapsed folder and only the folder's
+// own items once it is expanded (the children then carry their own counts).
+function folderTreeCount(folder, expanded) {
+  if (!expanded && Number.isFinite(folder.descendantImageCount)) return folder.descendantImageCount;
+  return folder.imageCount;
+}
+
+function countFolders(folders) {
+  return (folders || []).reduce((total, folder) => total + 1 + countFolders(folder.children), 0);
+}
+
 function renderFolderTree() {
   if (!state.library) return;
   const tree = $('#folderTree');
@@ -2603,12 +2619,12 @@ function renderFolderTree() {
     return ordered.map(folder => {
     const children = folder.children || [];
     const expanded = state.expandedFolders.has(folder.id);
-    const count = Number.isFinite(folder.descendantImageCount) ? folder.descendantImageCount : folder.imageCount;
+    const count = folderTreeCount(folder, children.length > 0 && expanded);
     return `<div class="folder-node">
       <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
-        ${Number.isFinite(count) ? `<span class="folder-count">${count}</span>` : ''}
+        ${folderCountBadge(count)}
       </button>
       ${children.length && expanded ? `<div class="folder-children">${folderHTML(children,folder.id)}</div>` : ''}
     </div>`;
@@ -2621,29 +2637,30 @@ function renderFolderTree() {
       <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>
-        ${Number.isFinite(folder.imageCount) ? `<span class="folder-count">${folder.imageCount}</span>` : ''}
+        ${folderCountBadge(folder.imageCount)}
       </button>
       ${children.length && expanded ? `<div class="folder-children">${smartFolderHTML(children)}</div>` : ''}
     </div>`;
   }).join('');
   const smartHTML = smartFolderHTML(state.library.smartFolders || []);
-  const quickHTML = quickAccessEntries().map(folder => folder.quickType === 'smart'
+  const quickEntries = quickAccessEntries();
+  const quickHTML = quickEntries.map(folder => folder.quickType === 'smart'
     ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
     : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}">
-      <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${Number.isFinite(folder.descendantImageCount) ? `<span class="folder-count">${folder.descendantImageCount}</span>` : ''}</button>`).join('');
+      <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${folderCountBadge(folder.imageCount)}</button>`).join('');
   tree.innerHTML = `
     <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
     <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
     <button class="folder-row ${state.currentView.kind === 'unfiled' ? 'active' : ''}" data-special="unfiled"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-unfiled.svg')}</span><span class="folder-name">未分类</span></button>
     <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未加标签</span></button>
-    <button class="folder-row ${state.currentView.kind === 'tags' ? 'active' : ''}" data-special="tags"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">标签管理</span><span class="folder-count">${state.availableTags.length.toLocaleString()}</span></button>
+    <button class="folder-row ${state.currentView.kind === 'tags' ? 'active' : ''}" data-special="tags"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">标签管理</span>${folderCountBadge(state.availableTags.length)}</button>
     <button class="folder-row ${state.currentView.kind === 'recent' ? 'active' : ''}" data-special="recent"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('recent')}</span><span class="folder-name">最近使用</span></button>
     <button class="folder-row ${state.currentView.kind === 'random' ? 'active' : ''}" data-special="random"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('random')}</span><span class="folder-name">随机模式</span></button>
     <button class="folder-row ${state.currentView.kind === 'trash' ? 'active' : ''}" data-special="trash"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('trash')}</span><span class="folder-name">回收站</span></button>
-    ${quickHTML ? `<div class="folder-section-label">快速访问</div>${quickHTML}` : ''}
+    ${quickHTML ? `<div class="folder-section-label">快速访问 (${quickEntries.length})</div>${quickHTML}` : ''}
     ${smartHTML ? `<div class="folder-section-label">智能文件夹</div>${smartHTML}` : ''}
-    <div class="folder-section-label">文件夹</div>${folderHTML(state.library.folders)}
+    <div class="folder-section-label">文件夹 (${countFolders(state.library.folders)})</div>${folderHTML(state.library.folders)}
     `;
   attachFolderDragTargets();
 }

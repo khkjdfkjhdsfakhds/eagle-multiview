@@ -260,8 +260,8 @@ button:disabled { cursor: default; }
   font-size: 12px;
 }
 .app-title-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 1px; align-self: center; }
-.app-title-copy > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 640; color: #f7f8f8; }
-.sidebar-library-label { color: #85868c; font-size: 10px; font-weight: 500; line-height: 1.1; }
+.app-title-copy > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: #f8f9fb; }
+.sidebar-library-label { color: rgba(248, 249, 251, .6); font-size: 11px; font-weight: 400; line-height: 1.15; }
 body.no-traffic-lights .sidebar-app-title {
   height: var(--workspace-toolbar-height, 48px);
   min-height: var(--workspace-toolbar-height, 48px);
@@ -270,7 +270,7 @@ body.no-traffic-lights .sidebar-app-title {
 }
 body.no-traffic-lights .sidebar-app-title .app-mark { width: 28px; height: 28px; flex-basis: 28px; border-radius: 7px; }
 body.no-traffic-lights .app-title-copy { max-width: calc(100% - 36px); }
-body.no-traffic-lights .app-title-copy > span:first-child { font-size: 11.5px; }
+body.no-traffic-lights .app-title-copy > span:first-child { font-size: 12.5px; }
 .icon-button, .mini-button {
   border: 0;
   background: transparent;
@@ -697,21 +697,23 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .folder-row {
   position: relative;
   width: 100%;
-  height: 31px;
+  height: 26px;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
-  color: #c5c5ca;
+  /* Eagle's --color-text-primary. The old #c5c5ca grey read as a thinner,
+     weaker face than Eagle's at the same 13px/400. */
+  color: #f8f9fb;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
   transition: background .12s ease, color .12s ease, border-color .12s ease;
 }
-.folder-row:hover { background: rgba(255, 255, 255, .055); color: #f0f0f2; }
+.folder-row:hover { background: rgba(255, 255, 255, .055); color: #f8f9fb; }
 .folder-row.active {
   border-color: rgba(247, 248, 248, .06);
   background: rgba(247, 248, 248, .09);
@@ -739,10 +741,10 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   flex: 0 0 16px;
   display: grid;
   place-items: center;
-  color: #b7b8bd;
+  color: rgba(248, 249, 251, .8);
 }
-.folder-icon.special { color: #b7b8bd; }
-.folder-icon.smart { color: #c4c5ca; }
+.folder-icon.special { color: rgba(248, 249, 251, .8); }
+.folder-icon.smart { color: rgba(248, 249, 251, .8); }
 .folder-icon { position: relative; }
 .folder-color-dot {
   position: absolute;
@@ -770,21 +772,19 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .folder-children > .folder-node::before {
   content: "";
   position: absolute;
-  top: 15px;
+  top: 13px;
   left: -7px;
   width: 7px;
   border-top: 1px solid rgba(247, 248, 248, .11);
 }
 .folder-row .folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.folder-count { margin-left: auto; padding-left: 5px; color: #6f7075; font-size: 9px; font-variant-numeric: tabular-nums; }
-.folder-row.active .folder-count { color: #a2a3a8; }
+.folder-count { margin-left: auto; padding-left: 5px; color: rgba(248, 249, 251, .6); font: 11px ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace; font-variant-numeric: tabular-nums; }
+.folder-row.active .folder-count { color: rgba(248, 249, 251, .8); }
 .folder-section-label {
-  margin: 16px 10px 6px;
-  color: #696a70;
-  font-size: 9px;
-  font-weight: 720;
-  letter-spacing: .09em;
-  text-transform: uppercase;
+  margin: 14px 8px 2px;
+  color: rgba(248, 249, 251, .6);
+  font-size: 12px;
+  line-height: 24px;
 }
 @keyframes locate-pulse {
   0%, 45% { border-color: rgba(0, 114, 239, .75); background: rgba(0, 114, 239, .2); box-shadow: 0 0 0 2px rgba(0, 114, 239, .13); }
@@ -1579,16 +1579,16 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   margin: 0 3px 3px;
   overflow: hidden;
   display: -webkit-box;
-  color: #dadadf;
-  font-size: 12px;
-  font-weight: 560;
+  color: #f8f9fb;
+  font-size: 13px;
+  font-weight: 400;
   line-height: 16px;
   text-overflow: ellipsis;
   word-break: break-word;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-.folder-meta { margin: 0 3px 3px; overflow: hidden; color: #737479; font-size: 9px; line-height: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.folder-meta { margin: 0 3px 3px; overflow: hidden; color: rgba(248, 249, 251, .6); font-size: 11px; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .item-card {
   flex: var(--item-aspect) 1 calc(var(--thumb) * var(--item-aspect));
   min-width: 0;
@@ -1718,8 +1718,8 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   text-transform: uppercase;
   backdrop-filter: blur(8px);
 }
-.card-name { margin: 8px 4px 2px; overflow: hidden; color: #dadadf; font-size: 11px; font-weight: 530; text-overflow: ellipsis; white-space: nowrap; }
-.card-meta { margin: 0 4px 4px; color: #737479; font-size: 9px; }
+.card-name { margin: 8px 4px 2px; overflow: hidden; color: #f8f9fb; font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta { margin: 0 4px 4px; overflow: hidden; color: rgba(248, 249, 251, .6); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 /* 瀑布流：CSS 多栏，卡片保持各自纵横比自然堆叠。 */
 .asset-grid.waterfall {
   display: block;
@@ -1801,7 +1801,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .asset-grid.list .thumb-wrap img { object-fit: cover; }
 .asset-grid.list .card-name { margin: 0; font-size: 12px; }
-.asset-grid.list .card-meta { margin: 0; font-size: 10px; white-space: nowrap; }
+.asset-grid.list .card-meta { margin: 0; font-size: 11px; white-space: nowrap; }
 .asset-grid.list .card-stars,
 .asset-grid.list .format-badge,
 .asset-grid.list .pin-badge { display: none; }
@@ -1901,9 +1901,9 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .preview-box img, .preview-box video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .inspector-section { margin-top: 14px; padding-top: 0; border-top: 0; }
 .inspector-section:first-of-type { margin-top: 0; }
-.inspector-section h3 { margin: 0 0 6px; color: #b8bac1; font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.inspector-section h3 { margin: 0 0 6px; color: rgba(248, 249, 251, .6); font-size: 12px; font-weight: 600; }
 .inspector-field { min-width: 0; margin: 7px 0; }
-.inspector label, .multi-selection label { display: grid; gap: 4px; margin: 7px 0; color: #86878d; font-size: 10px; font-weight: 590; }
+.inspector label, .multi-selection label { display: grid; gap: 4px; margin: 7px 0; color: rgba(248, 249, 251, .6); font-size: 12px; font-weight: 400; }
 .inspector input, .inspector textarea { width: 100%; min-width: 0; min-height: 38px; padding: 9px 10px; color: #dadadf; line-height: 1.3; }
 .inspector textarea { height: 38px; overflow: hidden; resize: none; }
 .inspector input::placeholder, .inspector textarea::placeholder { color: #77787d; opacity: 1; }
@@ -1911,18 +1911,18 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .inspector select#itemRating.has-value { color: var(--text-soft); }
 .comments-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .comments-heading h3 { margin-bottom: 0; }
-.small-action { min-height: 24px; padding: 0 8px; border: 1px solid rgba(111, 159, 226, .28); border-radius: 5px; background: rgba(111, 159, 226, .08); color: #a8c9f5; font-size: 10px; cursor: pointer; }
+.small-action { min-height: 24px; padding: 0 8px; border: 1px solid rgba(111, 159, 226, .28); border-radius: 5px; background: rgba(111, 159, 226, .08); color: #a8c9f5; font-size: 11px; cursor: pointer; }
 .small-action:hover { border-color: rgba(111, 159, 226, .5); background: rgba(111, 159, 226, .16); }
 .item-comments { display: grid; gap: 7px; min-width: 0; }
 .comment-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; min-width: 0; padding: 8px; border: 1px solid rgba(247, 248, 248, .07); border-radius: 7px; background: #18191d; }
 .comment-copy { min-width: 0; }
-.comment-text { margin: 0; color: #d4d5da; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
-.comment-meta { margin-top: 4px; color: #77787d; font-size: 9px; line-height: 1.35; }
+.comment-text { margin: 0; color: #e6e7ea; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.comment-meta { margin-top: 4px; color: rgba(248, 249, 251, .5); font-size: 10px; line-height: 1.35; }
 .comment-actions { display: flex; align-items: start; gap: 3px; }
 .comment-action { width: 23px; height: 23px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #858890; cursor: pointer; font-size: 11px; }
 .comment-action:hover { background: rgba(247, 248, 248, .08); color: #e5e6e9; }
 .comment-action.danger:hover { background: rgba(240, 116, 130, .1); color: #f39aa4; }
-.stale-banner { margin: 9px 0; padding: 9px 10px; border: 1px solid rgba(242, 178, 76, .16); border-radius: 8px; background: rgba(242, 178, 76, .1); color: #efc878; font-size: 10px; line-height: 1.5; }
+.stale-banner { margin: 9px 0; padding: 9px 10px; border: 1px solid rgba(242, 178, 76, .16); border-radius: 8px; background: rgba(242, 178, 76, .1); color: #efc878; font-size: 11px; line-height: 1.5; }
 .item-meta {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1932,11 +1932,11 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #c3c5cb;
+  color: #e6e7ea;
   font-size: 11px;
 }
 .item-meta span { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.item-meta em { color: #77787d; font-size: 9px; font-style: normal; }
+.item-meta em { color: rgba(248, 249, 251, .55); font-size: 11px; font-style: normal; }
 .generation-metadata-section {
   position: relative;
   min-height: 148px;
@@ -2799,6 +2799,20 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   }
   /* Menu rows sized for a fingertip rather than a cursor. */
   .context-menu-row { min-height: 38px; }
+  /* The desktop sidebar matches Eagle's 26px rows, which is too tight for a
+     finger; the tree connector follows the row's vertical centre. */
+  .folder-row { height: 40px; }
+  .folder-children > .folder-node::before { top: 20px; }
+  /* Below ~12px text stops being comfortably readable on a phone or tablet,
+     so the desktop's 9-11px secondary text is raised to that floor here. */
+  .card-meta, .folder-meta, .folder-count, .item-meta em, .comment-meta,
+  .filter-popover label, .filter-save-smart, .tag-colors-toggle,
+  .tag-suggestion-name, .tag-suggestion-count,
+  .tag-manager-name, .tag-manager-count, .tag-manager-action, .tag-manager-group-heading span,
+  .tag-manager-group-select, .small-action, .stale-banner, .comment-text { font-size: 12px; }
+  .tag-color-row { font-size: 12px !important; }
+  .folder-meta { line-height: 16px; }
+  .statusbar { font-size: 11px; }
 }
 /* Context menus become bottom sheets on narrow screens: a 294px panel whose
    submenus fly out another 270px cannot fit a phone at all — measured at
