@@ -79,7 +79,7 @@ test('entering a folder search result clears only the text search', () => {
 test('folder cards share the search-exiting navigation path', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   assert.match(source, /function enterFolderFromGrid\(folderId\)[\s\S]*?navigate\(\{ kind: 'folder', id: folderId \}, \{ exitSearch: true \}\)/);
-  assert.match(source, /if \(touch && !state\.selected\.size\) \{ enterFolderFromGrid\(folderId\); return; \}/);
+  assert.match(source, /if \(touch && state\.selectedFolderCard === folderId && !state\.selected\.size\) \{ enterFolderFromGrid\(folderId\); return; \}/);
   assert.match(source, /if \(folder\) \{ enterFolderFromGrid\(folder\.dataset\.openFolder\); return; \}/);
   assert.match(source, /event\.key === 'Enter' && state\.selectedFolderCard\) \{ event\.preventDefault\(\); enterFolderFromGrid\(state\.selectedFolderCard\); \}/);
 });

@@ -108,8 +108,17 @@ class HostRecoveryCoordinator {
     fun isCurrentNavigation(attempt: HostNavigationAttempt): Boolean =
         isCurrent(attempt.generation) && activeNavigationAttempt == attempt
 
-    fun networkUnavailable(generation: Long): HostRecoveryAction? {
+    /**
+     * [pageLive]: a trusted page has already loaded. It rides out the outage on its own (the web
+     * client shows its offline state and reconnects when the network returns), so there is no
+     * failure screen now and no reload later that would lose its folder, preview, and drafts.
+     */
+    fun networkUnavailable(generation: Long, pageLive: Boolean = false): HostRecoveryAction? {
         if (!isCurrent(generation)) return null
+        if (pageLive) {
+            networkAvailable = false
+            return null
+        }
         if (networkAvailable != false || !outageActive) {
             outageActive = true
             automaticRecoveryAttempted = false

@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
@@ -28,11 +29,13 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -45,6 +48,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
     private lateinit var hostPanel: LinearLayout
@@ -84,6 +88,8 @@ class MainActivity : AppCompatActivity() {
     private var backTimeoutRequestId: Long? = null
     private var backTimeoutRunnable: Runnable? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var fullscreenView: View? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private val fileChooserCoordinator = FileChooserCoordinator<Uri>()
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -236,9 +242,15 @@ class MainActivity : AppCompatActivity() {
         connectButton.setOnClickListener {
             connectFromInput()
         }
-        hostInput.setOnEditorActionListener { _, _, _ ->
-            connectFromInput()
-            true
+        hostInput.setOnEditorActionListener { _, actionId, event ->
+            when (HostInputSubmitPolicy.decide(actionId, event?.toHardwareKey())) {
+                HostInputSubmit.CONNECT -> {
+                    connectFromInput()
+                    true
+                }
+                HostInputSubmit.CONSUME -> true
+                HostInputSubmit.IGNORE -> false
+            }
         }
     }
 
@@ -260,7 +272,7 @@ class MainActivity : AppCompatActivity() {
     private fun bindSystemBack() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                dispatchBackCommand(backRequestCoordinator.begin(currentBackAvailability()))
+                requestBack()
             }
 
             // The web client owns its own transient/preview/history state. There is no native
@@ -287,6 +299,9 @@ class MainActivity : AppCompatActivity() {
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(false)
             safeBrowsingEnabled = true
+            // Lets the web client recognize the shell (single window, native Back) without
+            // guessing from the generic WebView "wv" token.
+            userAgentString = "${WebSettings.getDefaultUserAgent(this@MainActivity)} $USER_AGENT_TOKEN/${BuildConfig.VERSION_NAME}"
         }
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -312,10 +327,59 @@ class MainActivity : AppCompatActivity() {
                 filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?,
             ): Boolean = showFileChooser(view, filePathCallback, fileChooserParams)
+
+            // The preview's <video controls> full-screen button.
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                showFullscreenView(view, callback)
+            }
+
+            override fun onHideCustomView() {
+                hideFullscreenView(notifyPage = false)
+            }
         }
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             startHostDownload(url, userAgent, contentDisposition, mimeType)
         }
+    }
+
+    private fun showFullscreenView(view: View?, callback: WebChromeClient.CustomViewCallback?) {
+        if (view == null || callback == null) return
+        if (fullscreenView != null) {
+            callback.onCustomViewHidden()
+            return
+        }
+        fullscreenView = view
+        fullscreenCallback = callback
+        view.setBackgroundColor(Color.BLACK)
+        rootContainer().addView(
+            view,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        WindowCompat.getInsetsController(window, view).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    /** Leaves full-screen video; returns false when none was showing. */
+    private fun hideFullscreenView(notifyPage: Boolean): Boolean {
+        val view = fullscreenView ?: return false
+        val callback = fullscreenCallback
+        fullscreenView = null
+        fullscreenCallback = null
+        (view.parent as? ViewGroup)?.removeView(view)
+        WindowCompat.getInsetsController(window, rootContainer()).show(WindowInsetsCompat.Type.systemBars())
+        if (notifyPage) callback?.onCustomViewHidden()
+        focusWebViewIfBrowsing()
+        return true
+    }
+
+    private fun rootContainer(): ViewGroup = findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as ViewGroup
+
+    /** System Back, back gestures, and an Esc the page left unconsumed all arrive here. */
+    private fun requestBack() {
+        if (hideFullscreenView(notifyPage = true)) return
+        dispatchBackCommand(backRequestCoordinator.begin(currentBackAvailability()))
     }
 
     private fun showFileChooser(
@@ -430,7 +494,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleUnhandledWebKey(event: KeyEvent): Boolean =
         when (UnhandledWebKeyPolicy.decide(event.toHardwareKey())) {
             UnhandledKeyDecision.REQUEST_BACK -> {
-                dispatchBackCommand(backRequestCoordinator.begin(currentBackAvailability()))
+                requestBack()
                 true
             }
             UnhandledKeyDecision.CONSUME -> true
@@ -448,6 +512,10 @@ class MainActivity : AppCompatActivity() {
                 clearHostInputError()
                 hostInput.setText(result.endpoint.startUrl)
                 hostInput.setSelection(hostInput.length())
+                // The field is about to be hidden; its keyboard would otherwise stay up over the
+                // page, attached to the WebView once that takes focus.
+                hostInput.clearFocus()
+                WindowCompat.getInsetsController(window, hostInput).hide(WindowInsetsCompat.Type.ime())
                 invalidateTrustedPage()
                 val clearSiteData = connectionCoordinator.beginConnection(result.endpoint)
                 val session = recoveryCoordinator.activate(result.endpoint, networkAvailable)
@@ -499,6 +567,8 @@ class MainActivity : AppCompatActivity() {
         val hadTrustedHost = connectionCoordinator.showHostEntry()
         hostPanel.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
+        // From the login banner the dark page colours are still on the bars and root.
+        applySystemBarColors(pageShowing = false)
         clearHostInputError()
         if (hadTrustedHost && !trustClearInProgress) {
             clearWebViewTrust {
@@ -632,7 +702,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun applySystemInsets() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val root = findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+        val root = rootContainer()
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
@@ -649,7 +719,7 @@ class MainActivity : AppCompatActivity() {
      * native connection screens.
      */
     private fun applySystemBarColors(pageShowing: Boolean) {
-        val root = findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+        val root = rootContainer()
         root.setBackgroundColor(
             getColor(if (pageShowing) R.color.page_background else R.color.surface_background),
         )
@@ -728,10 +798,14 @@ class MainActivity : AppCompatActivity() {
         if (available) {
             handleRecoveryAction(recoveryCoordinator.networkAvailable(session.generation))
         } else {
-            invalidateTrustedPage()
-            mainFrameFailed = true
-            webView.stopLoading()
-            handleRecoveryAction(recoveryCoordinator.networkUnavailable(session.generation))
+            // A loaded page keeps running offline; only a page still loading needs stopping.
+            val pageLive = trustedPageReady && webViewAvailable
+            if (!pageLive) {
+                invalidateTrustedPage()
+                mainFrameFailed = true
+                webView.stopLoading()
+            }
+            handleRecoveryAction(recoveryCoordinator.networkUnavailable(session.generation, pageLive))
         }
     }
 
@@ -815,6 +889,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun invalidateTrustedPage() {
+        hideFullscreenView(notifyPage = true)
         trustedPageReady = false
         backRequestCoordinator.cancelPending()
         cancelBackTimeout(backTimeoutRequestId)
@@ -1018,6 +1093,7 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val BACK_REQUEST_TIMEOUT_MS = 1_500L
+        const val USER_AGENT_TOKEN = "EagleMultiViewAndroid"
         const val KEY_RECREATED_MODE = "recreated_mode"
         const val KEY_HOST_INPUT = "host_input"
         const val KEY_ACTIVE_HOST = "active_host"

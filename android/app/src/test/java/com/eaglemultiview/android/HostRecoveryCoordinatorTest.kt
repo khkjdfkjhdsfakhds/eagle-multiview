@@ -32,6 +32,28 @@ class HostRecoveryCoordinatorTest {
     }
 
     @Test
+    fun `a loaded page rides out a network blip without a failure screen or reload`() {
+        val coordinator = HostRecoveryCoordinator()
+        val session = coordinator.activate(first)
+        coordinator.pageCommitted(session.generation)
+
+        assertNull(coordinator.networkUnavailable(session.generation, pageLive = true))
+        assertNull(coordinator.networkAvailable(session.generation))
+        assertFalse(coordinator.hasPendingNavigation)
+
+        // If the page then fails a load of its own while offline, recovery works as before.
+        assertEquals(
+            HostRecoveryAction.ShowFailure(ConnectionFailureKind.OFFLINE),
+            coordinator.pageLoadFailed(session.generation, ConnectionFailureKind.OFFLINE),
+        )
+        val probe = coordinator.networkAvailable(session.generation).probe()
+        assertEquals(
+            HostRecoveryAction.Navigate(first.startUrl, RecoveryNavigation.RELOAD_CURRENT),
+            coordinator.probeCompleted(probe, SessionHealth.AUTHENTICATED),
+        )
+    }
+
+    @Test
     fun `failed recovery does not loop and manual retry remains available`() {
         val coordinator = HostRecoveryCoordinator()
         val session = coordinator.activate(first)

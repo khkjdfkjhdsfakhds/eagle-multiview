@@ -469,6 +469,9 @@ let activeMarquee = null;
 // click — both must be swallowed without eating the user's next real tap.
 let suppressTouchClickUntil = 0;
 let touchLongPressActive = false;
+// A touch double-tap also fires dblclick after its two clicks; the taps have
+// already selected and opened, so that dblclick must not open again.
+let lastTouchGridTapAt = 0;
 const TOUCH_LONG_PRESS_MS = 480;
 const TOUCH_LONG_PRESS_SLOP = 12;
 
@@ -524,11 +527,19 @@ function triggerTouchLongPress(card, paneId, point) {
     return;
   }
   const id = card.dataset.id;
-  if (!state.selected.size) {
-    if (selectItem(id)) toast('已选中，轻点其它素材可多选', 2400);
-    return;
+  // Long-press is touch's right-click and its ⌘-click: with nothing selected
+  // it selects the item and opens the menu; with a selection it adds an
+  // unselected item (a tap would replace the selection), and on a selected
+  // one it opens the menu for the whole selection.
+  if (!state.selected.has(id)) {
+    const before = state.selected.size;
+    if (!before) {
+      if (!selectItem(id)) return;
+    } else {
+      if (selectItem(id, true) && before === 1) toast('已进入多选：长按其它素材继续加选，长按已选素材打开菜单', 3200);
+      return;
+    }
   }
-  if (!state.selected.has(id) && !selectItem(id, true)) return;
   const selectedItems = [...state.selected].map(itemById).filter(Boolean);
   showContextMenuAt(point.x, point.y, {
     ids: [...state.selected],
@@ -2962,7 +2973,9 @@ function renderSelectionBar() {
   const bar = $('#selectionBar');
   if (!bar) return;
   const count = state.selected.size;
-  const visible = isCompactLayout() && count > 0;
+  // The preview has its own caption and controls, and a swipe there moves
+  // past the selected item, so the strip steps aside until it closes.
+  const visible = isCompactLayout() && count > 0 && !state.previewId;
   bar.classList.toggle('hidden', !visible);
   document.body.classList.toggle('selection-bar-open', visible);
   if (!visible) return;
@@ -4471,6 +4484,7 @@ async function openPreview(id, { forceReload = false } = {}) {
   const ownsResult = () => paneById(paneId) === pane && pane.previewToken === token && pane.previewId === id && state.library?.path === libraryPath;
   state.previewId = id;
   $('#previewModal').classList.remove('hidden');
+  renderSelectionBar();
   updatePreviewChrome(item);
   followPreviewInGrid(id, ownsResult);
   if (String(item.ext || '').toLowerCase() !== 'txt') {
@@ -4613,11 +4627,11 @@ function closePreview({ commitSelection = true, skipDiscard = false, syncBroadca
   state.textSession = null;
   $('#previewModal').classList.add('hidden');
   $('#modalMedia').innerHTML = '';
+  renderSelectionBar();
   if (finalId && itemById(finalId)) {
     // Collapse the selection onto the final preview item only when the
-    // preview was entered with a selection. A touch tap previews without
-    // selecting; committing here would turn the next tap into toggle-select
-    // instead of another preview.
+    // preview was entered with a selection, so the item swiped to last is
+    // what stays selected (and what the next touch tap reopens).
     if (commitSelection && state.selected.size) {
       state.selectedFolderCard = null;
       state.selected = new Set([finalId]);
@@ -5040,9 +5054,12 @@ function closeTopTransientSurface() {
     closeDrawers();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'drawer' };
   }
-  // The compact selection strip is a selection mode: back leaves it first,
-  // like Escape. A preview on top is closed by the preview step instead.
-  if (isCompactLayout() && state.selected.size && $('#previewModal').classList.contains('hidden')) {
+  // On touch clients a selection is a mode (a tap selects before it opens):
+  // back leaves it first, like Escape, on phones and wide tablets alike —
+  // otherwise back at the root closes the app with the selection still up.
+  // A preview on top is closed by the preview step instead. The desktop app
+  // keeps Eagle's behaviour of back moving through history.
+  if (isWebClient && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
     if (!confirmDiscardChanges()) return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'unsaved-edit' };
     state.selected.clear();
     state.selectedFolderCard = null;
@@ -5462,7 +5479,7 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
       contextMenuRow({ label: 'ArtStation 作品挑选…', action: 'site-import', disabled: !state.connected }),
       contextMenuRow({ label: 'Pinterest 导入说明', action: 'pinterest-help' })
     ].join('') })] : []),
-    contextMenuRow({ icon: 'window', label: '新建窗口', shortcut: '⌘ ⌥ N', action: 'new-window' })
+    ...(hasCapability('multiWindow') ? [contextMenuRow({ icon: 'window', label: '新建窗口', shortcut: '⌘ ⌥ N', action: 'new-window' })] : [])
   ].join('');
 }
 
@@ -5813,7 +5830,7 @@ function contextMenuMarkup(data) {
     contextMenuRow({ icon: 'tag', label: '标签颜色', submenu: contextTagPicker('tag-color') })
   ].join('');
   return [
-    contextMenuRow({ icon: 'window', label: '在新窗口打开', shortcut: '⌘ O', action: 'open-window' }),
+    ...(hasCapability('multiWindow') ? [contextMenuRow({ icon: 'window', label: '在新窗口打开', shortcut: '⌘ O', action: 'open-window' })] : []),
     revealInPaneMenuMarkup(data),
     ...(hasCapability('openDefault') ? [contextMenuRow({ icon: 'open', label: '在默认应用打开', shortcut: '⇧ Enter', action: 'open-default', disabled: !one })] : []),
     ...(hasCapability('openOther') ? [contextMenuRow({ icon: 'open', label: '在其它应用打开…', action: 'open-other', disabled: !one })] : []),
@@ -5860,7 +5877,14 @@ const windowActions = createWindowActions({
   windowStateForView
 });
 
+// The Android shell has a single window; split panes are its way to see two places.
+const SINGLE_WINDOW_HINT = '此设备只有一个窗口，可用分栏布局同时浏览多个位置';
+
 function openNewWindowAt(target = 'multiview') {
+  if (!hasCapability('multiWindow')) {
+    toast(SINGLE_WINDOW_HINT, 3200);
+    return Promise.resolve(false);
+  }
   return windowActions.open(target);
 }
 
@@ -5905,6 +5929,10 @@ function contextMenuAriaLabel(kind) {
 }
 
 function openSelectionInNewWindow(ids = []) {
+  if (!hasCapability('multiWindow')) {
+    toast(SINGLE_WINDOW_HINT, 3200);
+    return Promise.resolve(false);
+  }
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   return window.eagleMV.newWindow({
     view: { ...state.currentView },
@@ -7397,11 +7425,14 @@ function bindPaneEvents(paneId) {
       return;
     }
     const touch = isTouchEvent(event);
+    if (touch) lastTouchGridTapAt = Date.now();
+    // Touch has no double-click: the first tap selects (replacing any
+    // selection, as a mouse click does) and a tap on what is already the
+    // only selection opens it. Long-press adds to the selection.
     const folder = event.target.closest('.folder-card');
     if (folder) {
       const folderId = folder.dataset.openFolder;
-      // Touch: a tap enters the folder directly (no double-tap on phones).
-      if (touch && !state.selected.size) { enterFolderFromGrid(folderId); return; }
+      if (touch && state.selectedFolderCard === folderId && !state.selected.size) { enterFolderFromGrid(folderId); return; }
       selectFolderCard(folderId);
       return;
     }
@@ -7409,14 +7440,13 @@ function bindPaneEvents(paneId) {
     if (card) {
       const id = card.dataset.id;
       if (touch) {
-        // Touch: tap previews; with a selection active it toggles instead.
-        if (state.selected.size) {
-          selectItem(id, true);
-        } else {
+        if (state.selected.size === 1 && state.selected.has(id)) {
           openPreview(id);
           broadcastPaneAction(() => {
             if (itemById(id)) openPreview(id);
           });
+        } else {
+          selectItem(id);
         }
         return;
       }
@@ -7464,6 +7494,7 @@ function bindPaneEvents(paneId) {
     }
   });
   query('#itemGrid').addEventListener('dblclick', event => {
+    if (Date.now() - lastTouchGridTapAt < 600) return;
     activatePane(paneId);
     const folder = event.target.closest('.folder-card');
     if (folder) { enterFolderFromGrid(folder.dataset.openFolder); return; }

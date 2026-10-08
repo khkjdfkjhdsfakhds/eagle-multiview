@@ -26,6 +26,8 @@ test('Android uses Ctrl for ⌘-only shortcuts and wide touch tablets keep multi
   assert.deepEqual(android.back.sort, [true, 'handled', 'sort-popover', false]);
   assert.equal(android.back.historyUnchanged, true);
   assert.deepEqual(android.esc, { selected: [true, 0], idlePrevented: false });
+  assert.deepEqual(android.tabletBack, ['handled', 'selection', 0], 'wide tablets clear a selection before back can exit');
+  assert.deepEqual(android.folderBack, ['handled', 'selection', null], 'a selected folder card counts as a selection');
   assert.deepEqual(android.fieldEsc, { prevented: true, left: true, nextPrevented: false }, 'Esc in a field leaves it instead of becoming Back');
 
   // Phone width: back leaves the selection strip first, a preview closes

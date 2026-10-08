@@ -1,6 +1,7 @@
 package com.eaglemultiview.android
 
 import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
 
 /** A hardware key event reduced to the fields the shell policy depends on. */
 data class HardwareKey(
@@ -83,5 +84,31 @@ object UnhandledWebKeyPolicy {
             key.keyCode == KeyEvent.KEYCODE_TAB && !commandModifier -> UnhandledKeyDecision.CONSUME
             else -> UnhandledKeyDecision.DEFAULT
         }
+    }
+}
+
+enum class HostInputSubmit {
+    CONNECT,
+
+    /** An Enter the field must swallow without connecting again (its key up or auto-repeat). */
+    CONSUME,
+    IGNORE,
+}
+
+/**
+ * The host field's editor actions. A hardware Enter reports both its key down and its key up as
+ * an editor action, so connecting on each would start the same connection twice; the soft
+ * keyboard's Go/Done arrives once with no key event.
+ */
+object HostInputSubmitPolicy {
+    fun decide(actionId: Int, key: HardwareKey?): HostInputSubmit = when {
+        key == null -> if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE) {
+            HostInputSubmit.CONNECT
+        } else {
+            HostInputSubmit.IGNORE
+        }
+        key.keyCode != KeyEvent.KEYCODE_ENTER && key.keyCode != KeyEvent.KEYCODE_NUMPAD_ENTER -> HostInputSubmit.IGNORE
+        key.isDown && key.repeatCount == 0 -> HostInputSubmit.CONNECT
+        else -> HostInputSubmit.CONSUME
     }
 }

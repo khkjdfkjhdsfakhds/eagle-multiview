@@ -2776,6 +2776,10 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   /* Our long-press owns the gesture: block iOS image callouts and text
      selection flashes inside the grid and the folder tree. */
   .item-grid, .item-grid img, .folder-tree { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  /* Android's WebView flashes a grey box over whatever owns the click
+     listener — for the grid that is the whole grid. Selection styles are the
+     tap feedback. (Inherited, so the root covers every control.) */
+  html { -webkit-tap-highlight-color: transparent; }
   /* Vertical scrolling stays native; pinch-zoom and double-tap zoom belong to
      the grid's own thumbnail-resize gesture (Safari ignores user-scalable=no,
      so touch-action is the only reliable way to claim them). */
@@ -2810,6 +2814,9 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
     max-height: min(76vh, calc(100vh - 120px));
     overflow-y: auto;
     overscroll-behavior: contain;
+    /* Above the selection strip (z-index 50), which shares the bottom edge
+       and otherwise hid the sheet's last rows. */
+    z-index: 55;
   }
   /* The row is a four-column grid; a static submenu would land in one 21px
      cell. Give it its own full-width line under the label. */

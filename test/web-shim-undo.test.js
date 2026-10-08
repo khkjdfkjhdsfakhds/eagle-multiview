@@ -81,3 +81,11 @@ test('⌘Z undoes the last delete on macOS browsers while Ctrl+Z does not', () =
   assert.equal(press({ metaKey: true }), true);
   assert.equal(undos, 1);
 });
+
+test('only the Android shell drops the multi-window capability', () => {
+  const shell = { ...ANDROID, userAgent: `${ANDROID.userAgent} EagleMultiViewAndroid/1.8.1` };
+  assert.equal(loadShim(shell).eagleMV.capabilities.multiWindow, false);
+  // A phone browser can still open tabs; only the shell's WebView cannot.
+  assert.equal(loadShim(ANDROID).eagleMV.capabilities.multiWindow, true);
+  assert.equal(loadShim(MAC).eagleMV.capabilities.multiWindow, true);
+});

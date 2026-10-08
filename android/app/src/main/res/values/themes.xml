@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.EagleMultiView" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- The native screens are drawn with fixed light colours (white panel, dark text), so the
+         theme stays light: a DayNight theme gave the host field near-white text on that white
+         panel when the system was in dark mode. The page itself is always dark. -->
+    <style name="Theme.EagleMultiView" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">@color/brand_blue</item>
         <item name="colorAccent">@color/brand_blue</item>
         <item name="android:fontFamily">sans</item>

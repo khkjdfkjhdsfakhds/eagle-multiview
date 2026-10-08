@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="brand_blue">#1769E0</color>
+    <!-- Sampled from the edge of the desktop icon so the adaptive mask never shows a seam. -->
+    <color name="launcher_background">#076DFC</color>
     <color name="surface_background">#F4F5F7</color>
     <!-- The web client's page background (styles.css bg), shown behind the system bars while the page fills the window. -->
     <color name="page_background">#18191D</color>

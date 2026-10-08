@@ -371,9 +371,14 @@
     return outcome;
   }
 
+  // The Android shell tags its WebView user agent. It has one window and no
+  // popups, so window.open there would replace the page instead of opening one.
+  const androidShell = /\bEagleMultiViewAndroid\//.test(globalThis.navigator?.userAgent || '');
+
   window.eagleMV = {
     platform: 'web',
     capabilities: {
+      multiWindow: !androidShell,
       nativeDrag: false,
       hostDialogs: false,
       clipboardFiles: false,

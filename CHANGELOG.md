@@ -2,6 +2,19 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## Unreleased
+
+### Android app and touch
+
+- Touch selection works like a click: a tap selects (replacing the selection), a tap on the selected item opens the preview and a tap on a selected folder card enters it. Long-press adds an item to the selection, or opens the menu when nothing is selected or on a selected item. Tapping blank space clears the selection.
+- Back clears a selection first on wide tablets too, instead of leaving the app.
+- A short network loss no longer covers the page or reloads it afterwards: the page keeps its folder, preview and drafts and reconnects by itself.
+- The app icon is now the desktop app's icon (adaptive on every launcher shape).
+- The connection screen stays readable in system dark mode; Enter on a hardware keyboard connects once; the keyboard closes once connected; "Change host" restores the light screen; the login banner no longer says the login expired on a first connection.
+- Videos can go full screen; Back leaves full screen.
+- "New window" entries are hidden in the app, which has a single window (they replaced the page).
+- No more grey tap flash; the selection strip steps aside for the preview and no longer covers the bottom of the long-press menu.
+
 ## 1.8.1 - 2026-10-08
 
 ### Android app

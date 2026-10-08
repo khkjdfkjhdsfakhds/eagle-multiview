@@ -28,6 +28,9 @@ async function run() {
       Object.defineProperty(ev, 'pointerType', { value: 'touch' });
       target.dispatchEvent(ev);
     };
+    // First tap selects, the second tap on the selected item opens it.
+    touchClick(card);
+    await wait(120);
     touchClick(card);
     await wait(120);
     const afterTap = read();

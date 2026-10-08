@@ -27,7 +27,7 @@ test('compact layout turns the side panels into drawers', () => {
   assert.ok(styles.includes('grid-auto-rows: minmax(72vh, auto)'), 'panes stack vertically on phones');
 });
 
-test('touch pointers tap to preview, long-press to select, and never marquee', () => {
+test('touch pointers tap to select, tap the selection to open, long-press to add, and never marquee', () => {
   assert.ok(renderer.includes("if (event.pointerType === 'touch') return;"), 'marquee skips touch pointers');
   assert.ok(renderer.includes('function triggerTouchLongPress(card, paneId, point)'));
   assert.ok(renderer.includes('suppressTouchClickUntil = Date.now() + 400;'), 'suppression starts at lift-off');
@@ -39,9 +39,17 @@ test('touch pointers tap to preview, long-press to select, and never marquee', (
   );
   assert.ok(renderer.includes("query('#gridScroller').addEventListener('click'"), 'blank-space tap clearing covers the whole scroller');
   assert.ok(renderer.includes("$('#clearSelectionButton').addEventListener('click'"), 'multi-select panel offers an explicit exit for touch');
-  assert.ok(clickHandler.includes('openPreview(id)'), 'touch tap opens the preview');
-  assert.ok(clickHandler.includes('selectItem(id, true)'), 'tap toggles inside a live selection');
-  assert.ok(clickHandler.includes('enterFolderFromGrid(folderId)'), 'touch tap enters folder results through the search-exiting path');
+  assert.ok(clickHandler.includes('if (state.selected.size === 1 && state.selected.has(id)) {\n          openPreview(id);'), 'a tap on the only selected item opens the preview');
+  assert.ok(clickHandler.includes('selectItem(id);'), 'a tap on any other item replaces the selection');
+  assert.ok(!clickHandler.includes('selectItem(id, true)'), 'taps no longer toggle; long-press adds');
+  assert.ok(clickHandler.includes("if (touch && state.selectedFolderCard === folderId && !state.selected.size) { enterFolderFromGrid(folderId); return; }"), 'a tap on the selected folder card enters it through the search-exiting path');
+  assert.ok(renderer.includes('if (selectItem(id, true) && before === 1)'), 'long-press adds to a live selection');
+  assert.ok(renderer.includes("if (Date.now() - lastTouchGridTapAt < 600) return;"), 'the dblclick after a touch double-tap does not open twice');
+  assert.ok(styles.includes('html { -webkit-tap-highlight-color: transparent; }'), 'no WebView tap flash over the grid');
+  // Taps now select before they open, so the strip must not sit over the
+  // preview or the long-press sheet.
+  assert.ok(renderer.includes('const visible = isCompactLayout() && count > 0 && !state.previewId;'), 'the selection strip steps aside for the preview');
+  assert.ok(/context-menu-sheet \{[^}]*z-index: 55;/.test(styles), 'the menu sheet sits above the selection strip');
   assert.ok(renderer.includes("navigate({ kind: 'folder', id: folderId }, { exitSearch: true })"), 'folder-result entry clears the phone search before loading the folder');
 });
 
@@ -57,7 +65,7 @@ test('a compact selection shows the bottom strip and a single way to clear', () 
   assert.ok(indexHTML.includes('id="selectionBarPreview"'));
   assert.ok(indexHTML.includes('id="selectionBarDetails"'));
   assert.ok(renderer.includes('function renderSelectionBar()'));
-  assert.ok(renderer.includes('const visible = isCompactLayout() && count > 0;'), 'the strip is compact-only');
+  assert.ok(renderer.includes('const visible = isCompactLayout() && count > 0 && !state.previewId;'), 'the strip is compact-only');
   assert.ok(renderer.includes('function renderInspector() {\n  renderSelectionBar();'), 'every selection change repaints it');
   assert.ok(renderer.includes('  renderSelectionBar();'), 'so does rotating in or out of compact mode');
   assert.ok(renderer.includes('  updateToolbarWrapState();\n}'), 'panel visibility changes resync the toolbar wrap state');

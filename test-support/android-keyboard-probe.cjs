@@ -97,6 +97,14 @@ const escSelectedPrevented = !key('Escape', 'Escape');
 result.esc = { selected: [escSelectedPrevented, state.selected.size], idlePrevented: !key('Escape', 'Escape') };
 // Esc in a text field leaves the field instead of falling through to the
 // shell as Back (which could close the app); the next Esc is Back again.
+// (First: on a wide tablet, back with a selection clears it instead of
+// leaving the app.)
+selectItem('item-1', false, false);
+const tabletBack = window.EagleMVBack.request();
+result.tabletBack = [tabletBack.status, tabletBack.reason, state.selected.size];
+selectFolderCard('target-folder');
+const folderBack = window.EagleMVBack.request();
+result.folderBack = [folderBack.status, folderBack.reason, state.selectedFolderCard];
 const search = document.querySelector('#searchInput');
 search.focus();
 const fieldPrevented = !search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));

@@ -48,6 +48,11 @@ async function run() {
     Object.defineProperty(lockedTouchClick, 'pointerType', { value: 'touch' });
     lockedFolder.dispatchEvent(lockedTouchClick);
     await wait(30);
+    // The first tap only selects the card; the second asks to enter it.
+    const lockedTouchEnter = new MouseEvent('click', { bubbles: true, cancelable: true });
+    Object.defineProperty(lockedTouchEnter, 'pointerType', { value: 'touch' });
+    lockedFolder.dispatchEvent(lockedTouchEnter);
+    await wait(30);
     assert(searchInput.value === 'Locked', 'blocked folder entry must not clear the text search');
 
     searchInput.value = 'Multi';
@@ -55,6 +60,11 @@ async function run() {
     await wait(360);
     const searchFolder = document.querySelector('.folder-card[data-open-folder="mv-folder"]');
     assert(searchFolder, 'the matching folder should stay reachable in search results');
+    const touchSelect = new MouseEvent('click', { bubbles: true, cancelable: true });
+    Object.defineProperty(touchSelect, 'pointerType', { value: 'touch' });
+    searchFolder.dispatchEvent(touchSelect);
+    await wait(30);
+    assert(state.selectedFolderCard === 'mv-folder', 'the first touch tap selects the folder card');
     const touchClick = new MouseEvent('click', { bubbles: true, cancelable: true });
     Object.defineProperty(touchClick, 'pointerType', { value: 'touch' });
     const originalConfirm = window.confirm;
