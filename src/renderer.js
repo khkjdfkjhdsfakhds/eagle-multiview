@@ -475,6 +475,21 @@ let lastTouchGridTapAt = 0;
 const TOUCH_LONG_PRESS_MS = 480;
 const TOUCH_LONG_PRESS_SLOP = 12;
 
+// Android WebView turns a touch long-press on a draggable card into a native
+// drag session that never reports its end; the next one leaves Blink stuck in
+// drag mode, dropping every tap and key until a reload. Touch has no drag
+// gesture here (long-press selects and opens the menu), so drags started by a
+// finger or pen are cancelled before any page handler sees them.
+let lastPointerDownType = 'mouse';
+window.addEventListener('pointerdown', event => {
+  lastPointerDownType = event.pointerType || 'mouse';
+}, true);
+window.addEventListener('dragstart', event => {
+  if (lastPointerDownType === 'mouse') return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
 // Shared touch long-press: the grid and the folder tree both need "hold to
 // get the menu" with the same timing, the same movement budget, and the same
 // suppression of the synthetic click and native contextmenu that follow.
@@ -2717,18 +2732,8 @@ function attachFolderDragTargets() {
   }
 }
 
-async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false, minimumCount = 0 } = {}) {
-  const pane = paneById(paneId);
-  if (!pane || (pane.loading && !reset)) return;
-  const refreshToken = ++pane.refreshToken;
-  pane.loading = true;
-  withActivePane(paneId, () => $('#loadIndicator').classList.remove('hidden'));
-  setSyncStatus('正在同步…');
-  const currentView = { ...pane.currentView };
-  const selectedId = pane.selected.size === 1 ? [...pane.selected][0] : null;
-  const offset = reset ? 0 : pane.nextOffset;
-  const restoreCount = Math.max(state.pageSize, reset && preserveScroll ? pane.items.length : 0, minimumCount);
-  const libraryPath = state.library?.path;
+// The item query a pane's view pages through (refresh) and locates in.
+function paneItemQuery(pane, currentView = pane.currentView) {
   const query = {
     ...cloneQuery(pane.query),
     folderId: currentView.kind === 'folder' ? currentView.id : null,
@@ -2748,6 +2753,22 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
     visit(state.library?.folders);
     if (folderIds.length) query.folderIds = folderIds;
   }
+  return query;
+}
+
+async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false, minimumCount = 0 } = {}) {
+  const pane = paneById(paneId);
+  if (!pane || (pane.loading && !reset)) return;
+  const refreshToken = ++pane.refreshToken;
+  pane.loading = true;
+  withActivePane(paneId, () => $('#loadIndicator').classList.remove('hidden'));
+  setSyncStatus('正在同步…');
+  const currentView = { ...pane.currentView };
+  const selectedId = pane.selected.size === 1 ? [...pane.selected][0] : null;
+  const offset = reset ? 0 : pane.nextOffset;
+  const restoreCount = Math.max(state.pageSize, reset && preserveScroll ? pane.items.length : 0, minimumCount);
+  const libraryPath = state.library?.path;
+  const query = paneItemQuery(pane, currentView);
   try {
     const page = currentView.kind === 'tags'
       ? { data: [], total: 0, nextOffset: 0, hasMore: false }
@@ -5659,21 +5680,42 @@ async function openItemLocation(id, folderId = null, { paneId = state.activePane
 
   const viewKey = descriptorKey(pane.currentView);
   const queryKey = JSON.stringify(pane.query);
-  const refreshToken = pane.refreshToken + 1;
+  // Background syncs and viewport fills may refresh the pane meanwhile; only
+  // leaving the view, changing the query or switching library abandons it.
   const stillCurrent = () => paneById(pane.id) === pane &&
-    state.library?.path === libraryPath && pane.refreshToken === refreshToken &&
+    state.library?.path === libraryPath &&
     descriptorKey(pane.currentView) === viewKey && JSON.stringify(pane.query) === queryKey;
 
   await refresh({ paneId: pane.id, reset: true, preserveScroll: false });
   if (!stillCurrent() || pane.errorMessage) return false;
 
   let itemIndex = pane.items.findIndex(item => item.id === id);
-  let pageLimit = 10;
-  while (itemIndex === -1 && pane.hasMore && pageLimit > 0) {
-    pageLimit--;
-    await refresh({ reset: false, preserveScroll: true, paneId: pane.id });
+  if (itemIndex === -1 && pane.hasMore) {
+    // Ask the host where the item sits (ids only, about a second for 85k
+    // items), then load just that far. Loading past SORT_FETCH_CAP stalls
+    // the page for seconds, so a deeper item is reported instead.
+    toast('正在定位素材…', 15000);
+    let position = null;
+    try {
+      position = (await window.eagleMV.locateItem({ query: paneItemQuery(pane), id }))?.index ?? null;
+    } catch {}
+    if (!stillCurrent()) return false;
+    const where = targetView.kind === 'all' ? '全部素材' : `「${targetView.name}」`;
+    if (position === -1) {
+      toast(`${where}中没有找到该素材，它可能已被移动或删除`, 4200);
+      saveSessionState();
+      return true;
+    }
+    if (position !== null && position >= SORT_FETCH_CAP) {
+      toast(`该素材在${where}的第 ${(position + 1).toLocaleString()} 个，超出可直接定位的范围（前 ${SORT_FETCH_CAP.toLocaleString()} 个）`, 5200);
+      saveSessionState();
+      return true;
+    }
+    await refresh({ paneId: pane.id, reset: true, preserveScroll: false, minimumCount: position === null ? SORT_FETCH_CAP : position + 1 });
     if (!stillCurrent() || pane.errorMessage) return false;
     itemIndex = pane.items.findIndex(item => item.id === id);
+    if (itemIndex === -1) toast(`没能在${where}中定位到该素材，请刷新后重试`, 4200);
+    else $('#toast').classList.add('hidden');
   }
 
   if (itemIndex !== -1) {

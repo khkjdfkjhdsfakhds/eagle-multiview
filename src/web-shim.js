@@ -398,6 +398,7 @@
     switchLibrary: data => invoke('library:switch', [data]),
     identity: () => helloPromise,
     query: query => invoke('hub:query', [query]),
+    locateItem: data => invoke('hub:locate-item', [data]),
     getRecentFolders: () => invoke('hub:recent-folders'),
     getTrashItems: data => invoke('hub:trash-items', [data]),
     getItem: id => invoke('hub:get-item', [id]),

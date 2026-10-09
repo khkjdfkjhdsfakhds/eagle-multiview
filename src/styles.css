@@ -2239,6 +2239,14 @@ body.web-client .content-pane .modal-rating,
 body.web-client .content-pane .slideshow-controls { display: flex !important; }
 body.web-client .content-pane .modal-star { width: 34px; height: 34px; font-size: 18px; }
 body.web-client .content-pane .slideshow-controls .preview-view-button { display: none; }
+/* Touch web client (Android): only ‹ › stay on the picture. Swipe down,
+   system Back and Esc close it; the inspector rates. */
+@media (pointer: coarse) {
+  body.web-client .content-pane .preview-modal .modal-close,
+  body.web-client .content-pane .preview-modal .modal-caption,
+  body.web-client .content-pane .preview-modal .modal-rating,
+  body.web-client .content-pane .preview-modal .slideshow-controls { display: none !important; }
+}
 /* hud-hidden fades the whole preview HUD out slowly after a period of no
    interaction; the controls already animate opacity at .7s. */
 .preview-modal.hud-hidden .modal-close,

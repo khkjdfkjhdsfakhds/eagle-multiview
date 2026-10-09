@@ -436,3 +436,19 @@ test('default search uses the ready metadata index while preserving Eagle constr
   assert.deepEqual(page.data.map(item => item.id), ['match']);
   assert.equal(page.metadataIndexed, true);
 });
+
+test('locateItem counts not-yet-indexed imports ahead of the Eagle order', async () => {
+  class LocateClient {
+    static matchesSearchConstraints(item, query) {
+      return !query.folderId || (item.folders || []).includes(query.folderId);
+    }
+    async locateItemIndex(_query, id) { return { indexed: 0, later: 5 }[id] ?? -1; }
+  }
+  const hub = new DataHub(new LocateClient());
+  hub.library = { path: '/library' };
+  hub.setSupplementalItems('/library', [{ id: 'fresh', name: 'Fresh', folders: ['F'], modificationTime: 2 }]);
+  assert.deepEqual(await hub.locateItem({ folderId: 'F' }, 'fresh'), { index: 0 });
+  assert.deepEqual(await hub.locateItem({ folderId: 'F' }, 'later'), { index: 6 });
+  assert.deepEqual(await hub.locateItem({ folderId: 'F' }, 'gone'), { index: -1 });
+  assert.deepEqual(await hub.locateItem({ folderId: 'other' }, 'indexed'), { index: 0 }, 'non-matching imports do not shift the index');
+});

@@ -109,6 +109,22 @@ const search = document.querySelector('#searchInput');
 search.focus();
 const fieldPrevented = !search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
 result.fieldEsc = { prevented: fieldPrevented, left: document.activeElement !== search, nextPrevented: !key('Escape', 'Escape') };
+// A finger or pen long-press must not start an HTML5 drag (Android WebView
+// never ends it and then drops all input); a mouse drag still starts one.
+clearSelection();
+const card = document.querySelector('.item-card[data-id]');
+const dragFrom = pointerType => {
+  let reached = false;
+  const seen = () => { reached = true; };
+  window.addEventListener('dragstart', seen, true);
+  document.dispatchEvent(new PointerEvent('pointerdown', { pointerType, bubbles: true }));
+  const prevented = !card.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+  window.removeEventListener('dragstart', seen, true);
+  card.dispatchEvent(new DragEvent('dragend', { bubbles: true }));
+  document.dispatchEvent(new PointerEvent('pointerup', { pointerType, bubbles: true }));
+  return pointerType === 'mouse' ? reached : [prevented, reached];
+};
+result.touchDrag = { touch: dragFrom('touch'), pen: dragFrom('pen'), mouse: dragFrom('mouse') };
 return result;`);
   // Narrow phone: the selection strip is a mode that back leaves first.
   tablet.setContentSize(390, 844);

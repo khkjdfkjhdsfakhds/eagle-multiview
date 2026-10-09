@@ -59,6 +59,14 @@ test('openItemLocation handles all view targets, clears search, and selects item
   assert.ok(fnBody.includes('createQuery()'), 'clears filters and search keyword upon navigation');
   assert.ok(fnBody.includes('card.scrollIntoView('), 'scrolls selected card into view');
   assert.ok(fnBody.includes('card.focus('), 'focuses selected card');
+  // Deep items: locate on the host first, load only that far, and report
+  // positions past the load cap instead of stalling the page.
+  assert.ok(!fnBody.includes('pageLimit'), 'no blind page-by-page search');
+  assert.ok(fnBody.includes('window.eagleMV.locateItem({ query: paneItemQuery(pane), id })'), 'asks the host for the position');
+  assert.ok(fnBody.includes('position >= SORT_FETCH_CAP'), 'positions past the cap are reported, not loaded');
+  assert.ok(fnBody.includes('minimumCount: position === null ? SORT_FETCH_CAP : position + 1'), 'loads exactly up to the item');
+  assert.ok(!fnBody.includes('pane.refreshToken === refreshToken'), 'a background refresh does not abandon the jump');
+  assert.ok(renderer.includes('const query = paneItemQuery(pane, currentView);'), 'refresh and locate share one query');
 });
 
 test('itemFolderLocations helper correctly resolves folders and password states', () => {

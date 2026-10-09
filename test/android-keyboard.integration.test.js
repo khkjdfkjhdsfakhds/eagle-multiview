@@ -29,6 +29,7 @@ test('Android uses Ctrl for ⌘-only shortcuts and wide touch tablets keep multi
   assert.deepEqual(android.tabletBack, ['handled', 'selection', 0], 'wide tablets clear a selection before back can exit');
   assert.deepEqual(android.folderBack, ['handled', 'selection', null], 'a selected folder card counts as a selection');
   assert.deepEqual(android.fieldEsc, { prevented: true, left: true, nextPrevented: false }, 'Esc in a field leaves it instead of becoming Back');
+  assert.deepEqual(android.touchDrag, { touch: [true, false], pen: [true, false], mouse: true }, 'touch and pen long-presses never start an HTML5 drag; mouse drags still do');
 
   // Phone width: back leaves the selection strip first, a preview closes
   // before its selection, and only then does history move.

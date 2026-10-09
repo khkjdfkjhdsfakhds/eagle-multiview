@@ -14,6 +14,12 @@ All notable public changes to Eagle MultiView are recorded here.
 - Videos can go full screen; Back leaves full screen.
 - "New window" entries are hidden in the app, which has a single window (they replaced the page).
 - No more grey tap flash; the selection strip steps aside for the preview and no longer covers the bottom of the long-press menu.
+- A second long-press on a card no longer freezes the whole page (Android WebView started a touch drag that never ended).
+- On touch screens the preview keeps only ‹ ›; swipe down, Back or Esc closes it and rating stays in the inspector.
+
+### Desktop and web
+
+- "Open file location" finds the item anywhere in the first 3,000 of the view and selects it, instead of giving up silently after a few pages; a deeper or missing item gets a message.
 
 ## 1.8.1 - 2026-10-08
 

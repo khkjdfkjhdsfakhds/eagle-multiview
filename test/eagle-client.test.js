@@ -285,3 +285,22 @@ test('surfaces Eagle response details instead of a generic HTTP status', async (
     global.fetch = originalFetch;
   }
 });
+
+test('locateItemIndex scans ids only, 1000 per page, in the query order', async () => {
+  class PagedClient extends EagleClient {
+    constructor() { super('http://unused'); this.calls = []; }
+    async request(path, options = {}) {
+      this.calls.push(options.body);
+      const ids = Array.from({ length: 2500 }, (_, index) => ({ id: `item-${index}` }));
+      const { offset, limit } = options.body;
+      return { data: ids.slice(offset, offset + limit), total: ids.length };
+    }
+  }
+  const client = new PagedClient();
+  assert.equal(await client.locateItemIndex({ folderId: 'F' }, 'item-2100'), 2100);
+  assert.deepEqual(client.calls.map(body => body.offset), [0, 1000, 2000]);
+  assert.ok(client.calls.every(body => body.limit === 1000 && body.fields?.join() === 'id' && body.folders?.join() === 'F'));
+  assert.equal(await new PagedClient().locateItemIndex({}, 'missing'), -1);
+  assert.equal(await new PagedClient().locateItemIndex({ search: 'cat' }, 'item-1'), null, 'search order is not the API order');
+  assert.equal(await new PagedClient().locateItemIndex({ random: true }, 'item-1'), null);
+});

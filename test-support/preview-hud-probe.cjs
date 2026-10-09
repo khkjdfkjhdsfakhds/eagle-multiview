@@ -41,6 +41,16 @@ async function run() {
     document.body.classList.remove('web-client');
     return { desktop, web, hudHidden, slideshowPressed };
   })()`);
+  // Touch web client (Android tablet/phone): only ‹ › stay on the picture.
+  window.webContents.debugger.attach('1.3');
+  await window.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  result.touch = await window.webContents.executeJavaScript(`(() => {
+    document.body.classList.add('web-client');
+    document.querySelector('.content-pane .preview-modal').classList.remove('hidden', 'hud-hidden');
+    const display = id => getComputedStyle(document.querySelector('#' + id)).display;
+    return { coarse: matchMedia('(pointer: coarse)').matches, prev: display('prevPreview'), next: display('nextPreview'),
+      close: display('closePreview'), caption: display('modalCaption'), rating: display('modalRating'), slideshow: display('slideshowControls') };
+  })()`);
   process.stdout.write(`EAGLEMV_HUD ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();
 }

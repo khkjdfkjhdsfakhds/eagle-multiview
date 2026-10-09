@@ -37,6 +37,9 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   // After inactivity the HUD fades out.
   assert.ok(result.hudHidden.closeOpacity < 0.01, `the HUD fades to nearly transparent (got ${result.hudHidden.closeOpacity})`);
   assert.ok(result.hudHidden.close === 'grid' && result.hudHidden.prev === 'grid', 'fading keeps the buttons present for the transition');
+  // Touch web client keeps only ‹ ›; swipe down, Back and Esc close, and the
+  // inspector rates.
+  assert.deepEqual(result.touch, { coarse: true, prev: 'grid', next: 'grid', close: 'none', caption: 'none', rating: 'none', slideshow: 'none' });
 });
 
 test('preview HUD rules are scoped to the web client only', () => {
