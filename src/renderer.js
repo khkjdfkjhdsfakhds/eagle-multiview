@@ -2092,6 +2092,16 @@ const compactLayoutQuery = window.matchMedia('(max-width: 900px)');
 const isCompactLayout = () => isWebClient && compactLayoutQuery.matches;
 const isTouchEvent = event => event.pointerType === 'touch' ||
   (event.pointerType === undefined && window.matchMedia('(pointer: coarse)').matches);
+// Android reports an active stylus as `pen`, even though it is used as the
+// touch-like pointer on the preview surface. Keep swipe navigation and the
+// swipe-down close gesture available when the close button is hidden on coarse
+// web clients.
+const isPreviewTouchPointer = event => event.pointerType === 'touch' ||
+  event.pointerType === 'pen' ||
+  // Some Android WebViews expose an active stylus as a mouse pointer. On a
+  // coarse web client there is no desktop mouse fallback to preserve, so keep
+  // the swipe gesture working for that reporting variant too.
+  (event.pointerType === 'mouse' && window.matchMedia('(pointer: coarse)').matches);
 
 // Thumbnail size has three drivers (slider, two-finger pinch, restore on
 // launch) that must agree; they all go through here.
@@ -4908,7 +4918,7 @@ function applyView(view) {
   // current view is assigned — covers every navigation path, including the
   // startup root view and library switches.
   const remembered = view.kind === 'folder'
-    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders, Boolean(state.sortCascade || sortCascadeEnabled))
+    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders)
     : sortMemory.recall(state.library?.path, descriptorKey(view));
   state.sort = remembered?.sort || 'default';
   state.sortDir = remembered?.sortDir || 'auto';
@@ -7933,7 +7943,7 @@ function bindPaneEvents(paneId) {
       if (event.target.closest('#slideshowControls, #modalRating')) return;
       const pane = paneById(paneId);
       if (!pane) return;
-      if (event.pointerType === 'touch') {
+      if (isPreviewTouchPointer(event)) {
         previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
         event.currentTarget.setPointerCapture(event.pointerId);
         if (previewPointers.size === 2) {
@@ -7964,7 +7974,7 @@ function bindPaneEvents(paneId) {
     previewModal.addEventListener('pointermove', event => {
       const pane = paneById(paneId);
       if (!pane) return;
-      if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1) {
+      if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1 && pane.previewZoom.mode === 'fit') {
         previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
         const image = paneQuery(paneId, '#modalMedia img.preview-image');
         if (image) image.style.transform = `translateX(${event.clientX - swipeSession.startX}px)`;
@@ -8485,7 +8495,7 @@ function bindEvents() {
     // The modal owns the gesture surface, but capturing the pointer here would
     // steal the tap from the controls sitting on top of it.
     if (event.target.closest('#slideshowControls, #modalRating')) return;
-    if (event.pointerType === 'touch') {
+    if (isPreviewTouchPointer(event)) {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       event.currentTarget.setPointerCapture(event.pointerId);
       if (previewPointers.size === 2) {
@@ -8514,7 +8524,7 @@ function bindEvents() {
     renderPreviewZoom();
   });
   $('#previewModal').addEventListener('pointermove', event => {
-    if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1) {
+    if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1 && state.previewZoom.mode === 'fit') {
       previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       const image = previewImage();
       if (image) image.style.transform = `translateX(${event.clientX - swipeSession.startX}px)`;

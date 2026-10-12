@@ -61,3 +61,12 @@ test('a missing image degrades to a message instead of a broken glyph', () => {
   assert.ok(renderer.includes("if (!$('#previewModal').classList.contains('image-gesture')) return;"));
   assert.ok(renderer.includes("if (!image || state.previewZoom.mode === 'fit') {\n        swipeSession ="));
 });
+
+test('a stylus swipes the preview like a finger, but never while zoomed', () => {
+  // Android reports an active stylus as `pen` (some WebViews as `mouse`).
+  assert.ok(renderer.includes("event.pointerType === 'pen' ||"));
+  assert.strictEqual(renderer.match(/if \(isPreviewTouchPointer\(event\)\) \{/g)?.length, 2,
+    'both the single-pane and per-pane previews accept a stylus');
+  // A one-finger pan of a zoomed image must not end as a swipe to the next item.
+  assert.ok(renderer.includes("if (!image || pane.previewZoom.mode === 'fit') {\n          swipeSession ="));
+});

@@ -16,10 +16,13 @@ All notable public changes to Eagle MultiView are recorded here.
 - No more grey tap flash; the selection strip steps aside for the preview and no longer covers the bottom of the long-press menu.
 - A second long-press on a card no longer freezes the whole page (Android WebView started a touch drag that never ended).
 - On touch screens the preview keeps only ‹ ›; swipe down, Back or Esc closes it and rating stays in the inspector.
+- A stylus swipes through and closes the preview like a finger.
+- Optional remembered host addresses (off by default): recent addresses are kept, can be pinned and named, switching between them keeps each login, and an unreachable address fails over to the next saved one.
 
 ### Desktop and web
 
 - "Open file location" finds the item anywhere in the first 3,000 of the view and selects it, instead of giving up silently after a few pages; a deeper or missing item gets a message.
+- A sort applied with "Include subfolders" now sticks to every subfolder, including ones created later, instead of being pushed out on large libraries; setting such a folder back to Eagle's order also resets its subfolders.
 
 ## 1.8.1 - 2026-10-08
 

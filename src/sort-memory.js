@@ -53,6 +53,35 @@
   // Eagle remembers the sort per folder. MultiView keeps the same memory in
   // its own storage (never in the Eagle library), keyed by library path and
   // view descriptor; default-sorted views are dropped to keep the map small.
+  //
+  // 包含子文件夹 stores one subtree marker (`cascade:folder:<id>`) instead of
+  // copying the sort onto every descendant: large trees would otherwise blow
+  // through the per-library cap and evict the parent, so subfolders silently
+  // fell back to a grandparent's sort. A folder resolves to the newest of its
+  // own entry and the markers on itself and its ancestors, which also covers
+  // subfolders created after the sort was applied.
+  const CASCADE_PREFIX = 'cascade:';
+
+  function normalizeEntry(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    return {
+      sort: typeof entry.sort === 'string' && entry.sort ? entry.sort : 'default',
+      sortDir: entry.sortDir === 'asc' || entry.sortDir === 'desc' ? entry.sortDir : 'auto',
+      at: Number(entry.at) || 0
+    };
+  }
+
+  function pruneLibrary(library) {
+    // Markers and per-view entries are capped separately so a burst of view
+    // entries can never evict the marker a whole subtree depends on.
+    for (const markers of [false, true]) {
+      const keys = Object.keys(library).filter(key => key.startsWith(CASCADE_PREFIX) === markers);
+      if (keys.length <= MAX_VIEWS_PER_LIBRARY) continue;
+      keys.sort((a, b) => (Number(library[a].at) || 0) - (Number(library[b].at) || 0));
+      for (const key of keys.slice(0, keys.length - MAX_VIEWS_PER_LIBRARY)) delete library[key];
+    }
+  }
+
   function createSortMemory(storage) {
     // recall runs on every navigation; cache the parsed store and let other
     // windows invalidate it through the storage event.
@@ -83,29 +112,26 @@
 
     function recall(libraryPath, viewKey) {
       if (!libraryPath || !viewKey) return null;
-      const entry = read()[String(libraryPath)]?.[String(viewKey)];
-      if (!entry || typeof entry !== 'object') return null;
-      return {
-        sort: typeof entry.sort === 'string' && entry.sort ? entry.sort : 'default',
-        sortDir: entry.sortDir === 'asc' || entry.sortDir === 'desc' ? entry.sortDir : 'auto'
-      };
+      const entry = normalizeEntry(read()[String(libraryPath)]?.[String(viewKey)]);
+      return entry ? { sort: entry.sort, sortDir: entry.sortDir } : null;
     }
 
-    function recallFolderSort(libraryPath, folderId, foldersTree = null, cascade = false) {
+    function recallFolderSort(libraryPath, folderId, foldersTree = null) {
       if (!libraryPath || !folderId) return null;
       const cleanId = String(folderId).replace(/^folder:/, '');
-      const direct = recall(libraryPath, `folder:${cleanId}`);
-      if (direct) return direct;
-      if (!cascade || !foldersTree) return null;
-      const path = findFolderPath(foldersTree, cleanId);
-      for (let i = path.length - 2; i >= 0; i--) {
-        const ancestor = path[i];
-        if (ancestor && ancestor.id) {
-          const ancestorSort = recall(libraryPath, `folder:${ancestor.id}`);
-          if (ancestorSort) return ancestorSort;
-        }
+      if (!cleanId) return null;
+      const library = read()[String(libraryPath)];
+      if (!library || typeof library !== 'object') return null;
+      let best = normalizeEntry(library[`folder:${cleanId}`]);
+      const path = foldersTree ? findFolderPath(foldersTree, cleanId) : [];
+      const chain = path.length ? path.map(node => node.id) : [cleanId];
+      // Deepest first with a strict comparison: on equal timestamps the
+      // folder's own choice, then the nearest marker, wins.
+      for (let index = chain.length - 1; index >= 0; index -= 1) {
+        const marker = normalizeEntry(library[`${CASCADE_PREFIX}folder:${chain[index]}`]);
+        if (marker && (!best || marker.at > best.at)) best = marker;
       }
-      return null;
+      return best ? { sort: best.sort, sortDir: best.sortDir } : null;
     }
 
     function remember(libraryPath, viewKey, sort, sortDir, now = 0) {
@@ -113,13 +139,13 @@
       const data = read();
       const library = data[String(libraryPath)] || (data[String(libraryPath)] = {});
       const isDefault = (!sort || sort === 'default') && (!sortDir || sortDir === 'auto');
-      if (isDefault) delete library[String(viewKey)];
-      else library[String(viewKey)] = { sort, sortDir, at: Number(now) || 0 };
-      const keys = Object.keys(library);
-      if (keys.length > MAX_VIEWS_PER_LIBRARY) {
-        keys.sort((a, b) => (Number(library[a].at) || 0) - (Number(library[b].at) || 0));
-        for (const key of keys.slice(0, keys.length - MAX_VIEWS_PER_LIBRARY)) delete library[key];
-      }
+      // Under a subtree marker, 默认 is a real override of the inherited sort
+      // and has to be stored instead of dropped.
+      const keepDefault = String(viewKey).startsWith('folder:')
+        && Object.keys(library).some(key => key.startsWith(CASCADE_PREFIX));
+      if (isDefault && !keepDefault) delete library[String(viewKey)];
+      else library[String(viewKey)] = { sort: sort || 'default', sortDir: sortDir || 'auto', at: Number(now) || 0 };
+      pruneLibrary(library);
       if (!Object.keys(library).length) delete data[String(libraryPath)];
       write(data);
     }
@@ -132,19 +158,16 @@
       const ids = node ? collectFolderIds(node) : [cleanId];
       const data = read();
       const library = data[String(libraryPath)] || (data[String(libraryPath)] = {});
-      const isDefault = (!sort || sort === 'default') && (!sortDir || sortDir === 'auto');
-      const timestamp = Number(now) || 0;
-      for (const id of ids) {
-        const viewKey = `folder:${id}`;
-        if (isDefault) delete library[viewKey];
-        else library[viewKey] = { sort, sortDir, at: timestamp };
+      // Older choices inside the subtree are superseded; dropping them keeps
+      // the store small and the result independent of timestamps.
+      for (const id of ids.slice(1)) {
+        delete library[`folder:${id}`];
+        delete library[`${CASCADE_PREFIX}folder:${id}`];
       }
-      const keys = Object.keys(library);
-      if (keys.length > MAX_VIEWS_PER_LIBRARY) {
-        keys.sort((a, b) => (Number(library[a].at) || 0) - (Number(library[b].at) || 0));
-        for (const key of keys.slice(0, keys.length - MAX_VIEWS_PER_LIBRARY)) delete library[key];
-      }
-      if (!Object.keys(library).length) delete data[String(libraryPath)];
+      const entry = { sort: sort || 'default', sortDir: sortDir || 'auto', at: Number(now) || 0 };
+      library[`${CASCADE_PREFIX}folder:${cleanId}`] = entry;
+      library[`folder:${cleanId}`] = { ...entry };
+      pruneLibrary(library);
       write(data);
       return ids;
     }
@@ -157,9 +180,12 @@
       const timestamp = Number(now) || Date.now();
       const library = data[String(libraryPath)] = { ...source };
       for (const [sourceId, targetId] of Object.entries(folderMap)) {
-        const entry = library[`folder:${sourceId}`];
-        if (entry) library[`folder:${targetId}`] = { ...entry, at: timestamp };
+        for (const prefix of ['', CASCADE_PREFIX]) {
+          const entry = library[`${prefix}folder:${sourceId}`];
+          if (entry) library[`${prefix}folder:${targetId}`] = { ...entry, at: timestamp };
+        }
       }
+      pruneLibrary(library);
       write(data);
     }
 

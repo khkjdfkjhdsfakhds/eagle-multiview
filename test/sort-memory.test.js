@@ -132,21 +132,19 @@ test('rememberCascade writes sort preference for parent folder and all descendan
   const updatedIds = memory.rememberCascade('/A.library', 'F1', foldersTree, 'rating', 'asc', 100);
   assert.deepEqual(updatedIds.sort(), ['F1', 'F1_1', 'F1_1_1', 'F1_2'].sort());
 
-  assert.deepEqual(memory.recall('/A.library', 'folder:F1'), { sort: 'rating', sortDir: 'asc' });
-  assert.deepEqual(memory.recall('/A.library', 'folder:F1_1'), { sort: 'rating', sortDir: 'asc' });
-  assert.deepEqual(memory.recall('/A.library', 'folder:F1_1_1'), { sort: 'rating', sortDir: 'asc' });
-  assert.deepEqual(memory.recall('/A.library', 'folder:F1_2'), { sort: 'rating', sortDir: 'asc' });
+  for (const id of ['F1', 'F1_1', 'F1_1_1', 'F1_2']) {
+    assert.deepEqual(memory.recallFolderSort('/A.library', id, foldersTree), { sort: 'rating', sortDir: 'asc' }, id);
+  }
 
   // Sibling folders must not be touched
-  assert.equal(memory.recall('/A.library', 'folder:F2'), null);
-  assert.equal(memory.recall('/A.library', 'folder:F2_1'), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'F2', foldersTree), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'F2_1', foldersTree), null);
 
-  // Cascading default reset clears entries
+  // Cascading Eagle order resets the whole subtree
   memory.rememberCascade('/A.library', 'folder:F1', foldersTree, 'default', 'auto', 200);
-  assert.equal(memory.recall('/A.library', 'folder:F1'), null);
-  assert.equal(memory.recall('/A.library', 'folder:F1_1'), null);
-  assert.equal(memory.recall('/A.library', 'folder:F1_1_1'), null);
-  assert.equal(memory.recall('/A.library', 'folder:F1_2'), null);
+  for (const id of ['F1', 'F1_1', 'F1_1_1', 'F1_2']) {
+    assert.deepEqual(memory.recallFolderSort('/A.library', id, foldersTree), { sort: 'default', sortDir: 'auto' }, id);
+  }
 });
 
 test('exported top-level rememberCascade helper works with storage or memory instance', () => {
@@ -154,8 +152,8 @@ test('exported top-level rememberCascade helper works with storage or memory ins
   const tree = [{ id: 'F10', children: [{ id: 'F11' }] }];
   rememberCascade(storage, '/A.library', 'F10', tree, 'size', 'desc', 123);
   const memory = createSortMemory(storage);
-  assert.deepEqual(memory.recall('/A.library', 'folder:F10'), { sort: 'size', sortDir: 'desc' });
-  assert.deepEqual(memory.recall('/A.library', 'folder:F11'), { sort: 'size', sortDir: 'desc' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'F10', tree), { sort: 'size', sortDir: 'desc' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'F11', tree), { sort: 'size', sortDir: 'desc' });
 });
 
 test('exported top-level rememberCascade helper keeps arguments aligned with browser localStorage fallback', () => {
@@ -170,8 +168,8 @@ test('exported top-level rememberCascade helper keeps arguments aligned with bro
     else global.window = previousWindow;
   }
   const memory = createSortMemory(storage);
-  assert.deepEqual(memory.recall('/B.library', 'folder:F20'), { sort: 'rating', sortDir: 'asc' });
-  assert.deepEqual(memory.recall('/B.library', 'folder:F21'), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recallFolderSort('/B.library', 'F20', tree), { sort: 'rating', sortDir: 'asc' });
+  assert.deepEqual(memory.recallFolderSort('/B.library', 'F21', tree), { sort: 'rating', sortDir: 'asc' });
 });
 
 test('sort controls include cascade checkbox in markup, scoping, and event bindings', () => {
@@ -191,115 +189,94 @@ test('sort cascade preference key is exported and renderer wires persistence and
   assert.ok(renderer.includes('localStorage.getItem(SORT_CASCADE_KEY'), 'reads sort cascade preference');
 });
 
-test('recallFolderSort falls back to closest ancestor sort when cascade is enabled', () => {
-  const storage = fakeStorage();
-  const memory = createSortMemory(storage);
-  const foldersTree = [
-    {
-      id: 'ParentFolder',
-      name: 'Parent',
-      children: [
-        {
-          id: 'NewSubFolder',
-          name: 'New Sub'
-        }
-      ]
-    }
-  ];
-
-  memory.remember('/A.library', 'folder:ParentFolder', 'rating', 'asc', 100);
-
-  // Without cascade enabled: returns null for new subfolder with no explicit sort
-  assert.equal(memory.recallFolderSort('/A.library', 'NewSubFolder', foldersTree, false), null);
-
-  // With cascade enabled: inherits parent sort
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewSubFolder', foldersTree, true), {
-    sort: 'rating',
-    sortDir: 'asc'
-  });
+test('a sort chosen without 包含子文件夹 stays on that folder', () => {
+  const memory = createSortMemory(fakeStorage());
+  const tree = [{ id: 'Parent', children: [{ id: 'Child' }] }];
+  memory.remember('/A.library', 'folder:Parent', 'rating', 'asc', 100);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Parent', tree), { sort: 'rating', sortDir: 'asc' });
+  assert.equal(memory.recallFolderSort('/A.library', 'Child', tree), null);
 });
 
-test('recallFolderSort traverses deep ancestor chains to find the closest sort preference', () => {
+test('the newest of own choice and ancestor markers wins at every depth', () => {
+  const memory = createSortMemory(fakeStorage());
+  const tree = [{
+    id: 'GrandParent',
+    children: [
+      { id: 'Parent', children: [{ id: 'Child', children: [{ id: 'GrandChild' }] }] },
+      { id: 'SiblingParent', children: [{ id: 'SiblingChild' }] }
+    ]
+  }];
+  memory.rememberCascade('/A.library', 'GrandParent', tree, 'size', 'desc', 10);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', tree), { sort: 'size', sortDir: 'desc' });
+
+  memory.rememberCascade('/A.library', 'Parent', tree, 'name', 'asc', 20);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', tree), { sort: 'name', sortDir: 'asc' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'SiblingChild', tree), { sort: 'size', sortDir: 'desc' });
+
+  // A later choice on one subfolder (without cascading) overrides only it.
+  memory.remember('/A.library', 'folder:Child', 'rating', 'desc', 30);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Child', tree), { sort: 'rating', sortDir: 'desc' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', tree), { sort: 'name', sortDir: 'asc' });
+
+  // Re-applying from the top supersedes everything underneath.
+  memory.rememberCascade('/A.library', 'GrandParent', tree, 'added', 'asc', 40);
+  for (const id of ['GrandParent', 'Parent', 'Child', 'GrandChild', 'SiblingParent', 'SiblingChild']) {
+    assert.deepEqual(memory.recallFolderSort('/A.library', id, tree), { sort: 'added', sortDir: 'asc' }, id);
+  }
+});
+
+test('cascading Eagle order under a sorted grandparent does not inherit the grandparent sort', () => {
+  const memory = createSortMemory(fakeStorage());
+  const tree = [{ id: 'GrandParent', children: [{ id: 'Parent', children: [{ id: 'Child' }] }] }];
+  memory.rememberCascade('/A.library', 'GrandParent', tree, 'size', 'desc', 10);
+  memory.rememberCascade('/A.library', 'Parent', tree, 'default', 'auto', 20);
+  memory.remember('/A.library', 'folder:Parent', 'default', 'auto', 21);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Parent', tree), { sort: 'default', sortDir: 'auto' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Child', tree), { sort: 'default', sortDir: 'auto' });
+  // Resetting one folder to Eagle order is likewise a real override.
+  memory.remember('/A.library', 'folder:GrandParent', 'default', 'auto', 30);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandParent', tree), { sort: 'default', sortDir: 'auto' });
+});
+
+test('cascading over a subtree larger than the cap keeps every folder on the parent sort', () => {
   const storage = fakeStorage();
   const memory = createSortMemory(storage);
-  const foldersTree = [
-    {
-      id: 'GrandParent',
-      children: [
-        {
-          id: 'Parent',
-          children: [
-            {
-              id: 'Child',
-              children: [
-                { id: 'GrandChild' }
-              ]
-            }
-          ]
-        },
-        {
-          id: 'SiblingParent',
-          children: [{ id: 'SiblingChild' }]
-        }
-      ]
-    }
-  ];
+  const children = Array.from({ length: MAX_VIEWS_PER_LIBRARY * 3 }, (_, index) => ({ id: `C${index}`, children: [{ id: `C${index}_x` }] }));
+  const tree = [{ id: 'GrandParent', children: [{ id: 'Parent', children }] }];
+  memory.rememberCascade('/A.library', 'GrandParent', tree, 'size', 'desc', 10);
+  memory.rememberCascade('/A.library', 'Parent', tree, 'name', 'asc', 20);
+  for (const id of ['Parent', 'C0', 'C0_x', `C${children.length - 1}_x`]) {
+    assert.deepEqual(memory.recallFolderSort('/A.library', id, tree), { sort: 'name', sortDir: 'asc' }, id);
+  }
+  // Unrelated view entries filling the cap must not evict the markers.
+  for (let index = 0; index <= MAX_VIEWS_PER_LIBRARY; index += 1) {
+    memory.remember('/A.library', `smart:S${index}`, 'rating', 'desc', 100 + index);
+  }
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'C5_x', tree), { sort: 'name', sortDir: 'asc' });
+  assert.ok(Object.keys(storage.dump()['/A.library']).length <= MAX_VIEWS_PER_LIBRARY * 2);
+});
 
-  // Set sort at GrandParent
-  memory.remember('/A.library', 'folder:GrandParent', 'size', 'desc', 10);
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, true), {
-    sort: 'size',
-    sortDir: 'desc'
-  });
+test('subfolders created after 包含子文件夹 follow the marker', () => {
+  const memory = createSortMemory(fakeStorage());
+  memory.rememberCascade('/A.library', 'Parent', [{ id: 'Parent' }], 'rating', 'asc', 10);
+  const grown = [{ id: 'Parent', children: [{ id: 'NewChild', children: [{ id: 'NewGrandChild' }] }] }];
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewGrandChild', grown), { sort: 'rating', sortDir: 'asc' });
+});
 
-  // Override sort at Parent
-  memory.remember('/A.library', 'folder:Parent', 'name', 'asc', 20);
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, true), {
-    sort: 'name',
-    sortDir: 'asc'
-  });
-
-  // Sibling branch still inherits from GrandParent
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'SiblingChild', foldersTree, true), {
-    sort: 'size',
-    sortDir: 'desc'
-  });
-
-  // Without cascade enabled, none of them inherit
-  assert.equal(memory.recallFolderSort('/A.library', 'GrandChild', foldersTree, false), null);
-  assert.equal(memory.recallFolderSort('/A.library', 'SiblingChild', foldersTree, false), null);
+test('cloning a folder carries its subtree marker', () => {
+  const memory = createSortMemory(fakeStorage());
+  const tree = [{ id: 'src', children: [{ id: 'src-child' }] }, { id: 'copy', children: [{ id: 'copy-child' }] }];
+  memory.rememberCascade('/A.library', 'src', tree, 'size', 'asc', 10);
+  memory.cloneFolders('/A.library', { src: 'copy', 'src-child': 'copy-child' }, 20);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'copy-child', tree), { sort: 'size', sortDir: 'asc' });
 });
 
 test('recallFolderSort handles nonexistent folders, null inputs, and missing library safely', () => {
   const storage = fakeStorage();
   const memory = createSortMemory(storage);
-  assert.equal(memory.recallFolderSort('', 'F1', [], true), null);
-  assert.equal(memory.recallFolderSort('/A.library', '', [], true), null);
-  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', [], true), null);
-  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', null, true), null);
+  assert.equal(memory.recallFolderSort('', 'F1', []), null);
+  assert.equal(memory.recallFolderSort('/A.library', '', []), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', []), null);
+  assert.equal(memory.recallFolderSort('/A.library', 'NotFound', null), null);
 });
 
-test('newly added child folder dynamically reflects parent sort changes when cascade is enabled', () => {
-  const storage = fakeStorage();
-  const memory = createSortMemory(storage);
-  const foldersTree = [
-    {
-      id: 'Parent',
-      children: [{ id: 'NewChild' }]
-    }
-  ];
-
-  // Set sort at Parent
-  memory.remember('/A.library', 'folder:Parent', 'date', 'desc', 10);
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewChild', foldersTree, true), {
-    sort: 'date',
-    sortDir: 'desc'
-  });
-
-  // When Parent sort changes, NewChild dynamically reflects the change without static record
-  memory.remember('/A.library', 'folder:Parent', 'rating', 'asc', 20);
-  assert.deepEqual(memory.recallFolderSort('/A.library', 'NewChild', foldersTree, true), {
-    sort: 'rating',
-    sortDir: 'asc'
-  });
-});
