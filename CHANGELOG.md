@@ -2,7 +2,7 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
-## Unreleased
+## 1.8.3 - 2026-10-13
 
 ### Android app
 

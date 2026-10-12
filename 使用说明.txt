@@ -6,8 +6,8 @@ Eagle MultiView 使用说明
 3. 从“文件”菜单或按 Command-Option-N 新建独立窗口。
 4. 每个窗口还可以选择单栏、双栏、三栏或四栏布局；每个视图可以分别停留在不同文件夹、搜索或筛选结果。
 
-当前版本：1.8.2。桌面版仅提供 macOS Apple silicon，停止 Windows 桌面构建和维护；手机和平板另有 Android App。
-完整功能与公开演示截图见 README.md，本版更新见 docs/release-notes-v1.8.2.md。
+当前版本：1.8.3。桌面版仅提供 macOS Apple silicon，停止 Windows 桌面构建和维护；手机和平板另有 Android App。
+完整功能与公开演示截图见 README.md，本版更新见 docs/release-notes-v1.8.3.md。
 
 网页与手机连接
 1. Mac 上保持 Eagle 与 MultiView 运行。
@@ -29,6 +29,9 @@ Android App（1.8.1 起）
 检查更新（Mac）
 - 菜单“Eagle MultiView → 检查更新…”，或等待每天一次的自动检查（更新窗口里可关闭自动检查）。
 - 发现新版本可选“跳过此版本”“稍后提醒”或“下载并安装”；下载校验完成后点“立即重启并更新”，或选“稍后”在下次退出时安装。
+
+1.8.3 更新
+- Android App：连上主机后，点左上角资料库名称，菜单里可“检查更新…”或“更换主机…”，不必再回连接页。
 
 1.8.2 更新
 - 检查更新：Mac 和 Android App 都能在 App 内检查、下载（SHA-256 校验）并安装新版本，见上文。

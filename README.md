@@ -4,13 +4,13 @@
 
 Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多分栏工作区**和**内置局域网 Web 访问**。电脑端与网页端共享浏览、搜索、筛选、预览、整理和编辑流程，各视图独立导航，素材修改通过主机同步。
 
-[下载 macOS / Android 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.2 更新说明](docs/release-notes-v1.8.2.md)
+[下载 macOS / Android 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.3 更新说明](docs/release-notes-v1.8.3.md)
 
 ![Eagle MultiView 1.8.0 多分栏工作区](docs/screenshots/desktop-multipane.jpg)
 
 > Eagle MultiView 不是 Eagle 官方产品。使用时需要先启动 Eagle 并打开资料库；常规操作通过本机 Eagle HTTP API，TXT 正文保存通过配套的 Eagle 官方 Plugin API 后台服务。
 
-当前版本：**[1.8.2](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.2)**，可直接下载 [macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.2/Eagle-MultiView-1.8.2-arm64.dmg)或 [Android App](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.2/Eagle-MultiView-1.8.2-android.apk)。从 1.8.2 起，两端都能在 App 内检查并安装更新。桌面安装包仅提供 **macOS Apple silicon**，不再构建和维护 Windows 桌面版；Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机和平板可直接用浏览器，也可安装 Android App。
+当前版本：**[1.8.3](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.3)**，可直接下载 [macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.3/Eagle-MultiView-1.8.3-arm64.dmg)或 [Android App](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.3/Eagle-MultiView-1.8.3-android.apk)。从 1.8.2 起，两端都能在 App 内检查并安装更新。桌面安装包仅提供 **macOS Apple silicon**，不再构建和维护 Windows 桌面版；Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机和平板可直接用浏览器，也可安装 Android App。
 
 ## 手机、平板和网页端：核心功能
 
@@ -202,4 +202,4 @@ App 内更新读取 GitHub 上最新的正式 Release（不含 Draft 和 Prerele
 
 Eagle MultiView is an unofficial Eagle client for **Apple silicon macOS and local-network browsers**. Keep independent windows and up to four panes on your Mac, then browse, search, preview, organize, upload and download assets from a phone, tablet or another computer. Enable **View → Web Access** on the Mac, open its LAN address on the other device and sign in with the access key. Eagle and MultiView must remain running on the host. No cloud account or full-library copy is required. The built-in server uses HTTP and is intended for trusted local networks.
 
-Version 1.8.2 adds in-app updates on macOS and Android: a once-a-day or on-demand check against the latest GitHub release, a SHA-256-verified download, then an in-place replace and relaunch on the Mac or the system installer on Android. Version 1.8.1 added an Android app for phones and tablets: it opens the same Web Access service with system Back and edge gestures that follow the page's own close/back order, Ctrl-based hardware-keyboard shortcuts (⌘ on macOS), desktop-like Esc, the system file picker for imports and system downloads. The APK is debug-signed for sideloading. Ctrl/⌘+Z now undoes moves to Trash on every client. Version 1.8.0 added folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving and WebP/NovelAI character metadata. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued.
+Version 1.8.3 puts "Check for updates" and "Change host" in the Android app's library menu. Version 1.8.2 added in-app updates on macOS and Android: a once-a-day or on-demand check against the latest GitHub release, a SHA-256-verified download, then an in-place replace and relaunch on the Mac or the system installer on Android. Version 1.8.1 added an Android app for phones and tablets: it opens the same Web Access service with system Back and edge gestures that follow the page's own close/back order, Ctrl-based hardware-keyboard shortcuts (⌘ on macOS), desktop-like Esc, the system file picker for imports and system downloads. The APK is debug-signed for sideloading. Ctrl/⌘+Z now undoes moves to Trash on every client. Version 1.8.0 added folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving and WebP/NovelAI character metadata. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued.
