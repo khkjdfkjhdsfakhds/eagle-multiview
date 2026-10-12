@@ -15,6 +15,11 @@ android {
         versionName = "1.8.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Release feed shared with the Mac app; `-PupdateFeed=<url>` points a local test build elsewhere.
+        val updateFeed = (project.findProperty("updateFeed") as String?)
+            ?: "https://api.github.com/repos/khkjdfkjhdsfakhds/eagle-multiview/releases/latest"
+        buildConfigField("String", "UPDATE_FEED_URL", "\"$updateFeed\"")
     }
 
     buildTypes {

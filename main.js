@@ -46,6 +46,7 @@ const { createTrashScanService } = require('./lib/trash-scan-service');
 const { exportFiles } = require('./lib/export-service');
 const { resolveEagleWindowState } = require('./lib/window-location');
 const { createWindowRouter } = require('./lib/window-router');
+const { UpdateController, appBundlePath } = require('./lib/update-service');
 const {
   normalizeNewFileType,
   normalizeEagleFolderName,
@@ -961,6 +962,11 @@ function setupMenu() {
       label: identity.name,
       submenu: [
         { role: 'about' },
+        {
+          label: '检查更新…',
+          enabled: !identity.profile,
+          click: () => checkForUpdates({ manual: true })
+        },
         { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },
@@ -1032,6 +1038,138 @@ function setupMenu() {
     { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+let updater = null;
+let updateWindow = null;
+
+function getUpdater() {
+  if (updater) return updater;
+  updater = new UpdateController({
+    currentVersion: app.getVersion(),
+    workDir: path.join(app.getPath('userData'), 'Updates'),
+    bundlePath: app.isPackaged ? appBundlePath(app.getPath('exe')) : null,
+    fetch: (url, options) => net.fetch(url, options),
+    ...(process.env.EAGLE_MV_UPDATE_FEED ? { feedURL: process.env.EAGLE_MV_UPDATE_FEED } : {}),
+    logFault
+  });
+  updater.on('state', state => {
+    if (!updateWindow || updateWindow.isDestroyed()) return;
+    updateWindow.webContents.send('updater:state', state);
+    // Short states have no release notes; keep the window compact for them.
+    const compact = ['checking', 'latest', 'error', 'installing'].includes(state.phase);
+    if (updateWindow.__compact !== compact) {
+      updateWindow.__compact = compact;
+      updateWindow.setContentSize(520, compact ? 190 : 400, updateWindow.isVisible());
+    }
+    const { received, total } = state;
+    updateWindow.setProgressBar(state.phase === 'downloading' && total ? Math.min(1, received / total) : -1);
+  });
+  return updater;
+}
+
+function showUpdateWindow() {
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    if (updateWindow.isMinimized()) updateWindow.restore();
+    updateWindow.show();
+    updateWindow.focus();
+    return updateWindow;
+  }
+  updateWindow = new BrowserWindow({
+    width: 520,
+    height: 400,
+    useContentSize: true,
+    resizable: false,
+    title: '软件更新',
+    backgroundColor: '#1f2024',
+    minimizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'lib', 'update-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  const window = updateWindow;
+  window.__compact = false;
+  const compact = ['checking', 'latest', 'error', 'installing'].includes(getUpdater().state.phase);
+  if (compact) {
+    window.__compact = true;
+    window.setContentSize(520, 190);
+  }
+  window.once('ready-to-show', () => window.show());
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.on('closed', () => {
+    if (updateWindow === window) updateWindow = null;
+    const controller = getUpdater();
+    if (['latest', 'error'].includes(controller.state.phase)) controller.setState({ phase: 'idle' });
+  });
+  window.loadFile(path.join(__dirname, 'src', 'update.html'));
+  return window;
+}
+
+function closeUpdateWindow() {
+  if (updateWindow && !updateWindow.isDestroyed()) updateWindow.close();
+}
+
+async function checkForUpdates({ manual = false } = {}) {
+  if (identity.profile) return null;
+  const controller = getUpdater();
+  if (manual) showUpdateWindow();
+  const state = await controller.check({ manual });
+  if (!manual && ['available', 'ready'].includes(state.phase)) showUpdateWindow();
+  return state;
+}
+
+async function startUpdateSchedule() {
+  if (identity.profile) return;
+  const controller = getUpdater();
+  await controller.loadSettings();
+  await controller.cleanupLeftovers();
+  const tick = () => {
+    if (controller.state.phase !== 'idle' || !controller.dueForAutoCheck()) return;
+    checkForUpdates().catch(error => logFault('update', '自动检查更新失败', error));
+  };
+  setTimeout(tick, 15000).unref?.();
+  setInterval(tick, 60 * 60 * 1000).unref?.();
+}
+
+function setupUpdateIPC() {
+  const fromUpdateWindow = event => updateWindow && !updateWindow.isDestroyed() && event.sender === updateWindow.webContents;
+  ipcMain.handle('updater:get-state', event => (fromUpdateWindow(event) ? getUpdater().snapshot() : null));
+  ipcMain.handle('updater:action', async (event, { action, value } = {}) => {
+    if (!fromUpdateWindow(event)) return null;
+    const controller = getUpdater();
+    switch (action) {
+      case 'check': return checkForUpdates({ manual: true });
+      case 'download': {
+        const state = await controller.downloadAndPrepare();
+        if (state.phase === 'ready') showUpdateWindow();
+        return state;
+      }
+      case 'cancel': controller.cancelDownload(); return null;
+      case 'skip': await controller.skip(); closeUpdateWindow(); return null;
+      case 'later':
+        controller.requestInstall({ relaunch: false });
+        closeUpdateWindow();
+        return null;
+      case 'install':
+        if (controller.requestInstall({ relaunch: true })) app.quit();
+        return null;
+      case 'open-page': {
+        const url = String(controller.state.releaseURL || '');
+        if (/^https:\/\/github\.com\//.test(url)) await shell.openExternal(url);
+        return null;
+      }
+      case 'auto-check': await controller.setAutoCheck(Boolean(value)); return null;
+      case 'close': closeUpdateWindow(); return null;
+      default: return null;
+    }
+  });
 }
 
 async function resolveMediaURL(kind, id) {
@@ -1672,6 +1810,7 @@ function setupIPC() {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (window && !window.isDestroyed()) window.__closePromptPending = false;
     quitting = false;
+    updater?.quitCancelled();
   });
   handleRPC('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
     const requestedName = normalizeEagleFolderName(name);
@@ -2293,6 +2432,11 @@ if (!gotLock) {
     quitting = true;
   });
   app.on('will-quit', () => {
+    try {
+      updater?.runPendingInstall();
+    } catch (error) {
+      logFault('update', '无法启动更新安装', error);
+    }
     clearTimeout(supplementalHydrationRetry);
     webServer?.stop().catch(() => {});
   });
@@ -2307,11 +2451,13 @@ if (!gotLock) {
     });
     setupMenu();
     setupIPC();
+    setupUpdateIPC();
     await getTextPluginBridge().start().catch(error => logFault('text-bridge', 'TXT 后台连接启动失败；草稿仍可保留', error));
     await installProtocol();
     createWindow(null);
     hub.startPolling();
     applyWebAccess().catch(error => logFault('web', `Web 访问初始化失败：${error.message}`, error));
+    startUpdateSchedule().catch(error => logFault('update', '更新检查初始化失败', error));
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

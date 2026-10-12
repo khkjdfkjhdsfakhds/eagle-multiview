@@ -4,6 +4,11 @@ All notable public changes to Eagle MultiView are recorded here.
 
 ## Unreleased
 
+### Software updates
+
+- Mac: "Eagle MultiView → Check for Updates…" plus a once-a-day background check against the latest GitHub release. A new version shows its release notes with Download and Install / Remind Me Later / Skip This Version. The DMG is downloaded in the app with progress and cancel, checked against the release's `SHA256SUMS.txt`, its app bundle is verified (identity, version, code signature), and the app is replaced in place and relaunched — or installed silently on the next quit with "Later". Unsaved TXT prompts still run before quitting. Builds that cannot replace themselves (development runs, an unwritable install location) link to the download page instead.
+- Android: "Check for updates" on the connection screen plus a once-a-day background check. The APK is downloaded, checked against `SHA256SUMS.txt` and handed to the system installer; the first time, Android asks to allow installs from Eagle MultiView and the install continues on return.
+
 ### Android app and touch
 
 - Touch selection works like a click: a tap selects (replacing the selection), a tap on the selected item opens the preview and a tap on a selected folder card enters it. Long-press adds an item to the selection, or opens the menu when nothing is selected or on a selected item. Tapping blank space clears the selection.

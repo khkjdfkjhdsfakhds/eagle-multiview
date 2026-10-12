@@ -62,6 +62,8 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 
 安装：从 Release 下载 `Eagle-MultiView-1.8.1-android.apk`，在手机上打开安装（需要允许当前来源安装应用）。打开后输入 Mac 上“Web 访问”窗口显示的地址（例如 `http://192.168.1.20:41600`），再输入访问密钥。需要换到另一台 Mac 时，在连接失败页或登录页点“更换主机”。
 
+以后的版本可在 App 内更新：连接页底部有“检查更新”，App 每天也会自动检查一次；下载的安装包会先用 Release 中的 `SHA256SUMS.txt` 校验，再交给系统安装程序（第一次需要允许 Eagle MultiView 安装应用）。
+
 当前 APK 使用开发（debug）签名，适合个人侧载使用；以后改为正式签名时，需要先卸载旧版再安装。源码和外壳约定见 [android/README.md](android/README.md)。
 
 ## 适合做什么
@@ -114,6 +116,8 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 5. 如需编辑并保存 TXT 正文，按[后台保存插件说明](eagle-plugin/text-save-service/README.md)加载 App 随附的 Eagle 插件。普通浏览不需要该插件。
 
 当前版本使用临时本机签名，尚未经过 Apple 公证。macOS 首次拦截时，请在 Finder 中右键 Eagle MultiView 并选择“打开”；不需要关闭 Gatekeeper 或修改系统安全策略。
+
+**更新**：从带有“检查更新”的版本起，菜单“Eagle MultiView → 检查更新…”可随时检查，App 每天也会自动检查一次（更新窗口里可关闭）。发现新版本时可以跳过、稍后提醒或“下载并安装”：安装包在 App 内下载并用 `SHA256SUMS.txt` 校验，再核对 App 标识、版本和签名，然后自动替换“应用程序”中的 Eagle MultiView 并重新打开；选“稍后”则在下次退出时安装。有未保存的 TXT 时会先照常提示。
 
 ## 基本操作
 
@@ -187,6 +191,8 @@ pnpm dist:mac
 ## 发布记录
 
 完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+App 内更新读取 GitHub 上最新的正式 Release（不含 Draft 和 Prerelease），发布时需要：标签为 `v<版本>`；附带 `Eagle-MultiView-<版本>-arm64.dmg`、`Eagle-MultiView-<版本>-android.apk`，以及包含这两个文件 SHA-256 的 `SHA256SUMS.txt`；DMG 里只放一个 App，`CFBundleShortVersionString` 与标签版本一致；Android 每次发布都要提高 `versionCode` 并沿用同一签名，否则系统会拒绝覆盖安装。
 
 ## 许可与第三方内容
 

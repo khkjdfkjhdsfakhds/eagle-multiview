@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: ShellWebView
 
     private val savedHostStore by lazy { SharedPreferencesSavedHostStore(this) }
+    private val appUpdates by lazy { AppUpdateController(this) }
     private val connectionCoordinator by lazy {
         HostConnectionCoordinator(SharedPreferencesRecentHostStore(this)) {
             savedHostStore.takeIf { it.enabled }?.read()?.origins
@@ -133,6 +134,7 @@ class MainActivity : AppCompatActivity() {
         applySystemInsets()
         configureWebView()
         bindHostEntryActions()
+        bindAppUpdates()
         bindSavedHosts()
         bindBrowserActions()
         bindSystemBack()
@@ -266,6 +268,18 @@ class MainActivity : AppCompatActivity() {
                 HostInputSubmit.IGNORE -> false
             }
         }
+    }
+
+    private fun bindAppUpdates() {
+        findViewById<TextView>(R.id.appVersionText).text = getString(R.string.app_version, BuildConfig.VERSION_NAME)
+        findViewById<Button>(R.id.checkUpdateButton).setOnClickListener { appUpdates.checkNow() }
+        // Let the first page load settle before the once-a-day background check.
+        mainHandler.postDelayed({ appUpdates.autoCheck() }, AUTO_UPDATE_CHECK_DELAY_MS)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        appUpdates.resume()
     }
 
     private fun bindBrowserActions() {
@@ -1217,6 +1231,7 @@ class MainActivity : AppCompatActivity() {
         }
         networkCallback = null
         mainHandler.removeCallbacksAndMessages(null)
+        appUpdates.shutdown()
         fileChooserCoordinator.cancel()
         webView.stopLoading()
         webView.setDownloadListener(null)
@@ -1362,6 +1377,7 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val BACK_REQUEST_TIMEOUT_MS = 1_500L
+        const val AUTO_UPDATE_CHECK_DELAY_MS = 3_000L
         const val USER_AGENT_TOKEN = "EagleMultiViewAndroid"
         const val KEY_RECREATED_MODE = "recreated_mode"
         const val KEY_HOST_INPUT = "host_input"
