@@ -2,7 +2,7 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
-## Unreleased
+## 1.8.2 - 2026-10-12
 
 ### Software updates
 
@@ -27,6 +27,7 @@ All notable public changes to Eagle MultiView are recorded here.
 ### Desktop and web
 
 - "Open file location" finds the item anywhere in the first 3,000 of the view and selects it, instead of giving up silently after a few pages; a deeper or missing item gets a message.
+- Sidebar rows, counts, card names and inspector text match Eagle 4.0's sizes, weights and colours; folder counts follow Eagle (a collapsed folder counts its subtree, an expanded one only itself).
 - A sort applied with "Include subfolders" now sticks to every subfolder, including ones created later, instead of being pushed out on large libraries; setting such a folder back to Eagle's order also resets its subfolders.
 
 ## 1.8.1 - 2026-10-08

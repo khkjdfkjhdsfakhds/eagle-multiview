@@ -6,8 +6,8 @@ Eagle MultiView 使用说明
 3. 从“文件”菜单或按 Command-Option-N 新建独立窗口。
 4. 每个窗口还可以选择单栏、双栏、三栏或四栏布局；每个视图可以分别停留在不同文件夹、搜索或筛选结果。
 
-当前版本：1.8.1。桌面版仅提供 macOS Apple silicon，停止 Windows 桌面构建和维护；手机和平板另有 Android App。
-完整功能与公开演示截图见 README.md，本版更新见 docs/release-notes-v1.8.1.md。
+当前版本：1.8.2。桌面版仅提供 macOS Apple silicon，停止 Windows 桌面构建和维护；手机和平板另有 Android App。
+完整功能与公开演示截图见 README.md，本版更新见 docs/release-notes-v1.8.2.md。
 
 网页与手机连接
 1. Mac 上保持 Eagle 与 MultiView 运行。
@@ -17,7 +17,7 @@ Eagle MultiView 使用说明
 5. 内置服务使用 HTTP，仅用于可信网络，不要直接映射到公网。主机睡眠或退出后远端连接中断。
 
 Android App（1.8.1 起）
-1. 在手机或平板上安装 Release 中的 Eagle-MultiView-1.8.1-android.apk（Android 8.0 及以上）。
+1. 在手机或平板上安装 Release 中的 Eagle-MultiView-<版本>-android.apk（Android 8.0 及以上）。
 2. 打开后输入 Mac 上“Web 访问”窗口显示的地址，例如 http://192.168.1.20:41600，再输入访问密钥。
 3. 系统返回键和边缘手势按网页层级逐步返回：菜单、弹窗、预览、选择栏、浏览历史，最后才退出 App。
 4. 外接键盘：Mac 上的 Command 快捷键在 Android 上用 Ctrl，例如 Ctrl-1 至 Ctrl-4 切换分栏、Ctrl-F 搜索、Ctrl-Z 撤销删除；Esc 离开输入框、关闭弹窗和预览、清除选择。
@@ -29,6 +29,13 @@ Android App（1.8.1 起）
 检查更新（Mac）
 - 菜单“Eagle MultiView → 检查更新…”，或等待每天一次的自动检查（更新窗口里可关闭自动检查）。
 - 发现新版本可选“跳过此版本”“稍后提醒”或“下载并安装”；下载校验完成后点“立即重启并更新”，或选“稍后”在下次退出时安装。
+
+1.8.2 更新
+- 检查更新：Mac 和 Android App 都能在 App 内检查、下载（SHA-256 校验）并安装新版本，见上文。
+- 触屏选择与点击一致；修复平板第二次长按后页面卡死；短暂断网不再重新加载页面。
+- Android 可选“记住访问地址”，当前地址连不上时自动换用其他已保存的地址。
+- “打开文件所在的位置”可定位前 3,000 个素材；“包含子文件夹”的排序在大资料库中稳定生效。
+- 侧边栏、卡片和详情面板的字号与颜色对齐 Eagle 4.0。
 
 1.8.1 其他更新
 - Control-Z / Command-Z 撤销最近一次移入废纸篓（浏览器和 Android App 同样可用；输入框内仍是文字撤销）。
