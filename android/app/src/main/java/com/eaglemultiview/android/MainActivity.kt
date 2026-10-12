@@ -33,7 +33,9 @@ import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.AutoCompleteTextView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -44,6 +46,7 @@ import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -53,7 +56,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 class MainActivity : AppCompatActivity() {
     private lateinit var hostPanel: LinearLayout
     private lateinit var browserContainer: LinearLayout
-    private lateinit var hostInput: EditText
+    private lateinit var hostInput: AutoCompleteTextView
+    private lateinit var rememberHostsCheck: CheckBox
+    private lateinit var savedHostAdapter: SavedHostAdapter
     private lateinit var hostErrorText: TextView
     private lateinit var connectButton: Button
     private lateinit var retryButton: Button
@@ -68,9 +73,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stateMessage: TextView
     private lateinit var webView: ShellWebView
 
+    private val savedHostStore by lazy { SharedPreferencesSavedHostStore(this) }
     private val connectionCoordinator by lazy {
-        HostConnectionCoordinator(SharedPreferencesRecentHostStore(this))
+        HostConnectionCoordinator(SharedPreferencesRecentHostStore(this)) {
+            savedHostStore.takeIf { it.enabled }?.read()?.origins
+        }
     }
+    /** Addresses tried in the current failover chain; a user connect/retry or a loaded page resets it. */
+    private val failoverTried = mutableSetOf<String>()
+    private var failoverToken = 0L
+    private var rememberToggleSuppressed = false
     private val backRequestCoordinator = BackRequestCoordinator()
     private val recoveryCoordinator = HostRecoveryCoordinator()
     private val healthProbeRunner = SessionHealthProbeRunner()
@@ -103,6 +115,7 @@ class MainActivity : AppCompatActivity() {
         hostPanel = findViewById(R.id.hostPanel)
         browserContainer = findViewById(R.id.browserContainer)
         hostInput = findViewById(R.id.hostInput)
+        rememberHostsCheck = findViewById(R.id.rememberHostsCheck)
         hostErrorText = findViewById(R.id.hostErrorText)
         connectButton = findViewById(R.id.connectButton)
         retryButton = findViewById(R.id.retryButton)
@@ -120,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         applySystemInsets()
         configureWebView()
         bindHostEntryActions()
+        bindSavedHosts()
         bindBrowserActions()
         bindSystemBack()
         registerNetworkMonitoring()
@@ -133,7 +147,7 @@ class MainActivity : AppCompatActivity() {
             ?.getInt(KEY_FAILURE_HTTP_STATUS)
         when (recreatedMode) {
             MODE_HOST_ENTRY -> {
-                hostInput.setText(savedInstanceState.getString(KEY_HOST_INPUT).orEmpty())
+                setHostInputText(savedInstanceState.getString(KEY_HOST_INPUT).orEmpty())
                 showHostEntry()
                 if (recreateNeedsTrustClear) {
                     clearWebViewTrust {
@@ -148,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                 if (activeHost == null) {
                     showHostEntry()
                 } else {
-                    hostInput.setText(activeHost.startUrl)
+                    setHostInputText(activeHost.startUrl)
                     connectionCoordinator.beginConnection(activeHost)
                     val session = recoveryCoordinator.activate(activeHost, networkAvailable)
                     activeHostSession = session
@@ -172,7 +186,7 @@ class MainActivity : AppCompatActivity() {
                 if (restoredHost == null) {
                     showHostEntry()
                 } else {
-                    hostInput.setText(restoredHost.startUrl)
+                    setHostInputText(restoredHost.startUrl)
                     val session = recoveryCoordinator.activate(restoredHost, networkAvailable)
                     activeHostSession = session
                     startEndpoint(session, clearSiteData = false)
@@ -234,7 +248,7 @@ class MainActivity : AppCompatActivity() {
             if (pasted.isEmpty()) {
                 Toast.makeText(this, R.string.clipboard_empty, Toast.LENGTH_SHORT).show()
             } else {
-                hostInput.setText(pasted)
+                setHostInputText(pasted)
                 hostInput.setSelection(pasted.length)
             }
         }
@@ -510,13 +524,14 @@ class MainActivity : AppCompatActivity() {
             }
             is HostInputResult.Valid -> {
                 clearHostInputError()
-                hostInput.setText(result.endpoint.startUrl)
+                setHostInputText(result.endpoint.startUrl)
                 hostInput.setSelection(hostInput.length())
                 // The field is about to be hidden; its keyboard would otherwise stay up over the
                 // page, attached to the WebView once that takes focus.
                 hostInput.clearFocus()
                 WindowCompat.getInsetsController(window, hostInput).hide(WindowInsetsCompat.Type.ime())
                 invalidateTrustedPage()
+                resetFailover()
                 val clearSiteData = connectionCoordinator.beginConnection(result.endpoint)
                 val session = recoveryCoordinator.activate(result.endpoint, networkAvailable)
                 activeHostSession = session
@@ -561,6 +576,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterHostEntryAndClearTrust() {
         invalidateTrustedPage()
+        resetFailover()
         recoveryCoordinator.deactivate()
         activeHostSession = null
         activeHostNavigationAttempt = null
@@ -608,6 +624,239 @@ class MainActivity : AppCompatActivity() {
         stateChangeHostButton.isEnabled = enabled
         authRetryButton.isEnabled = enabled
         authChangeHostButton.isEnabled = enabled
+    }
+
+    /** Programmatic text must not pop the saved-address list up over the page. */
+    private fun setHostInputText(text: String) {
+        hostInput.setText(text, false)
+    }
+
+    private fun bindSavedHosts() {
+        savedHostAdapter = SavedHostAdapter(this, ::toggleSavedHostPin, ::removeSavedHost)
+        rememberHostsCheck.isChecked = savedHostStore.enabled
+        applyRememberHosts()
+        rememberHostsCheck.setOnCheckedChangeListener { _, checked ->
+            if (rememberToggleSuppressed) return@setOnCheckedChangeListener
+            if (checked) {
+                savedHostStore.setEnabled(true)
+                // Start the list from what is already known: the last host that connected.
+                SharedPreferencesRecentHostStore(this).read()?.let { recent ->
+                    savedHostStore.write(savedHostStore.read().recordConnected(recent, System.currentTimeMillis()))
+                }
+                applyRememberHosts()
+            } else {
+                confirmDisableRememberHosts()
+            }
+        }
+        hostInput.setOnClickListener { showSavedHostsDropDown() }
+        hostInput.setOnFocusChangeListener { _, hasFocus -> if (hasFocus) showSavedHostsDropDown() }
+        hostInput.setOnItemClickListener { _, _, _, _ ->
+            clearHostInputError()
+            hostInput.setSelection(hostInput.length())
+        }
+    }
+
+    private fun setRememberChecked(checked: Boolean) {
+        rememberToggleSuppressed = true
+        rememberHostsCheck.isChecked = checked
+        rememberToggleSuppressed = false
+    }
+
+    private fun confirmDisableRememberHosts() {
+        val count = savedHostStore.read().entries.size
+        if (count == 0) {
+            disableRememberHosts()
+            return
+        }
+        // Keep the box ticked until the deletion is confirmed.
+        setRememberChecked(true)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.remember_hosts_disable_title)
+            .setMessage(getString(R.string.remember_hosts_disable_message, count))
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.remember_hosts_disable_confirm) { _, _ ->
+                setRememberChecked(false)
+                disableRememberHosts()
+            }
+            .show()
+    }
+
+    /** Forgets the list and every login kept for it; the old one-host-at-a-time rule applies again. */
+    private fun disableRememberHosts() {
+        savedHostStore.setEnabled(false)
+        applyRememberHosts()
+        if (connectionCoordinator.activeEndpoint == null && !trustClearInProgress) {
+            clearWebViewTrust { webView.visibility = View.VISIBLE }
+        }
+    }
+
+    private fun applyRememberHosts() {
+        if (savedHostStore.enabled) {
+            savedHostAdapter.submit(savedHostStore.read())
+            hostInput.setAdapter(savedHostAdapter)
+        } else {
+            hostInput.dismissDropDown()
+            hostInput.setAdapter<SavedHostAdapter>(null)
+        }
+    }
+
+    private fun showSavedHostsDropDown() {
+        if (!savedHostStore.enabled || hostPanel.visibility != View.VISIBLE) return
+        hostInput.post {
+            if (isDestroyed || !hostInput.hasFocus() || hostPanel.visibility != View.VISIBLE) return@post
+            savedHostAdapter.filter.filter(hostInput.text) { count ->
+                if (count > 0 && hostInput.hasFocus()) hostInput.showDropDown()
+            }
+        }
+    }
+
+    private fun updateSavedHosts(book: SavedHostBook) {
+        savedHostStore.write(book)
+        savedHostAdapter.submit(book)
+        if (book.entries.isEmpty()) hostInput.dismissDropDown()
+    }
+
+    private fun rememberConnectedHost(endpoint: HostEndpoint) {
+        if (!savedHostStore.enabled) return
+        updateSavedHosts(savedHostStore.read().recordConnected(endpoint, System.currentTimeMillis()))
+    }
+
+    private fun toggleSavedHostPin(entry: SavedHost) {
+        val book = savedHostStore.read()
+        if (entry.pinned) {
+            updateSavedHosts(book.unpin(entry.endpoint.startUrl, System.currentTimeMillis()))
+            return
+        }
+        hostInput.dismissDropDown()
+        val nameInput = EditText(this).apply {
+            hint = getString(R.string.saved_host_name_hint)
+            setSingleLine()
+            setText(entry.name.orEmpty())
+        }
+        val padding = resources.getDimensionPixelSize(R.dimen.panel_padding)
+        val container = FrameLayout(this).apply {
+            setPadding(padding, padding / 2, padding, 0)
+            addView(nameInput)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.saved_host_name_title)
+            .setMessage(entry.endpoint.startUrl)
+            .setView(container)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.saved_host_name_confirm) { _, _ ->
+                updateSavedHosts(
+                    savedHostStore.read().pin(
+                        entry.endpoint.startUrl,
+                        nameInput.text.toString(),
+                        System.currentTimeMillis(),
+                    ),
+                )
+            }
+            .show()
+    }
+
+    private fun removeSavedHost(entry: SavedHost) {
+        val book = savedHostStore.read().remove(entry.endpoint.startUrl)
+        updateSavedHosts(book)
+        val origin = entry.endpoint.origin
+        if (origin !in book.origins && origin != connectionCoordinator.activeEndpoint?.origin) forgetSiteData(origin)
+        Toast.makeText(this, getString(R.string.saved_host_removed, entry.label), Toast.LENGTH_SHORT).show()
+    }
+
+    /** Drops one origin's cookies and storage, leaving other remembered addresses logged in. */
+    private fun forgetSiteData(origin: String) {
+        val cookies = CookieManager.getInstance()
+        cookies.getCookie(origin)
+            ?.split(';')
+            ?.map { it.substringBefore('=').trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.forEach { name -> cookies.setCookie(origin, "$name=; Max-Age=0; Path=/") }
+        cookies.flush()
+        WebStorage.getInstance().deleteOrigin(origin)
+    }
+
+    private fun resetFailover() {
+        failoverTried.clear()
+        failoverToken += 1
+    }
+
+    /**
+     * The active address is unreachable: probe the other remembered addresses in list order and
+     * move to the first one that answers as a MultiView host. Returns false when there is nothing
+     * to try, leaving the normal failure screen.
+     */
+    private fun startFailover(): Boolean {
+        val session = activeHostSession ?: return false
+        if (!savedHostStore.enabled) return false
+        failoverTried += session.endpoint.startUrl
+        val candidates = savedHostStore.read().failoverCandidates(session.endpoint, failoverTried)
+        if (candidates.isEmpty()) return false
+        failoverToken += 1
+        probeFailoverCandidate(session, candidates, 0, failoverToken)
+        return true
+    }
+
+    private fun probeFailoverCandidate(
+        session: HostSession,
+        candidates: List<HostEndpoint>,
+        index: Int,
+        token: Long,
+    ) {
+        if (index >= candidates.size) {
+            renderState(connectionCoordinator.state)
+            return
+        }
+        val candidate = candidates[index]
+        failoverTried += candidate.startUrl
+        renderFailover(session.endpoint, candidate)
+        val request = SessionHealthProbe(
+            id = -token,
+            generation = session.generation,
+            endpoint = candidate,
+            trigger = RecoveryTrigger.MANUAL_RETRY,
+        )
+        val cookie = CookieManager.getInstance().getCookie(candidate.startUrl)
+        healthProbeRunner.execute(request, cookie) { _, health, _ ->
+            mainHandler.post {
+                val stillFailing = (connectionCoordinator.state as? HostConnectionState.Failed)?.kind ==
+                    ConnectionFailureKind.UNREACHABLE
+                if (isDestroyed || token != failoverToken || !stillFailing ||
+                    !recoveryCoordinator.isCurrent(session.generation, session.endpoint)
+                ) {
+                    return@post
+                }
+                when (health) {
+                    SessionHealth.AUTHENTICATED,
+                    SessionHealth.LOGIN_REQUIRED,
+                    -> switchToFailoverHost(candidate)
+                    SessionHealth.UNREACHABLE,
+                    SessionHealth.TLS_ERROR,
+                    SessionHealth.HTTP_ERROR,
+                    -> probeFailoverCandidate(session, candidates, index + 1, token)
+                }
+            }
+        }
+    }
+
+    private fun renderFailover(from: HostEndpoint, candidate: HostEndpoint) {
+        applySystemBarColors(pageShowing = false)
+        authBanner.visibility = View.GONE
+        stateOverlay.visibility = View.VISIBLE
+        stateProgress.visibility = View.VISIBLE
+        webView.visibility = View.INVISIBLE
+        retryButton.isEnabled = false
+        stateTitle.text = getString(R.string.state_failover_title)
+        stateMessage.text = getString(R.string.state_failover_message, from.startUrl, candidate.startUrl)
+    }
+
+    private fun switchToFailoverHost(target: HostEndpoint) {
+        invalidateTrustedPage()
+        val clearSiteData = connectionCoordinator.beginConnection(target)
+        val session = recoveryCoordinator.activate(target, networkAvailable)
+        activeHostSession = session
+        setHostInputText(target.startUrl)
+        startEndpoint(session, clearSiteData)
+        Toast.makeText(this, getString(R.string.failover_switched, target.startUrl), Toast.LENGTH_SHORT).show()
     }
 
     private fun showHostEntry() {
@@ -672,7 +921,13 @@ class MainActivity : AppCompatActivity() {
                     }
                     ConnectionFailureKind.UNREACHABLE -> {
                         stateTitle.text = getString(R.string.state_unreachable_title)
-                        stateMessage.text = getString(R.string.state_unreachable_message)
+                        val othersTried = failoverTried.size - 1
+                        stateMessage.text = if (othersTried > 0) {
+                            getString(R.string.state_unreachable_message) + "\n" +
+                                getString(R.string.state_unreachable_failover_suffix, othersTried)
+                        } else {
+                            getString(R.string.state_unreachable_message)
+                        }
                     }
                     ConnectionFailureKind.HTTP_ERROR -> {
                         stateTitle.text = getString(R.string.state_http_error_title)
@@ -731,6 +986,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestRecoveryRetry() {
         val session = activeHostSession ?: return
+        resetFailover()
         handleRecoveryAction(recoveryCoordinator.manualRetry(session.generation))
     }
 
@@ -763,6 +1019,7 @@ class MainActivity : AppCompatActivity() {
             is HostRecoveryAction.ShowFailure -> {
                 invalidateTrustedPage()
                 connectionCoordinator.fail(action.kind, action.httpStatus)
+                if (action.kind == ConnectionFailureKind.UNREACHABLE && startFailover()) return
                 renderState(connectionCoordinator.state)
             }
         }
@@ -796,6 +1053,7 @@ class MainActivity : AppCompatActivity() {
         networkAvailable = available
         val session = activeHostSession ?: return
         if (available) {
+            resetFailover()
             handleRecoveryAction(recoveryCoordinator.networkAvailable(session.generation))
         } else {
             // A loaded page keeps running offline; only a page still loading needs stopping.
@@ -933,6 +1191,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * WebView writes cookies to disk lazily, so a login made seconds before the app is swiped away
+     * or killed in the background was lost. Leaving the foreground persists it.
+     */
+    override fun onStop() {
+        CookieManager.getInstance().flush()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         invalidateTrustedPage()
         recoveryCoordinator.deactivate()
@@ -1008,6 +1275,8 @@ class MainActivity : AppCompatActivity() {
             trustedPageReady = committedTrustedPage
             if (committedTrustedPage) {
                 recoveryCoordinator.pageCommitted(navigationAttempt)
+                failoverTried.clear()
+                rememberConnectedHost(endpoint)
                 renderState(connectionCoordinator.state)
                 focusWebViewIfBrowsing()
             }

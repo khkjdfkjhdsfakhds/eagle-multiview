@@ -40,4 +40,22 @@
     <string name="download_failed">无法开始下载，请重试</string>
     <string name="download_untrusted">只允许下载当前 MultiView 主机提供的文件</string>
     <string name="download_unsupported">这种下载链接无法保存到设备</string>
+    <string name="remember_hosts">记住访问地址</string>
+    <string name="remember_hosts_help">保存连接过的地址，输入时可直接选择；当前地址连接失败时会自动尝试其他已保存的地址。在已保存的地址之间切换会保留各自的登录状态。</string>
+    <string name="remember_hosts_disable_title">关闭“记住访问地址”？</string>
+    <string name="remember_hosts_disable_message">将删除 %1$d 个已保存的地址。</string>
+    <string name="remember_hosts_disable_confirm">关闭并删除</string>
+    <string name="cancel">取消</string>
+    <string name="saved_host_pin">固定</string>
+    <string name="saved_host_unpin">取消固定</string>
+    <string name="saved_host_remove">删除</string>
+    <string name="saved_host_pinned_badge">已固定</string>
+    <string name="saved_host_name_title">固定这个地址</string>
+    <string name="saved_host_name_hint">名称（可选），例如：家里 / 公司</string>
+    <string name="saved_host_name_confirm">固定</string>
+    <string name="saved_host_removed">已删除：%1$s</string>
+    <string name="state_failover_title">正在尝试其他地址</string>
+    <string name="state_failover_message">%1$s 无法连接，正在尝试：%2$s</string>
+    <string name="failover_switched">已切换到：%1$s</string>
+    <string name="state_unreachable_failover_suffix">另外 %1$d 个已保存的地址也无法连接。</string>
 </resources>
