@@ -2055,6 +2055,22 @@ async function openLibraryPopover() {
   }
 }
 
+// The Android shell has no menu bar and normally never shows its host
+// screen, so its update check and host switch live in this popover.
+function renderShellAppSection() {
+  const shellApp = window.eagleMV.shellApp;
+  $('#shellAppSection').classList.toggle('hidden', !shellApp);
+  if (shellApp) $('#shellAppTitle').textContent = `Eagle MultiView App${shellApp.version ? ` ${shellApp.version}` : ''}`;
+}
+
+function runShellAppAction(action) {
+  const shellApp = window.eagleMV.shellApp;
+  closeLibraryPopover();
+  if (!shellApp) return;
+  if (action === 'check-for-updates') shellApp.checkForUpdates();
+  else if (action === 'change-host' && confirmDiscardChanges()) shellApp.changeHost();
+}
+
 function closeLibraryPopover() {
   $('#libraryPopover').classList.add('hidden');
   $('#libraryButton').setAttribute('aria-expanded', 'false');
@@ -8125,6 +8141,11 @@ function bindEvents() {
     const row = event.target.closest('[data-library-path]');
     if (!row || row.disabled) return;
     switchToLibrary(row.dataset.libraryPath, row.dataset.libraryName);
+  });
+  renderShellAppSection();
+  $('#shellAppSection').addEventListener('click', event => {
+    const row = event.target.closest('[data-shell-action]');
+    if (row) runShellAppAction(row.dataset.shellAction);
   });
   $('#paneLayoutButton').addEventListener('click', event => {
     event.stopPropagation();

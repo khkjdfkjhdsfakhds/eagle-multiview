@@ -62,7 +62,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 
 安装：从 Release 下载 `Eagle-MultiView-<版本>-android.apk`，在手机上打开安装（需要允许当前来源安装应用）。打开后输入 Mac 上“Web 访问”窗口显示的地址（例如 `http://192.168.1.20:41600`），再输入访问密钥。需要换到另一台 Mac 时，在连接失败页或登录页点“更换主机”。
 
-以后的版本可在 App 内更新：连接页底部有“检查更新”，App 每天也会自动检查一次；下载的安装包会先用 Release 中的 `SHA256SUMS.txt` 校验，再交给系统安装程序（第一次需要允许 Eagle MultiView 安装应用）。
+以后的版本可在 App 内更新：连接页底部有“检查更新”，App 每天也会自动检查一次；连上主机后，点左上角资料库名称打开菜单，也能“检查更新…”或“更换主机…”（返回连接页）；下载的安装包会先用 Release 中的 `SHA256SUMS.txt` 校验，再交给系统安装程序（第一次需要允许 Eagle MultiView 安装应用）。
 
 当前 APK 使用开发（debug）签名，适合个人侧载使用；以后改为正式签名时，需要先卸载旧版再安装。源码和外壳约定见 [android/README.md](android/README.md)。
 

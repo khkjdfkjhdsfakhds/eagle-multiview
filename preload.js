@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('eagleMV', {
     copyPath: true,
     webAccess: true
   },
+  // Only the Android shell has an app of its own to update or re-point.
+  shellApp: null,
   mediaURL: (kind, id) => `eaglemv://${kind}/${encodeURIComponent(String(id))}`,
   connect: () => ipcRenderer.invoke('hub:connect'),
   getLibraryHistory: () => ipcRenderer.invoke('library:history'),

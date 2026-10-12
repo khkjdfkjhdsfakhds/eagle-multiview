@@ -374,6 +374,14 @@
   // The Android shell tags its WebView user agent. It has one window and no
   // popups, so window.open there would replace the page instead of opening one.
   const androidShell = /\bEagleMultiViewAndroid\//.test(globalThis.navigator?.userAgent || '');
+  // The shell's JavaScript bridge (update checks, back to its host screen).
+  // Phones have no menu bar, so these live in the page's own menus.
+  const androidBridge = androidShell ? globalThis.EagleMVAndroid : null;
+  const androidShellApp = androidBridge && typeof androidBridge.request === 'function' ? {
+    version: (() => { try { return String(androidBridge.appVersion() || ''); } catch { return ''; } })(),
+    checkForUpdates: () => androidBridge.request('check-for-updates'),
+    changeHost: () => androidBridge.request('change-host')
+  } : null;
 
   window.eagleMV = {
     platform: 'web',
@@ -392,6 +400,7 @@
       copyPath: false,
       webAccess: false
     },
+    shellApp: androidShellApp,
     mediaURL: (kind, id) => `/media/${encodeURIComponent(String(kind))}/${encodeURIComponent(String(id))}`,
     connect: () => invoke('hub:connect'),
     getLibraryHistory: () => invoke('library:history'),

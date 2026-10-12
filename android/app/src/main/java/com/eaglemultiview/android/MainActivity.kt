@@ -282,6 +282,29 @@ class MainActivity : AppCompatActivity() {
         appUpdates.resume()
     }
 
+    private fun handleShellCommand(command: ShellCommand) {
+        if (isFinishing || isDestroyed || !webViewAvailable) return
+        if (!ShellCommandPolicy.allowed(connectionCoordinator.activeEndpoint, trustedPageReady, webView.url)) return
+        when (command) {
+            ShellCommand.CHECK_FOR_UPDATES -> appUpdates.checkNow()
+            ShellCommand.CHANGE_HOST -> confirmChangeHost()
+        }
+    }
+
+    private fun confirmChangeHost() {
+        val endpoint = connectionCoordinator.activeEndpoint ?: return
+        val savedOrigins = savedHostStore.takeIf { it.enabled }?.read()?.origins
+        val clearsLogin = SiteDataPolicy.clearOnLeavingHost(endpoint.origin, savedOrigins)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.change_host_confirm_title)
+            .setMessage(if (clearsLogin) R.string.change_host_confirm_clears else R.string.change_host_confirm_keeps)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.change_host) { _, _ ->
+                if (connectionCoordinator.activeEndpoint == endpoint) enterHostEntryAndClearTrust()
+            }
+            .show()
+    }
+
     private fun bindBrowserActions() {
         stateChangeHostButton.setOnClickListener {
             enterHostEntryAndClearTrust()
@@ -331,6 +354,11 @@ class MainActivity : AppCompatActivity() {
             // guessing from the generic WebView "wv" token.
             userAgentString = "${WebSettings.getDefaultUserAgent(this@MainActivity)} $USER_AGENT_TOKEN/${BuildConfig.VERSION_NAME}"
         }
+        // Lets the page's own menus reach update checks and the host screen; see handleShellCommand.
+        webView.addJavascriptInterface(
+            ShellBridge(mainHandler, BuildConfig.VERSION_NAME, ::handleShellCommand),
+            ShellBridge.NAME,
+        )
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, false)

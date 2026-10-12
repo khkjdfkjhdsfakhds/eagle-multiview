@@ -2,6 +2,12 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## Unreleased
+
+### Android app
+
+- The library menu (tap the library name at the top of the sidebar) now has "检查更新…" and "更换主机…", so updates and switching hosts no longer need the connection screen, which the app normally skips. Changing hosts asks first and says whether the current login is kept.
+
 ## 1.8.2 - 2026-10-12
 
 ### Software updates

@@ -58,6 +58,9 @@
     <string name="state_failover_message">%1$s 无法连接，正在尝试：%2$s</string>
     <string name="failover_switched">已切换到：%1$s</string>
     <string name="state_unreachable_failover_suffix">另外 %1$d 个已保存的地址也无法连接。</string>
+    <string name="change_host_confirm_title">返回连接页？</string>
+    <string name="change_host_confirm_keeps">可以在连接页打开其他主机；这个地址已保存，切回来时仍保持登录。</string>
+    <string name="change_host_confirm_clears">可以在连接页打开其他主机。这个地址没有保存，离开后会清除它的登录状态，切回来时需要重新登录。</string>
     <string name="app_version">版本 %1$s</string>
     <string name="update_check">检查更新</string>
     <string name="update_checking">正在检查更新…</string>

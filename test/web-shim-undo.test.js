@@ -11,7 +11,7 @@ const keyboardPlatform = require('../src/keyboard-platform.js');
 
 // The web client has no application menu, so ⌘/Ctrl+Z (the desktop 编辑 → 撤销
 // accelerator) is bound by the shim itself.
-function loadShim(nav) {
+function loadShim(nav, globals = {}) {
   const keydown = [];
   const document = {
     body: { appendChild() {} },
@@ -33,6 +33,7 @@ function loadShim(nav) {
     fetch: () => new Promise(() => {}),
     setTimeout: () => 0,
     clearTimeout() {},
+    ...globals,
   }, { filename: 'web-shim.js' });
   const press = init => {
     const event = {
@@ -88,4 +89,19 @@ test('only the Android shell drops the multi-window capability', () => {
   // A phone browser can still open tabs; only the shell's WebView cannot.
   assert.equal(loadShim(ANDROID).eagleMV.capabilities.multiWindow, true);
   assert.equal(loadShim(MAC).eagleMV.capabilities.multiWindow, true);
+});
+
+test('the Android shell bridge backs shellApp; other clients have none', () => {
+  const shell = { ...ANDROID, userAgent: `${ANDROID.userAgent} EagleMultiViewAndroid/1.8.3` };
+  const requests = [];
+  const EagleMVAndroid = { appVersion: () => '1.8.3', request: command => requests.push(command) };
+  const { shellApp } = loadShim(shell, { EagleMVAndroid }).eagleMV;
+  assert.equal(shellApp.version, '1.8.3');
+  shellApp.checkForUpdates();
+  shellApp.changeHost();
+  assert.deepEqual(requests, ['check-for-updates', 'change-host']);
+  // A phone browser that happens to see a same-named global is not the shell.
+  assert.equal(loadShim(ANDROID, { EagleMVAndroid }).eagleMV.shellApp, null);
+  assert.equal(loadShim(shell).eagleMV.shellApp, null);
+  assert.equal(loadShim(MAC).eagleMV.shellApp, null);
 });
