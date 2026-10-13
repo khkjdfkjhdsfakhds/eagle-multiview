@@ -163,3 +163,26 @@
 
   原版新建同名文件夹的行为**待本机核对**，以原版为准统一。
 - **P5-09（信息，低）** 自动更新的完整性依据是同一 Release 里的 `SHA256SUMS.txt`，加上 ad-hoc 签名的 `codesign --verify`（`lib/update-service.js:131`、`331-337`），能防传输损坏，但不能防 GitHub 账户本身被盗用。这是 ad-hoc 签名下的已知取舍，不需要改，只是记录。
+
+### 分区 6：渲染进程状态与事件 bug 审查（2026-10-13）
+
+范围：`src/renderer.js` 的选择、网格渲染、检查器保存、批量操作、预览、快捷键分派、上下文菜单，以及 `src/pane-state.js`、`src/query-spec.js`。草稿与冲突保护、跨栏令牌、资料库切换防护都很扎实，XSS 转义也做到了（插值普遍经过 `escapeHTML`）。主要问题：
+
+- **P6-01（Bug，中，源码确认，待 GUI 验证）文件夹颜色字段读错。** `folderColorValue` 读的是 `folder.color`（`src/renderer.js:2622-2627`）。而主进程、原生同步脚本和测试夹具一律使用 Eagle 的 `iconColor` 字段（`lib/data-hub.js:623`、`lib/eagle-native-sync.js:71`、`test/folder-copy.test.js:47`）。因此侧栏、快速访问和文件夹卡片上的颜色圆点很可能**永远不显示**，现有测试只断言了函数文本，查不出来。
+  - 方案：读 `folder.iconColor ?? folder.color`；补一条单测，用 `iconColor: 'red'` 断言能渲染出圆点。
+- **P6-02（Bug／与原版不同，中，源码确认）⌘A 只选中已载入的素材。** `selectAllItems` 用的是 `state.items`（`src/renderer.js:2187-2194`）。分页按 160 个一页载入，大文件夹里按 ⌘A 再批量打标签或删除，只会作用于已载入的部分，界面上没有任何提示。原版 ⌘A 选中整个视图。
+  - 方案：未载入完时先补齐所有分页再全选，或者明确提示“已选 N / 共 M，继续载入全部？”。批量操作也要按真实数量提示。
+- **P6-03（Bug，中低，源码确认）Shift 连选的锚点不对。** `selectRange` 取的锚点是“视图顺序里第一个已选项”（`src/pane-state.js:336-351`），不是上次单击的项。例如先点第 20 个，Shift 点第 10 个，再 Shift 点第 30 个，结果选中的是 10–30；Finder 的惯例是 20–30（原版**待本机核对**）。
+  - 方案：每栏记录 `selectionAnchor`，普通点击和 ⌘ 点击时更新，Shift 点击以它为锚。
+- **P6-04（原版缺失，中低，源码确认）Shift+方向键不能扩展选择。** 方向键处理只调用 `moveCardFocus`，再用 `selectItem(id)` 单选（`src/renderer.js:2243-2256`、`8845-8848`），按住 Shift 也一样。方案：Shift+方向键沿用 P6-03 的锚点做区间选择。
+- **P6-05（Bug，中低，推测待验证）外部修改监视的是“前 N 个”，不是“可见的”素材。** `scheduleVisibleItemWatch` 对每栏取 `items.slice(0, 300 / 栏数)`（`src/renderer.js:1314-1323`）。四栏时每栏只监视前 75 个。用户滚到下面时，在 Eagle 原版里对这些素材的修改不会实时反映，要等手动刷新或资料库级变更。
+  - 方案：用 IntersectionObserver 或滚动位置计算出真正可见的卡片 ID 上报；`lib/data-hub.js:227` 的 300 个上限保持不变。需要本机确认 Eagle 改标签时 `library/info` 的 `modificationTime` 是否变化（如果会变，影响就小）。
+- **P6-06（性能，中，推测待验证）非追加的更新都是整网格重建。** `renderGrid` 只有在“已渲染卡片是新列表的前缀”时才增量追加，其余情况都整段重写 `innerHTML`（`src/renderer.js:2505-2520`）。检查器保存回执（`:3766`）、批量操作后的 `refresh({reset:true})`、其他窗口广播都会触发重建；非默认排序会补拉到 3000 个，手动排序时可能更多。每次都会重建全部 `<img>`、重新绑定 GIF 悬停，可能闪烁或卡顿。
+  - 方案：先在本机用 3000 项文件夹实测保存一次元数据的耗时。若明显，就改成按 `data-id` 局部替换卡片，或做虚拟列表。
+- **P6-07（Bug，低，源码确认）上下文菜单有两处空白图标。** “缩略图 › 从文件设置…”和“设为文件夹封面”用的是 `uiIcon('image')`（`src/renderer.js:5905`、`5935`），但 `uiIcon` 的路径表里没有 `image`（`:646-679`），渲染出来是空 SVG。另外“设置评分”和各星级行用的是三点 `more` 图标，语义不符。
+- **P6-08（美观，低，源码确认）非图片卡片显示“0×0”。** 卡片元信息固定写 `${width||0}×${height||0} · 大小`（`src/renderer.js:2552`），TXT、PDF、音频卡片会显示“0×0 · 2 KB”；检查器的“尺寸”（`:3140`）和移动端选择条（`:3049`）也一样。方案：没有宽高时只显示大小；音视频改显示时长（如果 item 有 `duration`）。
+- **P6-09（Bug，低，源码确认）冲突后“载入最新”没同步 `itemMap`。** 只替换了 `pane.items[index]`，没更新 `pane.itemMap`（`src/renderer.js:3668-3670`）。随后的置顶操作会从 `itemMap` 读到旧的 `pinned` 基线（`:3828`），可能误报“Eagle 置顶状态已变化”。保存回执路径（`:3722-3723`）有同样的问题。
+- **P6-10（代码整洁，低，源码确认）**
+  - `state` 字面量里 `availableTags`、`tagColors`、`recentFolders`、`tagGroups`、`localPins`、`dragDepth`、`draggingItemIds` 各声明了两次（`src/renderer.js:159-240`），后一个覆盖前一个。
+  - 每个分栏的 `paneMarkup` 都生成同样的 `id`（`#breadcrumb`、`#gridScroller` 等，`:728-828`），多栏时文档里有重复 ID。现在靠 `$()` 的作用域规避，但 `<label for>`、aria 引用和无障碍树都会混乱。重构风险大，建议只记录，不单独动。
+- BUG-01、BUG-02 的 renderer 侧已在分区 5 合并记录（`onUndoDelete` 不判断焦点、`prompt()` 在桌面版失效）。
