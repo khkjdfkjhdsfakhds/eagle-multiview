@@ -115,3 +115,15 @@
 ## 新发现（云会话追加）
 
 <!-- 按分区追加 -->
+
+### 测试基线（2026-10-13，云会话，Linux 容器，Node 22，Electron 43.2.0）
+
+- `pnpm install` 成功。pnpm 会在后台下载 Electron 二进制，下载完成前跑测试会出现大量 `spawn ETXTBSY`。
+- 直接 `node --test --test-force-exit`：747 项，665 通过，77 失败，5 跳过。失败原因是容器以 root 运行，Electron 报 “Running as root without --no-sandbox is not supported”。
+- 云端推荐用这条命令跑基线：`ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a -s "-screen 0 1920x1080x24" node --test --test-force-exit`。结果：747 项，**724 通过，18 失败**，5 跳过，约 92 秒。
+- 剩余 18 项都判定为环境失败，不是代码回归：
+  - 13 项（metadata-viewer-controls、new-window-ui、pane-reveal、path-bar-ui、path-bar、preview-hud、preview-sync-shortcut、review-bugfixes×4、sync-panes-mobile、zoom-feedback、zoom-shortcut）：`assertCleanElectronStderr` 要求 stderr 为空，但 Linux 下 Chromium 会输出 dbus 和 GPU 报错。`test-support/electron-stderr.cjs` 只过滤了 macOS 的噪音。
+  - `web-server.test.js` 中的 ditto 用例：容器里没有 `/usr/bin/ditto`（这是 macOS 专有工具）。
+  - `android-keyboard`：断言 `apple.apple === true`，依赖 macOS 平台。
+  - `pane-layout-shortcuts`（⌘1–4）超时，`web-platform`（UW-02/04）的 `ratios.after` 为空：大概率也是平台差异，**待本机确认**在 macOS 上是否通过。
+- 可选改进（不在本次审查范围）：让 `electron-stderr.cjs` 在 Linux 上也过滤 dbus/GPU 噪音，云端基线就能更干净。
