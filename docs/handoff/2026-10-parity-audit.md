@@ -1065,7 +1065,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 5. **BUG-02 / P5-02**：桌面版 `prompt()` 不弹窗，评论和标签颜色入口失效。
    - **已修复（云会话，2026-10-13）**：新增 `askText()`（复用应用内名称对话框，支持允许留空），替换评论、视频时间点、框选坐标、编辑评论、两处标签颜色共 6 处 `prompt()`；颜色格式错误时给出提示。新增 `ask-text` 测试（禁止 `prompt(` ＋真实渲染探针）。原版标签颜色是色板交互，本次仍为文本输入，**未对齐**，待本机核对后另做。
 6. **安全一揽子**：
-   - S-01 原型污染；
+   - S-01 原型污染（**已修复**：`PinStore` 对文件夹与素材 ID 用 `safeId` 校验，`cloneFolders` 只读自有键并跳过非法 ID；新增回归测试。其他按输入做键的 store 已查：`manual-order-store` 的键受 scope 正则约束，无此问题）；
    - P5-03 + W-04 Host/Origin/Content-Type 校验；
    - W-01 / S-11 `/media` 的 CSP 与 nosniff；
    - B4-02 主窗口导航与 `window.open` 守卫，以及 IPC 发送方校验；
