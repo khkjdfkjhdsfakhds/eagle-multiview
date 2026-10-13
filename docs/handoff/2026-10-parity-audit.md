@@ -1045,8 +1045,8 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 
 - 分支：`claude/kind-lamport-48izv4`（基于 `claude/parity-audit`）。每修一项一个提交，并在下方清单该条后标注“已修复”。
 - 云端跑测：先 `pnpm install --frozen-lockfile` 与 `node node_modules/electron/install.js`，再用 `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a -s "-screen 0 1920x1080x24" node --test --test-force-exit`。基线约 19 项环境失败（Linux dbus/GPU stderr、ditto、android-keyboard、pane-layout-shortcuts、web-platform、TXT 布局），判断回归时与改动前对比失败名单。
-- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-7、P0-8、P0-9、P0-10、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
-- 下一项：P0-11（P6-01 文件夹颜色字段），然后进入 P1。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
+- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-7、P0-8、P0-9、P0-10、P0-11、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
+- P0 已全部处理（各条未做部分见条目内说明）。下一项：P1“选择与快捷键”组，从 B2-01（评分或批量操作后选择被拉回）开始，按清单顺序往下。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
 
 ## 三轮合并优先级清单（2026-10-13，云会话，取代上文第一轮清单的排序）
 
@@ -1089,6 +1089,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 10. **P7-09 + P7-10**：最小窗口下右键菜单底部的“丢到回收站”点不到，子菜单不翻转。
     - **已修复（云会话，2026-10-13）**：新增 `src/context-menu-position.js`（纯函数）；`.context-menu` 高度上限改为视口内并内部滚动，去掉 `backdrop-filter`（它会让 fixed 子菜单以菜单为定位基准）；指针模式下子菜单改为 `position: fixed`，打开和菜单滚动时由 `placeContextSubmenu` 测量定位，右侧不够就向左展开、纵向收进视口；手机底部面板模式不变。新增 `context-menu-position` 测试（含 980×640 真实渲染探针，旧代码四个子菜单均越界）。待本机核对：菜单去掉毛玻璃后的观感、第 15 步。
 11. **P6-01**：文件夹颜色读错字段。
+    - **已修复（云会话，2026-10-13）**：`folderColorValue` 读 `iconColor`（`color` 作旧名兜底）；`folder-color-lock.test.js` 新增真实渲染探针，旧代码失败。待本机核对：侧栏、快速访问、文件夹卡片的颜色圆点。
 
 **P1：行为错误或明显不一致，中等改动**
 

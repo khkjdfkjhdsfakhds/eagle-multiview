@@ -44,3 +44,17 @@ test('locked folders cannot be entered and show the API limitation', () => {
   const returnIndex = fn.indexOf('return false;', guard);
   assert.ok(returnIndex > guard && returnIndex < fn.indexOf('recordViewNavigation'), 'must bail out before touching history');
 });
+
+test('P6-01: Eagle iconColor renders a colour dot in the real sidebar', { timeout: 30000 }, async () => {
+  const { execFile } = require('node:child_process');
+  const { promisify } = require('node:util');
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/folder-color-probe.cjs')], { env, timeout: 25000 });
+  const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_FOLDER_COLOR '));
+  assert.ok(line, `missing folder colour result: ${stdout}`);
+  const result = JSON.parse(line.slice('EAGLEMV_FOLDER_COLOR '.length));
+  assert.match(result.value, /^#[0-9a-f]{6}$/);
+  assert.equal(result.hex, '#123456');
+  assert.ok(result.dot, 'the sidebar row shows a colour dot');
+});

@@ -2641,7 +2641,8 @@ function reconcileLocalFolderCount(folderId, total) {
 // presets (eagleNamedFolderColors, declared with the filter choices); unset
 // folders have no color field at all.
 function folderColorValue(folder) {
-  const raw = String(folder?.color || '').trim();
+  // Eagle stores a folder's colour as iconColor; `color` is a legacy alias.
+  const raw = String(folder?.iconColor || folder?.color || '').trim();
   if (!raw) return '';
   if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
   return eagleNamedFolderColors[raw.toLowerCase()] || '';
