@@ -469,7 +469,7 @@ test('trash deletion records an inverse operation and Control+Z restores it thro
   assert.ok(source.includes('async function undoLastTrash()'));
   assert.ok(source.includes("patch: { isDeleted: false }"));
   assert.ok(source.includes("event.key.toLowerCase() === 'z'"));
-  assert.ok(source.includes("onUndoDelete?.(() => undoLastTrash())"));
+  assert.ok(source.includes("onUndoDelete?.(() => routeUndoCommand())"));
 });
 
 test('one pane query failure stays local and offers a retry instead of disabling the app', () => {

@@ -249,6 +249,20 @@ const state = {
 const trashUndoStack = [];
 let trashMutationInFlight = 0;
 
+// 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
+// has focus, otherwise undoing the last delete. An open dialog swallows it so
+// nothing changes behind the dialog.
+function routeUndoCommand() {
+  if (isEditableElement()) {
+    document.execCommand('undo');
+    return;
+  }
+  const dialogOpen = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
+    .some(dialog => !dialog.classList.contains('hidden'));
+  if (dialogOpen) return;
+  undoLastTrash();
+}
+
 async function undoLastTrash() {
   if (trashMutationInFlight) { toast('删除操作尚未完成，请稍后再试', 2600); return; }
   const entry = trashUndoStack.at(-1);
@@ -9101,7 +9115,7 @@ function bindHubEvents() {
     window.eagleMV.confirmClose();
   });
   window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
-  window.eagleMV.onUndoDelete?.(() => undoLastTrash());
+  window.eagleMV.onUndoDelete?.(() => routeUndoCommand());
   window.eagleMV.onPinSelection(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId));
   window.eagleMV.onAddToFolder(payload => addSelectionToFolder(payload));
   window.eagleMV.onMoveToFolder(payload => moveSelectionToFolder(payload));
