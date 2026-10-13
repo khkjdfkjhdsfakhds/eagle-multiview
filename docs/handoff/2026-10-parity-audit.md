@@ -127,3 +127,39 @@
   - `android-keyboard`：断言 `apple.apple === true`，依赖 macOS 平台。
   - `pane-layout-shortcuts`（⌘1–4）超时，`web-platform`（UW-02/04）的 `ratios.after` 为空：大概率也是平台差异，**待本机确认**在 macOS 上是否通过。
 - 可选改进（不在本次审查范围）：让 `electron-stderr.cjs` 在 Linux 上也过滤 dbus/GPU 噪音，云端基线就能更干净。
+
+### 分区 5：主进程与 `lib/` 代码审查（2026-10-13）
+
+范围：`main.js` 全文，`lib/data-hub.js`、`lib/eagle-client.js`、`lib/web-server.js`、`lib/update-service.js`、`lib/export-service.js`、`lib/text-file-service.js`，以及 `src/query-spec.js`。整体质量较高：跨窗口冲突、资料库切换保护、写后回读确认都做得很细。以下是问题：
+
+- **P5-01 ＝ BUG-01 复核（Bug，高，源码确认，待 GUI 验证）** `main.js:1007` 的编辑菜单“撤销”是自定义 `click`，固定发送 `command:undo-delete`；`src/renderer.js:9070` 收到后直接执行 `undoLastTrash()`，不判断焦点。renderer 的 keydown（`src/renderer.js:8737`）只在非输入框时处理 ⌘Z，所以在输入框里按 ⌘Z 时会落到菜单项，文字撤销失效。同一菜单里“重做”仍是 `role: 'redo'`，两者不对称。
+  - 方案：菜单项改发 `command:undo`；renderer 判断 `document.activeElement` 是否可编辑，可编辑时执行 `document.execCommand('undo')`，否则执行 `undoLastTrash()`。“重做”同样处理（目前没有删除的重做栈，非编辑状态下可以灰显或不处理）。附带测试：断言菜单模板不再固定发送 undo-delete，并给 renderer 的分派函数写单测。
+- **P5-02 ＝ BUG-02 复核（Bug，高，源码确认）** Electron 不支持 `window.prompt()`，调用后直接返回 `null`、不弹窗。以下桌面版入口因此点击后**完全没有反应**：
+  - 添加评论（`src/renderer.js:3211`，视频时间点 `:3217`、框选坐标 `:3224` 也在这一流程里）；
+  - 编辑评论（`:3255`）；
+  - 右键菜单“标签颜色”（`:6165`）；
+  - 主进程菜单发来的设置标签颜色（`:9081`）。
+
+  `confirm()` 在 Electron 里可用，删除评论不受影响。
+  - 方案：复用现有的应用内模态框（`web-copy-dialog` 或 `feature-ui.js` 的对话框模式）做通用的 `askText()`，替换上面全部 `prompt`。标签颜色改用色板加 `<input type=color>`，与原版色板交互看齐（原版色板细节**待本机核对**）。
+- **P5-03（安全，中，源码确认）** Web 访问关闭“需要密钥”后（`#webAccessNoKey`，`lib/web-server.js:219`），服务器监听 `0.0.0.0`，且**不校验 Host 头和 Origin**。这时存在 DNS rebinding 风险：本机或局域网设备访问的任意恶意网页，可以把自己的域名解析到 `127.0.0.1:<端口>`，变成同源后调用 `/rpc`，执行改元数据、合并标签、丢回收站、导出原图等操作。
+  - 方案：`handleRequest` 校验 `Host` 只能是 IP 字面量、`localhost` 或 `*.local`；对 POST `/rpc`、`/upload`、`/export/prepare` 额外校验 `Origin`（如果带了）与 Host 一致。改动小，开着密钥时也无副作用。
+- **P5-04（Bug／与原版不同，中，推测待验证）** 文件菜单的“新建文件夹”是 `Alt+N`，“新建 TXT”是 `Alt+Shift+N`（`main.js:980-981`），作为全局菜单快捷键注册。macOS 上 ⌥N 是输入 `˜`/`ñ` 的死键，焦点在名称、备注、TXT 编辑器里时，按键可能被菜单截走去新建文件夹。⌘R（重命名，`main.js:1010`）也是全局注册。
+  - 原版新建文件夹、重命名的快捷键**待本机核对**。
+  - 方案：先在本机验证输入框里按 ⌥N 的表现。若被截走，有两种改法：让菜单项在编辑状态下由 renderer 判断并放行；或改成原版的组合键。
+- **P5-05（与原版不同，低，源码确认）** 补充 GUI-01 的菜单细节：
+  - “窗口”菜单只有 `minimize`/`zoom`/`front` 三个 role，没写中文 label，所以显示英文；
+  - 没有“帮助”菜单；
+  - “Web 访问…”和“打开错误日志文件夹”放在“显示”菜单下，位置不合逻辑；
+  - 应用菜单没有“偏好设置…（⌘,）”入口；
+  - “重新载入窗口”的 ⌘⇧R 属于开发者功能，暴露在普通菜单里。
+
+  方案：随 GUI-01 一起重建菜单：给 role 写中文 label；新增“帮助”菜单，收纳错误日志、使用说明、检查更新；“Web 访问”移到应用菜单或“文件 › 共享”。
+- **P5-06（Bug，低，推测待验证）** 剪贴板粘贴网址导入图片时，名称取 `path.basename(new URL(url).pathname)`（`main.js:1417`）：既没有做 URL 解码，也保留了扩展名。中文文件名的图片会以 `%E5%9B%BE.png` 这样的名称入库。方案：先 `decodeURIComponent`，再去掉扩展名（Eagle 的 name 字段不含扩展名）。
+- **P5-07（资源，低，源码确认）** 关闭 Web 访问后，即使所有桌面窗口都已关闭，`hub` 的 900ms 轮询也不会停：`applyWebAccess` 不调用 `stopPolling`，`window-all-closed` 只在当时判断一次（`main.js:805-836`、`2467-2471`）。方案：`applyWebAccess` 结束时如果 `windows.size === 0` 且服务未运行，就调用 `hub.stopPolling()`。
+- **P5-08（逻辑自洽，低，源码确认）** 命名规则前后不一致：
+  - 新建文件夹会自动去重成“未命名文件夹 2”（`main.js:1822`）；
+  - 复制文件夹却刻意保留同名（`main.js:373-376`，注释说 Eagle 允许同名）。
+
+  原版新建同名文件夹的行为**待本机核对**，以原版为准统一。
+- **P5-09（信息，低）** 自动更新的完整性依据是同一 Release 里的 `SHA256SUMS.txt`，加上 ad-hoc 签名的 `codesign --verify`（`lib/update-service.js:131`、`331-337`），能防传输损坏，但不能防 GitHub 账户本身被盗用。这是 ad-hoc 签名下的已知取舍，不需要改，只是记录。
