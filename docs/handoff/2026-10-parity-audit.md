@@ -914,3 +914,41 @@ W-05（App 内 PDF 预览）、W-09（iPhone 主屏与横屏刘海）、A-05（�
 - **E-07**：替换 T-02 为“两次运行并存，停掉 B 后 A 的自动应答仍有效”；集成测试用 deferred 控制两次 `folder:copy` 并发。
 - **H-02 / H-03**：vm 提取 `libraryChangeIsStale` 等函数，覆盖“新实例低 revision 必须应用”和 H-06 的挂起重试；改写 T-03，断言重连后发出带新快照的库变更事件。
 - **P7-09 / P7-10**：把右键菜单定位抽成纯模块（参照 `pane-layout-popover-position.js`），用 980×640 等实测数据做单测；Electron 端复用 `layout-popover-probe.cjs`，断言每个菜单和子菜单都在视口内、末项 `elementFromPoint` 命中自身。
+
+### 第三轮 · main.js 与 preload.js 逐行通读（子代理 B4，主会话已核实 B4-01 的关闭逻辑）
+
+| ID | 问题 | 类别｜级别 | 状态 | 证据 | 建议 |
+|---|---|---|---|---|---|
+| B4-01 | 渲染进程崩溃、卡死或启动早期抛错（白屏）后，窗口关不掉，⌘Q 也退不出。`close` 只在 `__allowClose` 或 `webContents.isDestroyed()` 时放行，崩溃的 webContents 并未销毁；`render-process-gone` 与 `unresponsive` 只写日志；`__closePromptPending` 永不复位。之后 `quitting` 残留为真，下次正常关任意窗口都会退出应用 | Bug｜高 | 已复现（`forcefullyCrashRenderer()` 后 `close()` 与 `app.quit()` 均无效） | `main.js:180,935-941,948`、`renderer.js:9482` | `isCrashed()` 时直接放行；请求关闭约 5 秒无回复弹原生“窗口无响应，强制关闭？”；`render-process-gone`、`did-start-loading` 时复位标志 |
+| B4-02 | 主窗口没有 `will-navigate`、`setWindowOpenHandler`、权限请求处理，IPC 不校验 `senderFrame.url`（对比更新窗口 `:1104-1105` 已限制）。实测主窗口跳到别的页面后 `window.eagleMV` 仍注入，该页可调用 `items:import`（任意路径）、`web-access:set`（开免密 Web 访问）、`shell:open-external` 等 | 安全｜中 | 导航与注入已实测；触发入口（PDF 预览 `plugins:true` 内链接，`renderer.js:4134`）推测待验证 | `main.js:910-956,1454` | 所有 webContents 拒绝非 `index.html` 导航，`window.open` 一律 deny，默认拒绝权限请求，IPC 统一校验发送方 |
+| B4-03（补充 H-13） | `approvedWindowClose` 只保持 1 秒；草稿或 TXT 未保存时 beforeunload 会拦截。主进程若恰好忙超 1 秒，关闭被静默拦下，此后 `__allowClose` 一直为真、每次关闭都直接撞 beforeunload，窗口无法关闭 | Bug｜中低 | 推测待验证 | `renderer.js:8998-9006,9065-9067`、`main.js:1801-1807` | main 处理 `will-prevent-unload` 并在已确认关闭时放行；用令牌替代 1 秒定时 |
+| B4-04 | Web 访问开关与密钥重置没有串行化：先开再立即关，磁盘为关闭但服务仍在监听（逻辑模拟复现）；启动期间重置密钥服务继续用旧密钥；并发保存共用 `${pid}.tmp`，可能写坏 `web-access.json` 并重新生成密钥 | 逻辑自洽/安全｜低 | 已复现（逻辑模拟） | `main.js:754-761,805-836,2384-2402` | 开关与保存走同一 promise 队列，写盘成功后再更新内存 |
+| B4-05（补充 S-02、S-16） | `tag-colors` 存储：JSON 损坏后永久抛错；`tag-colors:set` 不在 `HOST_ONLY_CHANNELS`、不调 `ensureLibraryPath`、参数不校验，Web 端可用任意库路径让文件无限增长；`color` 原样进 `style` 属性，存在 CSS 注入 | Bug/安全｜低 | 源码确认 | `main.js:188-229,1719-1724` | 先校验库路径；`color` 限 `#[0-9a-f]{6}`；限制 tag 长度与数量 |
+| B4-06 | macOS 下 `activate` 用 `getAllWindows().length===0`，只开更新窗口时点 Dock 不建主窗口；聚焦更新窗口或无窗口时“导入文件…”“新建文件夹”“Web 访问…”等菜单可用但无反应 | 逻辑自洽｜低 | 源码确认 | `main.js:980-1037,2462-2466` | 用主窗口集合判断；无主窗口时先建窗再派发，或灰显 |
+| B4-07（补充 H-15） | `item:set-custom-thumbnail` 接受 renderer 传入的任意 `filePath`（renderer 从不传），扩大了数据边界；`library:history` 不是宿主专属，Web 端能拿到主机资料库绝对路径 | 安全｜低 | 源码确认 | `main.js:1679-1692`、`renderer.js:3299` | 删除 `filePath` 参数；Web 端只返回库名 |
+| B4-08 | `foregroundMultiViewView` 逐窗口 `executeJavaScript` 无超时，一个窗口卡死就让 Eagle 插件“打开/跟随当前视图”请求一直挂起 | Bug｜低 | 源码确认 | `main.js:137-150` | 每窗口约 1 秒超时 |
+| B4-09 | 复制文件夹时 `startCopyImportHandling` 在 try 之外，`startDuplicateKeeper` 失败则 finally 不执行，Eagle 的复制导入模式要等 15 分钟 TTL 才恢复 | Bug｜低 | 源码确认 | `main.js:572-646` | 移进 try |
+| B4-10 | 导入结束后总以 `app.focus({steal:true})` 抢焦点，出错时也抢；长导入期间切走的用户会被拉回 | 逻辑自洽｜低 | 源码确认 | `main.js:850,2029-2033` | 仅在弹过 Eagle 重复对话框且导入前在前台时恢复，不用 `steal` |
+| B4-11 | `thumbnailCache` 无上限；`userData/temp/thumbnails` 靠 60 秒 unref 定时器清理，退出即残留、启动不清理；`document:create` 为去重分页拉取目标位置全部素材，在“未分类”下可上百次请求，且全部 ID 写进手动排序（加重 S-04） | 性能｜低 | 源码确认 | `main.js:83,1214,1565-1571,1860` | LRU；启动清理 `temp/`；按名称搜索去重 |
+
+核对无问题：单实例锁（Review 版独立 userData）、无 deep link/`open-file`、`shell:open-external` 只放行 http/https、更新窗口 IPC 校验发送方、`eaglemv` 协议与剪贴板网址限定 scheme、子窗口不继承 preload（实测）、preload 128 个方法与主进程通道一一对应。
+
+待本机验证：B4-01（活动监视器杀掉某窗口渲染进程后点关闭、按 ⌘Q）、B4-02（PDF 预览里点外部链接）、B4-03（保留草稿关闭时主进程繁忙）。
+
+### 第三轮 · renderer.js 1–2205 逐行通读（子代理 B1，主会话已核实 B1-02、B1-05）
+
+| ID | 问题 | 类别｜级别 | 状态 | 证据 | 建议 |
+|---|---|---|---|---|---|
+| B1-01 | 新建分栏固定 `sort:'default'`，不读排序记忆；排序记忆只在 `applyView` 里读，新栏不经过。单栏把 Beta 排成“名称”后切双栏，新栏打开同一 Beta 却显示“Eagle 顺序” | Bug｜中低 | 已复现 | `renderer.js:408,435-439,1169,1194-1217,4936-4940` | 对 `plan.created` 的新栏在 `withActivePane` 里调 `applyView`，或 fresh 分支按记忆取排序 |
+| B1-02（补充 P1-05） | “包含子文件夹”切换时所有栏的 `pane.sortCascade` 都改了，但只刷新活动栏的复选框；排序弹层打开和激活分栏都不刷新。B 栏看到“未勾选”实际为真，此时改排序会经 `rememberCascade` 改写 B 所在整棵子树的排序。另一窗口切换时同样 | Bug｜中低 | 已复现 | `renderer.js:94-118,1583-1584,7400-7416,7482-7491` | 开关变化后对每栏刷新；打开弹层前刷新 |
+| B1-03（(b) 补充 S-05） | 右键“新建 › 新建智能文件夹…”：(a) 先打开筛选面板，同一次点击冒泡到 document 又把它关掉，toast 却让用户去面板里设条件，`aria-expanded` 留成 true（主菜单入口无此问题）；(b) 根目录无筛选时直接弹“保存为智能文件夹”，保存的条件等于“未分类”；在普通文件夹里则直接保存“该文件夹”条件——“新建”变成了“另存当前视图” | Bug/逻辑自洽｜中低 | 已复现 | `renderer.js:1955-1970,5537,8116-8119,8247-8272`、`smart-folder.js:49` | 菜单行点击 `stopPropagation` 或延后打开；无筛选时不走另存（原版是否打开空白条件编辑器，待本机核对） |
+| B1-04 | 重启后活动分栏与第 2 栏以后的布局方式丢失：启动时第 2 栏起都按 fresh 创建，固定 `justified`；活动栏按 id 匹配，但 id 重启后重新编号，视图本身按下标恢复 | Bug｜低中 | 已复现 | `renderer.js:412,1115,1140-1141,9501` | `viewMode` 写进会话状态按下标恢复；活动栏存 `activeIndex` |
+| B1-05 | “添加日期”结束时间用当天 0 点 + 86399999，夏令时切换日算错：回拨日漏掉最后一小时，拨快日回显成后一天。中国大陆不受影响 | Bug｜低 | 已复现（node，美东时区） | `renderer.js:1732-1745` | 结束改为 `new Date(y, m, d + 1).getTime() - 1` |
+| B1-06（补充 BUG-02、P5-02） | 标签颜色输入不是 `#RRGGBB` 时静默返回，Web 端输入 `#fff`、`red` 没有任何提示 | 逻辑自洽｜低 | 源码确认 | `renderer.js:1997` | 改色板或 `<input type=color>`，校验失败给提示 |
+| B1-07 | 标签颜色管理只列前 200 个标签，无搜索；未设色默认显示 `#0072ef`，与蓝色无法区分，想设成恰好该色时 change 不触发 | 美观/逻辑自洽｜低 | 源码确认 | `renderer.js:1924-1927` | 加搜索，未设色显示空色块并提供“清除颜色”，随 GUI-08 重做 |
+| B1-08 | “最近使用”视图跳过文件夹名称过滤，搜索不起作用，与根目录和普通文件夹不一致 | 逻辑自洽｜低 | 源码确认 | `renderer.js:1636,1641-1642,2801` | recent 分支走同一过滤 |
+| B1-09 | 排序相关处理忽略 `activatePane` 返回值；检查器有改动且未连接时用户在 confirm 点取消，B 栏排序改动会写进仍为活动的 A 栏 | Bug｜低 | 源码确认（条件少见） | `renderer.js:619,1667-1668,7402,7420,7438,7459,7475` | 统一 `if (!activatePane(paneId)) return;` |
+
+文案（低，并入 GUI-07 / F-15）：回收站与“最近使用”为空时仍提示“调整筛选条件或导入”（`:800-801,2486-2487`）；`renderSortControls` 把排序按钮提示改成拖动说明，在回收站、随机、标签视图里不成立（`:1565`）；`formatBytes` 在 1023.95 KB 显示“1024 KB”且无 TB（`:1391-1396`）。
+
+查过排除：触控长按 pointerup、撤销后选中失败项、叠栏分隔条下标映射、`broadcastPaneAction` 与异步预览、智能文件夹右键入口的错误处理。
