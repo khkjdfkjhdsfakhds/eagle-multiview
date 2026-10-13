@@ -720,7 +720,10 @@ function broadcast(channel, payload) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
   // Web clients are additional "windows": every hub broadcast fans out to the
-  // /events WebSocket so browsers stay in the same live-sync loop.
+  // /events WebSocket so browsers stay in the same live-sync loop. Native drag
+  // sessions are desktop-only; browsers track their own HTML5 drags, and their
+  // tokens would collide with these.
+  if (channel === 'item:drag-state') return;
   webServer?.broadcast(channel, payload);
 }
 
@@ -2237,6 +2240,9 @@ function setupIPC() {
       active: true,
       token,
       ids: uniqueIds,
+      // The exact paths handed to startDrag let drop targets tell this
+      // session's files apart from files dragged in from Finder.
+      files,
       sourceFolderId: payload.sourceFolderId || null,
       sourcePaneId: payload.sourcePaneId || null,
       sourceWindowId: payload.sourceWindowId || null,

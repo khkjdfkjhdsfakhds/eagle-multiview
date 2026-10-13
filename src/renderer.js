@@ -38,7 +38,8 @@ const {
   readItemIds,
   isInternalItemDrag,
   classifyDrop,
-  shouldShowImportOverlay
+  shouldShowImportOverlay,
+  resolveDrop
 } = window.EagleMVDragDrop;
 const {
   exceedsThreshold: marqueeExceedsThreshold,
@@ -2732,7 +2733,8 @@ function attachFolderDragTargets() {
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
     row.addEventListener('drop', event => {
-      const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+      const drop = resolveItemDrop(event);
+      const dropKind = drop.kind;
       if (dropKind === 'unsupported') return;
       event.preventDefault();
       event.stopPropagation();
@@ -2742,17 +2744,18 @@ function attachFolderDragTargets() {
         scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId);
         return;
       }
-      const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+      const ids = drop.ids;
       if (!ids.length) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
         return;
       }
-      const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
+      const session = drop.session;
+      const libraryPath = session?.libraryPath || state.library?.path;
       const folderName = row.dataset.folderName;
-      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+      const sourceFolderId = session?.sourceFolderId || null;
       const move = Boolean(sourceFolderId && !event.altKey);
-      const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
+      const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
       scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
     });
   }
@@ -6717,6 +6720,27 @@ function activeDraggedItemIds() {
   return sharedIds?.length ? sharedIds : (state.draggingItemIds || []);
 }
 
+// Decides at drop time what was dropped. Electron never delivers dragend for
+// a native drag that ends outside the window, so drag state can outlive its
+// session; the dropped paths, not leftover ids, decide whether files from
+// Finder are imports or library items being re-filed.
+function resolveItemDrop(event) {
+  const dataTransfer = event.dataTransfer;
+  let paths = [];
+  if (dragHasType(dataTransfer, 'Files') && !dragHasType(dataTransfer, window.EagleMVDragDrop.ITEM_TYPE)) {
+    try {
+      paths = [...(dataTransfer.files || [])].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    } catch {}
+  }
+  const drop = resolveDrop(dataTransfer, {
+    sessionIds: activeDraggedItemIds(),
+    sessionFiles: state.internalDrag?.files || [],
+    libraryPaths: [state.internalDrag?.libraryPath, state.library?.path].filter(Boolean),
+    paths
+  });
+  return { ...drop, session: drop.fromSession ? state.internalDrag : null };
+}
+
 function externalDropImportables(dataTransfer) {
   const files = [...(dataTransfer?.files || [])];
   const paths = files.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
@@ -6734,19 +6758,23 @@ function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.act
   return true;
 }
 
-function clearDragUI() {
-  const token = state.internalDrag?.token || null;
+function resetDragState() {
   state.dragDepth = 0;
   state.draggingItemIds = null;
   state.dragSourcePaneId = null;
   state.internalDrag = null;
-  if (token) window.eagleMV.cancelDrag?.(token);
   for (const pane of state.panes || []) {
     pane.dragDepth = 0;
     pane.draggingItemIds = null;
   }
   for (const target of document.querySelectorAll('.drop-target')) target.classList.remove('drop-target');
   for (const overlay of document.querySelectorAll('.drop-overlay')) overlay.classList.add('hidden');
+}
+
+function clearDragUI() {
+  const token = state.internalDrag?.token || null;
+  resetDragState();
+  if (token) window.eagleMV.cancelDrag?.(token);
 }
 
 function scheduleDropTask(task) {
@@ -6885,12 +6913,12 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   }
 }
 
-function paneItemDropContext(targetPaneId, event) {
+function paneItemDropContext(targetPaneId, event, drop = resolveItemDrop(event)) {
   const targetPane = paneById(targetPaneId);
-  const internalDrag = state.internalDrag;
-  const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+  const internalDrag = drop.session;
+  const ids = drop.ids;
   if (!targetPane || !ids.length) return null;
-  let sourcePaneId = state.dragSourcePaneId || internalDrag?.sourcePaneId || null;
+  let sourcePaneId = internalDrag ? (state.dragSourcePaneId || internalDrag.sourcePaneId || null) : null;
   try { sourcePaneId = event.dataTransfer.getData('application/x-eagle-multiview-source-pane') || sourcePaneId; } catch {}
   const sourceIsThisWindow = !internalDrag?.sourceWindowId || internalDrag.sourceWindowId === state.windowId;
   const sourcePane = sourceIsThisWindow && sourcePaneId ? paneById(sourcePaneId) : null;
@@ -7354,7 +7382,8 @@ function bindPaneEvents(paneId) {
   });
   if (breadcrumb) breadcrumb.addEventListener('drop', event => {
     const target = crumbDropTarget(event);
-    const kind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    const drop = resolveItemDrop(event);
+    const kind = drop.kind;
     if (!target || kind === 'unsupported') return;
     event.preventDefault(); event.stopPropagation();
     breadcrumb.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target'));
@@ -7363,10 +7392,11 @@ function bindPaneEvents(paneId) {
       scheduleExternalFolderImport(event.dataTransfer, folderId, paneId);
       return;
     }
-    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
-    const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
+    const ids = drop.ids;
+    const session = drop.session;
+    const libraryPath = session?.libraryPath || state.library?.path;
+    const sourceFolderId = session?.sourceFolderId || null;
+    const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
     const name = target.textContent;
     const move = Boolean(sourceFolderId && !event.altKey);
     scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourcePaneId }));
@@ -7689,7 +7719,8 @@ function bindPaneEvents(paneId) {
     }
     const folder = event.target.closest('.folder-card');
     if (!folder) return;
-    const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    const drop = resolveItemDrop(event);
+    const dropKind = drop.kind;
     if (dropKind === 'unsupported') return;
     event.preventDefault();
     event.stopPropagation();
@@ -7698,17 +7729,18 @@ function bindPaneEvents(paneId) {
       scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId);
       return;
     }
-    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+    const ids = drop.ids;
     if (!ids.length) {
       toast('无法识别拖入的素材，请重新拖动', 3500);
       clearDragUI();
       return;
     }
     const target = findFolder(state.library?.folders, folder.dataset.openFolder);
-    const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    const session = drop.session;
+    const libraryPath = session?.libraryPath || state.library?.path;
+    const sourceFolderId = session?.sourceFolderId || null;
     const move = Boolean(sourceFolderId && !event.altKey);
-    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || paneId;
+    const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || paneId) : null;
     scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourcePaneId }));
   });
   const scroller = query('#gridScroller');
@@ -7804,9 +7836,9 @@ function bindPaneEvents(paneId) {
       clearDragUI();
       return;
     }
-    const fallbackIds = activeDraggedItemIds();
-    if (classifyDrop(event.dataTransfer, fallbackIds) === 'internal-items') {
-      const context = paneItemDropContext(paneId, event);
+    const drop = resolveItemDrop(event);
+    if (drop.kind === 'internal-items') {
+      const context = paneItemDropContext(paneId, event, drop);
       if (!context) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
@@ -9009,15 +9041,12 @@ function bindHubEvents() {
       state.internalDrag = payload;
       return;
     }
-    if (!state.internalDrag || payload?.token !== state.internalDrag.token) return;
-    state.internalDrag = null;
-    for (const pane of state.panes) {
-      pane.draggingItemIds = null;
-      pane.dragDepth = 0;
-    }
-    state.dragSourcePaneId = null;
-    for (const target of document.querySelectorAll('.drop-target')) target.classList.remove('drop-target');
-    for (const overlay of document.querySelectorAll('.drop-overlay')) overlay.classList.add('hidden');
+    // Only a different, known session's end is ignored. A failed native
+    // start reports no token, and the pending local drag never got one.
+    if (!state.internalDrag && !state.draggingItemIds && !state.dragSourcePaneId) return;
+    const currentToken = state.internalDrag?.token;
+    if (payload?.token && currentToken && payload.token !== currentToken) return;
+    resetDragState();
   });
   window.eagleMV.onDragFinished(result => {
     if (!result?.ok) toast(`拖动失败：${result?.message || '无法导出素材文件'}`, 4000);

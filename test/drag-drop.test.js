@@ -7,7 +7,9 @@ const {
   readItemIds,
   isInternalItemDrag,
   classifyDrop,
-  shouldShowImportOverlay
+  shouldShowImportOverlay,
+  libraryItemIdFromPath,
+  resolveDrop
 } = require('../src/drag-drop');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -25,11 +27,87 @@ test('reads unique internal item ids from the custom drag type', () => {
   assert.equal(isInternalItemDrag(dataTransfer), true);
 });
 
-test('keeps a native file drag internal when the active MultiView session supplies ids', () => {
+test('while hovering, a native file drag is treated as internal only when a session supplies ids', () => {
   const dataTransfer = transfer(['Files']);
   assert.deepEqual(readItemIds(dataTransfer, ['A']), ['A']);
   assert.equal(isInternalItemDrag(dataTransfer, ['A']), true);
   assert.equal(shouldShowImportOverlay(dataTransfer, ['A']), false);
+  // Text and URL drags never borrow session ids.
+  assert.equal(classifyDrop(transfer(['text/uri-list']), ['A']), 'unsupported');
+});
+
+const LIBRARY = '/Users/u/Pictures/Main.library';
+
+test('on drop, Finder files are imports even when a stale drag session still holds ids', () => {
+  const drop = resolveDrop(transfer(['Files']), {
+    sessionIds: ['A'],
+    sessionFiles: [`${LIBRARY}/images/A.info/a.png`],
+    libraryPaths: [LIBRARY],
+    paths: ['/Users/u/Desktop/photo.png']
+  });
+  assert.deepEqual(drop, { kind: 'external-files', ids: [], fromSession: false });
+  // A mix of session and outside files is not a re-file either.
+  assert.equal(resolveDrop(transfer(['Files']), {
+    sessionIds: ['A'],
+    sessionFiles: [`${LIBRARY}/images/A.info/a.png`],
+    libraryPaths: [LIBRARY],
+    paths: [`${LIBRARY}/images/A.info/a.png`, '/Users/u/Desktop/photo.png']
+  }).kind, 'external-files');
+  // Without readable paths there is nothing to prove the files are items.
+  assert.equal(resolveDrop(transfer(['Files']), { sessionIds: ['A'], libraryPaths: [LIBRARY] }).kind, 'external-files');
+});
+
+test('on drop, the session files re-file every session item, including ones without a file', () => {
+  const drop = resolveDrop(transfer(['Files']), {
+    sessionIds: ['A', 'B', 'A'],
+    sessionFiles: [`${LIBRARY}/images/A.info/a.png`],
+    libraryPaths: [LIBRARY],
+    paths: [`${LIBRARY}/images/A.info/a.png`]
+  });
+  assert.deepEqual(drop, { kind: 'internal-items', ids: ['A', 'B'], fromSession: true });
+});
+
+test('on drop, library originals outside the session are re-filed without the session context', () => {
+  const drop = resolveDrop(transfer(['Files']), {
+    sessionIds: ['A'],
+    sessionFiles: [`${LIBRARY}/images/A.info/a.png`],
+    libraryPaths: [LIBRARY],
+    paths: [`${LIBRARY}/images/C.info/c.png`]
+  });
+  assert.deepEqual(drop, { kind: 'internal-items', ids: ['C'], fromSession: false });
+  // The same originals with no session at all still never import duplicates.
+  assert.deepEqual(resolveDrop(transfer(['Files']), {
+    libraryPaths: [LIBRARY],
+    paths: [`${LIBRARY}/images/C.info/c.png`]
+  }), { kind: 'internal-items', ids: ['C'], fromSession: false });
+});
+
+test('on drop, HTML5 item data and synthetic in-page drags keep their session', () => {
+  assert.deepEqual(resolveDrop(transfer([ITEM_TYPE], { [ITEM_TYPE]: '["A"]' }), { sessionIds: ['Z'] }),
+    { kind: 'internal-items', ids: ['A'], fromSession: true });
+  assert.deepEqual(resolveDrop(transfer([]), { sessionIds: ['A'] }),
+    { kind: 'internal-items', ids: ['A'], fromSession: true });
+  assert.equal(resolveDrop(transfer([])).kind, 'unsupported');
+  assert.equal(resolveDrop(transfer(['text/plain']), { sessionIds: ['A'] }).kind, 'unsupported');
+});
+
+test('library item ids come only from <library>/images/<id>.info/<file>', () => {
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}/images/KX12.info/name.jpg`, LIBRARY), 'KX12');
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}/images/KX12.info/name.jpg`, `${LIBRARY}/`), 'KX12');
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}/images/KX12.info/sub/name.jpg`, LIBRARY), null);
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}/images/KX12/name.jpg`, LIBRARY), null);
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}-copy/images/KX12.info/name.jpg`, LIBRARY), null);
+  assert.equal(libraryItemIdFromPath('/Users/u/Desktop/name.jpg', LIBRARY), null);
+  assert.equal(libraryItemIdFromPath(`${LIBRARY}/images/KX12.info/name.jpg`, ''), null);
+});
+
+test('native drag sessions publish their files and stay off the web event stream', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = main.indexOf("onRPC('item:start-drag'");
+  const handler = main.slice(start, main.indexOf("onRPC('item:cancel-drag'", start));
+  assert.ok(/active: true,\s+token,\s+ids: uniqueIds,[\s\S]*?\n\s+files,/.test(handler), 'drag-state carries the dragged file paths');
+  const broadcast = main.slice(main.indexOf('function broadcast(channel, payload)'));
+  assert.ok(broadcast.indexOf("if (channel === 'item:drag-state') return;") < broadcast.indexOf('webServer?.broadcast(channel, payload);'));
 });
 
 test('shows the import overlay for files that genuinely come from outside MultiView', () => {
