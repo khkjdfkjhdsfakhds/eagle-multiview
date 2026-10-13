@@ -10,6 +10,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
 const { buildIdentity } = require('./lib/app-identity');
 const { ThumbnailOperations } = require('./lib/thumbnail-operations');
+const { fileInDirectory } = require('./lib/item-paths');
 const { createSiteImportService } = require('./lib/site-import');
 const { SiteImportSessions } = require('./lib/site-import-session');
 const { DataHub } = require('./lib/data-hub');
@@ -1388,8 +1389,8 @@ function cachedItemFilePath(id) {
   const libraryPath = hub.library?.path;
   if (!item || !libraryPath) return null;
   const itemFolder = path.join(libraryPath, 'images', `${item.id}.info`);
-  const expected = path.join(itemFolder, `${item.name}.${item.ext}`);
-  if (fs.existsSync(expected)) return expected;
+  const expected = fileInDirectory(itemFolder, `${item.name}.${item.ext}`);
+  if (expected && fs.existsSync(expected)) return expected;
   try {
     const extension = `.${String(item.ext || '').toLowerCase()}`;
     const match = fs.readdirSync(itemFolder).find(name => name.toLowerCase().endsWith(extension) && !name.includes('_thumbnail'));

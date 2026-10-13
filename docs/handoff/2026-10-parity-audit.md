@@ -1045,8 +1045,8 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 
 - 分支：`claude/kind-lamport-48izv4`（基于 `claude/parity-audit`）。每修一项一个提交，并在下方清单该条后标注“已修复”。
 - 云端跑测：先 `pnpm install --frozen-lockfile` 与 `node node_modules/electron/install.js`，再用 `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a -s "-screen 0 1920x1080x24" node --test --test-force-exit`。基线约 19 项环境失败（Linux dbus/GPU stderr、ditto、android-keyboard、pane-layout-shortcuts、web-platform、TXT 布局），判断回归时与改动前对比失败名单。
-- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07。
-- 下一项：P0-6 剩余（E-14 名称路径越界；H-15 余项待定取舍），然后 P0-7 起。
+- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
+- 下一项：P0-7（E-06 剪贴板纯文本路径），之后 P0-8 起。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
 
 ## 三轮合并优先级清单（2026-10-13，云会话，取代上文第一轮清单的排序）
 
@@ -1077,7 +1077,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
    - W-01 / S-11 `/media` 的 CSP 与 nosniff（**Web 端已修复**：`/media/*` 全部加 `nosniff`，html/svg/xhtml/xml 加 `sandbox; default-src 'none'…` CSP，PDF 不加以免破坏手机预览。**Android `HostUrlValidator` 只信任 `/`、`/index.html` 一项未改**，需本机能构建 Android 时再做）；
    - B4-02 主窗口导航与 `window.open` 守卫，以及 IPC 发送方校验（**已修复**：主窗口 `will-navigate` 只允许 `src/index.html`，`window.open` 一律拒绝（http/https 交给系统浏览器）；`handleRPC`/`onRPC` 只接受顶层框架且 URL 为 `src/index.html` 的发送方，已在真实 Electron 里验证 `senderFrame.parent`/`url` 语义（含空格与中文路径）。**权限请求处理未做**：默认拒绝可能影响剪贴板等，需本机核对后再加。待本机核对：PDF 预览里点外部链接）；
    - B4-05 / B4-07 / H-15 宿主专属通道与参数校验（**部分修复**：B4-05 `tag-colors:set` 先 `ensureLibraryPath`，标签名 1–255 字符且不得为 `__proto__` 等，颜色限 `#rrggbb`，每库上限 5000，损坏的 JSON 另存为 `.corrupt-*` 后重新开始；B4-07 `item:set-custom-thumbnail` 不再接受 renderer 传入的 `filePath`。**未改**：`library:history`/`item:file-path` 对 Web 暴露主机路径、`x-eaglemv-client` 可冒充、免密模式下的 `library:switch`、端口兜底 41600——这些牵涉 Web 端切库与复制路径功能，需要先定取舍）；
-   - E-14 名称路径越界。
+   - E-14 名称路径越界（**已修复**：新增 `lib/item-paths.js` 的 `fileInDirectory`，`eagle-client` 的 `fileURLForItem`、`main.js` 的 `cachedItemFilePath`、`duplicate-service` 的 `mediaPathForMetadata` 在名称含分隔符或 `..` 时不再拼路径，改走目录内文件匹配）。
 7. **E-06**：剪贴板纯文本路径会被当作文件导入，还会递归导入目录，违反“只作用于用户明确选择的文件”。改写 T-04。
 8. **E-02 + E-01 + E-03 元数据读取**：
    - E-02：PNG 解压炸弹与正则二次方耗时；
