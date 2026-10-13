@@ -76,9 +76,9 @@
                 <option value="panoramic-portrait">全景纵向</option>
               </select>
             </label>
-            <label>颜色
+            <div class="field-group" role="group" aria-labelledby="colorFilterLabel"><span id="colorFilterLabel">颜色</span>
               <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
-            </label>
+            </div>
             <label>文件大小（MB）
               <div class="filter-range">
                 <input id="sizeMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小文件大小（MB）">
@@ -106,12 +106,12 @@
             <label>来源包含
               <input id="urlFilter" placeholder="筛选来源 URL" autocomplete="off">
             </label>
-            <label>标签
+            <div class="field-group" role="group" aria-labelledby="filterTagLabel"><label id="filterTagLabel" for="filterTagInput">标签</label>
               <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
                 <div id="filterTagChips" class="tag-chips"></div>
                 <input id="filterTagInput" placeholder="筛选标签…" autocomplete="off">
               </div>
-            </label>
+            </div>
             <button id="toggleTagColorsButton" type="button" class="tag-colors-toggle">管理标签颜色</button>
             <div id="tagColorManager" class="tag-color-manager hidden"></div>
             <button id="saveSmartFolderButton" class="filter-save-smart" type="button">保存为智能文件夹</button>
@@ -247,9 +247,9 @@
       <div id="multiSelection" class="multi-selection hidden">
         <h2><span id="multiCount">0</span> 个素材</h2>
         <p>将所选素材拖到左侧文件夹即可批量归类。</p>
-        <label id="sharedTagsSection" class="shared-tags-section hidden">共同标签
+        <div id="sharedTagsSection" class="field-group shared-tags-section hidden" role="group" aria-labelledby="sharedTagsLabel"><span id="sharedTagsLabel">共同标签</span>
           <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
-        </label>
+        </div>
         <label>批量设置评分
           <select id="batchRating">
             <option value="">选择评分…</option>
@@ -261,12 +261,12 @@
             <option value="5">★★★★★</option>
           </select>
         </label>
-        <label>批量添加标签
+        <div class="field-group" role="group" aria-labelledby="batchTagLabel"><label id="batchTagLabel" for="batchTagInput">批量添加标签</label>
           <div id="batchTagEditor" class="tag-editor">
             <div id="batchTagChips" class="tag-chips"></div>
             <input id="batchTagInput" placeholder="输入标签后按 Return" autocomplete="off">
           </div>
-        </label>
+        </div>
         <button id="batchTagButton" class="primary-button">添加标签</button>
         <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
         <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
