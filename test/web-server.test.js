@@ -614,3 +614,20 @@ test('P5-03/W-04: foreign hosts, cross-site origins and simple-request writes ar
   assert.equal(same.status, 200);
   assert.deepEqual(calls, ['tags:get']);
 });
+
+test('W-01/S-11: library media is never sniffed, and HTML/SVG open sandboxed', async t => {
+  const srcDir = makeFixtureDir();
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-media-csp-'));
+  for (const name of ['a.svg', 'a.html', 'a.png', 'a.pdf']) fs.writeFileSync(path.join(mediaDir, name), '<svg onload="fetch(`/rpc`)"/>');
+  const server = createWebServer({ srcDir, invoke: async () => null,
+    resolveMediaPath: async (_kind, id) => path.join(mediaDir, id), accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(mediaDir, { recursive: true, force: true }); });
+  for (const name of ['a.svg', 'a.html', 'a.png', 'a.pdf']) {
+    const response = await request(port, { path: `/media/original/${name}` });
+    assert.equal(response.status, 200, name);
+    assert.equal(response.headers['x-content-type-options'], 'nosniff', name);
+    const sandboxed = /^sandbox;/.test(response.headers['content-security-policy'] || '');
+    assert.equal(sandboxed, name === 'a.svg' || name === 'a.html', name);
+  }
+});
