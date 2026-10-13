@@ -3911,6 +3911,15 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   if (!ids.length) return;
   const pane = paneById(paneId);
   if (!pane) return;
+  // Items already in the requested state need no write and must not enter the
+  // undo stack: ⌫ in the trash view would otherwise "delete" deleted items
+  // and a later ⌘Z would restore them.
+  const known = new Map(pane.items.map(item => [item.id, item]));
+  ids = ids.filter(id => !known.has(id) || Boolean(known.get(id).isDeleted) !== Boolean(deleted));
+  if (!ids.length) {
+    toast(deleted ? '所选素材已在废纸篓中' : '所选素材不在废纸篓中', 2400);
+    return;
+  }
   const libraryPath = state.library?.path;
   const action = deleted ? '移入废纸篓' : '恢复';
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
