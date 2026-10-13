@@ -977,6 +977,15 @@ function createWindow(initialState = null) {
     // -3 (ERR_ABORTED) fires on ordinary in-app navigation cancellations.
     if (isMainFrame && code !== -3) logFault(`renderer#${webContentsId}`, `窗口页面加载失败（${code} ${description}）：${url}`);
   });
+  // The bridge stays injected across navigations, so the window must never
+  // leave the app page (a link inside a PDF preview, a dropped URL).
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isMainPageURL(url)) event.preventDefault();
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
   window.loadFile(path.join(__dirname, 'src', 'index.html'));
   return window;
 }
@@ -1543,14 +1552,45 @@ const HOST_ONLY_CHANNELS = new Set([
 ]);
 const rpcRegistry = new Map();
 
+const MAIN_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
+
+function isMainPageURL(value) {
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.href === MAIN_PAGE_URL;
+  } catch {
+    return false;
+  }
+}
+
+// Only the app page's own top frame may use the bridge; anything that got
+// navigated into a window (or a subframe) is refused.
+function isTrustedSender(event) {
+  try {
+    const frame = event.senderFrame;
+    return Boolean(frame && !frame.parent && isMainPageURL(frame.url));
+  } catch {
+    // A frame that was disposed mid-call can no longer be trusted.
+    return false;
+  }
+}
+
 function handleRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  ipcMain.handle(channel, handler);
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝来自非应用页面的请求');
+    return handler(event, ...args);
+  });
 }
 
 function onRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  ipcMain.on(channel, handler);
+  ipcMain.on(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) return;
+    return handler(event, ...args);
+  });
 }
 
 async function invokeWebRPC(method, args, sender) {

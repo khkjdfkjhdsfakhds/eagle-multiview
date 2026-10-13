@@ -17,7 +17,7 @@ function loadMain(root, { dialog = {}, clipboard = {}, BrowserWindow = { fromWeb
   const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, copyFolderTree, resolveMediaURL, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
     'setWebServer: value => { webServer = value; }, setWaitForImportedFile: value => { waitForImportedFile = value; }, ' +
     'addFakeWindow: value => windows.add(value), getQuitting: () => quitting, createWindow, ' +
-    'setUpdater: value => { updater = value; }, setQuitting: value => { quitting = value; } };';
+    'setUpdater: value => { updater = value; }, setQuitting: value => { quitting = value; }, isTrustedSender, isMainPageURL, MAIN_PAGE_URL };';
   vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8') + expose, context, { filename: path.join(ROOT, 'main.js') });
   const result = context.module.exports;
   result.setupIPC();

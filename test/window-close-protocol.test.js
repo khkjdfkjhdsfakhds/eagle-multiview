@@ -19,7 +19,8 @@ function harness({ dialogResponse = 1 } = {}) {
         id: created.length + 1, sent: [], crashed: false,
         send: channel => this.webContents.sent.push(channel),
         isDestroyed: () => this.destroyed,
-        isCrashed: () => this.webContents.crashed
+        isCrashed: () => this.webContents.crashed,
+        setWindowOpenHandler: handler => { this.webContents.openHandler = handler; }
       });
       created.push(this);
     }
@@ -154,4 +155,30 @@ test('renderer close handler answers first and cancels only on an actual refusal
   const keepDrafts = handler.slice(handler.indexOf('if (!confirm('), handler.indexOf('if (!confirmTextSessionsLeave'));
   assert.ok(keepDrafts.indexOf('cancelClose') > keepDrafts.indexOf('activatePane'), 'drafts cancel only when the user keeps editing');
   assert.equal(handler.includes('approvedWindowClose = false; }, 1000'), false, 'approval is not a one-second timer');
+});
+
+test('B4-02: only the app page top frame may use the bridge, and windows never navigate away', () => {
+  const { main, created } = harness();
+  const page = main.MAIN_PAGE_URL;
+  assert.ok(page.startsWith('file://') && page.endsWith('/src/index.html'));
+  assert.equal(main.isMainPageURL(`${page}#state=x`), true);
+  assert.equal(main.isMainPageURL(`${page}?a=1`), true);
+  assert.equal(main.isMainPageURL('https://evil.example/'), false);
+  assert.equal(main.isMainPageURL(page.replace('index.html', 'update.html')), false);
+  const top = { url: page, parent: null };
+  assert.equal(main.isTrustedSender({ senderFrame: top }), true);
+  assert.equal(main.isTrustedSender({ senderFrame: { url: page, parent: top } }), false, 'subframe');
+  assert.equal(main.isTrustedSender({ senderFrame: null }), false);
+  assert.equal(main.isTrustedSender({ senderFrame: { url: 'https://evil.example/', parent: null } }), false, 'navigated away');
+  assert.equal(main.isTrustedSender({ get senderFrame() { throw new Error('disposed'); } }), false);
+
+  const second = main.createWindow();
+  const opened = second.webContents.openHandler;
+  assert.equal(typeof opened, 'function');
+  assert.equal(opened({ url: 'file:///etc/passwd' }).action, 'deny');
+  for (const [url, blocked] of [['https://evil.example/', true], [`${page}#state=1`, false]]) {
+    let prevented = false;
+    second.webContents.emit('will-navigate', { preventDefault: () => { prevented = true; } }, url);
+    assert.equal(prevented, blocked, url);
+  }
 });
