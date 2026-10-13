@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
   confirmClose: () => ipcRenderer.send('window:confirm-close'),
   cancelClose: () => ipcRenderer.send('window:cancel-close'),
+  deferClose: () => ipcRenderer.send('window:defer-close'),
   createFolder: data => ipcRenderer.invoke('folder:create', data),
   createDocument: data => ipcRenderer.invoke('document:create', data),
   mutateFolder: data => ipcRenderer.invoke('folder:mutate', data),

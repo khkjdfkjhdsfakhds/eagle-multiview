@@ -9053,6 +9053,10 @@ function bindHubEvents() {
     else if (result.missing) toast(`已拖动 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
   });
   window.eagleMV.onRequestClose(async () => {
+    // Answer at once so main knows this window is alive; only an actual
+    // refusal below cancels the close (and with it a pending quit).
+    approvedWindowClose = false;
+    window.eagleMV.deferClose?.();
     const pendingOperations = blockingForegroundOperations();
     const anyTextSaving = state.panes.some(pane => pane.textSession?.saving);
     if (state.inspectorSaving || anyTextSaving || pendingOperations.length) {
@@ -9067,21 +9071,21 @@ function bindHubEvents() {
     }
     // Metadata is auto-saved on input/blur. A close request is the final
     // flush for a very recent edit instead of a discard prompt.
-    if (state.inspectorDirty) {
-      window.eagleMV.cancelClose();
-      await saveInspector();
-    }
+    if (state.inspectorDirty) await saveInspector();
     const failedDrafts = [...inspectorDrafts.values()].filter(draft => Object.keys(inspectorDraftPatch(draft)).length);
     const failedDraft = failedDrafts[0];
     if (failedDraft) {
-      window.eagleMV.cancelClose();
-      if (!failedDrafts.every(draft => persistInspectorDraft(draft))) return;
+      if (!failedDrafts.every(draft => persistInspectorDraft(draft))) {
+        window.eagleMV.cancelClose();
+        return;
+      }
       if (!confirm(`有 ${failedDrafts.length} 个素材信息草稿尚未提交，已保存在本机。\n\n按“确定”保留草稿并关闭，下次打开原素材可恢复；按“取消”继续编辑。`)) {
         if (failedDraft.libraryPath === state.library?.path && paneById(failedDraft.paneId)) {
           activatePane(failedDraft.paneId);
           const pane = paneById(failedDraft.paneId);
           if (pane.items.some(item => item.id === failedDraft.id)) { pane.selected = new Set([failedDraft.id]); renderInspector(); }
         }
+        window.eagleMV.cancelClose();
         return;
       }
     }
@@ -9091,8 +9095,9 @@ function bindHubEvents() {
     }
     state.inspectorDirty = false;
     saveSessionState();
+    // Stays approved until the next close request; main also overrides a
+    // beforeunload guard once it has allowed the close.
     approvedWindowClose = true;
-    setTimeout(() => { approvedWindowClose = false; }, 1000);
     window.eagleMV.confirmClose();
   });
   window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));

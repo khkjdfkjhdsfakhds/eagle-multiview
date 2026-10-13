@@ -458,6 +458,7 @@
     isFullScreen: async () => Boolean(document.fullscreenElement),
     confirmClose: () => {},
     cancelClose: () => {},
+    deferClose: () => {},
     createFolder: data => invoke('folder:create', [data]),
     createDocument: data => invoke('document:create', [data]),
     mutateFolder: data => invoke('folder:mutate', [data]),

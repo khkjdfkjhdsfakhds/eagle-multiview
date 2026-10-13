@@ -934,15 +934,37 @@ function createWindow(initialState = null) {
   const webContentsId = window.webContents.id;
   window.__allowClose = false;
   window.__closePromptPending = false;
+  window.__rendererGone = false;
   window.__initialState = initialState;
   window.on('close', event => {
-    if (window.__allowClose || window.webContents.isDestroyed()) return;
+    if (window.__allowClose || window.__rendererGone || window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
     event.preventDefault();
     if (window.__closePromptPending) return;
     window.__closePromptPending = true;
     window.webContents.send('command:request-close');
+    armCloseWatchdog(window);
+  });
+  // A renderer that crashed, hung or never finished starting cannot answer a
+  // close request; it must not keep the window (and ⌘Q) hostage.
+  window.webContents.on('render-process-gone', () => {
+    window.__rendererGone = true;
+    const pending = window.__closePromptPending;
+    clearCloseWatchdog(window);
+    window.__closePromptPending = false;
+    if (pending && !window.isDestroyed()) forceCloseWindow(window);
+  });
+  window.webContents.on('did-start-loading', () => {
+    window.__rendererGone = false;
+    window.__closePromptPending = false;
+    clearCloseWatchdog(window);
+  });
+  // Once the renderer approved the close, a beforeunload guard must not
+  // silently cancel it and leave every later close stuck behind it.
+  window.webContents.on('will-prevent-unload', event => {
+    if (window.__allowClose) event.preventDefault();
   });
   window.on('closed', () => {
+    clearCloseWatchdog(window);
     windows.delete(window);
     hub.removeWatcher(webContentsId);
   });
@@ -957,6 +979,47 @@ function createWindow(initialState = null) {
   });
   window.loadFile(path.join(__dirname, 'src', 'index.html'));
   return window;
+}
+
+const CLOSE_REPLY_TIMEOUT_MS = 5000;
+
+function clearCloseWatchdog(window) {
+  clearTimeout(window.__closeWatchdog);
+  window.__closeWatchdog = null;
+}
+
+function forceCloseWindow(window) {
+  window.__allowClose = true;
+  window.destroy();
+  if (quitting) setImmediate(() => app.quit());
+}
+
+function cancelPendingQuit() {
+  quitting = false;
+  updater?.quitCancelled();
+}
+
+function armCloseWatchdog(window) {
+  clearCloseWatchdog(window);
+  window.__closeWatchdog = setTimeout(async () => {
+    window.__closeWatchdog = null;
+    if (window.isDestroyed() || !window.__closePromptPending) return;
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'warning',
+      buttons: ['强制关闭', '继续等待'],
+      defaultId: 1,
+      cancelId: 1,
+      message: '窗口没有响应',
+      detail: '强制关闭会丢弃这个窗口里尚未保存的修改。'
+    });
+    if (window.isDestroyed()) return;
+    if (response === 0) {
+      forceCloseWindow(window);
+      return;
+    }
+    window.__closePromptPending = false;
+    cancelPendingQuit();
+  }, CLOSE_REPLY_TIMEOUT_MS);
 }
 
 function setupMenu() {
@@ -1475,6 +1538,7 @@ const HOST_ONLY_CHANNELS = new Set([
   'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
   'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
   'window:focus', 'window:is-fullscreen', 'window:confirm-close', 'window:cancel-close',
+  'window:defer-close',
   'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key'
 ]);
 const rpcRegistry = new Map();
@@ -1801,9 +1865,16 @@ function setupIPC() {
   handleRPC('window:is-fullscreen', event => {
     return Boolean(BrowserWindow.fromWebContents(event.sender)?.isFullScreen());
   });
+  // The renderer answered a close request and is finishing saves or asking
+  // the user; the request stays pending and the quit stays armed.
+  onRPC('window:defer-close', event => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window && !window.isDestroyed()) clearCloseWatchdog(window);
+  });
   onRPC('window:confirm-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window || window.isDestroyed()) return;
+    clearCloseWatchdog(window);
     window.__closePromptPending = false;
     window.__allowClose = true;
     window.close();
@@ -1811,9 +1882,11 @@ function setupIPC() {
   });
   onRPC('window:cancel-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (window && !window.isDestroyed()) window.__closePromptPending = false;
-    quitting = false;
-    updater?.quitCancelled();
+    if (window && !window.isDestroyed()) {
+      clearCloseWatchdog(window);
+      window.__closePromptPending = false;
+    }
+    cancelPendingQuit();
   });
   handleRPC('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
     const requestedName = normalizeEagleFolderName(name);

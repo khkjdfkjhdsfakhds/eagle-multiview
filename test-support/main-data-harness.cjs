@@ -7,16 +7,17 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
 const ROOT = process.env.EAGLEMV_UI_SOURCE_ROOT || path.resolve(__dirname, '..');
-function loadMain(root, { dialog = {}, clipboard = {} } = {}) {
+function loadMain(root, { dialog = {}, clipboard = {}, BrowserWindow = { fromWebContents: () => null } } = {}) {
   const app = new EventEmitter();
   Object.assign(app, { getPath: () => root, setPath() {}, setName() {}, getName: () => 'Review fixture', requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }), quit() {} });
-  const electron = { app, dialog, clipboard, protocol: { registerSchemesAsPrivileged() {} }, BrowserWindow: { fromWebContents: () => null }, ipcMain: { on() {}, handle() {} } };
+  const electron = { app, dialog, clipboard, protocol: { registerSchemesAsPrivileged() {} }, BrowserWindow, ipcMain: { on() {}, handle() {} } };
   const realRequire = createRequire(path.join(ROOT, 'main.js'));
   const context = { require: name => name === 'electron' ? electron : realRequire(name), module: { exports: {} }, __dirname: ROOT,
     process: { on() {}, platform: 'darwin', pid: process.pid, env: {} }, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, structuredClone, URL, Buffer, AbortController };
   const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, copyFolderTree, resolveMediaURL, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
     'setWebServer: value => { webServer = value; }, setWaitForImportedFile: value => { waitForImportedFile = value; }, ' +
-    'addFakeWindow: value => windows.add(value), getQuitting: () => quitting };';
+    'addFakeWindow: value => windows.add(value), getQuitting: () => quitting, createWindow, ' +
+    'setUpdater: value => { updater = value; }, setQuitting: value => { quitting = value; } };';
   vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8') + expose, context, { filename: path.join(ROOT, 'main.js') });
   const result = context.module.exports;
   result.setupIPC();
