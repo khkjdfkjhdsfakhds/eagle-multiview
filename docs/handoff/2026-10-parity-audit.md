@@ -1045,8 +1045,8 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 
 - 分支：`claude/kind-lamport-48izv4`（基于 `claude/parity-audit`）。每修一项一个提交，并在下方清单该条后标注“已修复”。
 - 云端跑测：先 `pnpm install --frozen-lockfile` 与 `node node_modules/electron/install.js`，再用 `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a -s "-screen 0 1920x1080x24" node --test --test-force-exit`。基线约 19 项环境失败（Linux dbus/GPU stderr、ditto、android-keyboard、pane-layout-shortcuts、web-platform、TXT 布局），判断回归时与改动前对比失败名单。
-- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
-- 下一项：P0-7（E-06 剪贴板纯文本路径），之后 P0-8 起。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
+- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-7、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
+- 下一项：P0-8（E-02 + E-01 + E-03 元数据读取），之后 P0-9 起。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
 
 ## 三轮合并优先级清单（2026-10-13，云会话，取代上文第一轮清单的排序）
 
@@ -1079,6 +1079,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
    - B4-05 / B4-07 / H-15 宿主专属通道与参数校验（**部分修复**：B4-05 `tag-colors:set` 先 `ensureLibraryPath`，标签名 1–255 字符且不得为 `__proto__` 等，颜色限 `#rrggbb`，每库上限 5000，损坏的 JSON 另存为 `.corrupt-*` 后重新开始；B4-07 `item:set-custom-thumbnail` 不再接受 renderer 传入的 `filePath`。**未改**：`library:history`/`item:file-path` 对 Web 暴露主机路径、`x-eaglemv-client` 可冒充、免密模式下的 `library:switch`、端口兜底 41600——这些牵涉 Web 端切库与复制路径功能，需要先定取舍）；
    - E-14 名称路径越界（**已修复**：新增 `lib/item-paths.js` 的 `fileInDirectory`，`eagle-client` 的 `fileURLForItem`、`main.js` 的 `cachedItemFilePath`、`duplicate-service` 的 `mediaPathForMetadata` 在名称含分隔符或 `..` 时不再拼路径，改走目录内文件匹配）。
 7. **E-06**：剪贴板纯文本路径会被当作文件导入，还会递归导入目录，违反“只作用于用户明确选择的文件”。改写 T-04。
+   - **已修复（云会话，2026-10-13）**：`lib/clipboard-files.js` 的 Finder 格式（`public.file-url`、`text/uri-list`、`NSFilenamesPboardType`）照常接受文件与文件夹；只有它们为空时才看纯文本，且纯文本只接受单行、已存在的普通文件（绝对路径或 file: URL），目录与多行列表一律不收。T-04 已改写（`clipboard-files.test.js`）。未做：Finder 复制的文件夹在导入前先确认数量。
 8. **E-02 + E-01 + E-03 元数据读取**：
    - E-02：PNG 解压炸弹与正则二次方耗时；
    - E-01：每次修改都整份读原文件；

@@ -13,7 +13,7 @@ function fakeClipboard({ formats = [], values = {}, text = '', buffer = Buffer.a
   };
 }
 
-test('recognizes and deduplicates Finder file URLs and absolute text paths', () => {
+test('recognizes and deduplicates Finder file URLs; plain text is not read alongside them', () => {
   const clipboard = fakeClipboard({
     values: {
       'public.file-url': 'file:///tmp/%E7%A4%BA%E4%BE%8B%201.png',
@@ -21,8 +21,18 @@ test('recognizes and deduplicates Finder file URLs and absolute text paths', () 
     },
     text: '/tmp/third.txt\nnot-a-path'
   });
-  const result = clipboardFilePaths(clipboard, { existsSync: candidate => candidate !== '/tmp/second.jpg' });
-  assert.deepEqual(result, ['/tmp/示例 1.png', '/tmp/third.txt']);
+  const result = clipboardFilePaths(clipboard, { existsSync: candidate => candidate !== '/tmp/second.jpg', isFile: () => true });
+  assert.deepEqual(result, ['/tmp/示例 1.png']);
+});
+
+test('E-06: plain text imports only a single existing regular file, never a folder or a list', () => {
+  const options = { existsSync: () => true, isFile: candidate => !candidate.endsWith('/Downloads') };
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: '/tmp/third.txt' }), options), ['/tmp/third.txt']);
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: ' file:///tmp/a%20b.png ' }), options), ['/tmp/a b.png']);
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: '/Users/me/Downloads' }), options), [], 'a folder path typed as text');
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: '/tmp/a.png\n/tmp/b.png' }), options), [], 'a list of paths in text');
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: 'relative/a.png' }), options), []);
+  assert.deepEqual(clipboardFilePaths(fakeClipboard({ text: '/tmp/missing.png' }), { ...options, existsSync: () => false }), []);
 });
 
 test('recognizes the macOS NSFilenamesPboardType Finder format', () => {
