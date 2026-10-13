@@ -6091,18 +6091,24 @@ function showContextMenuAt(x, y, data) {
   menu.style.top = `${Math.max(8, y)}px`;
   requestAnimationFrame(() => {
     const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
-    const targets = menu.querySelector('.pane-target-options');
-    if (targets) {
-      const submenu = targets.parentElement;
-      const row = submenu.parentElement.getBoundingClientRect();
-      const width = parseFloat(getComputedStyle(submenu).width);
-      const flip = row.right + width > window.innerWidth - 8;
-      submenu.style.left = flip ? 'auto' : 'calc(100% - 2px)';
-      submenu.style.right = flip ? 'calc(100% - 2px)' : 'auto';
-    }
+    const position = window.EagleMVContextMenuPosition.menuPosition({ x, y }, rect, { width: window.innerWidth, height: window.innerHeight });
+    menu.style.left = `${position.left}px`;
+    menu.style.top = `${position.top}px`;
   });
+}
+
+// Submenus are fixed-positioned so the scrolling menu cannot clip them; each
+// one is measured when it opens and kept inside the window.
+function placeContextSubmenu(row) {
+  const menu = $('#contextMenu');
+  if (!row || menu.classList.contains('context-menu-sheet')) return;
+  const submenu = row.querySelector(':scope > .context-submenu');
+  if (!submenu) return;
+  const size = submenu.getBoundingClientRect();
+  const position = window.EagleMVContextMenuPosition.submenuPosition(row.getBoundingClientRect(), size,
+    { width: window.innerWidth, height: window.innerHeight });
+  submenu.style.left = `${position.left}px`;
+  submenu.style.top = `${position.top}px`;
 }
 
 function showContextMenu(event, data) {
@@ -8353,6 +8359,7 @@ function bindEvents() {
           }
         } else {
           submenu.classList.add('submenu-open');
+          placeContextSubmenu(submenu);
         }
         submenu.querySelector('.context-picker-search')?.focus();
       }
@@ -8399,8 +8406,13 @@ function bindEvents() {
   });
   $('#contextMenu').addEventListener('mouseenter', event => {
     const row = event.target.closest('.has-submenu');
-    if (row) row.classList.add('submenu-open');
+    if (!row) return;
+    row.classList.add('submenu-open');
+    placeContextSubmenu(row);
   }, true);
+  $('#contextMenu').addEventListener('scroll', () => {
+    for (const row of $('#contextMenu').querySelectorAll('.has-submenu.submenu-open')) placeContextSubmenu(row);
+  });
   $('#contextMenu').addEventListener('mouseleave', event => {
     const row = event.target.closest('.has-submenu');
     if (row && !row.contains(event.relatedTarget)) row.classList.remove('submenu-open');
