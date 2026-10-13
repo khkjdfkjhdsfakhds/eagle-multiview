@@ -477,6 +477,7 @@ let librarySyncTimer = null;
 let librarySyncRunning = false;
 let pendingLibraryChange = null;
 let lastAppliedLibraryRevision = -1;
+let libraryHubInstance = null;
 let newestLibraryRevision = -1;
 let visibleItemWatchQueued = false;
 let activeMarquee = null;
@@ -9268,6 +9269,7 @@ function bindHubEvents() {
 }
 
 function scheduleLibraryChange(payload) {
+  adoptLibraryHubInstance(payload);
   if (libraryChangeIsStale(payload)) return;
   if (pendingLibraryChange) {
     const comparison = compareLibrarySnapshots(payload, pendingLibraryChange);
@@ -9326,6 +9328,19 @@ function compareLibrarySnapshots(left, right) {
   return 0;
 }
 
+// The host restarted: its revisions count from 0 again, so the counters kept
+// from the previous host process say nothing about the new snapshots.
+function adoptLibraryHubInstance(payload) {
+  const instance = payload?.hubInstance;
+  if (!instance || instance === libraryHubInstance) return;
+  if (libraryHubInstance) {
+    lastAppliedLibraryRevision = -1;
+    newestLibraryRevision = -1;
+    if (pendingLibraryChange && pendingLibraryChange.hubInstance !== instance) pendingLibraryChange = null;
+  }
+  libraryHubInstance = instance;
+}
+
 function libraryChangeIsStale(payload) {
   if (!payload?.library) return true;
   const revision = librarySnapshotRevision(payload);
@@ -9345,6 +9360,7 @@ function libraryChangeIsSuperseded(payload) {
 }
 
 function recordAppliedLibrarySnapshot(payload) {
+  adoptLibraryHubInstance(payload);
   const revision = librarySnapshotRevision(payload);
   if (revision === null) return;
   lastAppliedLibraryRevision = Math.max(lastAppliedLibraryRevision, revision);
@@ -9615,9 +9631,9 @@ async function start() {
   renderQueryControls();
   try {
     state.windowId = await window.eagleMV.identity();
-    const { app, library } = await window.eagleMV.connect();
+    const { app, library, hubInstance } = await window.eagleMV.connect();
     state.library = library;
-    recordAppliedLibrarySnapshot({ library });
+    recordAppliedLibrarySnapshot({ library, hubInstance });
     await loadLibraryExtras();
     $('#windowTitle').textContent = 'Eagle MultiView';
     $('.sidebar-library-label').textContent = library.name || '资源库';
@@ -9649,7 +9665,7 @@ async function start() {
         const result = await window.eagleMV.connect();
         clearInterval(retry);
         state.library = result.library;
-        recordAppliedLibrarySnapshot({ library: result.library });
+        recordAppliedLibrarySnapshot({ library: result.library, hubInstance: result.hubInstance });
         await loadLibraryExtras();
         setConnection(true);
         renderFolderTree();

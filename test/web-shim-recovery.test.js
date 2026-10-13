@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'web-shim.js'), 'utf8');
 
-function createHarness({ healthStatus = 200, healthResponse } = {}) {
+function createHarness({ healthStatus = 200, healthResponse, rpcResult = true } = {}) {
   const sockets = [];
   const fetches = [];
   const timers = [];
@@ -61,7 +61,7 @@ function createHarness({ healthStatus = 200, healthResponse } = {}) {
         return healthResponse || Promise.resolve({ status: healthStatus, json: async () => ({ ok: true }) });
       }
       if (url === '/rpc') {
-        return Promise.resolve({ status: 200, json: async () => ({ ok: true, result: true }) });
+        return Promise.resolve({ status: 200, json: async () => ({ ok: true, result: rpcResult }) });
       }
       throw new Error(`Unexpected fetch ${url}`);
     },
@@ -103,11 +103,14 @@ async function flushPromises() {
 }
 
 test('websocket disconnect uses one health probe and reconnect timer, then resynchronizes', async () => {
-  const harness = createHarness();
+  const library = { path: '/host/B.library', name: 'B', folders: [{ id: 'new-folder', children: [] }] };
+  const harness = createHarness({ rpcResult: { app: {}, library, revision: 3, hubInstance: 'host-after-restart' } });
   const statuses = [];
   const invalidations = [];
+  const events = [];
   harness.window.eagleMV.onStatus(payload => statuses.push(payload));
-  harness.window.eagleMV.onQueryInvalidated(payload => invalidations.push(payload));
+  harness.window.eagleMV.onQueryInvalidated(payload => { invalidations.push(payload); events.push('invalidated'); });
+  harness.window.eagleMV.onLibraryChanged(payload => events.push(payload));
 
   assert.equal(harness.sockets.length, 1);
   harness.sockets[0].hello(11);
@@ -130,6 +133,13 @@ test('websocket disconnect uses one health probe and reconnect timer, then resyn
   assert.equal(harness.fetches.filter(call => call.url === '/rpc').length, 1);
   assert.equal(statuses.at(-1).connected, true);
   assert.equal(invalidations.at(-1).reason, 'web-reconnected');
+  // H-03: the snapshot missed while offline (here: another library on a
+  // restarted host) is replayed before panes refetch.
+  assert.equal(events.length, 2);
+  assert.equal(events[0].library, library);
+  assert.equal(events[0].revision, 3);
+  assert.equal(events[0].hubInstance, 'host-after-restart');
+  assert.equal(events[1], 'invalidated');
 });
 
 test('expired websocket session enters login and pagehide invalidates old transport callbacks', async () => {

@@ -110,8 +110,21 @@
           // Reconnected after a drop: re-sync connection state and make every
           // pane refetch, mirroring what a desktop window sees after a hiccup.
           invoke('hub:connect')
-            .then(() => {
+            .then(result => {
               emit('hub:status', { connected: true });
+              // Events broadcast while the socket was down are lost: replay
+              // the host's current snapshot (another library, a changed
+              // folder tree, or a restarted host) before refetching panes.
+              if (result?.library) {
+                emit('hub:library-changed', {
+                  library: result.library,
+                  source: 'multiview',
+                  origin: null,
+                  revision: result.revision,
+                  hubInstance: result.hubInstance,
+                  reason: 'web-reconnected'
+                });
+              }
               emit('hub:query-invalidated', { reason: 'web-reconnected' });
             })
             .catch(() => {});
