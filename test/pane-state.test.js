@@ -627,3 +627,11 @@ test('app initialization restores session layout, split ratios, and validates pa
   assert.ok(source.includes('if (!state.library) return;'), 'saveSessionState guards against early library null writes');
   assert.ok(source.includes('renderFolderTree();'), 'calls renderFolderTree during start and session restoration');
 });
+
+test('the delete dialog opens with Cancel focused so Return never deletes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function chooseTrashAction(');
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  assert.ok(body.includes("$('#trashCancelButton').focus();"));
+  assert.equal(body.includes("$('#trashDeleteButton').focus();"), false);
+});

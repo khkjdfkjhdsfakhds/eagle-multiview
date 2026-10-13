@@ -3903,7 +3903,8 @@ function chooseTrashAction(ids) {
   $('#trashDialogMessage').textContent = `已选择 ${ids.length} 个素材。请选择只从当前文件夹移除，还是删除素材并移入回收站。`;
   $('#trashRemoveButton').classList.remove('hidden');
   $('#trashDialog').classList.remove('hidden');
-  $('#trashDeleteButton').focus();
+  // Return must never delete by default; the destructive choice needs a click.
+  $('#trashCancelButton').focus();
   return new Promise(resolve => { state.trashDialogResolve = resolve; });
 }
 
