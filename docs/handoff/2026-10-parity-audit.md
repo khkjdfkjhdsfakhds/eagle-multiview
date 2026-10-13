@@ -757,3 +757,46 @@
 - preload 缺少 `multiWindow` 能力字段（靠默认值为真，可以工作）；
 - `onPinSelection` 的处理没有对 `payload` 判空，P3-01 接上菜单后如果发送空载荷会报错；
 - 以及前面已列出的 H-01、H-07、H-08、H-09。
+
+### 第二轮 · Android 外壳与手机网页（子代理 A6，主会话已核实 W-01、W-02、A-02）
+
+实测方式：Electron + Xvfb 加载真实 `src/index.html` 与 renderer，platform 设为 `web`，CDP 模拟 `pointer: coarse`，在 390×844 和 768×1024 两个尺寸测量。两个尺寸都**没有横向溢出**，问题集中在触控目标和层叠遮挡。Android 部分只读源码，未做真机验证。
+
+#### 安全
+
+| ID | 问题 | 级别 | 证据 | 建议 |
+|---|---|---|---|---|
+| W-01（补充 S-11） | `/media/original/<id>` 对 html、svg 按同源内联返回，没有 CSP、`nosniff`、`Content-Disposition`；MultiView 自己就能新建 html/svg（`renderer.js:5524`）。已登录用户打开后，脚本可任意调用 `/rpc`。Android `HostUrlValidator.kt:205-210` 把同源除 `/login` 外的路径都当可信页，进入后返回键只弹“网页返回请求无效”，用户被困 | 中 | `lib/web-server.js:316-321`、`lib/media-mime.js:8,13` | `/media/*` 加 `nosniff` 和 `CSP: sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'`；html/svg/xml 在非图片请求下改为 attachment；Android 只把 `/`、`/index.html` 视为可信页 |
+| W-03 | 明文 HTTP 下密钥和会话令牌可被嗅探。令牌是 `HMAC(key, 常量)`，全部设备共用，有效期一年，不能按设备吊销；Android 故障切换会向所有已保存地址自动带 cookie 探测 | 中 | `web-server.js:75-77,351-357`、`AndroidManifest.xml:16`、`SessionHealthProbeRunner.kt:28` | 每设备随机令牌，桌面端可列出和吊销；可选自签 HTTPS，二维码带指纹；至少在 Web 访问窗口说明明文风险 |
+| A-04 | 主机地址没有身份校验：换网络后已保存 IP 可能是另一台设备，健康探测 200/401 就算可用，自动切换后把对方登录页当可信页 | 中低 | `MainActivity.kt:830-902`、`SessionHealthProbeRunner.kt:30-34`、`web-server.js:638-645` | `/health/session` 返回持久 `instanceId`，Android 按地址记住，不一致时弹窗确认 |
+| W-04（补充 P5-03） | 开着密钥时同站跨端口 CSRF 与 WebSocket 劫持：Lax cookie 对同 IP 不同端口照样发送，`/rpc`、`/upload` 不校验 Content-Type 与 Origin，`/events` 不校验 Origin | 低-中 | `web-server.js:356,367-389,607-618` | Origin/Host 校验对密钥模式同样生效；`/rpc` 要求 `application/json`；升级时校验 Origin |
+| A-01 | 发布 APK 为 debug 签名，可调试；debug keystore 一旦重建，App 内更新全部因签名冲突失败 | 中低 | `docs/release-notes-v1.8.3.md:23`、`README.md:67`、`app/build.gradle.kts`、`MainActivity.kt:343` | 建立正式签名；之前至少关闭 debuggable 和 WebView 调试 |
+
+#### Bug 与逻辑自洽
+
+| ID | 问题 | 级别 | 状态 | 证据 | 建议 |
+|---|---|---|---|---|---|
+| W-02 | 上传每个文件总超时 120 秒，超时后 `break`，剩余文件既不上传也不出现在结果里；没有进度。服务端 Node 默认 `requestTimeout` 300 秒，声明的 2 GB 上限实际达不到 | 中 | 源码确认 | `web-shim.js:73,333-336,365`、`web-server.js:674`、`renderer.js:5368-5379` | 改为空闲超时并显示字节进度；服务端为 `/upload` 放宽超时；剩余文件写入 `notSubmitted` |
+| W-05 | 预览 PDF 用 `<embed type="application/pdf">`，Android WebView 不渲染，iOS 只显示首页 | 中 | 推测待验证 | `renderer.js:4134,4249-4256` | 网页端显示 Eagle 预览图，加“下载/系统打开”按钮 |
+| W-06 | 手机上筛选面板（z-index 16）被底部选择条（z-index 50）盖住，“保存为智能文件夹”点不到；右键菜单面板已修过同类问题 | 中 | 已复现（390×844） | `styles.css:556-558,2723-2731,2079,2848` | 窄屏 `.filter-popover` 提到 55，或在 `selection-bar-open` 时抬高 bottom |
+| W-08 | 普通手机浏览器没有返回语义（无 `pushState/popstate`），返回手势直接离开页面；触屏下预览关闭按钮被隐藏，只能下滑关闭 | 中 | 源码确认 | `styles.css:2251-2256` | 非外壳时打开预览、抽屉、选择状态压入 history，`popstate` 复用 `backActionRouter`；非外壳 coarse 设备保留关闭按钮 |
+| A-02 | renderer 在对话框忙、未保存编辑时返回 `blocked + transient`，Android 白名单 BLOCKED 不含 `transient`，页面已正确拦截仍再弹“网页返回请求无效”；同步 `confirm()` 超过 1.5 秒还会多弹“未及时响应” | 低 | 已核实 | `renderer.js:5064,5127`、`BackRequestCoordinator.kt:103-104`、`BackRequestCoordinatorTest.kt:142`、`MainActivity.kt:1407` | BLOCKED 白名单加入 `transient` 并改测试；返回处理中不用同步 `confirm()` |
+| A-03 | 连接失败页或连接中按返回只弹 toast，无法退出 | 低-中 | 源码确认 | `MainActivity.kt:1112-1118,1170-1173` | Failed/Connecting 状态下返回回到连接页或 `finish()` |
+| W-09 | iOS 主屏 Web App（`black-translucent` + `viewport-fit=cover`）工具栏没有避让顶部和横屏刘海安全区 | 中低 | 推测待验证 | `web-server.js:94-96`、`index.html:5` | 工具栏/工作区加 `env(safe-area-inset-*)` 内边距 |
+| A-05 | 授予“安装未知应用”权限后若进程被重启，内存中的已校验 APK 丢失，更新静默中断 | 低 | 推测待验证 | `AppUpdateController.kt:147-168,347` | 待安装路径与哈希写入 prefs，启动时恢复 |
+| A-06 | 渲染进程被回收也按崩溃处理；连接页默认 `WebViewClient` 下渲染进程死亡会连带杀掉 App | 低 | 源码确认 | `MainActivity.kt:647,1268,1391-1403` | `!didCrash()` 自动重载；连接页用自定义 client 返回 true |
+| A-07 | 连接页没有滚动容器，横屏、大字体、键盘弹出时上下被裁 | 低-中 | 源码确认（裁切为推测） | `res/layout/activity_main.xml:135` | 外包 `ScrollView` |
+| A-08 | `configChanges` 缺 uiMode、density、fontScale、locale，切深色模式等会重载页面，丢失预览和抽屉状态 | 低 | 源码确认 | `AndroidManifest.xml:20` | 补齐 |
+| A-10 | Wi-Fi 无互联网时系统默认网络切到蜂窝，局域网主机连不上 | 低 | 推测待验证 | `MainActivity.kt:1070-1093` | 私有地址时绑定 Wi-Fi Network，或失败页给出提示 |
+| W-10 | 导出下载不能续传，下载令牌 120 秒过期；ZIP 无 Content-Length | 低 | 源码确认 | `web-server.js:466,479,494-517` | 令牌延长到下载结束；单文件支持 Range |
+| W-11 | “正在建立到 MultiView 主机的安全会话”在 HTTP 下有误导 | 低 | 源码确认 | `android/.../values/strings.xml:22` | 改为“正在连接 MultiView 主机” |
+
+#### 美观、触控与性能
+
+- **W-07 触控目标普遍小于 44px**（已实测）：后退/前进/上一级、侧栏与检查器开关、布局切换按钮都是 28×28（`styles.css:943,298,1383`）；筛选面板关闭按钮 23×23（`:589`）；颜色色块 18×18（`:2009`）；检查器“打开/复制/添加”42×24（`:1921`）；路径条高 24（`:2276`）；搜索框只有高 18 的输入框可点（`:417`，外层是 `div`）。预览 ‹ › 为 30×48，因为容器查询 `@container (max-width: 440px)`（`:2386-2412`）覆盖了 coarse 下 44×64 的规则（`:2762`），而手机竖屏时它是预览里唯一可见的控件。建议在 `@media (pointer: coarse)` 下用 `::after` 统一扩大热区到 44px，容器查询内尺寸用 `max()` 保底，`.search-box` 改为 `<label>` 或绑定点击聚焦。
+- **W-12 样式冲突与多余提示**：`styles.css:2760-2777` 放大预览评分星的规则被 `:2251-2256` 的隐藏规则覆盖，实际不生效；`:2717-2719` 注释指向不存在的块；平板与手机仍显示 `Ctrl+F`、`Ctrl+O`、`Shift+D` 等键位提示，建议在 coarse 且无外接键盘时隐藏。
+- **A-09** WebView 没有跟随 Activity 生命周期暂停（`MainActivity.kt:280-283,1240-1243`），后台计时器与 WebSocket 重连继续运行，费电。
+
+#### 需要真机验证
+
+W-05（App 内 PDF 预览）、W-09（iPhone 主屏与横屏刘海）、A-05（授予安装权限后是否重启）、A-07（横屏和大字体连接页）、A-10（无互联网 Wi-Fi）、W-02（真机上传约 1 GB 视频）、A-04 和 W-03（换网络后的故障切换）。
