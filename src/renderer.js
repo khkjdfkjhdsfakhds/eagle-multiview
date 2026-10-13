@@ -8406,8 +8406,11 @@ function bindEvents() {
     execution.catch(error => toast(`添加标签失败：${error.message}`, 4000));
   });
   $('#contextMenu').addEventListener('mouseenter', event => {
+    // Only entering the row itself places its submenu. Entering something
+    // inside an open submenu must not move it: a filtered picker would slide
+    // away from under the pointer and the whole menu would close.
     const row = event.target.closest('.has-submenu');
-    if (!row) return;
+    if (!row || event.target !== row) return;
     row.classList.add('submenu-open');
     placeContextSubmenu(row);
   }, true);

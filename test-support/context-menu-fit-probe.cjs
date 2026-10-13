@@ -46,6 +46,26 @@ async function run() {
       inside(submenu.getBoundingClientRect(), 'submenu ' + label);
       row.classList.remove('submenu-open');
     }
+    // A picker that shrinks while it is open (search filtering) must stay
+    // where it is: moving onto one of its rows must not slide it away from
+    // under the pointer.
+    const pickerRow = rows.filter(row => row.querySelector(':scope > .context-submenu .context-menu-row')).at(-1);
+    const picker = pickerRow.querySelector(':scope > .context-submenu');
+    const sample = picker.querySelector('.context-menu-row');
+    // Tall enough to be pinned at the top margin, like a long tag list.
+    for (let i = 0; i < 40; i += 1) sample.after(sample.cloneNode(true));
+    pickerRow.scrollIntoView({ block: 'nearest' });
+    pickerRow.dispatchEvent(new MouseEvent('mouseenter'));
+    await frame();
+    const placed = { left: picker.style.left, top: picker.style.top };
+    const entries = [...picker.querySelectorAll('.context-menu-row')];
+    entries.slice(1).forEach(entry => entry.remove());
+    picker.dispatchEvent(new MouseEvent('mouseenter'));
+    await frame();
+    if (picker.style.left !== placed.left || picker.style.top !== placed.top) {
+      problems.push('open submenu moved when the pointer entered it: ' + pickerRow.querySelector('.context-menu-label')?.textContent.trim() + ' ' + JSON.stringify({ placed, now: { left: picker.style.left, top: picker.style.top } }));
+    }
+    pickerRow.classList.remove('submenu-open');
     return { problems, submenus, last: last.textContent.trim() };
   })()`);
   console.log(`EAGLEMV_MENU_FIT ${JSON.stringify(result)}`);
