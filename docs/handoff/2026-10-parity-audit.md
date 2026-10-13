@@ -1041,6 +1041,13 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 
 无法判定、需真机或本机：A-10、W-05 的 iOS 部分、A-05 授权后进程是否重启、B2-02 标签计数字段名。
 
+## 修复进度（接手必读，云会话持续更新）
+
+- 分支：`claude/kind-lamport-48izv4`（基于 `claude/parity-audit`）。每修一项一个提交，并在下方清单该条后标注“已修复”。
+- 云端跑测：先 `pnpm install --frozen-lockfile` 与 `node node_modules/electron/install.js`，再用 `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a -s "-screen 0 1920x1080x24" node --test --test-force-exit`。基线约 19 项环境失败（Linux dbus/GPU stderr、ditto、android-keyboard、pane-layout-shortcuts、web-platform、TXT 布局），判断回归时与改动前对比失败名单。
+- 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-6 的 S-01 与 P5-03/W-04。
+- 下一项：P0-6 剩余（W-01/S-11 `/media` CSP 与 nosniff → B4-02 导航与 window.open 守卫、IPC 发送方校验 → B4-05/B4-07/H-15 → E-14），然后 P0-7 起。
+
 ## 三轮合并优先级清单（2026-10-13，云会话，取代上文第一轮清单的排序）
 
 三轮共审查 renderer.js、main.js、preload.js 全文逐行，`lib/`、`src/` 全部模块，样式表全文，Android 外壳，测试套件；两轮反向核查剔除了 4 条误报（R2-05、B1-06、B2-09、B2-11）。以下仍只是方案，**未改任何代码**。修复时每项一个提交，附回归测试；凡在“固化了已知 bug 的测试”表（T-01～T-05、T-17）里出现的，修复时同步改写测试。
@@ -1066,7 +1073,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
    - **已修复（云会话，2026-10-13）**：新增 `askText()`（复用应用内名称对话框，支持允许留空），替换评论、视频时间点、框选坐标、编辑评论、两处标签颜色共 6 处 `prompt()`；颜色格式错误时给出提示。新增 `ask-text` 测试（禁止 `prompt(` ＋真实渲染探针）。原版标签颜色是色板交互，本次仍为文本输入，**未对齐**，待本机核对后另做。
 6. **安全一揽子**：
    - S-01 原型污染（**已修复**：`PinStore` 对文件夹与素材 ID 用 `safeId` 校验，`cloneFolders` 只读自有键并跳过非法 ID；新增回归测试。其他按输入做键的 store 已查：`manual-order-store` 的键受 scope 正则约束，无此问题）；
-   - P5-03 + W-04 Host/Origin/Content-Type 校验；
+   - P5-03 + W-04 Host/Origin/Content-Type 校验（**已修复**：`lib/web-server.js` 只服务 IP、localhost、单段主机名和私有后缀 `.local/.lan/.home/.home.arpa/.internal/.localdomain/.ts.net/.test`；非 GET/HEAD 与 WebSocket 升级若带 Origin 必须与 Host 一致；`/rpc`、`/export/prepare` 要求 JSON，`/upload` 要求 `x-eaglemv-client` 头。待本机核对：手机或 Android 用自定义主机名访问是否被拒）；
    - W-01 / S-11 `/media` 的 CSP 与 nosniff；
    - B4-02 主窗口导航与 `window.open` 守卫，以及 IPC 发送方校验；
    - B4-05 / B4-07 / H-15 宿主专属通道与参数校验；

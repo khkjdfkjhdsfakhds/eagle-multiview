@@ -10,6 +10,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const {
+  isAllowedHost,
   createWebServer,
   generateAccessKey,
   transformIndexHTML,
@@ -397,7 +398,7 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   const upload = await request(port, {
     path: `/upload?${new URLSearchParams({ name: '../../evil.png', folderId: 'F1', libraryPath: '/tmp/lib.library' })}`,
     method: 'POST',
-    headers: authed
+    headers: { ...authed, 'x-eaglemv-client': '1' }
   }, 'PNGDATA');
   const body = JSON.parse(upload.body.toString());
   assert.equal(body.ok, true);
@@ -407,7 +408,7 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   assert.equal(imports[0].folderId, 'F1');
   assert.equal(imports[0].libraryPath, '/tmp/lib.library');
 
-  const noName = await request(port, { path: '/upload?name=..%2F..%2F', method: 'POST', headers: authed }, 'x');
+  const noName = await request(port, { path: '/upload?name=..%2F..%2F', method: 'POST', headers: { ...authed, 'x-eaglemv-client': '1' } }, 'x');
   assert.equal(noName.status, 400, 'unusable names are rejected');
 
   await server.stop();
@@ -492,7 +493,7 @@ test('UW-03: exports reject 501 items explicitly and prepare a verified unique m
   assert.equal(excess.status, 400);
   assert.match(JSON.parse(excess.body).message, /500/);
   assert.equal(resolved.length, 0, 'an oversized request must not resolve a truncated subset');
-  const prepare = selected => request(port, { path: '/export/prepare', method: 'POST', headers }, JSON.stringify({ ids: selected }));
+  const prepare = selected => request(port, { path: '/export/prepare', method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' } }, JSON.stringify({ ids: selected }));
   assert.equal((await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['one'] }))).status, 401);
   for (const count of [499, 500]) {
     const prepared = await prepare(ids.slice(0, count).concat(ids[0]));
@@ -521,7 +522,7 @@ test('UW-03: export preparation stops on library changes and frozen downloads do
     accessKey: ACCESS_KEY, requireKey: false });
   const { port } = await server.start(0, '127.0.0.1');
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
-  const prepare = ids => request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids, libraryPath: '/A' }));
+  const prepare = ids => request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids, libraryPath: '/A' }));
   for (const ids of [['one', 'two'], ['last']]) {
     library = '/A'; switchOnResolve = true; resolved.length = 0;
     const stopped = await prepare(ids);
@@ -547,7 +548,7 @@ test('UW-03: oversized bytes are rejected before streaming', async t => {
     resolveMediaPath: async () => sparse, accessKey: ACCESS_KEY, requireKey: false });
   const { port } = await server.start(0, '127.0.0.1');
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
-  const response = await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['large'] }));
+  const response = await request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids: ['large'] }));
   assert.equal(response.status, 400);
   assert.match(JSON.parse(response.body).message, /3\.5GB/);
   assert.ok(response.body.length < 1000, 'no file payload is streamed');
@@ -572,7 +573,7 @@ test('TXT Web draft transport accepts a 5 MB body after worst-case JSON escaping
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
   const content = '\u0001'.repeat(5 * 1024 * 1024);
   const data = { libraryPath: path.join(srcDir, 'fixture.library'), id: 'TXT', draftId: 'WINDOW', revision: 1, content };
-  const rpc = (method, args) => request(port, { path: '/rpc', method: 'POST' }, JSON.stringify({ method, args }));
+  const rpc = (method, args) => request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ method, args }));
   for (const method of ['text-draft:put', 'text:save']) {
     const response = await rpc(method, [data]);
     assert.equal(response.status, 200);
@@ -584,4 +585,32 @@ test('TXT Web draft transport accepts a 5 MB body after worst-case JSON escaping
   const other = await rpc('test:other', ['x'.repeat(9 * 1024 * 1024)]);
   assert.equal(other.status, 413);
   assert.ok(!calls.includes('test:other'), 'non-text requests retain their original 8 MB boundary');
+});
+
+test('P5-03: only IP, localhost and private LAN host names are served', () => {
+  for (const host of ['127.0.0.1:41600', '192.168.1.20', '[::1]:41600', 'localhost:41600', 'macbook', 'macbook.local:41600',
+    'mac.lan', 'probe.test', 'nas.home.arpa', 'mac.tailnet-1.ts.net']) assert.equal(isAllowedHost(host), true, host);
+  for (const host of ['', 'evil.com', 'rebind.attacker.example.com:41600', '127.0.0.1.nip.io', 'mac.local.evil.com', 'a b'])
+    assert.equal(isAllowedHost(host), false, host);
+});
+
+test('P5-03/W-04: foreign hosts, cross-site origins and simple-request writes are refused', async t => {
+  const srcDir = makeFixtureDir();
+  const calls = [];
+  const server = createWebServer({ srcDir, invoke: async method => { calls.push(method); return { ok: true }; },
+    resolveMediaPath: async () => null, accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const json = { 'Content-Type': 'application/json' };
+  const body = JSON.stringify({ method: 'tags:get', args: [] });
+  assert.equal((await request(port, { path: '/', headers: { Host: 'rebind.attacker.com:' + port } })).status, 403, 'DNS-rebound host');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Host: 'rebind.attacker.com' } }, body)).status, 403);
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: 'http://127.0.0.1:9999' } }, body)).status, 403, 'other port');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: 'null' } }, body)).status, 403, 'opaque origin');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'text/plain' } }, body)).status, 415, 'form-style post');
+  assert.equal((await request(port, { path: '/upload?name=a.png', method: 'POST' }, 'x')).status, 403, 'upload without client header');
+  assert.deepEqual(calls, []);
+  const same = await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: `http://127.0.0.1:${port}` } }, body);
+  assert.equal(same.status, 200);
+  assert.deepEqual(calls, ['tags:get']);
 });
