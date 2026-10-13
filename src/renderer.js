@@ -230,6 +230,7 @@ const state = {
   contextMenu: null,
   openDrawer: null,
   folderDialogResolve: null,
+  folderDialogAllowEmpty: false,
   trashDialogResolve: null,
   duplicateDialogResolve: null,
   localPins: {},
@@ -2009,7 +2010,11 @@ async function removeSmartFolder(id) {
 }
 
 async function updateTagColor(tag, color) {
-  if (!tag || !/^#[0-9a-f]{6}$/i.test(color || '')) return;
+  if (!tag) return;
+  if (!/^#[0-9a-f]{6}$/i.test(color || '')) {
+    toast('颜色需为六位十六进制，例如 #0072ef', 3200);
+    return;
+  }
   const libraryPath = state.library?.path;
   try {
     await runForegroundOperation('正在保存标签颜色…', { key: `tag-color:${libraryPath}:${tag}` }, async () => {
@@ -3225,20 +3230,22 @@ async function addCommentToSelected() {
   const id = [...(pane?.selected || [])][0];
   if (!id || !state.connected) return;
   const libraryPath = state.library?.path;
-  const annotation = prompt('评论内容', '');
+  const annotation = await askText({ title: '添加评论', fieldLabel: '评论内容', submitLabel: '添加' });
   if (annotation === null || !annotation.trim()) return;
   const item = pane.items.find(candidate => candidate.id === id);
   const payload = { id, libraryPath, annotation: annotation.trim() };
   const ext = String(item?.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) {
-    const duration = prompt('可选视频时间点（秒），留空为普通评论', '');
+    const duration = await askText({ title: '评论时间点', fieldLabel: '视频时间点（秒），留空为普通评论', placeholder: '例如 12.5', allowEmpty: true, maxLength: 32 });
+    if (duration === null) return;
     if (duration?.trim()) {
       const value = Number(duration);
       if (!Number.isFinite(value) || value < 0) { toast('时间点必须是大于等于 0 的数字', 3000); return; }
       payload.duration = value;
     }
   } else if (isImageItem(item)) {
-    const rect = prompt('可选图片框选坐标：x,y,width,height；留空为普通评论', '');
+    const rect = await askText({ title: '评论框选区域', fieldLabel: '框选坐标 x,y,width,height，留空为普通评论', placeholder: '例如 10,20,200,120', allowEmpty: true, maxLength: 80 });
+    if (rect === null) return;
     if (rect?.trim()) {
       const values = rect.split(/[,，\s]+/).map(Number);
       if (values.length !== 4 || values.some(value => !Number.isFinite(value)) || values[2] <= 0 || values[3] <= 0) {
@@ -3269,7 +3276,7 @@ async function editComment(commentId) {
   if (!id || !comment) return;
   const libraryPath = state.library?.path;
   const item = pane.items.find(candidate => candidate.id === id);
-  const annotation = prompt('编辑评论', comment.annotation || '');
+  const annotation = await askText({ title: '编辑评论', fieldLabel: '评论内容', initialValue: comment.annotation || '', submitLabel: '保存' });
   if (annotation === null || annotation.trim() === comment.annotation) return;
   const operationToken = beginForegroundOperation('正在更新评论…', { key: `comment:${libraryPath}:${id}` });
   if (!operationToken) return;
@@ -6189,8 +6196,8 @@ async function executeContextAction(action, payload) {
   if (action === 'tag-color') {
     const tag = String(payload.tag || '').trim();
     if (!tag) return;
-    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, state.tagColors[tag] || '#0072ef');
-    if (color !== null) return updateTagColor(tag, color.trim());
+    const color = await askTagColor(tag);
+    if (color !== null) return updateTagColor(tag, color);
     return;
   }
   if (action === 'rating') return setSelectionRating({ ids, rating: payload.rating });
@@ -6275,6 +6282,36 @@ function requestNameDialog({ title, initialValue = '', submitLabel = '确认', f
     $('#folderNameInput').select();
   });
   return new Promise(resolve => { state.folderDialogResolve = resolve; });
+}
+
+// Electron has no window.prompt(): it returns null without showing anything.
+// Text questions reuse the in-app name dialog instead. Resolves to null when
+// cancelled and to the trimmed text (possibly empty when allowed) otherwise.
+function askTagColor(tag) {
+  return askText({
+    title: `设置标签“${tag}”颜色`,
+    fieldLabel: '六位十六进制颜色',
+    initialValue: state.tagColors[tag] || '#0072ef',
+    placeholder: '#0072ef',
+    maxLength: 7
+  });
+}
+
+async function askText({ title, fieldLabel, initialValue = '', placeholder = '', submitLabel = '确定', allowEmpty = false, maxLength = 4000 }) {
+  if (state.folderDialogResolve) {
+    toast('请先完成当前的输入', 2800);
+    return null;
+  }
+  const input = $('#folderNameInput');
+  const defaultMaxLength = input.maxLength;
+  state.folderDialogAllowEmpty = allowEmpty;
+  input.maxLength = maxLength;
+  try {
+    return await requestNameDialog({ title, initialValue, submitLabel, fieldLabel, placeholder });
+  } finally {
+    state.folderDialogAllowEmpty = false;
+    input.maxLength = defaultMaxLength;
+  }
 }
 
 function folderCreationParentForPane(paneId = state.activePaneId) {
@@ -8242,7 +8279,7 @@ function bindEvents() {
   $('#folderDialogForm').addEventListener('submit', event => {
     event.preventDefault();
     const name = $('#folderNameInput').value.trim();
-    if (!name) { $('#folderNameInput').focus(); return; }
+    if (!name && !state.folderDialogAllowEmpty) { $('#folderNameInput').focus(); return; }
     closeFolderDialog(name);
   });
   $('#folderDialogCancelButton').addEventListener('click', () => closeFolderDialog());
@@ -9135,9 +9172,8 @@ function bindHubEvents() {
   window.eagleMV.onSetTagColor(async payload => {
     const tag = String(payload?.tag || '').trim();
     if (!tag) return;
-    const current = state.tagColors[tag] || '#0072ef';
-    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, current);
-    if (color !== null) updateTagColor(tag, color.trim());
+    const color = await askTagColor(tag);
+    if (color !== null) updateTagColor(tag, color);
   });
   window.eagleMV.onRenameRequest(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000)));
   window.eagleMV.onImportRequest(() => importFiles());
