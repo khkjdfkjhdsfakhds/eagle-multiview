@@ -304,3 +304,22 @@ test('locateItemIndex scans ids only, 1000 per page, in the query order', async 
   assert.equal(await new PagedClient().locateItemIndex({ search: 'cat' }, 'item-1'), null, 'search order is not the API order');
   assert.equal(await new PagedClient().locateItemIndex({ random: true }, 'item-1'), null);
 });
+
+test('getItem still finds items in the trash, so a delete can be undone', async () => {
+  // Eagle 4's v2 item/get leaves trashed items out even when asked by id;
+  // restoring one (undo delete, 恢复素材) reads it first for the conflict check.
+  class TrashClient extends EagleClient {
+    constructor(info) { super('http://unused'); this.info = info; this.paths = []; }
+    async request(path) {
+      this.paths.push(path.split('?')[0]);
+      if (path.startsWith('/api/v2/item/get')) return { data: [], total: 0 };
+      if (this.info) return this.info;
+      throw new Error('Eagle API 请求失败');
+    }
+  }
+  const trashed = new TrashClient({ id: 'T1', name: 'cat', isDeleted: true });
+  assert.deepEqual(await trashed.getItem('T1'), { id: 'T1', name: 'cat', isDeleted: true });
+  assert.deepEqual(trashed.paths, ['/api/v2/item/get', '/api/item/info']);
+  await assert.rejects(new TrashClient(null).getItem('gone'), /素材不存在/);
+  await assert.rejects(new TrashClient({ id: 'other' }).getItem('T1'), /素材不存在/);
+});
