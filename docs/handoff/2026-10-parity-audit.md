@@ -505,3 +505,58 @@
 - **R2-04（逻辑自洽，中，源码确认；原版行为待本机核对）搜索和筛选会跟着导航带到下一个视图。** `navigate` 默认沿用当前的 `state.query`（`src/renderer.js:4975-4992`），只有从网格进入子文件夹时清空搜索词，筛选条件始终保留。结合 GUI-11（筛选条件生效后不可见），用户从侧栏切到另一个文件夹后，看到的结果被看不见的筛选过滤了，只有“筛选”按钮上有一个小数字提示。
   - 方案：确认原版切换文件夹时是否保留搜索和筛选。若原版清空，就照做；若原版保留，至少在栏标题下显示一行生效条件（GUI-11 的筛选条），并提供一键清除。
 - **R2-05（逻辑自洽，低，源码确认）重命名素材后，检查器中尚未保存的名称草稿不会同步。** `renameItem` 走 `mutate`，只用名称做冲突基线（`src/renderer.js:6432-6437`）。完成后网格靠广播刷新；检查器里如果有其他字段处于脏状态，`selectedBase` 不会更新，下次自动保存可能误报名称冲突。影响有限，记录备查。
+
+### 第二轮 · 本地状态存储与纯逻辑模块（子代理 A3，主会话已抽查核实第 1 条）
+
+范围已全部通读，共 26 个文件：`lib/` 下的 manual-order-store、pin-store、folder-cover-store、supplemental-item-store、text-draft-store、conflict、error-log、app-identity、window-location、window-router、new-file-service、zip-stream、media-mime、preview-image、qr-code；`src/` 下的 sort-memory、pane-state、folder-navigation、eagle-logical-path、smart-folder、operation-state、keyboard-platform、window-actions、window-target、window-router、pane-layout-popover-position。复现脚本只留在云端临时目录，未提交。
+
+- **S-01（安全，中，已复现）`pins:set` 可以污染主进程的 `Object.prototype`。**
+  - 位置：`lib/pin-store.js:69-76`；`main.js:2347-2369`；`pins:set` 不在 `HOST_ONLY_CHANNELS` 中，Web 端可以调用。
+  - 原因：`folderId` 不做校验就执行 `library[folderId] ||= {}`。
+  - 后果：传入 `folderId='__proto__'`、`ids=['isDeleted']` 后，主进程里所有对象都会带上 `isDeleted`，所有素材都被判为已删除，直到重启。传 `ids=['password']` 则所有文件夹都被当成加密。与 P5-03（免密模式加 DNS rebinding）组合后风险更高。
+  - 方案：
+    - store 改用 `Object.create(null)` 或 `Map`；
+    - handler 用与 `folder-cover-store` 相同的 `safeId` 规则校验 `folderId` 和 `ids`，并确认文件夹存在；
+    - 顺带检查其他按用户输入做对象键的 store。
+- **S-02（Bug，中，已复现）状态文件损坏后，相关功能永久失效。** manual-order、folder-cover、pin、supplemental 四个 store：
+  - 写入时只做“临时文件 + rename”，不做 fsync，断电后可能留下空文件；
+  - 之后每次 `JSON.parse` 都失败，手动排序、封面、置顶、补充素材持续报错，直到用户手动删除文件；
+  - 遇到未知 `version` 时处理不一致：前两个 store 报错，后两个静默当成空数据，下次写入时把原文件覆盖掉。
+
+  方案：抽一个共用的 JSON 状态 store。解析失败时把原文件改名为 `.corrupt-时间戳`，从空状态继续，并写入错误日志。遇到未知版本时只读、拒绝写入。写入临时文件后做 fsync。
+- **S-03（性能，中，已复现）每打开一次 TXT 预览，就在磁盘上留下一个草稿墓碑文件，永不清理。**
+  - 位置：`lib/text-draft-store.js:82-91`；`src/renderer.js:4338`、`4369-4370`、`4570-4589`。
+  - 原因：打开时没有草稿，就生成一个新的 draftId（`renew`），会话是干净的，于是调用 `remove`；而 `remove` 在原本没有记录时也会写墓碑。
+  - 后果：草稿目录无限增长，`list()` 每次都对整个目录做 `readdir`，用得越久打开 TXT 越慢。
+  - 方案：没有记录时 `remove` 不写墓碑；草稿和墓碑都加 TTL，启动时清理。
+- **S-04（性能／Bug，中，已复现）手动排序的 ID 列表只增不减。** 合并逻辑是 `[...current.ids, ...known]`，已经离开该视图的素材永远保留在列表里（`lib/manual-order-store.js:84`、`95`）。超过 20 万个 ID 后，该视图的拖动排序全部失败。每次拖动都会重写整个文件，并把整库的 orders 广播出去（`main.js:2344`）。“全部”视图约 5 万项时，单次广播约 800KB。
+  - 方案：校验时裁掉已经不存在的 ID；广播只发发生变化的那一个 key。
+- **S-05（Bug，中，源码确认）“另存为智能文件夹”在两种视图下的结果比当前视图窄。**
+  - 文件夹视图加搜索词：当前视图包含子孙文件夹，保存的条件只含当前文件夹。
+  - 根目录视图加搜索词：当前视图搜索的是整库，保存时却加了“未分类”条件。
+
+  位置：`src/smart-folder.js:50-51`，对照 `src/renderer.js:2767-2781`。
+- **S-06（与原版不同，中，推测待验证）智能文件夹条件的语义没有对照过原版。** 涉及：
+  - 多组条件之间是否为 AND 关系；
+  - 搜索词里的标签，`union` 是精确匹配，而当前视图的搜索是子串匹配；
+  - rating、shape、type 的取值格式；
+  - `\bOR\b` 会把普通英文单词“or”误判为高级语法，因而拒绝保存（`src/smart-folder.js:27-59`）。
+
+  本机核对：在原版里建一个同样条件的智能文件夹，对比 metadata 里保存的 conditions。
+- **S-07（Bug，中低，源码确认；触发条件待本机核对）冲突检测对“缺省值”不宽容。** `lib/conflict.js` 只把 `undefined` 归一化为 `null`。所以 base 里是 `star:0` 而 Eagle 返回时省略了这个字段，或 base 里是 `annotation:''` 而返回时省略，都会被判为冲突。可能的后果是“评分清零后再打分”时误报“素材已在其他窗口发生变化”。
+  - 方案：按字段归一化（`star` 的 0、null、缺省视为相同；备注和链接的空串与缺省视为相同）。
+- **S-08（与原版不同，中低，已复现；原版顺序待本机核对）名称排序不是自然排序。** `localeCompare('zh-CN')` 没有开 numeric（`src/pane-state.js:272`），结果是“图1, 图10, 图2”。Finder 和多数看图软件是自然排序。方案：缓存一个 `new Intl.Collator('zh-CN', {numeric:true})`，速度还更快。
+- **S-09（逻辑自洽，低，已复现）排序记忆的几个边界问题。**（`src/sort-memory.js:74-83`、`126-147`）
+  - 级联范围内的覆盖项被淘汰后，会退回父级的级联排序；
+  - 文件夹移走后，继承来的排序丢失；
+  - `keepDefault` 只判断库里是否存在任何级联标记，不判断本文件夹是否在级联范围内；
+  - 多个窗口并发写入时，后写的覆盖先写的。
+- **S-10（Bug，低，已复现）逻辑路径解析可能解析到错误的文件夹。** 输入框的值被 trim，而路径本身不 trim；名称里含“ / ”时分隔符会产生歧义；没有做 NFC/NFD 归一化（`src/eagle-logical-path.js:32`、`36`）。复现：文件夹名末尾带空格时，格式化后再解析，得到的是另一个文件夹。
+- **S-11（安全，中低，源码确认）Web 端以内联方式提供资料库里的 SVG/HTML 原文件，没有 CSP 和 nosniff。** 位置：`lib/media-mime.js`；`lib/web-server.js:316-321`。在手机上把 `/media/original/<id>` 在新标签页打开时，文件里的脚本会在 Web 应用同源下执行，能带着 cookie 调用 `/rpc`（包括 S-01）。
+  - 方案：媒体响应加 `Content-Security-Policy: sandbox` 和 `X-Content-Type-Options: nosniff`；HTML 改为以附件形式下载。
+- **S-12（Bug，低，已复现）ZIP 打包的两个问题。** 文件名没有转成 NFC，Windows 解压后显示为分解形式；文件 mtime 年份 ≥2108 时 `writeUInt16LE` 抛错，这时响应头已经发出，用户拿到的是截断的下载（`lib/zip-stream.js:18-23`、`50`）。ZIP 格式本身经 `unzip -t` 和 Python zipfile 校验均正确。
+- **S-13（Bug，低，Linux 已复现，macOS 待验证）新建文件名按字符数限制在 240，而文件系统限制是 255 字节。** 100 个汉字（300 字节）会得到 `ENAMETOOLONG` 的英文报错（`lib/new-file-service.js:45`）。
+- **S-14（性能，低，已复现）补充素材登记的性能问题。** 复制文件夹时每个素材单独 `add` 一次，每次重写整个文件，写入量是 O(N²)：2000 项约 2.4 秒（`main.js:635`）。启动加载时对全部 ID 不设并发上限地调用 `getItem`（`main.js:678`）。
+- **S-15（性能，低，源码确认）本地置顶的 `-1` 记录只增不减**（`lib/pin-store.js:75-76`），随 S-04 一起清理。
+- **S-16（安全／资源，低，源码确认）文本草稿可以经 Web RPC 无限写入磁盘。** 每个 draftId 上限 5MB，但 draftId 可任意取，总量不设上限（`lib/text-draft-store.js:66-80`、`main.js:2379`）。免密模式下，局域网内任何设备都能把磁盘写满。
+- 检查后无问题：QR 编码（版本表、纠错、掩码已逐项对照）、error-log 的轮转与去重、folder-cover-store 的 revision 和 ID 校验、窗口路由与定位、`operation-state`、`keyboard-platform`。
