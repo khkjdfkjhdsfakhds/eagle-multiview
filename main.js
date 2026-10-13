@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage, ShareMenu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage, ShareMenu, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -48,6 +48,7 @@ const { exportFiles } = require('./lib/export-service');
 const { resolveEagleWindowState } = require('./lib/window-location');
 const { createWindowRouter } = require('./lib/window-router');
 const { UpdateController, appBundlePath } = require('./lib/update-service');
+const { installPermissionPolicy } = require('./lib/permission-policy');
 const {
   normalizeNewFileType,
   normalizeEagleFolderName,
@@ -2590,6 +2591,7 @@ if (!gotLock) {
       source: 'main',
       message: `Eagle MultiView ${app.getVersion()} 启动（Electron ${process.versions.electron}）`
     });
+    installPermissionPolicy(session.defaultSession);
     setupMenu();
     setupIPC();
     setupUpdateIPC();
