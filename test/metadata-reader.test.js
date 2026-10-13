@@ -186,3 +186,50 @@ test('DA-20: LoRA zero and negative weights survive every supported metadata for
   }) }]), 'png');
   assert.deepEqual(invoke.loras.map(lora => lora.weight), expected);
 });
+
+test('E-02: a PNG decompression bomb and huge parameters cannot stall the reader', () => {
+  const zlib = require('node:zlib');
+  const { readPngChunks, parseA1111 } = require('../lib/metadata-reader');
+  const chunk = (type, data) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(data.length, 0);
+    header.write(type, 4, 'ascii');
+    return Buffer.concat([header, data, Buffer.alloc(4)]);
+  };
+  const bomb = Buffer.concat([Buffer.from('bomb\0\0'), zlib.deflateSync(Buffer.alloc(64 * 1024 * 1024, 0x41))]);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('zTXt', bomb),
+    chunk('tEXt', Buffer.concat([Buffer.from('huge\0'), Buffer.alloc(2 * 1024 * 1024, 0x42)])),
+    chunk('tEXt', Buffer.from('parameters\0a cat\nSteps: 20, Sampler: Euler')),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
+  let started = Date.now();
+  const chunks = readPngChunks(png);
+  assert.ok(Date.now() - started < 1000, 'bounded inflate');
+  assert.equal(chunks.bomb, undefined);
+  assert.equal(chunks.huge, undefined);
+  assert.equal(chunks.parameters, 'a cat\nSteps: 20, Sampler: Euler');
+
+  const long = `a cat\nSteps: 20, ${'x, '.repeat(60000)}Sampler: Euler, Model hash: abc`;
+  started = Date.now();
+  const parsed = parseA1111(long);
+  assert.ok(Date.now() - started < 1000, `linear parameter split took ${Date.now() - started}ms`);
+  assert.equal(parsed.params.Steps.startsWith('20'), true);
+  assert.equal(parsed.params.Sampler, 'Euler');
+  assert.equal(parsed.params['Model hash'], 'abc');
+});
+
+test('E-03: a hung image decoder is killed instead of holding an index worker forever', async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { decodeToPam } = require('../lib/stealth-metadata-reader');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-decoder-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const decoder = path.join(directory, 'magick');
+  fs.writeFileSync(decoder, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+  const started = Date.now();
+  await assert.rejects(decodeToPam(decoder, 'png', '/tmp/a[1].png', { timeoutMs: 200 }), /timed out/);
+  assert.ok(Date.now() - started < 5000);
+});

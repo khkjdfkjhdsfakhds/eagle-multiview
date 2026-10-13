@@ -90,3 +90,28 @@ test('metadata index falls back to alpha-embedded prompt metadata', async t => {
   const result = await index.search('artist:nyong nyong', { limit: 10 });
   assert.deepEqual(result.data.map(item => item.id), ['stealth']);
 });
+
+test('E-01: metadata edits reuse indexed prompt text, skip non-images and read few files at a time', async t => {
+  const items = [
+    { id: 'img', name: 'cat', ext: 'png', size: 10, tags: [], folders: [], modificationTime: 1 },
+    ...Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, name: `p${i}`, ext: 'png', size: 10, tags: [], folders: [], modificationTime: 1 })),
+    { id: 'vid', name: 'clip', ext: 'mp4', size: 10, tags: [], folders: [], modificationTime: 1 }
+  ];
+  const { index } = await makeIndex(t, items, new Map([['img', { positive: 'Glowing nebula' }]]));
+  let reads = 0, active = 0, peak = 0;
+  index.readMetadata = async () => {
+    reads += 1; active += 1; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    active -= 1;
+    return { positive: 'Fresh prompt' };
+  };
+  await index.refreshItem({ ...items[0], tags: ['space'], modificationTime: 2 });
+  assert.equal(reads, 0, 'a tag edit does not read the original again');
+  const tagged = await index.search('nebula space');
+  assert.deepEqual(tagged.data.map(item => item.id), ['img'], 'old prompt text and the new tag are both searchable');
+  await index.refreshItem({ ...items.at(-1), tags: ['x'], size: 99 });
+  assert.equal(reads, 0, 'videos are never read');
+  await Promise.all(items.slice(1, 9).map(item => index.refreshItem({ ...item, size: 11 })));
+  assert.equal(reads, 8, 'a changed file is read again');
+  assert.ok(peak <= 3, `at most three files at a time, saw ${peak}`);
+});
