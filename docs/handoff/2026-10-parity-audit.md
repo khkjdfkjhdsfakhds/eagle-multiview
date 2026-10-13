@@ -708,3 +708,52 @@
   - 一处还写着提供 Windows 安装包，其他地方又说不提供；
   - README 写的是“保存”和“View → Web Access”，实际是“应用”和“显示 → Web 访问…”。
 - **F-18（文档，低，源码确认）README 的快捷键表缺少 ⌘⌫、⌘Z、⌘D、⌘⇧J、⇧D、⌘C、⌘⌥C、⌘⇧C/V、⌘⇧⌫、⌘1–4、⌘Enter、⌘R、⌘[ / ⌘]、Esc 等。** 可以与分区 3 的快捷键表合并后一起更新。
+
+### 第二轮 · 启动、Hub 事件、库变更合并、三端接口一致性（子代理 A2，主会话已核实 H-04、H-06）
+
+范围已逐行读完：`src/renderer.js:8880-9571`、`preload.js`、`src/web-shim.js` 全文，以及 `main.js:1440-2474`。用 acorn 对 renderer 顶层做了暂时性死区的静态扫描，**未发现启动白屏风险**（`start()` 位于所有顶层声明之后）。
+
+- **H-01 ＝ D-01 / D-02 的旁证**：A2 从 main 广播一侧独立得出同样结论，补充两点：
+  - 回收站视图里的素材不在 `hub.itemCache` 中，主进程的 `cachedItemFilePath` 找不到原文件，一拖动就必然走失败广播，所以一定会卡住状态（`main.js:1293`）。
+  - 桌面端的 `item:drag-state` 也会通过 WebSocket 推给 Web 客户端，而 Web 端的 dragToken 同样从 1 开始计数，可能与桌面端撞号，把 Web 端的拖动状态换成桌面端那批素材（`main.js:718-725`、`src/web-shim.js:217`、`548`）。
+  - 方案：`webServer.broadcast` 过滤掉 `item:drag-state`。
+- **H-02（Bug・Web，中高，源码确认）主机重启后，Web 端会把新的库变更当成过期事件丢掉。** `snapshotRevision` 在主进程重启后从 0 重新计数（`lib/data-hub.js:76`），而没有刷新的 Web 页面里，`lastAppliedLibraryRevision` 还是旧的大数，于是新事件全部被判为过期（`src/renderer.js:9238`）。期间新建文件夹、重命名，甚至切换资料库，Web 端都不会跟随。
+  - 方案：库变更载荷带上 hub 实例 ID（启动时随机生成），实例变化时重置两个计数。
+- **H-03（Bug・Web，中，源码确认）Web 端断线重连后，不会重新同步资料库快照。** 重连只调用 `hub:connect` 然后丢弃结果（`src/web-shim.js:112-117`）。断线期间主机上切换了资料库或改了文件夹树，重连后 Web 端看到的仍是旧状态。
+- **H-04（Bug，中，源码确认）刚编辑完素材信息就按 ⌘Q，应用只关窗口、不退出；“安装并重启”也会失去重启。** 关窗流程在有未保存的检查器编辑时，先调用 `cancelClose()`，再保存，然后继续走到 `confirmClose()`（`src/renderer.js:9041-9050`）。而主进程的 `cancelClose` 会把 `quitting` 置为假，并调用 `updater.quitCancelled()`（`main.js:1809-1813`），所以 `confirmClose` 之后不再执行 `app.quit()`。
+  - 方案：增加一个“关闭确认延迟中”的 IPC，只有用户真正取消时才调用 `cancelClose`。
+- **H-05（Bug，中低，源码确认）启动重连有并发问题，并且会吞掉与连接无关的错误。**（`src/renderer.js:9549-9567`）
+  - `setInterval` 每 2.5 秒触发一次异步重连，而连接超时是 8 秒，几个回调可能同时成功。只有第一个拿到 initial state，后面的会用 `restoreSavedSessionPanes()` 覆盖掉新窗口请求打开的位置。
+  - try 包住了整段启动流程，任何一步出错都提示“请先启动 Eagle 4”并进入重试，而这时 initial state 已经被消费掉。
+  - 重试成功的路径不更新侧栏的资料库名和窗口标题。
+  - 方案：改为 `setTimeout` 链式重试；try 只包住 connect；成功后的流程抽成一个函数，两条路径共用。
+- **H-06（Bug，低中，已复现）同步失败期间到达的库变更会一直挂起。** `drainLibraryChanges` 在 finally 里调用 `scheduleLibraryChange(pendingLibraryChange)`（`src/renderer.js:9207-9209`），传入的就是 pending 本身，比较结果为相等，被去重逻辑提前 return（`:9181`），定时器不会建立。这段补偿代码实际不起作用。用 vm 模拟已复现：revision 3 一直挂起，直到下一个事件到来。
+- **H-07（Bug，低／Web 中，源码确认）TXT 保存广播里的 `origin` 和 `fingerprint` 没有被使用。**（`main.js:2420` 带了这两个字段，`src/renderer.js:9134-9145` 都没用）
+  - 桌面端：每次自动保存，都会短暂显示“另一个编辑会话已修改此 TXT”。
+  - Web 端：WebSocket 事件和 HTTP 回执的先后不确定，可能触发强制重新载入自己刚保存的文本，光标和滚动位置丢失。
+  - 方案：`payload.fingerprint` 等于当前会话的 fingerprint 时忽略这条事件。
+- **H-08（与桌面版不一致，中，源码确认）Web 上传绕过重复检测。** `/upload` 直接调用导入（`lib/web-server.js:424`），没有经过 `findDuplicateImports`。上传重复文件时，重复弹窗出现在 Mac 上的 Eagle 里，手机上的用户看不到。
+- **H-09（Bug・Web，中低，源码确认）Web 端重连后拿到新的 clientId，但 `state.windowId` 不更新。** 后果：自己的保存会被当成“其他窗口修改”；10 秒超时得到的 clientId 都是 0，多个客户端共用同一个 watcher（`src/web-shim.js:33-38`、`src/renderer.js:9523`）。
+- **H-10（性能，中低，源码确认）设一个自定义缩略图，所有窗口、所有栏的全部缩略图会重新下载 4 次。** `thumbnailRevision` 是全局变量，主进程在 0、1.8、6、12 秒各广播一次（`main.js:1548-1554`、`src/renderer.js:124`、`9167`）。方案：按素材 id 维护版本号。
+- **H-11（Bug／性能，低中，源码确认）`loadLibraryExtras` 的问题。**（`src/renderer.js:9413-9434`）
+  - 读取失败时直接用空值覆盖，一次瞬时错误就会让所有置顶和标签颜色从界面消失；
+  - 没有请求令牌，旧结果可能覆盖新结果；
+  - 每次库变更会调用 1～3 次，每次 7 个 RPC；
+  - `tag-data:changed` 载荷里自带的 `colors` 没有被使用。
+- **H-12（Bug・Web，低）**
+  - Web 端在对话框打开时按 ⌘Z，会在对话框背后执行撤销删除（`src/web-shim.js:584-595`），与 BUG-01 一起修；
+  - 页面从 bfcache 恢复后，WebSocket 不会重连（`src/web-shim.js:193-212` 把 `disposed` 永久置为真，推测待验证）。
+- **H-13（Bug，低，推测待验证）有旧库的检查器草稿时，⌘⇧R“重新载入窗口”会静默失效。** beforeunload 会阻止卸载，而主进程没有处理 `will-prevent-unload`（`src/renderer.js:8998-9006`）。
+- **H-14（逻辑自洽，低，源码确认）恢复新窗口的选中项时，补拉的素材会被追加到网格里，但 `itemMap` 不更新，这些素材也可能根本不属于当前视图**（`src/renderer.js:9536-9542`，与 P6-09 同类）。
+- **H-15（低）Web 访问对话框和 RPC 边界的细节**：
+  - 端口兜底值写死为 41600，而 Review 构建使用的是 41601（`lib/app-identity.js:5`）；
+  - `item:file-path` 不是宿主专属通道，Web 端可以通过 RPC 读到主机绝对路径（包含用户名）；
+  - `x-eaglemv-client` 请求头由客户端自己填写，可以冒充桌面窗口的 webContents ID；
+  - `library:switch` 对 Web 开放，手机可以切换主机上 Eagle 的资料库。这是设计取舍，但建议在免密模式下禁止。
+
+**三端接口一致性核对结果**：preload 暴露的 128 个方法在 main 中都有对应的注册通道；web-shim 的方法与 preload 完全同名；web-shim 没有调用任何 `HOST_ONLY` 通道。不一致的地方只有以下几处：
+- `item:start-drag` 设置的 `returnValue` 无人读取；
+- `capabilities.hostDialogs` 在 renderer 中从未被读取；
+- preload 缺少 `multiWindow` 能力字段（靠默认值为真，可以工作）；
+- `onPinSelection` 的处理没有对 `payload` 判空，P3-01 接上菜单后如果发送空载荷会报错；
+- 以及前面已列出的 H-01、H-07、H-08、H-09。
