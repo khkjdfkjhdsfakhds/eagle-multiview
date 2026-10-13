@@ -383,6 +383,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   const missing = originals.filter(entry => !entry.filePath);
   if (missing.length) throw new Error(`${missing.length} 个素材原文件无法读取，未开始复制文件夹`);
   const created = new Map();
+  const createdParents = new Map();
   const copiedItemsBySourceId = new Map();
   const copiedItemPatches = [];
   let copiedItems = 0;
@@ -402,6 +403,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     const id = result?.id || result?.folder?.id;
     if (!id) throw new Error(`复制文件夹“${name}”后未获得新文件夹 ID`);
     created.set(node.folder.id, id);
+    createdParents.set(id, targetParent);
     if (node.folder.iconColor) await client.moveFolder(id, { parent: targetParent, iconColor: node.folder.iconColor });
     for (const child of node.children) await create(child);
   };
@@ -450,10 +452,19 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   // Folder tags are the one property the folder API can write directly.
   const copyFolderTags = async () => {
     for (const [sourceId, targetId] of created) {
-      const tags = sourceFolders.get(sourceId)?.tags;
+      const source = sourceFolders.get(sourceId);
+      const tags = source?.tags;
       if (!Array.isArray(tags) || !tags.length) continue;
       await hub.ensureLibraryPath(libraryPath);
-      await client.updateFolderProperties(targetId, { tags: structuredClone(tags) });
+      // Eagle's folder update moves a folder to the root unless its parent is
+      // repeated and clears its colour unless iconColor is, which would pull a
+      // tagged subfolder copy out of the tree and drop its colour.
+      const parent = createdParents.get(targetId);
+      await client.updateFolderProperties(targetId, {
+        tags: structuredClone(tags),
+        ...(parent ? { parent } : {}),
+        ...(source.iconColor ? { iconColor: source.iconColor } : {})
+      });
     }
   };
   // Eagle's own import pipeline can still write an item's metadata shortly

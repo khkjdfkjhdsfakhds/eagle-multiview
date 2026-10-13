@@ -47,7 +47,7 @@ async function setupFixture({ heldBackIds = [] } = {}) {
     coverId: 'one', iconColor: 'blue', tags: ['folder-tag'],
     // The source's cached cover is the newest image of the folder, exactly what
     // Eagle derived the last time it rebuilt its image bindings.
-    children: [{ id: 'source-child', name: 'Child', description: 'child description', iconColor: 'blue',
+    children: [{ id: 'source-child', name: 'Child', description: 'child description', iconColor: 'blue', tags: ['child-tag'],
       covers: [coverMarkup('two', 'two.txt')], children: [] }]
   }, { id: 'same-name-sibling', name: 'Source', children: [] }];
   const folderMappings = { source: folders[0], 'source-child': folders[0].children[0] };
@@ -95,7 +95,13 @@ async function setupFixture({ heldBackIds = [] } = {}) {
     if (id === 'copy-1' && updateCounts[id] === 1) itemMappings[id].url = '';
     return itemMappings[id];
   };
-  main.client.updateFolderProperties = async (id, patch) => Object.assign(folderMappings[id], patch);
+  const folderUpdates = [];
+  // Like Eagle, an update that leaves out iconColor clears the folder's colour.
+  main.client.updateFolderProperties = async (id, patch) => {
+    folderUpdates.push({ id, patch: plain(patch) });
+    if (!('iconColor' in patch)) delete folderMappings[id].iconColor;
+    return Object.assign(folderMappings[id], patch);
+  };
   let folderCount = 0;
   const folderCreates = [], folderMoves = [];
   main.client.createFolder = async (name, parent, options) => {
@@ -183,7 +189,7 @@ async function setupFixture({ heldBackIds = [] } = {}) {
   };
   main.hub.connect = async () => {};
   const copy = () => main.copyFolderTree({ sourceId: 'source', libraryPath, decisionTimeoutMs: 250, itemWaitMs: 250 });
-  return { root, libraryPath, libraryKey, orderKey, main, folders, folderMappings, itemMappings, scope, queued, imports, folderCreates, folderMoves, updateCounts, originalIsDuplicateImage, copy };
+  return { root, libraryPath, libraryKey, orderKey, main, folders, folderMappings, itemMappings, scope, queued, imports, folderCreates, folderMoves, folderUpdates, updateCounts, originalIsDuplicateImage, copy };
 }
 
 test('copying a folder tree clones hierarchy, native order, pins, cover and metadata', async t => {
@@ -216,6 +222,12 @@ test('copying a folder tree clones hierarchy, native order, pins, cover and meta
   assert.equal(copiedRoot.coverId, 'copy-1');
   assert.equal(copiedRoot.iconColor, 'blue');
   assert.deepEqual(plain(copiedRoot.tags), ['folder-tag']);
+  // Eagle's folder update moves a folder to the root unless its parent is
+  // given and clears its colour unless iconColor is given, so a copy's tags
+  // are written together with both.
+  assert.deepEqual(fixture.folderUpdates.find(entry => entry.id === 'copy-child')?.patch, { tags: ['child-tag'], parent: 'copy-folder', iconColor: 'blue' });
+  assert.deepEqual(fixture.folderUpdates.find(entry => entry.id === 'copy-folder')?.patch, { tags: ['folder-tag'], iconColor: 'blue' });
+  assert.equal(folderMappings['copy-child'].iconColor, 'blue');
   assert.equal(folderMappings['copy-child'].orderBy, undefined);
   // Eagle's cached cover markup has to follow the source onto the copies: the
   // child folder shows its newest image, not the image the import landed last.
