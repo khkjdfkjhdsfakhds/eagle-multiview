@@ -189,11 +189,20 @@ async function loadTagColors() {
   if (tagColorState) return tagColorState;
   if (!tagColorLoading) tagColorLoading = (async () => {
     let state = { version: 1, libraries: {} };
+    const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
     try {
-      const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
       const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
       if (parsed?.version === 1 && parsed.libraries && typeof parsed.libraries === 'object') state = parsed;
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // First run: no colours yet.
+      } else if (error instanceof SyntaxError) {
+        // A damaged file must not disable tag colours for good; keep it aside
+        // for inspection and start over.
+        logFault('main', '标签颜色文件已损坏，已另存并重新开始', error);
+        await fsp.rename(file, `${file}.corrupt-${Date.now()}`).catch(() => {});
+      } else throw error;
+    }
     tagColorState = state;
     return state;
   })().finally(() => { tagColorLoading = null; });
@@ -207,13 +216,22 @@ async function getTagColors(libraryPath) {
   return structuredClone(state.libraries[path.resolve(libraryPath)] || {});
 }
 
+const TAG_COLOR_LIMIT = 5000;
+
 async function setTagColor(libraryPath, tag, color) {
+  tag = typeof tag === 'string' ? tag.trim() : '';
+  if (!tag || tag.length > 255 || ['__proto__', 'constructor', 'prototype'].includes(tag)) throw new Error('标签名称无效');
+  if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('颜色需为六位十六进制，例如 #0072ef');
   const operation = tagColorQueue.then(async () => {
     const state = structuredClone(await loadTagColors());
     const key = path.resolve(libraryPath);
     state.libraries[key] ||= {};
-    if (color) state.libraries[key][tag] = color;
-    else delete state.libraries[key][tag];
+    const colors = state.libraries[key];
+    if (color && !Object.prototype.hasOwnProperty.call(colors, tag) && Object.keys(colors).length >= TAG_COLOR_LIMIT) {
+      throw new Error(`每个资料库最多保存 ${TAG_COLOR_LIMIT} 个标签颜色`);
+    }
+    if (color) colors[tag] = color;
+    else delete colors[tag];
     const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
     await fsp.mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.tmp`;
@@ -1783,8 +1801,10 @@ function setupIPC() {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const { id, libraryPath } = payload || {};
     if (!id) throw new Error('缺少素材 ID');
-    let filePath = payload.filePath;
-    if (!filePath) {
+    // The file always comes from the host's own picker; the renderer never
+    // names a path for Eagle to read.
+    let filePath = null;
+    {
       const chooser = await dialog.showOpenDialog(parent, {
         title: '选择自定义缩略图',
         buttonLabel: '使用缩略图',
@@ -1825,6 +1845,7 @@ function setupIPC() {
     refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
   handleRPC('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
   handleRPC('tag-colors:set', async (event, { libraryPath, tag, color }) => {
+    await hub.ensureLibraryPath(libraryPath);
     const colors = await setTagColor(libraryPath, tag, color);
     broadcast('tag-data:changed', { libraryPath, origin: event.sender.id, reason: 'tag-color', colors });
     return colors;

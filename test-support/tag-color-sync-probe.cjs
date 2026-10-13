@@ -20,6 +20,8 @@ const drafts = new TextDraftStore(path.join(directory, 'drafts'));
 const libraryA = { path: '/synthetic/tag-sync-A.library', name: 'Synthetic A', folders: [], smartFolders: [] };
 const libraryB = { ...libraryA, path: '/synthetic/tag-sync-B.library', name: 'Synthetic B' };
 let library = libraryA;
+// tag-colors:set confirms Eagle still has the library open (B4-05).
+main.client.libraryInfo = async () => library;
 const items = ['image-1', 'text-1'].map(id => ({ id, name: id, ext: id === 'text-1' ? 'txt' : 'png', tags: ['Shared tag'], folders: [], annotation: '', star: 0, size: 8 }));
 const calls = [], popups = [], errors = [], pendingReads = [];
 let delayLibraryAReads = false;

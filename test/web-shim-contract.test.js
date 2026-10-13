@@ -76,8 +76,11 @@ test('registry helpers bridge to ipcMain instead of recursing', () => {
   // A blanket ipcMain→helper rename once turned these into self-calls that
   // blew the stack on the first registration.
   const helper = main.slice(main.indexOf('function handleRPC'), main.indexOf('async function invokeWebRPC'));
-  assert.ok(helper.includes('ipcMain.handle(channel, handler);'));
-  assert.ok(helper.includes('ipcMain.on(channel, handler);'));
+  // Each helper registers with ipcMain behind the trusted-sender check (B4-02).
+  assert.ok(helper.includes('ipcMain.handle(channel, (event, ...args) => {'));
+  assert.ok(helper.includes('ipcMain.on(channel, (event, ...args) => {'));
+  assert.ok(helper.includes('return handler(event, ...args);'));
+  assert.equal((helper.match(/isTrustedSender\(event\)/g) || []).length, 2);
   assert.ok(!/function handleRPC[^]*?handleRPC\(channel/.test(helper), 'handleRPC 不得自递归');
   assert.ok(!/function onRPC[^]*?onRPC\(channel/.test(helper), 'onRPC 不得自递归');
 });
