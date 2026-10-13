@@ -848,3 +848,69 @@ W-05（App 内 PDF 预览）、W-09（iPhone 主屏与横屏刘海）、A-05（�
   - `.danger-button` 只有删除对话框里有 hover（`:2489`）。
 
 未覆盖：标签管理页（见 P7-01）、触屏与 Web 布局（见 A6 的 W 系列）、macOS 红绿灯区域、与原版 Eagle 的对照。
+
+## 第三轮审查（2026-10-13，云会话）
+
+第三轮做三件事：逐行通读前两轮只按关键词定位过的代码（renderer.js 1–4300 与 6700–9571、main.js、preload.js），反向核查第二轮子代理结论以剔除误报，审查测试覆盖。
+
+### 第三轮 · 测试覆盖与弱测试（子代理 B6，主会话已核实 T-01、T-04、T-05）
+
+实跑 8 个快测文件 83/83 通过；D-01、E-07、H-03、E-06、H-04 仍在源码里，相关测试照样全绿。S-01 已用脚本复现：`new PinStore(...).set(lib, '__proto__', ['isDeleted'], true)` 之后 `({}).isDeleted` 返回时间戳。
+
+#### 覆盖概况
+
+- **完全没有测试**：`lib/update-preload.js`、`src/update.js`、`src/update.html`。
+- **只有 Electron 探针覆盖**（云端需 xvfb）：`feature-ui`、`manual-order-ui`、`site-import-ui`、`thumbnail-ui`、`novelai-metadata`。
+- **只有源码断言**：`preload.js`。
+- **有行为测试但缺关键路径**：`metadata-search-index` 的 `refreshItem`（E-01）、`metadata-reader` 的解压炸弹与正则耗时（E-02）、`pin-store` 的键名校验（S-01）、`conflict` 的“字段被省略”（S-07）、`web-server` 的 Host/Origin 校验（P5-03）、main.js 关窗与退出 IPC。
+- **其余 `lib/` 与 `src/` 纯模块**都有直接 require 的行为测试；网络请求都注入了 fetch，端口都是随机的，探针 userData 都在临时目录。
+
+#### 源码断言占比
+
+729 个静态 `test()` 块中约 173 个（24%）只断言源码文本，按断言条数约 35%。18 个文件基本只做源码断言（shortcut-contract、mobile-layout、view-mode、preview-*、slideshow、scroll-memory、eagle-parity-batch1、folder-color-lock、multi-select-inspector 等）。
+
+只有源码断言保护的高风险行为：
+- 检查器保存、冲突循环、关窗保存与草稿（`pane-state.test.js:204-314`，H-04 在此仍通过）；
+- 丢回收站与撤销、⌘Z 与菜单分派（shortcut-contract 16 条全是源码断言）；
+- 对话框拦截 Esc 与快捷键、粘贴导入拦截；
+- 拖放的 drop 处理（D-01、D-07）、共同标签删除（F-01）、文件夹颜色（`folder-color-lock.test.js:15`，P6-01 读错字段照样通过，是现成反例）。
+
+#### 固化了已知 bug 的测试（修复时必须同时改写）
+
+| ID | 位置 | 固化的问题 |
+|---|---|---|
+| T-01 | `test/drag-drop.test.js:28-33` | 断言 `types=['Files']` 加残留 ID 判为内部拖动，即 D-01 |
+| T-02 | `test/eagle-duplicate-choice.test.js:55-58,73-82` | 断言新复制运行丢掉上一次运行的文件夹，即 E-07 |
+| T-03 | `test/web-shim-recovery.test.js:105-133` | 名为“then resynchronizes”，只断言 `query-invalidated`，即 H-03 |
+| T-04 | `test/clipboard-files.test.js:16-26`、`test/import-duplicate-routing.test.js:9,18,41` | 断言剪贴板纯文本路径被当文件，含递归导入目录，即 E-06 |
+| T-05 | `test/pane-state.test.js:299-314` | 断言 `cancelClose()` 后 `await saveInspector()` 的顺序，从不检查之后能否退出，即 H-04 |
+| T-17 | `android/.../BackRequestCoordinatorTest.kt:142` | 断言 `blocked+transient` 无效，即 A-02；JS 与 Kotlin 之间无契约测试 |
+
+#### 其他弱测试
+
+| ID | 位置 | 问题 |
+|---|---|---|
+| T-06 | `test/folder-color-lock.test.js:15-24` | 只断言函数文本，挡不住 P6-01 |
+| T-07 | `test/view-mode.test.js:41-42` | 固化 CSS `columns` 瀑布流（D-10，原版待核对） |
+| T-08 | `drag-drop.test.js:92`、`pane-state.test.js:296`、`slideshow.test.js:23` | `indexOf(x) < indexOf(y)` 前没检查 `>= 0`，标记被删时 -1 照样通过 |
+| T-09 | `eagle-plugin-entry.test.js:56,101`、`item-cross-pane-drag-probe.cjs` | 睡 30～60ms 后断言“什么都没发生”，迟到事件会让断言白过 |
+| T-10 | `web-server.test.js:290`、`text-plugin-bridge.test.js:96` | 固定睡眠后正向断言，高负载下偶发失败 |
+| T-11 | `test-support/interaction-regression-probe.cjs` | 45 处固定 sleep，20 个场景串在一个 90 秒进程里 |
+| T-12 | `web-server.test.js:432`（`/usr/bin/ditto`）、`android-keyboard.integration.test.js:44`、`test-support/electron-stderr.cjs:6` | 平台相关测试没有 skip，stderr 过滤只认 macOS 噪音，Linux 上产生 15 项环境失败、掩盖真回归 |
+| T-13 | `test/review-bugfixes.integration.test.js` | 同一探针启动 4 次，应缓存结果 |
+| T-14 | 16 个探针 | `mkdtemp` 后从不删除临时 userData |
+| T-15 | `eagle-plugin-entry.test.js:133-134`、`official-eagle-sdk.integration.test.js:15` | 硬编码 `node_modules/.pnpm/@electron+asar@3.4.1`，升级依赖即失效 |
+| T-16 | `update-service.test.js:239-266` | 向 LaunchServices 注册假 bundle，崩溃会残留；`controller()` 默认不注入 fetch，漏传会真请求 GitHub |
+| T-18 | `data-hub.test.js:176` | 没有“主进程重启后 revision 归零”的用例（H-02） |
+
+#### 高风险修复应配的回归测试
+
+- **D-01**：改写 T-01，`classifyDrop` 按路径是否落在 `<库>/images/<id>.info/` 判断内部拖动；新增 Electron 测试复用 `item-cross-pane-drag-preload.cjs`，dragstart 后不发 dragend、再发无 token 的结束事件（顺带 D-02），然后 drop 外部文件，断言只有一次导入、没有移动、拖动状态已清空。
+- **F-01**：扩展 `review-bugfixes-preload.cjs`，用 `sendInputEvent` 真实点击标签文字、“共同标签”标题、筛选面板标题，断言没有 `remove` 类 mutate；加一个解析 `index.html` 的结构测试，禁止 `<label>` 包按钮或 `.tag-chips`。
+- **S-01**：`pin-store.test.js` 对 `folderId` 和 `ids` 传 `__proto__`、`constructor`、`prototype`，断言拒绝且 `Object.prototype` 未被污染；RPC 层用 `main-data-harness.cjs` 调 `pins:set`；同样覆盖 manual-order、supplemental、text-draft 三个存储。
+- **E-01**：给 `readMetadata` 包计数，断言 mp4 不读、60 个 PNG 并发最多 4 个、仅改标签时不读文件但能搜到新标签。
+- **E-02**：构造 64 MB 解压后大小的 zTXt，2 秒内返回 null 或截断；`parseA1111` 喂 400 KB 对抗输入 1 秒内完成。
+- **H-04**：`main-data-harness.cjs` 支持注入 `BrowserWindow.fromWebContents` 与 `app.quit` spy，断言保存期间 `quitting` 保持为真、确认后调用 quit；renderer 侧断言顺序为“延迟关闭 → 保存 → confirmClose”，同时改写 T-05。
+- **E-07**：替换 T-02 为“两次运行并存，停掉 B 后 A 的自动应答仍有效”；集成测试用 deferred 控制两次 `folder:copy` 并发。
+- **H-02 / H-03**：vm 提取 `libraryChangeIsStale` 等函数，覆盖“新实例低 revision 必须应用”和 H-06 的挂起重试；改写 T-03，断言重连后发出带新快照的库变更事件。
+- **P7-09 / P7-10**：把右键菜单定位抽成纯模块（参照 `pane-layout-popover-position.js`），用 980×640 等实测数据做单测；Electron 端复用 `layout-popover-probe.cjs`，断言每个菜单和子菜单都在视口内、末项 `elementFromPoint` 命中自身。
