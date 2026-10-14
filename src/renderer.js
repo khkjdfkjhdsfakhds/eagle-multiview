@@ -5183,7 +5183,7 @@ function navigateHistory(delta) {
   return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.HISTORY };
 }
 
-function closeTopTransientSurface() {
+function closeTopTransientSurface({ selection = true } = {}) {
   if (activeMarquee?.started) {
     cancelMarquee({ restoreSelection: true });
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'marquee' };
@@ -5258,7 +5258,7 @@ function closeTopTransientSurface() {
   // otherwise back at the root closes the app with the selection still up.
   // A preview on top is closed by the preview step instead. The desktop app
   // keeps Eagle's behaviour of back moving through history.
-  if (isWebClient && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
+  if (selection && isWebClient && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
     if (!confirmDiscardChanges()) return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'unsaved-edit' };
     state.selected.clear();
     state.selectedFolderCard = null;
@@ -9030,18 +9030,13 @@ function bindEvents() {
       return;
     }
     if (event.key === 'Escape') {
-      if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }
-      if (!$('#folderDialog').classList.contains('hidden')) { event.preventDefault(); closeFolderDialog(); return; }
-      if (!$('#webAccessDialog').classList.contains('hidden')) { event.preventDefault(); closeWebAccessDialog(); return; }
-      if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
-      if (!$('#duplicateDialog').classList.contains('hidden')) { event.preventDefault(); closeDuplicateDialog('cancel'); return; }
-      if (!$('#contextMenu').classList.contains('hidden')) { event.preventDefault(); hideContextMenu(); return; }
-      if (document.querySelector('.sort-popover:not(.hidden)')) {
-        event.preventDefault();
-        for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) p.classList.add('hidden');
-        for (const b of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) b.setAttribute('aria-expanded', 'false');
-        return;
-      }
+      // Already handled: a control's own Esc (tag suggestions, path editing),
+      // an IME composition, or a native modal <dialog>'s cancel.
+      if (event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]')) return;
+      // Esc peels off the topmost surface the way back does — dialogs and
+      // menus, then the filter, library and layout popovers, the tag colour
+      // manager and drawers — before it touches the preview or the selection.
+      if (closeTopTransientSurface({ selection: false })) { event.preventDefault(); return; }
       if (previewOpen) { event.preventDefault(); closePreview(); return; }
       // Off Apple platforms an unconsumed Esc in a text field reaches the
       // Android shell as system Back and can close the app; leave the field

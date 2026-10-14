@@ -28,7 +28,9 @@ test('new-window location menu exposes the three specified targets', () => {
   assert.ok(renderer.includes("openNewWindowAt('eagle')"));
   assert.ok(renderer.includes("openNewWindowAt('multiview')"));
   assert.ok(renderer.includes("menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind))"));
-  assert.ok(renderer.includes("if (!$('#contextMenu').classList.contains('hidden')) { event.preventDefault(); hideContextMenu(); return; }"), 'Escape closes the location menu');
+  // Escape reaches the menu through the shared transient-surface closer (B3-06).
+  assert.ok(renderer.includes("if (closeTopTransientSurface({ selection: false })) { event.preventDefault(); return; }"), 'Escape closes the location menu');
+  assert.ok(renderer.includes("if (!$('#contextMenu').classList.contains('hidden')) {\n    hideContextMenu();"), 'the closer hides the context menu');
   assert.ok(renderer.includes("!event.target.closest('.new-window-control')"), 'outside clicks dismiss the location menu');
 });
 

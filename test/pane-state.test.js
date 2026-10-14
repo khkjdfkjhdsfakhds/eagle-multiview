@@ -427,7 +427,8 @@ test('blocking dialogs consume Escape before workspace shortcuts can run', () =>
   const shortcut = handler.indexOf("event.key.toLowerCase() === 'n'");
   assert.ok(escape >= 0);
   assert.ok(escape < shortcut);
-  assert.ok(handler.includes("closeDuplicateDialog('cancel')"));
+  assert.ok(handler.includes('closeTopTransientSurface({ selection: false })'));
+  assert.ok(source.includes("closeDuplicateDialog('cancel');\n    return { status: BACK_STATUS.HANDLED"));
   assert.ok(handler.includes('if (blockingSurfaceOpen()) return;'));
 });
 
