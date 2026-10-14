@@ -68,5 +68,5 @@ test('a stylus swipes the preview like a finger, but never while zoomed', () => 
   assert.strictEqual(renderer.match(/if \(isPreviewTouchPointer\(event\)\) \{/g)?.length, 2,
     'both the single-pane and per-pane previews accept a stylus');
   // A one-finger pan of a zoomed image must not end as a swipe to the next item.
-  assert.ok(renderer.includes("if (!image || pane.previewZoom.mode === 'fit') {\n          swipeSession ="));
+  assert.ok(renderer.includes("if (!image || pane.previewZoom.mode === 'fit') {\n          if (!swipeTurning) swipeSession ="));
 });
