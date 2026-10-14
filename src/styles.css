@@ -1548,6 +1548,21 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   letter-spacing: .035em;
 }
 .grid-section-heading:not(:first-child) { margin-top: 18px; }
+.grid-section-toggle {
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.grid-section-toggle:hover { color: #c8c9ce; }
+.grid-section-toggle > span:first-child { display: inline-flex; align-items: center; gap: 4px; }
+.grid-section-chevron { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.8; transition: transform .12s ease; }
+.grid-section-toggle[aria-expanded="true"] .grid-section-chevron { transform: rotate(90deg); }
+/* Folded: the files heading sits right under it. */
+.grid-section-toggle[aria-expanded="false"] + .grid-section-heading { margin-top: 6px; }
 .folder-card {
   position: relative;
   min-width: 0;

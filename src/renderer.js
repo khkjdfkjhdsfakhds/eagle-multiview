@@ -134,6 +134,16 @@ window.addEventListener('storage', event => {
     syncSortCascadeChecks();
   }
 });
+// Eagle's 子文件夹 section folds open or shut once for every view (its
+// isHideSubFolder in localStorage), open by default (P7-15).
+const SUBFOLDERS_COLLAPSED_KEY = 'eaglemv.subfoldersCollapsed';
+let subfoldersCollapsed = false;
+try { subfoldersCollapsed = localStorage.getItem(SUBFOLDERS_COLLAPSED_KEY) === 'true'; } catch {}
+window.addEventListener('storage', event => {
+  if (event.key !== SUBFOLDERS_COLLAPSED_KEY) return;
+  subfoldersCollapsed = event.newValue === 'true';
+  if (typeof state !== 'undefined' && Array.isArray(state.panes)) renderSubfolderSections();
+});
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
@@ -2709,7 +2719,8 @@ function renderGrid({ preserveScroll = true } = {}) {
   $('#emptyRetryButton').classList.toggle('hidden', !state.errorMessage);
   $('#emptyState').classList.toggle('hidden', items.length > 0 || folders.length > 0 || state.loading);
   const folderSection = folders.length
-    ? `<div class="grid-section-heading"><span>子文件夹</span><span>${folders.length.toLocaleString()}</span></div><div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`
+    ? `<button type="button" class="grid-section-heading grid-section-toggle" data-toggle-subfolders aria-expanded="${subfoldersCollapsed ? 'false' : 'true'}" title="${subfoldersCollapsed ? '展开子文件夹' : '收起子文件夹'}"><span>${uiIcon('chevronRight', 'grid-section-chevron')}子文件夹</span><span>${folders.length.toLocaleString()}</span></button>`
+      + (subfoldersCollapsed ? '' : `<div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`)
     : '';
   // Every layout carries its own class (including the default) so the CSS can
   // target one mode instead of excluding all the others.
@@ -2752,6 +2763,26 @@ function renderGrid({ preserveScroll = true } = {}) {
   scroller.scrollTop = state.scrollTop;
   if (updateSharedFooter) updateScrollUI();
   scheduleVisibleItemWatch();
+}
+
+function setSubfoldersCollapsed(collapsed) {
+  if (subfoldersCollapsed === collapsed) return;
+  subfoldersCollapsed = collapsed;
+  try { localStorage.setItem(SUBFOLDERS_COLLAPSED_KEY, String(collapsed)); } catch {}
+  renderSubfolderSections();
+}
+
+function renderSubfolderSections() {
+  let inspectorChanged = false;
+  for (const pane of state.panes) {
+    // A folded card cannot stay selected.
+    if (subfoldersCollapsed && pane.selectedFolderCard) {
+      pane.selectedFolderCard = null;
+      if (pane.id === state.activePaneId) inspectorChanged = true;
+    }
+    withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
+  if (inspectorChanged) renderInspector();
 }
 
 function itemCardMarkup(item) {
@@ -6734,6 +6765,7 @@ async function revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id 
     : pane.currentView.kind === 'root';
   if (!destinationIsVisible) return false;
   pane.selected.clear();
+  setSubfoldersCollapsed(false);
   pane.selectedFolderCard = id;
   withActivePane(paneId, () => {
     // The ordering reconciliation emits a second library snapshot. Its
@@ -8021,6 +8053,10 @@ function bindPaneEvents(paneId) {
   query('#itemGrid').addEventListener('click', event => {
     activatePane(paneId);
     if (Date.now() < suppressTouchClickUntil) return;
+    if (event.target.closest('[data-toggle-subfolders]')) {
+      setSubfoldersCollapsed(!subfoldersCollapsed);
+      return;
+    }
     const tagAction = event.target.closest('[data-tag-action]');
     if (tagAction) {
       executeTagManagerAction(tagAction.dataset.tagAction, {
