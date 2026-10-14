@@ -2598,7 +2598,7 @@ function tagManagerMarkup() {
         <button type="button" class="tag-manager-action danger" data-tag-action="remove-group" data-tag-group-id="${escapeHTML(group.id)}">移除分组</button>
       </div>
     </header>
-    <div class="tag-manager-list">${(group.tags || []).map(name => tagManagerTagMarkup(name, group.id)).join('') || '<span class="muted">分组中还没有标签</span>'}</div>
+    <div class="tag-manager-list">${(group.tags || []).map(name => tagManagerTagMarkup(name, group.id)).join('') || '<div class="tag-manager-row tag-manager-row-empty">分组中还没有标签</div>'}</div>
   </section>`).join('');
   const ungrouped = state.availableTags.filter(tag => !grouped.has(tagName(tag)));
   const ungroupedHTML = ungrouped.length ? `<section class="tag-manager-group">
