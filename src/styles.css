@@ -1523,6 +1523,13 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 /* Justified rows only: a greedy trailing flex item keeps the last row from
    stretching its few cards across the full width. */
+/* A row the next card cannot join (a portrait before a wrapping panorama)
+   used to hand all its free width to its few cards, blowing them up several
+   times over. Growth stops at 1.5× the thumbnail size and the rest of such a
+   row stays empty on the right (P7-16). */
+.asset-grid.justified .item-card {
+  max-width: calc(var(--thumb) * var(--item-aspect) * 1.5);
+}
 .asset-grid.justified::after {
   content: "";
   flex: 999 1 calc(var(--thumb) * 2);
