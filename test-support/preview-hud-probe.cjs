@@ -15,8 +15,6 @@ async function run() {
     modal.classList.remove('hidden');
     const read = () => ({
       close: getComputedStyle(document.querySelector('#closePreview')).display,
-      prev: getComputedStyle(document.querySelector('#prevPreview')).display,
-      next: getComputedStyle(document.querySelector('#nextPreview')).display,
       rating: getComputedStyle(document.querySelector('#modalRating')).display,
       slideshow: getComputedStyle(document.querySelector('#slideshowControls')).display,
       previewBackground: getComputedStyle(document.querySelector('#previewBackground')).display,
@@ -41,54 +39,16 @@ async function run() {
     document.body.classList.remove('web-client');
     return { desktop, web, hudHidden, slideshowPressed };
   })()`);
-  // Touch web client (Android tablet/phone): only ‹ › stay on the picture.
+  // Touch web client (Android tablet/phone): nothing floats over the picture.
   window.webContents.debugger.attach('1.3');
   await window.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   result.touch = await window.webContents.executeJavaScript(`(() => {
     document.body.classList.add('web-client');
     document.querySelector('.content-pane .preview-modal').classList.remove('hidden', 'hud-hidden');
     const display = id => getComputedStyle(document.querySelector('#' + id)).display;
-    return { coarse: matchMedia('(pointer: coarse)').matches, prev: display('prevPreview'), next: display('nextPreview'),
+    return { coarse: matchMedia('(pointer: coarse)').matches,
       close: display('closePreview'), caption: display('modalCaption'), rating: display('modalRating'), slideshow: display('slideshowControls') };
   })()`);
-  // Touch: after the HUD idles out, ‹ › stay dim and tappable; a disabled end stays hidden.
-  result.touchIdle = await window.webContents.executeJavaScript(`(async () => {
-    const wait = ms => new Promise(r => setTimeout(r, ms));
-    const modal = document.querySelector('.content-pane .preview-modal');
-    const prev = document.querySelector('#prevPreview');
-    const next = document.querySelector('#nextPreview');
-    prev.disabled = true;
-    next.disabled = false;
-    // Check the settled rule, not the fade: a hidden window throttles transitions.
-    prev.style.transition = next.style.transition = 'none';
-    modal.classList.add('hud-hidden');
-    await wait(50);
-    const style = el => getComputedStyle(el);
-    const out = { nextOpacity: parseFloat(style(next).opacity), nextPointer: style(next).pointerEvents,
-      prevOpacity: parseFloat(style(prev).opacity), prevPointer: style(prev).pointerEvents };
-    prev.disabled = false;
-    prev.style.transition = next.style.transition = '';
-    modal.classList.remove('hud-hidden');
-    return out;
-  })()`);
-  // Touch: the sticky :hover a tap leaves must not brighten the arrow.
-  const dbg = window.webContents.debugger;
-  await dbg.sendCommand('DOM.enable');
-  await dbg.sendCommand('CSS.enable');
-  const { root } = await dbg.sendCommand('DOM.getDocument');
-  const { nodeId } = await dbg.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: '#nextPreview' });
-  await dbg.sendCommand('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
-  result.touchHover = await window.webContents.executeJavaScript(`(async () => {
-    const next = document.querySelector('#nextPreview');
-    next.disabled = false;
-    next.style.transition = 'none';
-    await new Promise(r => setTimeout(r, 50));
-    const style = getComputedStyle(next);
-    const out = { hovered: next.matches(':hover'), opacity: parseFloat(style.opacity), background: style.backgroundColor };
-    next.style.transition = '';
-    return out;
-  })()`);
-  await dbg.sendCommand('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
   process.stdout.write(`EAGLEMV_HUD ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();
 }

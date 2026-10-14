@@ -2194,7 +2194,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 .unsupported-preview img { min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 12px; box-shadow: 0 20px 65px rgba(0, 0, 0, .4); }
 .unsupported-preview p { margin: 0; color: #d0d0d4; text-align: center; font-size: 13px; line-height: 1.7; }
 .unsupported-preview span { color: #7b7c81; font-size: 11px; }
-.modal-close, .modal-nav {
+.modal-close {
   position: absolute;
   border: 1px solid rgba(255, 255, 255, .08);
   background: rgba(0, 0, 0, .32);
@@ -2206,10 +2206,7 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
   transition: opacity .7s cubic-bezier(.2, 0, .2, 1), background .2s ease, color .2s ease;
 }
 .modal-close { top: 12px; right: 12px; width: 30px; height: 30px; border-radius: 50%; font-size: 18px; line-height: 1; display: grid; place-items: center; }
-.modal-nav { top: 50%; width: 34px; height: 52px; margin-top: -26px; border-radius: 8px; font-size: 26px; opacity: .35; }
-.modal-close:hover, .modal-nav:hover:not(:disabled) { background: rgba(0, 0, 0, .65); color: #fff; opacity: .95; transition-duration: .15s; }
-.modal-nav:disabled { opacity: .05; cursor: default; }
-.modal-nav.prev { left: 10px; }.modal-nav.next { right: 10px; }
+.modal-close:hover { background: rgba(0, 0, 0, .65); color: #fff; opacity: .95; transition-duration: .15s; }
 .modal-caption {
   position: absolute;
   bottom: 12px;
@@ -2231,17 +2228,15 @@ body.selection-bar-open .toast { bottom: calc(70px + env(safe-area-inset-bottom)
 }
 /* In-pane preview hides all floating overlays so picture gets 100% pure screen area */
 .content-pane .modal-close,
-.content-pane .modal-nav,
 .content-pane .modal-caption,
 .content-pane .slideshow-controls,
 .content-pane .modal-rating {
   display: none !important;
 }
-/* The web client (phone/tablet, no keyboard) needs the preview HUD to switch
-   and close images, so its ‹ › × controls show there as a dim, low-presence
-   HUD; the desktop app keeps them hidden (Esc/arrows cover those actions). */
-body.web-client .content-pane .modal-close,
-body.web-client .content-pane .modal-nav {
+/* The web client (phone/tablet, no keyboard) needs a way to close images, so
+   its × shows there as a dim, low-presence HUD; the desktop app keeps it
+   hidden (Esc covers it). Items switch by tapping the left or right third. */
+body.web-client .content-pane .modal-close {
   display: grid !important;
   place-items: center !important;
 }
@@ -2250,7 +2245,7 @@ body.web-client .content-pane .modal-rating,
 body.web-client .content-pane .slideshow-controls { display: flex !important; }
 body.web-client .content-pane .modal-star { width: 34px; height: 34px; font-size: 18px; }
 body.web-client .content-pane .slideshow-controls .preview-view-button { display: none; }
-/* Touch web client (Android): only ‹ › stay on the picture. Swipe down,
+/* Touch web client (Android): nothing floats over the picture. Swipe down,
    system Back and Esc close it; the inspector rates. */
 @media (pointer: coarse) {
   body.web-client .content-pane .preview-modal .modal-close,
@@ -2261,24 +2256,11 @@ body.web-client .content-pane .slideshow-controls .preview-view-button { display
 /* hud-hidden fades the whole preview HUD out slowly after a period of no
    interaction; the controls already animate opacity at .7s. */
 .preview-modal.hud-hidden .modal-close,
-.preview-modal.hud-hidden .modal-nav,
 .preview-modal.hud-hidden .modal-caption,
 .preview-modal.hud-hidden .slideshow-controls,
 .preview-modal.hud-hidden .modal-rating {
   opacity: 0;
   pointer-events: none;
-}
-/* Touch has no hover to wake the HUD, so ‹ › stay on the picture, dim, after
-   the rest of the HUD fades. A tap leaves a sticky :hover behind, so on touch
-   the arrows keep their resting look instead of flashing bright. */
-@media (pointer: coarse) {
-  .preview-modal .modal-nav:hover:not(:disabled),
-  .preview-modal.hud-hidden .modal-nav:not(:disabled) {
-    opacity: .35;
-    background: rgba(0, 0, 0, .32);
-    color: rgba(255, 255, 255, .7);
-  }
-  .preview-modal.hud-hidden .modal-nav:not(:disabled) { pointer-events: auto; }
 }
 /* The path strip grows to the same font size as the view title so it is easy
    to read and, on touch, easy to tap, while staying dim and low-presence. The
@@ -2418,27 +2400,11 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
     height: 32px;
     font-size: 20px;
   }
-  .preview-modal .modal-nav {
-    width: 30px;
-    height: 48px;
-    margin-top: -24px;
-    font-size: 26px;
-  }
-  .preview-modal .modal-nav.prev { left: 6px; }
-  .preview-modal .modal-nav.next { right: 6px; }
 }
 @container (max-width: 280px) {
   .preview-modal .modal-media {
     padding: 14px 18px;
   }
-  .preview-modal .modal-nav {
-    width: 22px;
-    height: 36px;
-    margin-top: -18px;
-    font-size: 20px;
-  }
-  .preview-modal .modal-nav.prev { left: 2px; }
-  .preview-modal .modal-nav.next { right: 2px; }
   .preview-modal .modal-close {
     top: 6px;
     right: 6px;
@@ -2781,7 +2747,6 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 /* Bigger touch targets for the preview modal on coarse pointers. */
 @media (pointer: coarse) {
   .modal-close { width: 44px; height: 44px; font-size: 26px; }
-  .modal-nav { width: 44px; height: 64px; font-size: 30px; }
   .modal-media { touch-action: none; }
   .slideshow-button { width: 44px; height: 44px; font-size: 15px; }
   .slideshow-interval { height: 38px; }
