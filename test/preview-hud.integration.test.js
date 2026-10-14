@@ -45,6 +45,10 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   assert.equal(result.touchIdle.nextPointer, 'auto', 'touch keeps › tappable when idle');
   assert.ok(result.touchIdle.prevOpacity < 0.01, 'a disabled end arrow still fades out on touch');
   assert.equal(result.touchIdle.prevPointer, 'none', 'a disabled end arrow is not tappable when idle');
+  // A tap leaves a sticky :hover on touch; the arrow must not flash bright.
+  assert.equal(result.touchHover.hovered, true, 'the probe forced :hover on ›');
+  assert.ok(Math.abs(result.touchHover.opacity - 0.35) < 0.01, `a tapped › keeps its resting opacity (got ${result.touchHover.opacity})`);
+  assert.equal(result.touchHover.background, 'rgba(0, 0, 0, 0.32)', 'a tapped › keeps its resting background');
 });
 
 test('preview HUD rules are scoped to the web client only', () => {

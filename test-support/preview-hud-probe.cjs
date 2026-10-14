@@ -71,6 +71,24 @@ async function run() {
     modal.classList.remove('hud-hidden');
     return out;
   })()`);
+  // Touch: the sticky :hover a tap leaves must not brighten the arrow.
+  const dbg = window.webContents.debugger;
+  await dbg.sendCommand('DOM.enable');
+  await dbg.sendCommand('CSS.enable');
+  const { root } = await dbg.sendCommand('DOM.getDocument');
+  const { nodeId } = await dbg.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: '#nextPreview' });
+  await dbg.sendCommand('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
+  result.touchHover = await window.webContents.executeJavaScript(`(async () => {
+    const next = document.querySelector('#nextPreview');
+    next.disabled = false;
+    next.style.transition = 'none';
+    await new Promise(r => setTimeout(r, 50));
+    const style = getComputedStyle(next);
+    const out = { hovered: next.matches(':hover'), opacity: parseFloat(style.opacity), background: style.backgroundColor };
+    next.style.transition = '';
+    return out;
+  })()`);
+  await dbg.sendCommand('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
   process.stdout.write(`EAGLEMV_HUD ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();
 }
