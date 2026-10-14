@@ -3,7 +3,8 @@
 // D-03 each pane keeps its own import overlay; D-04 passing over a pane does
 // not activate it (only the drop does); D-05 letting go in the folder the
 // items came from is a silent no-op; D-06 a slow refresh after a completed
-// move is not reported as a failed move.
+// move is not reported as a failed move; B3-07 the path bar's library root
+// takes no library items.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -99,6 +100,31 @@ app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-pane-drag
     await idle();
     assert(mutations.length === before, 'own-pane drop changed folders: ' + JSON.stringify(mutations.slice(before)));
     assert(!toasts.length, 'own-pane drop showed: ' + toasts.join(' / '));
+    clearDragUI();
+
+    // 2b. B3-07: the path bar's library root is no target for items (the
+    //     sidebar has no root row either); folder crumbs still are.
+    const rootCrumb = inPane(paneB.id, '#breadcrumb [data-crumb-root]');
+    assert(rootCrumb, 'library root crumb not rendered');
+    before = mutations.length;
+    toasts.length = 0;
+    data = recordEffect(new DataTransfer());
+    fire(card(paneA.id, 'a-0'), 'dragstart', data);
+    fire(rootCrumb, 'dragover', data);
+    assert(data.dropEffect === 'none', 'library root offered a ' + data.dropEffect + ' drop');
+    assert(!rootCrumb.classList.contains('drop-target'), 'library root highlighted as a target');
+    fire(rootCrumb, 'drop', data);
+    await wait(120);
+    await idle();
+    assert(mutations.length === before, 'drop on the library root changed folders: ' + JSON.stringify(mutations.slice(before)));
+    assert(!toasts.length, 'drop on the library root showed: ' + toasts.join(' / '));
+    clearDragUI();
+    const folderCrumb = inPane(paneB.id, '#breadcrumb [data-crumb-folder-id="eagle-folder"]');
+    assert(folderCrumb, 'folder crumb not rendered');
+    data = recordEffect(new DataTransfer());
+    fire(card(paneA.id, 'a-0'), 'dragstart', data);
+    fire(folderCrumb, 'dragover', data);
+    assert(data.dropEffect === 'move' && folderCrumb.classList.contains('drop-target'), 'folder crumb refused items: ' + data.dropEffect);
     clearDragUI();
 
     // 3. D-06: the move succeeds, then refreshing pane B takes too long.

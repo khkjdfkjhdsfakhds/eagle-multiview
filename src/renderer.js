@@ -7728,10 +7728,23 @@ function bindPaneEvents(paneId) {
   query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
   const pathRow = root.querySelector('.heading-path-row');
   const breadcrumb = query('#breadcrumb');
-  const crumbDropTarget = event => event.target.closest('[data-crumb-folder-id], [data-crumb-root]');
+  // Folder crumbs take items like sidebar rows. The library root takes only
+  // Finder files (an import without a folder): like the sidebar, which has
+  // no root row, it is no target for library items (B3-07).
+  const crumbDropTarget = (event, kind) => (kind === 'internal-items'
+    ? event.target.closest('[data-crumb-folder-id]')
+    : event.target.closest('[data-crumb-folder-id], [data-crumb-root]'));
   if (breadcrumb) breadcrumb.addEventListener('dragover', event => {
-    const target = crumbDropTarget(event);
-    if (!target || classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'unsupported') return;
+    const kind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    if (kind === 'unsupported') return;
+    const target = crumbDropTarget(event, kind);
+    if (!target) {
+      if (kind === 'internal-items' && event.target.closest('[data-crumb-root]')) {
+        event.preventDefault(); event.stopPropagation();
+        event.dataTransfer.dropEffect = 'none';
+      }
+      return;
+    }
     event.preventDefault(); event.stopPropagation();
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
     event.dataTransfer.dropEffect = sourceFolderId && !event.altKey ? 'move' : 'copy';
@@ -7742,9 +7755,9 @@ function bindPaneEvents(paneId) {
     if (target && !target.contains(event.relatedTarget)) target.classList.remove('drop-target');
   });
   if (breadcrumb) breadcrumb.addEventListener('drop', event => {
-    const target = crumbDropTarget(event);
     const drop = resolveItemDrop(event);
     const kind = drop.kind;
+    const target = crumbDropTarget(event, kind);
     if (!target || kind === 'unsupported') return;
     event.preventDefault(); event.stopPropagation();
     breadcrumb.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target'));
