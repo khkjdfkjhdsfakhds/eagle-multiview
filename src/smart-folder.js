@@ -13,7 +13,9 @@
     }));
   }
 
-  function buildSmartFolderConditions(view = { kind: 'all' }, query = {}, baseConditions = []) {
+  // folderScope: the folders the view's query covers (a search inside a
+  // folder reaches its whole subtree), so the saved folder matches the view.
+  function buildSmartFolderConditions(view = { kind: 'all' }, query = {}, baseConditions = [], { folderScope = null } = {}) {
     if (['recent', 'random', 'trash', 'tags'].includes(view.kind)) {
       return { conditions: [], unsupported: '当前特殊视图不能等价保存为 Eagle 智能文件夹' };
     }
@@ -47,8 +49,13 @@
     }
 
     const rules = [];
-    if (view.kind === 'folder' && view.id) rules.push({ property: 'folders', method: 'intersection', value: [view.id] });
-    if (view.kind === 'root' || view.kind === 'unfiled') rules.push({ property: 'folders', method: 'empty' });
+    // Match what the view shows (S-05). Eagle's folders `intersection` needs
+    // every listed folder and `union` any of them, so a searched subtree is a
+    // union; and a search at the root covers the whole library, not 未分类.
+    const subtree = search && view.kind === 'folder' && folderScope?.length > 1 ? [...folderScope] : null;
+    if (subtree) rules.push({ property: 'folders', method: 'union', value: subtree });
+    else if (view.kind === 'folder' && view.id) rules.push({ property: 'folders', method: 'intersection', value: [view.id] });
+    if (view.kind === 'unfiled' || (view.kind === 'root' && !search)) rules.push({ property: 'folders', method: 'empty' });
     if (view.kind === 'untagged') rules.push({ property: 'tags', method: 'empty' });
     if (query.tags?.length) rules.push({ property: 'tags', method: 'intersection', value: [...query.tags] });
     if (query.ext) rules.push({ property: 'type', method: 'equal', value: String(query.ext).toLowerCase() });

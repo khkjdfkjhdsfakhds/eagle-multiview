@@ -1982,12 +1982,18 @@ function renderTagColors() {
   }).join('') || '<small class="muted">当前资料库还没有标签</small>';
 }
 
-async function saveCurrentViewAsSmartFolder() {
-  const libraryPath = state.library?.path;
+function currentViewSmartFolderConditions() {
   const currentSmartFolder = state.currentView.kind === 'smart'
     ? findFolder(state.library?.smartFolders, state.currentView.id)
     : null;
-  const converted = buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || []);
+  return buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || [], {
+    folderScope: paneItemQuery(activePane()).folderIds || null
+  });
+}
+
+async function saveCurrentViewAsSmartFolder() {
+  const libraryPath = state.library?.path;
+  const converted = currentViewSmartFolderConditions();
   if (converted.unsupported) {
     toast(converted.unsupported, 4200);
     return;
@@ -2007,15 +2013,19 @@ async function saveCurrentViewAsSmartFolder() {
 }
 
 function createSmartFolderFromNewMenu() {
-  const currentSmartFolder = state.currentView.kind === 'smart'
-    ? findFolder(state.library?.smartFolders, state.currentView.id)
-    : null;
-  const converted = buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || []);
-  if (!converted.unsupported) return saveCurrentViewAsSmartFolder();
-  if (converted.unsupported === '当前视图没有可保存的筛选条件') {
-    $('#filterPopover').classList.remove('hidden');
-    $('#filterButton').setAttribute('aria-expanded', 'true');
-    requestAnimationFrame(() => $('#searchInput').focus());
+  const converted = currentViewSmartFolderConditions();
+  // "New" with no filter set is not "save this view": at the root that saved
+  // 未分类, in a folder just that folder. Ask for conditions instead (B1-03).
+  const nothingChosen = !queryFiltersActive(state.query);
+  if (!converted.unsupported && !nothingChosen) return saveCurrentViewAsSmartFolder();
+  if (nothingChosen || converted.unsupported === '当前视图没有可保存的筛选条件') {
+    // Opened after the menu click has finished bubbling: the document
+    // outside-click handler closed it again within the same click (B1-03).
+    setTimeout(() => {
+      $('#filterPopover').classList.remove('hidden');
+      renderFilterState();
+      $('#searchInput').focus();
+    }, 0);
     toast('请先设置筛选条件，再点击“另存为智能文件夹”', 4200);
     return Promise.resolve(false);
   }

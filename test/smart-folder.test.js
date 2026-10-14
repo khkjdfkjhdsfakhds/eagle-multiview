@@ -43,3 +43,18 @@ test('represents unfiled and untagged views with empty-set rules', () => {
     { property: 'tags', method: 'empty' }
   ]);
 });
+
+test('a searched folder or root saves what the view shows (S-05)', () => {
+  // A search inside a folder covers its subtree; Eagle's `union` matches any.
+  const folder = buildSmartFolderConditions({ kind: 'folder', id: 'A' }, { search: 'cat' }, [], { folderScope: ['A', 'A1', 'A2'] });
+  assert.deepEqual(folder.conditions.at(-1).rules, [{ property: 'folders', method: 'union', value: ['A', 'A1', 'A2'] }]);
+  // Without a search the folder view is the folder alone.
+  const plain = buildSmartFolderConditions({ kind: 'folder', id: 'A' }, { tags: ['t'] }, [], { folderScope: null });
+  assert.deepEqual(plain.conditions[0].rules[0], { property: 'folders', method: 'intersection', value: ['A'] });
+  // A search at the root covers the whole library, not 未分类.
+  const root = buildSmartFolderConditions({ kind: 'root' }, { search: 'cat' });
+  assert.equal(root.conditions.length, 1, 'only the search condition');
+  assert.ok(!JSON.stringify(root.conditions).includes('"empty"'));
+  // The unsearched root still shows only unfiled items.
+  assert.deepEqual(buildSmartFolderConditions({ kind: 'root' }, { tags: ['t'] }).conditions[0].rules[0], { property: 'folders', method: 'empty' });
+});
