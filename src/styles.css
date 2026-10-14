@@ -2269,14 +2269,16 @@ body.web-client .content-pane .slideshow-controls .preview-view-button { display
   pointer-events: none;
 }
 /* Touch has no hover to wake the HUD, so ‹ › stay on the picture, dim, after
-   the rest of the HUD fades. This also settles the sticky :hover a tap leaves. */
+   the rest of the HUD fades. A tap leaves a sticky :hover behind, so on touch
+   the arrows keep their resting look instead of flashing bright. */
 @media (pointer: coarse) {
+  .preview-modal .modal-nav:hover:not(:disabled),
   .preview-modal.hud-hidden .modal-nav:not(:disabled) {
     opacity: .35;
     background: rgba(0, 0, 0, .32);
     color: rgba(255, 255, 255, .7);
-    pointer-events: auto;
   }
+  .preview-modal.hud-hidden .modal-nav:not(:disabled) { pointer-events: auto; }
 }
 /* The path strip grows to the same font size as the view title so it is easy
    to read and, on touch, easy to tap, while staying dim and low-presence. The
