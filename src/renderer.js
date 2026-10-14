@@ -28,6 +28,7 @@ const {
   parentView: resolveParentView,
   recordViewNavigation,
   folderMoveDelta,
+  folderScopeRemovable,
   searchFolders,
   itemFolderLocations
 } = window.EagleMVFolderNavigation;
@@ -1488,7 +1489,7 @@ function attachManualDrag() {
       const ids=ctx.knownIds.filter(id=>state.selected.has(id));
       ctx.mixedPinned=ids.some(id=>itemIsPinned(itemById(id))!==ctx.pinned);
       state.draggingItemIds=ids;state.dragSourcePaneId=ctx.paneId;
-      state.internalDrag={active:true,ids,sourceFolderId:ctx.parentId,sourcePaneId:ctx.paneId,sourceWindowId:state.windowId,libraryPath:ctx.libraryPath};
+      state.internalDrag={active:true,ids,sourceFolderId:ctx.parentId,sourceFolderIds:paneFolderScope(paneById(ctx.paneId),ctx.parentId),sourcePaneId:ctx.paneId,sourceWindowId:state.windowId,libraryPath:ctx.libraryPath};
       return ids;
     },
     submit: async (source,target,position) => {
@@ -1510,13 +1511,13 @@ function attachManualDrag() {
     nativeSource: () => state.internalDrag?.active ? state.internalDrag.orderContext : null,
     nativeStart: hasCapability('nativeDrag') ? source => {
       state.internalDrag.orderContext=source;
-      window.eagleMV.startDrag({ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+      window.eagleMV.startDrag({ids:source.ids,sourceFolderId:source.parentId,sourceFolderIds:paneFolderScope(paneById(source.paneId),source.parentId),sourcePaneId:source.paneId,
         sourceWindowId:source.windowId,libraryPath:source.libraryPath,orderContext:source});
     } : null,
     forward: source => {
       if (source.kind!=='items') return;
       if (state.internalDrag?.orderContext===source) return;
-      state.internalDrag={active:true,ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+      state.internalDrag={active:true,ids:source.ids,sourceFolderId:source.parentId,sourceFolderIds:paneFolderScope(paneById(source.paneId),source.parentId),sourcePaneId:source.paneId,
         sourceWindowId:source.windowId,libraryPath:source.libraryPath};
     }
   });
@@ -2775,9 +2776,10 @@ function attachFolderDragTargets() {
       const libraryPath = session?.libraryPath || state.library?.path;
       const folderName = row.dataset.folderName;
       const sourceFolderId = session?.sourceFolderId || null;
+      const sourceFolderIds = session?.sourceFolderIds || null;
       const move = Boolean(sourceFolderId && !event.altKey);
       const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
-      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
+      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
     });
   }
 }
@@ -2804,6 +2806,16 @@ function paneItemQuery(pane, currentView = pane.currentView) {
     if (folderIds.length) query.folderIds = folderIds;
   }
   return query;
+}
+
+// Folders a pane's items come from: the open folder, or its whole subtree while
+// a search is active (paneItemQuery widens to descendants). Moving or removing
+// must leave all of them, or subfolder results are only copied (D-07/B2-06).
+function paneFolderScope(pane, folderId = pane?.currentView.kind === 'folder' ? pane.currentView.id : null) {
+  if (!folderId) return [];
+  if (pane?.currentView.kind !== 'folder' || pane.currentView.id !== folderId) return [folderId];
+  const { folderIds } = paneItemQuery(pane);
+  return folderIds?.length ? [...folderIds] : [folderId];
 }
 
 async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false, minimumCount = 0 } = {}) {
@@ -3902,10 +3914,8 @@ async function canRemoveFromCurrentFolder(ids, paneId = state.activePaneId) {
     'Eagle 素材信息读取超时'
   ));
   const items = results.filter(result => result.ok).map(result => result.value);
-  return items.some(item => {
-    const folders = Array.isArray(item?.folders) ? item.folders : [];
-    return folders.includes(currentFolder) && folders.some(folderId => folderId !== currentFolder);
-  });
+  const scope = paneFolderScope(pane, currentFolder);
+  return items.some(item => folderScopeRemovable(item?.folders, scope));
 }
 
 function chooseTrashAction(ids) {
@@ -4048,7 +4058,7 @@ async function moveSelectionToFolder(payload) {
     toast('素材已经在这个文件夹中', 3000);
     return;
   }
-  const delta = folderMoveDelta(sourceFolderId, folderId);
+  const delta = folderMoveDelta(payload?.sourceFolderIds || paneFolderScope(pane, sourceFolderId), folderId);
   const operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
   if (!operationToken) return;
   setSyncStatus('正在移动到文件夹…');
@@ -4079,7 +4089,7 @@ function removeSelectionFromFolder(payload) {
   const pane = paneById(paneId);
   const folderId = payload?.folderId || (pane?.currentView.kind === 'folder' ? pane.currentView.id : null);
   if (!folderId) return false;
-  return mutateSelectionSet(payload.ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', paneId);
+  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId);
 }
 
 function addTagToSelection(payload) {
@@ -6912,7 +6922,7 @@ async function runItemBatch(ids, worker, timeoutMessage) {
   return { succeeded, failed, firstError };
 }
 
-async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourcePaneId = null } = {}) {
+async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourceFolderIds = null, sourcePaneId = null } = {}) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
   if (!uniqueIds.length || (!folderId && !(move && sourceFolderId))) return false;
   if (!state.connected) {
@@ -6925,7 +6935,8 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   }
   // Dragging out of "全部/未分类" has no source folder to leave, so an
   // ⌥-drop there degrades to a plain add, mirroring Eagle.
-  const delta = folderId ? folderMoveDelta(move ? sourceFolderId : null, folderId) : { add: [], remove: [sourceFolderId] };
+  const sourceScope = sourceFolderIds?.length ? sourceFolderIds : [sourceFolderId];
+  const delta = folderId ? folderMoveDelta(move ? sourceScope : null, folderId) : { add: [], remove: sourceScope };
   const moving = delta.remove.length > 0;
   const verb = moving ? '移动' : '归类';
   const operationToken = beginForegroundOperation(`正在${verb} ${uniqueIds.length} 个素材…`, { key: `folder-${moving ? 'move' : 'add'}:${libraryPath}:${folderId}` });
@@ -6950,7 +6961,8 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
       const movedIds = new Set();
       results.forEach((res, idx) => { if (res?.ok) movedIds.add(uniqueIds[idx]); });
       for (const pane of state.panes) {
-        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId
+          && !paneFolderScope(pane).includes(folderId)) {
           pane.items = pane.items.filter(item => !movedIds.has(item.id));
           movedIds.forEach(id => { pane.itemMap?.delete(id); });
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
@@ -6994,12 +7006,16 @@ function paneItemDropContext(targetPaneId, event, drop = resolveItemDrop(event))
   const sourceFolderId = sourcePane?.currentView.kind === 'folder'
     ? sourcePane.currentView.id
     : (internalDrag?.sourceFolderId || null);
+  const sourceFolderIds = sourcePane?.currentView.kind === 'folder'
+    ? paneFolderScope(sourcePane)
+    : (internalDrag?.sourceFolderIds || (sourceFolderId ? [sourceFolderId] : []));
   return {
     targetPaneId,
     ids,
     libraryPath: internalDrag?.libraryPath || state.library?.path,
     targetFolderId: targetPane.currentView.kind === 'folder' ? targetPane.currentView.id : null,
     sourceFolderId,
+    sourceFolderIds,
     sourcePaneId,
     move: Boolean(sourceFolderId && !event.altKey)
   };
@@ -7007,7 +7023,7 @@ function paneItemDropContext(targetPaneId, event, drop = resolveItemDrop(event))
 
 async function handlePaneItemDrop(context) {
   if (!context) return false;
-  const { targetPaneId, ids, libraryPath, targetFolderId, sourceFolderId, move } = context;
+  const { targetPaneId, ids, libraryPath, targetFolderId, sourceFolderId, sourceFolderIds, move } = context;
   if (!state.connected) { toast('Eagle 未连接，暂时无法修改归类', 3500); return true; }
   if (!targetFolderId) { toast('请将素材拖入一个具体文件夹栏', 3500); return true; }
   if (sourceFolderId && sourceFolderId === targetFolderId) { toast('素材已经在这个文件夹中'); return true; }
@@ -7019,8 +7035,7 @@ async function handlePaneItemDrop(context) {
       window.eagleMV.mutateSet({
         id,
         field: 'folders',
-        add: [targetFolderId],
-        remove: move && sourceFolderId ? [sourceFolderId] : [],
+        ...folderMoveDelta(move && sourceFolderId ? (sourceFolderIds?.length ? sourceFolderIds : [sourceFolderId]) : null, targetFolderId),
         libraryPath
       }),
       15000,
@@ -7035,7 +7050,8 @@ async function handlePaneItemDrop(context) {
       const movedIds = new Set();
       results.forEach((res, idx) => { if (res?.ok) movedIds.add(ids[idx]); });
       for (const pane of state.panes) {
-        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId
+          && !paneFolderScope(pane).includes(targetFolderId)) {
           pane.items = pane.items.filter(item => !movedIds.has(item.id));
           movedIds.forEach(id => { pane.itemMap?.delete(id); });
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
@@ -7465,10 +7481,11 @@ function bindPaneEvents(paneId) {
     const session = drop.session;
     const libraryPath = session?.libraryPath || state.library?.path;
     const sourceFolderId = session?.sourceFolderId || null;
+    const sourceFolderIds = session?.sourceFolderIds || null;
     const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
     const name = target.textContent;
     const move = Boolean(sourceFolderId && !event.altKey);
-    scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourcePaneId }));
+    scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
   });
   pathRow?.addEventListener('pointerdown', event => {
     if (breadcrumb.classList.contains('is-editing')) return;
@@ -7738,6 +7755,7 @@ function bindPaneEvents(paneId) {
     const ids = [...state.selected];
     const libraryPath = state.library?.path;
     const sourceFolderId = state.currentView.kind === 'folder' ? state.currentView.id : null;
+    const sourceFolderIds = paneFolderScope(paneById(paneId), sourceFolderId);
     if (hasCapability('nativeDrag')) {
       // Electron's native file drag must replace Chromium's default HTML5
       // drag session. Leaving the default session alive can make macOS wait
@@ -7756,6 +7774,7 @@ function bindPaneEvents(paneId) {
       token: null,
       ids,
       sourceFolderId,
+      sourceFolderIds,
       sourcePaneId: paneId,
       sourceWindowId: state.windowId,
       libraryPath
@@ -7763,6 +7782,7 @@ function bindPaneEvents(paneId) {
     window.eagleMV.startDrag({
       ids,
       sourceFolderId,
+      sourceFolderIds,
       sourcePaneId: paneId,
       sourceWindowId: state.windowId,
       libraryPath
@@ -7808,9 +7828,10 @@ function bindPaneEvents(paneId) {
     const session = drop.session;
     const libraryPath = session?.libraryPath || state.library?.path;
     const sourceFolderId = session?.sourceFolderId || null;
+    const sourceFolderIds = session?.sourceFolderIds || null;
     const move = Boolean(sourceFolderId && !event.altKey);
     const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || paneId) : null;
-    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourcePaneId }));
+    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
   });
   const scroller = query('#gridScroller');
   bindMarqueeSelection(paneId, scroller);

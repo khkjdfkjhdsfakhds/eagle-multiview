@@ -2391,6 +2391,9 @@ function setupIPC() {
       // session's files apart from files dragged in from Finder.
       files,
       sourceFolderId: payload.sourceFolderId || null,
+      sourceFolderIds: Array.isArray(payload.sourceFolderIds)
+        ? payload.sourceFolderIds.filter(id => typeof id === 'string' && id).slice(0, 10000)
+        : null,
       sourcePaneId: payload.sourcePaneId || null,
       sourceWindowId: payload.sourceWindowId || null,
       orderContext: payload.orderContext || null,

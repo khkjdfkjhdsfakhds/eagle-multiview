@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, overlayFolder, itemFolderLocations } = require('../src/folder-navigation');
+const { normalizeView, parentView, recordViewNavigation, folderMoveDelta, folderScopeRemovable, flattenFolders, searchFolders, overlayFolder, itemFolderLocations } = require('../src/folder-navigation');
 
 const folders = [{
   id: 'top',
@@ -77,6 +77,22 @@ test('does not remove a folder when the move target is already active', () => {
     add: ['same'],
     remove: []
   });
+});
+
+test('moving out of a searched subtree leaves every folder of it except the target', () => {
+  assert.deepEqual(folderMoveDelta(['top', 'middle', 'deep'], 'middle'), {
+    add: ['middle'],
+    remove: ['top', 'deep']
+  });
+  assert.deepEqual(folderMoveDelta(null, 'target'), { add: ['target'], remove: [] });
+});
+
+test('remove-only applies when an item stays filed outside the scope', () => {
+  const scope = ['top', 'middle', 'deep'];
+  assert.equal(folderScopeRemovable(['deep', 'elsewhere'], scope), true);
+  assert.equal(folderScopeRemovable(['top', 'deep'], scope), false);
+  assert.equal(folderScopeRemovable(['elsewhere'], scope), false);
+  assert.equal(folderScopeRemovable(undefined, scope), false);
 });
 
 test('folder picker searches the complete hierarchy by full path', () => {

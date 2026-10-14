@@ -565,6 +565,7 @@
         token,
         ids: [...new Set(payload.ids || [])],
         sourceFolderId: payload.sourceFolderId || null,
+        sourceFolderIds: Array.isArray(payload.sourceFolderIds) ? payload.sourceFolderIds : null,
         sourcePaneId: payload.sourcePaneId || null,
         sourceWindowId: payload.sourceWindowId || null,
         libraryPath: payload.libraryPath || null
