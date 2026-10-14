@@ -2238,7 +2238,36 @@ function selectAllItems() {
   state.selected = new Set(state.items.map(item => item.id));
   updateCardSelectionStyles();
   renderInspector();
+  const pane = activePane();
+  if (pane?.hasMore) selectRestOfView(pane).catch(error => toast(`全选失败：${error.message}`, 4000));
   return true;
+}
+
+// Eagle's ⌘A takes the whole view, but only 160 items are loaded at first,
+// so a batch after ⌘A quietly touched a fraction of a big folder (P6-02).
+// The grid is not virtualised, so load as far as the locate feature does
+// (SORT_FETCH_CAP) and say plainly when the view holds more than that.
+async function selectRestOfView(pane) {
+  const paneId = pane.id;
+  const viewKey = descriptorKey(pane.currentView);
+  const chosen = new Set(pane.selected);
+  if (pane.items.length < SORT_FETCH_CAP) {
+    toast('正在载入当前视图的全部素材以便全选…', 2400);
+    await refresh({ paneId, reset: true, preserveScroll: true, minimumCount: SORT_FETCH_CAP });
+    // Picked something else, or left the view, while it loaded: leave it be.
+    if (paneById(paneId) !== pane || descriptorKey(pane.currentView) !== viewKey
+      || !sameSelection(pane, new Set([...chosen].filter(id => pane.itemMap.has(id))))) return;
+    pane.selected = new Set(pane.items.map(item => item.id));
+    if (state.activePaneId === paneId) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+  }
+  if (pane.hasMore) {
+    toast(`已全选前 ${pane.selected.size.toLocaleString()} 个素材（当前视图共 ${Number(pane.total || 0).toLocaleString()} 个），超出部分请分批操作`, 5200);
+  } else if (pane.selected.size > chosen.size) {
+    toast(`已全选 ${pane.selected.size.toLocaleString()} 个素材`, 2000);
+  }
 }
 
 function clearSelection() {
