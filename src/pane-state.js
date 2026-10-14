@@ -333,21 +333,51 @@
     return [...(shared || [])];
   }
 
-  function selectRange(items, selectedIds, targetId, additive = false) {
-    const current = new Set(selectedIds || []);
-    const targetIndex = (items || []).findIndex(item => item?.id === targetId);
-    const anchorIndex = (items || []).findIndex(item => current.has(item?.id));
-    const next = additive ? current : new Set();
+  // Eagle's ⇧-click: add the run from the anchor (the last plain or ⌘-click)
+  // to the target and keep everything already selected. Without an anchor in
+  // view the run starts at the first selected item, as Eagle's does.
+  function extendSelection(items, selectedIds, anchorId, targetId) {
+    const list = items || [];
+    const next = new Set(selectedIds || []);
+    const targetIndex = list.findIndex(item => item?.id === targetId);
     if (targetIndex < 0) return next;
-    if (anchorIndex < 0) {
-      next.add(targetId);
-      return next;
-    }
+    let anchorIndex = anchorId ? list.findIndex(item => item?.id === anchorId) : -1;
+    if (anchorIndex < 0) anchorIndex = list.findIndex(item => next.has(item?.id));
+    if (anchorIndex < 0) anchorIndex = targetIndex;
     for (let index = Math.min(anchorIndex, targetIndex); index <= Math.max(anchorIndex, targetIndex); index += 1) {
-      const id = items[index]?.id;
+      const id = list[index]?.id;
       if (id) next.add(id);
     }
     return next;
+  }
+
+  // Eagle's ⇧← / ⇧→ grow or shrink the selected run on the side away from
+  // the anchor. Returns the new selection and the item now at its moving edge.
+  function stepSelection(items, selectedIds, anchorId, direction) {
+    const list = items || [];
+    const next = new Set(selectedIds || []);
+    const indices = [];
+    list.forEach((item, index) => { if (next.has(item?.id)) indices.push(index); });
+    if (!indices.length) return { selected: next, edgeId: null };
+    const start = indices[0];
+    const end = indices.at(-1);
+    const anchorIndex = anchorId ? list.findIndex(item => item?.id === anchorId) : -1;
+    if (direction > 0) {
+      if (anchorIndex >= 0 && start < anchorIndex) {
+        next.delete(list[start].id);
+        return { selected: next, edgeId: list[start + 1]?.id || null };
+      }
+      if (!list[end + 1]) return { selected: next, edgeId: list[end].id };
+      next.add(list[end + 1].id);
+      return { selected: next, edgeId: list[end + 1].id };
+    }
+    if (anchorIndex >= 0 && end > anchorIndex) {
+      next.delete(list[end].id);
+      return { selected: next, edgeId: list[end - 1]?.id || null };
+    }
+    if (!list[start - 1]) return { selected: next, edgeId: list[start].id };
+    next.add(list[start - 1].id);
+    return { selected: next, edgeId: list[start - 1].id };
   }
 
   function defaultSplitRatios(layout) {
@@ -472,7 +502,8 @@
     filtersActive,
     filterCount,
     normalizeRange,
-    selectRange,
+    extendSelection,
+    stepSelection,
     defaultSortDir,
     effectiveSortDir,
     compareBySort,

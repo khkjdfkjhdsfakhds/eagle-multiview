@@ -57,7 +57,8 @@ const {
   queryWithoutSearch,
   filtersActive: queryFiltersActive,
   filterCount: queryFilterCount,
-  selectRange,
+  extendSelection,
+  stepSelection,
   normalizeRange: normalizeQueryRange,
   effectiveSortDir,
   compareBySort: compareItemsBySort,
@@ -337,7 +338,7 @@ function paneCreationOrder(id) {
 }
 
 const paneStateKeys = [
-  'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
+  'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase', 'selectionAnchor',
   'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query', 'sortCascade',
   'viewMemory', 'restoreScroll',
   'previewId', 'previewZoom', 'previewView', 'previewToken', 'textSession', 'textSaving', 'slideshow'
@@ -439,6 +440,8 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     errorMessage: '',
     selected: fresh ? new Set() : new Set(source.selected || []),
     selectedBase: fresh ? null : (source.selectedBase || null),
+    // Where ⇧-click and ⇧-arrows extend from: the last plain or ⌘-click.
+    selectionAnchor: null,
     sort: fresh ? 'default' : (source.sort || 'default'),
     sortDir: source.sortDir || 'auto',
     sortCascade: sortCascadeEnabled,
@@ -2317,6 +2320,21 @@ function directionalCard(cards, current, key) {
     .sort((a, b) => (Math.abs(a.primary) + a.secondary * 2) - (Math.abs(b.primary) + b.secondary * 2))[0]?.card || null;
 }
 
+function stepSelectionByKey(direction) {
+  if (!state.selected.size || !confirmDiscardChanges()) return false;
+  const { selected, edgeId } = stepSelection(sortedItems(), state.selected, state.selectionAnchor, direction);
+  state.selectedFolderCard = null;
+  state.selected = selected;
+  updateCardSelectionStyles();
+  renderInspector();
+  if (edgeId) requestAnimationFrame(() => {
+    const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(edgeId)}"]`);
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+  return true;
+}
+
 function moveCardFocus(key) {
   const cards = [...(paneRoot()?.querySelectorAll('#itemGrid .folder-card, #itemGrid .item-card') || [])];
   if (!cards.length) return;
@@ -3065,13 +3083,23 @@ function selectItem(id, additive = false, range = false) {
   if (staysOnSameItem) return true;
   if (!staysOnSameItem && !confirmDiscardChanges()) return false;
   state.selectedFolderCard = null;
-  if (range && state.selected.size) {
-    state.selected = selectRange(sortedItems(), state.selected, id, additive);
+  // Eagle's rules (P6-03): ⇧-click on a selected item drops it; on another
+  // item it adds the run from the anchor and keeps the rest; ⌘-click toggles,
+  // and a plain or adding ⌘-click becomes the new anchor.
+  if (range && state.selected.has(id)) {
+    state.selected.delete(id);
+  } else if (range && state.selected.size) {
+    state.selected = extendSelection(sortedItems(), state.selected, state.selectionAnchor, id);
   } else if (additive) {
-    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+    if (state.selected.has(id)) state.selected.delete(id);
+    else {
+      state.selected.add(id);
+      state.selectionAnchor = id;
+    }
   } else {
     state.selected.clear();
     state.selected.add(id);
+    state.selectionAnchor = id;
   }
   if (state.sort === 'manual') {
     const index=sortedItems().findIndex(item=>item.id===id);
@@ -9299,7 +9327,14 @@ function bindEvents() {
     }
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
-      moveCardFocus(event.key);
+      if (event.shiftKey) {
+        // ⇧← ⇧→ grow or shrink the run (P6-04); ⇧↑ ⇧↓ do the same in the
+        // list layout and nothing in the grid layouts, as in Eagle.
+        const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+        if (horizontal || state.viewMode === 'list') stepSelectionByKey(event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1);
+      } else {
+        moveCardFocus(event.key);
+      }
     }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }

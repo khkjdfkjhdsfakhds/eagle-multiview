@@ -10,7 +10,8 @@ const {
   queryWithoutSearch,
   filtersActive,
   filterCount,
-  selectRange,
+  extendSelection,
+  stepSelection,
   coordinatePaneLayout,
   paneLayoutSpecs,
   defaultSplitRatios,
@@ -86,8 +87,38 @@ test('folder cards share the search-exiting navigation path', () => {
 
 test('range selection falls back safely when the previous anchor disappeared', () => {
   const items = [{ id: 'A' }, { id: 'B' }, { id: 'C' }];
-  assert.deepEqual([...selectRange(items, new Set(['removed']), 'C')], ['C']);
-  assert.deepEqual([...selectRange(items, new Set(['A']), 'C')], ['A', 'B', 'C']);
+  assert.deepEqual([...extendSelection(items, new Set(['removed']), 'removed', 'C')], ['removed', 'C']);
+  assert.deepEqual([...extendSelection(items, new Set(['A']), null, 'C')], ['A', 'B', 'C']);
+});
+
+test('⇧-click extends from the last click and keeps the rest, as in Eagle (P6-03)', () => {
+  const items = Array.from({ length: 40 }, (_, index) => ({ id: String(index) }));
+  const ids = set => [...set].map(Number).sort((a, b) => a - b);
+  const range = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+  // Click 20, ⇧-click 10, ⇧-click 30: the anchor stays at 20 and Eagle adds.
+  let selected = extendSelection(items, new Set(['20']), '20', '10');
+  assert.deepEqual(ids(selected), range(10, 20));
+  selected = extendSelection(items, selected, '20', '30');
+  assert.deepEqual(ids(selected), range(10, 30));
+  // Click 20, ⌘-click 5 (new anchor), ⇧-click 10: 5–10 joins 20.
+  selected = extendSelection(items, new Set(['20', '5']), '5', '10');
+  assert.deepEqual(ids(selected), [...range(5, 10), 20]);
+});
+
+test('⇧-arrows grow and shrink the run away from the anchor (P6-04)', () => {
+  const items = ['A', 'B', 'C', 'D', 'E'].map(id => ({ id }));
+  let step = stepSelection(items, new Set(['C']), 'C', 1);
+  assert.deepEqual([...step.selected].sort(), ['C', 'D']);
+  assert.equal(step.edgeId, 'D');
+  step = stepSelection(items, step.selected, 'C', -1);
+  assert.deepEqual([...step.selected].sort(), ['C'], '⇧← first shrinks the run back to the anchor');
+  step = stepSelection(items, step.selected, 'C', -1);
+  assert.deepEqual([...step.selected].sort(), ['B', 'C']);
+  step = stepSelection(items, step.selected, 'C', 1);
+  assert.deepEqual([...step.selected].sort(), ['C'], '⇧→ shrinks from the far side of the anchor');
+  step = stepSelection(items, new Set(['E']), 'E', 1);
+  assert.deepEqual([...step.selected], ['E'], 'nothing past the last item');
+  assert.deepEqual([...stepSelection(items, new Set(), null, 1).selected], [], 'no selection, nothing to extend');
 });
 
 test('adding a vertical pane fills the middle slot without changing edge pane identity', () => {
