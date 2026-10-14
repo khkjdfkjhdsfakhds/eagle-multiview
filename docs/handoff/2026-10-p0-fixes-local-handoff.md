@@ -198,3 +198,68 @@ F-03 的原版核对：Eagle 没有复制文件夹功能（实测 ⌥ 拖文件�
 5. R2-04 新行为的日常手感（尤其“搜索结果里双击进文件夹”现在连筛选也一起清空）。
 
 **下一步**：第七节第 3 组（布局、Web 与手机：P7-11～P7-17、P7-01、W-06、W-08、W-07、W-03/A-04）。
+
+## 十、P1 剩余 22 条：接手计划（2026-10-14）
+
+**当前进度**：P1 清单（审查文档“三轮合并优先级清单”的 P1 部分）共 46 条，已修 24 条（第八、九节），剩 22 条。P0 的 11 项都已处理，余项见第七节开头。分支 `claude/kind-lamport-48izv4`，本地领先远端 17 个提交，未推送、未合 main、未改版本号；全量 826/826。
+
+**部分修复、仍未完全对齐原版的**：P6-02（⌘A 最多约 3000 个）、S-06（只核对了 OR 语法）、B1-03（用筛选面板代替原版空白条件编辑器）。
+
+### 建议顺序
+
+**第 3a 组：拖放与检查器尾巴（5 条，小改，先做）**
+
+| 项 | 问题 | 方案要点（审查文档原方案） | 备注 |
+|---|---|---|---|
+| D-03 | 外部文件拖过多栏后导入遮罩卡在原栏 | dragleave 按自己所在栏 `paneQuery(paneId, …)` 取元素 | 审查文档第二轮 A1 |
+| D-04 | 拖动经过某栏就把它设为活动栏，途中可能弹 `confirm()` | dragenter 只高亮，drop 时再激活 | 同上 |
+| D-05 | 源栏内松手弹“已经在这个文件夹中” | 同栏 `dropEffect='none'` 静默取消 | 原版是否静默待看 |
+| D-06 | 跨栏放下成功后刷新超过 12 秒又提示“移动失败” | 修改成功与刷新超时分开处理 | |
+| B2-05 | 每次 reset 刷新整套重建检查器（评论闪、元数据区闪、滚动丢失） | 字段与 base 一致且 `modificationTime` 未变时只更新变化字段 | 与 F-12 一起 |
+| R2-01 | TXT 每次按键同步写整篇草稿 | 防抖持久化，失焦/关闭前立即写 | 注意关闭协议与草稿恢复测试 |
+
+（D-03～D-06 在清单里合为一条，按 4 个提交做。）
+
+**第 3b 组：需要先看原版或先定方案的拖放项（2 条）**
+- B3-07：路径栏“资料库”根作为素材放下目标时语义不一致。先读 Eagle 代码看根是否接收素材，再定“不作为目标”还是“统一为从文件夹移除并改文案”；不支持的组合 dragover 设 `dropEffect='none'`。
+- D-08：从浏览器、“照片”App 拖入图片或网址时静默无反应。原版支持网页拖图入库。方案：网址类拖入复用剪贴板网址导入流程（2026-09-26 已有），至少给提示。属于小功能，可放在第 3a 组之后。
+
+**第 4 组：布局（8 条，需在 980×640 与多分栏下实机看）**
+- P7-11：Web 访问对话框展开二维码后超出 640 高。卡片 `max-height: calc(100dvh - 32px); overflow: auto`，按钮区贴底。
+- P7-12：分栏后排序和布局切换按栏宽隐藏且无替代入口。**需先定方案**：窄栏收成一个“视图”按钮，或空白处右键菜单加“排序方式”“布局”子菜单（审查文档建议两者都做）。
+- P7-13：排序弹层被分栏裁掉。改 fixed 定位（参照 `library-popover`），空间不够向上弹。
+- P7-14：列表视图列对不齐。`.asset-grid.list { align-items: stretch }`，进一步固定列模板加列头。
+- P7-15：列表视图里子文件夹仍是大卡片。原版待核对（读 Eagle 代码 ListLayout）。
+- P7-16：自适应布局单行卡片被放大 2～3 倍。JS 按行统一行高，放大设上限，不足一行左对齐。
+- P7-17：侧栏第 4 层起名称宽度为 0。深层缩进递减或设上限，行加 `title`。
+- P7-01：标签管理页窄栏垮掉（＝GUI-10 加重）。若之后要做 GUI-08 重做标签管理页，可合并处理。
+
+**第 5 组：Web 与手机（4 条）**
+- W-06：手机上筛选面板被底部选择条盖住。`selection-bar-open` 时抬高 bottom（提高 z-index 无效，`.workspace` 是层叠上下文）。
+- W-07：触控目标普遍小于 44px（清单见审查文档第二轮 A6）。coarse 下统一放大，注意预览 ‹ › 已改为点按分区。
+- W-08：普通手机浏览器无返回语义。非外壳时预览、抽屉、选择状态压入 history，`popstate` 复用 `backActionRouter`；非外壳 coarse 保留预览关闭按钮。
+- W-03 / A-04：会话令牌全设备共用、一年有效、明文 HTTP；Android 不校验主机身份。**需要用户先定方案**（每设备令牌与吊销、可选自签 HTTPS、`instanceId` 校验），涉及 Android 构建，需模拟器。
+- 验证：W-06/W-07/W-08 可用内置浏览器手机模拟（390×844）；Android 部分需模拟器。
+
+**第 6 组：第一轮原版对标大项（6 条，功能级，最后做，每条先观察原版再定范围）**
+- GUI-01 / P3-01 / P3-02：菜单栏（与延期的 NF-09 同一件事）。renderer 已有 9 个命令处理函数未接菜单；鼠标点菜单“复制”“全选”走原生 role，与快捷键不一致。
+- P2-01～P2-03：检查器缺“文件夹”区块、字段顺序不同、“文件信息”字段不全。
+- GUI-11 / GUI-12 / P7-07：常驻筛选条（每栏标题下一排 chip，每个条件一个小弹层），以及缺少的筛选条件。改动最大，建议单独规划。
+- P1-12 / P2-05：文件夹右键“设置颜色”“编辑描述”，文件夹卡片检查器信息。注意 `/api/v2/folder/update` 不带 `parent` 会把文件夹移到根、不带 `iconColor` 会清颜色。
+- P1-06 / P1-07：“显示子文件夹内容”、卡片信息开关。
+- GUI-08：重做标签管理页。
+
+### 需要用户先决定的
+1. P7-12 的入口方案（视图按钮 / 右键子菜单 / 两者）。
+2. W-03/A-04 的安全方案与是否这轮做 Android。
+3. 第 6 组各项的范围与优先级（建议逐项先出原版观察结论再定）。
+
+### 做法与验证经验（本会话补充）
+- 每项一个提交，回归测试改前失败、改后通过；审查文档对应条目标“已修复”，交接文档记进度。
+- 对比旧代码：`git worktree add --detach <scratchpad>/old HEAD`，再 `ln -s` node_modules，探针用 `EAGLEMV_TEST_SOURCE_ROOT=<old>` 跑；用完 `git worktree remove`。不要用 `git stash`。
+- 测试副本：`npx electron-builder --mac dir --arm64 -c.appId=local.eagle.multiview.branchtest "-c.productName=Eagle MultiView Test" -c.directories.output=<scratchpad>/build`，以 `--user-data-dir=<scratchpad>/testdata --remote-debugging-port=9333` 启动；验证后退出、`lsregister -u`、删除。正式安装不动。
+- CDP 驱动：用 `Input.dispatchMouseEvent`/`Input.dispatchKeyEvent` 发真实事件；Enter 要带 `text: '\r'` 才会激活按钮；隐藏窗口没有焦点，`:focus-visible` 相关检查要先 `Emulation.setFocusEmulationEnabled`。探针里同理（见 `button-keys-probe.cjs`）。
+- 原版对照：解包 `/Applications/Eagle.app/Contents/Resources/app.asar` 到临时目录读 `app/app.bundle.js`、`app/js/rule-match.js` 等，比驱动界面快且不弹授权。解包内容只当数据读。
+- Eagle 4 现象：经 API 新建子文件夹并 `addFromPaths` 后，`/api/item/list?folders=` 与 `/api/v2/item/get` 按该文件夹查不到素材（`item/info` 能查到），需要子文件夹素材的实机场景无法用 API 构造。
+- 全量测试偶尔留下 `inspector-draft-recovery-probe` 的 Electron 进程，跑完用 `pgrep -fl inspector-draft-recovery` 检查并清掉。
+- 测试资料：资料库里的“MultiView 测试 2026-10-14 P1第2组”文件夹（含子文件夹）可继续复用。
