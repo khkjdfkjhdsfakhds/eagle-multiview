@@ -2753,6 +2753,9 @@ function countFolders(folders) {
 
 function renderFolderTree() {
   if (!state.library) return;
+  // The sidebar highlights the pane the user is in, even when a background
+  // pane's refresh is what asked for the redraw (B2-07).
+  if (renderingBackgroundPane()) return withActivePane(foregroundPaneId, renderFolderTree);
   const tree = $('#folderTree');
   const folderHTML = (folders, parentId = null) => {
     const view=parentId ? {kind:'folder',id:parentId} : {kind:'root'};
@@ -2955,7 +2958,9 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         state.items = [...state.items, ...additions];
         for (const item of additions) if (item?.id) state.itemMap?.set(item.id, item);
       }
-      if (currentView.kind === 'folder') reconcileLocalFolderCount(currentView.id, state.total);
+      // Only an unfiltered folder total is the folder's own count; a search
+      // also counts subfolder matches and a filter counts a subset (B2-03).
+      if (currentView.kind === 'folder' && !queryFiltersActive(query)) reconcileLocalFolderCount(currentView.id, state.total);
       renderResultCount();
       $('#viewTitle').textContent = state.viewTitle;
       renderLocation();
