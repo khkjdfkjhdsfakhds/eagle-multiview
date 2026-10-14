@@ -2826,7 +2826,7 @@ function renderFolderTree() {
     const expanded = state.expandedFolders.has(folder.id);
     const count = folderTreeCount(folder, children.length > 0 && expanded);
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
         ${folderCountBadge(count)}
@@ -2839,7 +2839,7 @@ function renderFolderTree() {
     const children = folder.children || [];
     const expanded = state.expandedFolders.has(folder.id);
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>
         ${folderCountBadge(folder.imageCount)}
@@ -2850,7 +2850,7 @@ function renderFolderTree() {
   const smartHTML = smartFolderHTML(state.library.smartFolders || []);
   const quickEntries = quickAccessEntries();
   const quickHTML = quickEntries.map(folder => folder.quickType === 'smart'
-    ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
+    ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
     : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${folderCountBadge(folder.imageCount)}</button>`).join('');

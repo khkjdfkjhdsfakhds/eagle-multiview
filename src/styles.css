@@ -778,7 +778,8 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .folder-children {
   position: relative;
   min-width: 0;
-  margin-left: 16px;
+  /* 20px per level with the 1px guide line, as Eagle indents its tree (P7-17). */
+  margin-left: 12px;
   padding-left: 7px;
   border-left: 1px solid rgba(247, 248, 248, .11);
 }
@@ -791,7 +792,10 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   border-top: 1px solid rgba(247, 248, 248, .11);
 }
 .folder-row .folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.folder-count { margin-left: auto; padding-left: 5px; color: rgba(248, 249, 251, .6); font: 11px ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace; font-variant-numeric: tabular-nums; }
+/* Deep in a narrow sidebar the name keeps a few characters and the count
+   gives way first (it is clipped at the sidebar edge if it must). */
+.folder-tree .folder-row .folder-name { flex: 0 1 auto; min-width: min(3.2em, 100%); }
+.folder-count { margin-left: auto; padding-left: 5px; min-width: 0; overflow: hidden; text-overflow: clip; color: rgba(248, 249, 251, .6); font: 11px ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace; font-variant-numeric: tabular-nums; }
 .folder-row.active .folder-count { color: rgba(248, 249, 251, .8); }
 .folder-section-label {
   margin: 14px 8px 2px;
