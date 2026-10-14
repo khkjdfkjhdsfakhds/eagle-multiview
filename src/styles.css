@@ -2533,6 +2533,9 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .toast {
   position: fixed;
   z-index: 30;
+  /* Text only: a passing message must not swallow taps on what lies under
+     it (the phone filter sheet's last buttons, W-06). */
+  pointer-events: none;
   left: 50%;
   bottom: 44px;
   transform: translateX(-50%);
@@ -2839,6 +2842,12 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
     left: 8px;
     width: auto;
     max-height: min(72vh, calc(100vh - 130px));
+  }
+  /* …and above the selection strip, which sits in a higher stacking context
+     (raising the sheet's z-index cannot help inside .workspace) (W-06). */
+  body.web-client.selection-bar-open .filter-popover {
+    bottom: calc(66px + env(safe-area-inset-bottom));
+    max-height: min(72vh, calc(100vh - 196px));
   }
   /* The selection strip overlays the drawer's last rows. */
   body.web-client.selection-bar-open .inspector { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
