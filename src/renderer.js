@@ -8072,32 +8072,158 @@ function bindPaneEvents(paneId) {
     let pinchBase = null;
     let swipeSession = null;
     let swipeClickSuppressUntil = 0;
+    // Photo-album paging: while a finger drags the fitted image sideways, the
+    // neighbour it would turn to rides in from that edge. Letting go far
+    // enough, or with a quick flick, slides both into place; otherwise both
+    // slide back. With nothing to turn to that way the drag rubber-bands.
+    // Taps and arrow keys still cut straight to the next item.
+    let swipeTurning = false;
+    const swipeNeighbour = delta => withActivePane(paneId, () => {
+      const items = sortedItems();
+      const index = items.findIndex(item => item.id === state.previewId);
+      return index >= 0 ? items[index + delta] || null : null;
+    });
+    const startSwipeSession = (event, image) => {
+      const media = paneQuery(paneId, '#modalMedia');
+      const neighbours = { 1: swipeNeighbour(1), [-1]: swipeNeighbour(-1) };
+      if (image) image.style.transition = 'none';
+      return {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        image,
+        width: (media || previewModal).getBoundingClientRect().width || window.innerWidth,
+        padding: media ? getComputedStyle(media).padding : '0px',
+        neighbours,
+        canTurn: { 1: Boolean(neighbours[1]) || withActivePane(paneId, () => state.hasMore), [-1]: Boolean(neighbours[-1]) },
+        samples: [{ t: event.timeStamp, x: event.clientX }],
+        offset: 0,
+        peek: null,
+        peekDelta: 0
+      };
+    };
+    const removeSwipePeek = session => {
+      session.peek?.remove();
+      session.peek = null;
+      session.peekDelta = 0;
+    };
+    const showSwipePeek = (session, delta) => {
+      if (session.peekDelta === delta) return;
+      removeSwipePeek(session);
+      const item = delta ? session.neighbours[delta] : null;
+      if (!item) return;
+      const peek = document.createElement('div');
+      peek.className = 'preview-swipe-peek';
+      peek.setAttribute('aria-hidden', 'true');
+      peek.style.padding = session.padding;
+      const image = document.createElement('img');
+      image.className = 'preview-image';
+      image.alt = '';
+      image.draggable = false;
+      image.src = previewImageURL(item) || mediaURL('thumb', item.id);
+      peek.append(image);
+      previewModal.append(peek);
+      session.peek = peek;
+      session.peekDelta = delta;
+    };
+    const swipeSlot = (session, delta) => delta * (session.width + PREVIEW_SWIPE_GAP);
+    const paintSwipe = (session, dx) => {
+      const delta = dx < 0 ? 1 : dx > 0 ? -1 : 0;
+      session.offset = delta && !session.canTurn[delta] ? dx * .35 : dx;
+      showSwipePeek(session, session.canTurn[delta] ? delta : 0);
+      if (session.image) session.image.style.transform = `translateX(${session.offset}px)`;
+      if (session.peek) session.peek.style.transform = `translateX(${session.offset + swipeSlot(session, session.peekDelta)}px)`;
+    };
+    const swipeVelocity = (session, event) => {
+      const recent = session.samples.find(sample => event.timeStamp - sample.t <= 100) || session.samples.at(-1);
+      const elapsed = event.timeStamp - recent.t;
+      return elapsed > 0 ? (event.clientX - recent.x) / elapsed : 0;
+    };
+    const swipeDuration = (session, distance, velocity = 0) => {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+      let duration = distance / session.width * 360;
+      if (Math.abs(velocity) > .1) duration = Math.min(duration, distance / Math.abs(velocity) * 1.6);
+      return Math.round(Math.max(140, Math.min(320, duration)));
+    };
+    const slideSwipeLayer = (element, from, to, duration) => {
+      if (!element) return Promise.resolve();
+      element.style.transform = `translateX(${to}px)`;
+      if (!duration || from === to) return Promise.resolve();
+      const animation = element.animate([{ transform: `translateX(${from}px)` }, { transform: `translateX(${to}px)` }],
+        { duration, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+      // A page that stops painting (backgrounded app, hidden view) freezes the
+      // animation clock; never let that strand the turn half-way.
+      return Promise.race([
+        animation.finished.catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, duration + 120))
+      ]).then(() => animation.cancel());
+    };
+    const releaseSwipeImage = image => {
+      if (!image?.isConnected) return;
+      image.style.transform = '';
+      image.style.transition = '';
+    };
+    const slideSwipeBack = async (session, from = session.offset) => {
+      const duration = swipeDuration(session, Math.abs(from));
+      const peekFrom = from + swipeSlot(session, session.peekDelta);
+      await Promise.all([
+        slideSwipeLayer(session.image, from, 0, duration),
+        slideSwipeLayer(session.peek, peekFrom, swipeSlot(session, session.peekDelta), duration)
+      ]);
+      removeSwipePeek(session);
+      releaseSwipeImage(session.image);
+    };
+    const turnPreviewBySwipe = async (session, delta, velocity) => {
+      swipeTurning = true;
+      const target = -swipeSlot(session, delta);
+      const duration = swipeDuration(session, Math.abs(target - session.offset), velocity);
+      try {
+        await Promise.all([
+          slideSwipeLayer(session.image, session.offset, target, duration),
+          slideSwipeLayer(session.peek, session.offset + swipeSlot(session, session.peekDelta), 0, duration)
+        ]);
+        const moving = withActivePane(paneId, () => movePreview(delta));
+        broadcastPaneAction(pane => {
+          if (pane.previewId) movePreview(delta);
+        });
+        if (!await moving) {
+          session.peekDelta = session.peek ? delta : 0;
+          await slideSwipeBack(session, target);
+          return;
+        }
+        // Keep the peek over the new image until that has painted, so the
+        // hand-over is seamless rather than a blank frame.
+        const incoming = paneQuery(paneId, '#modalMedia img');
+        if (session.peek && incoming && !incoming.complete) {
+          await Promise.race([incoming.decode().catch(() => {}), new Promise(resolve => setTimeout(resolve, 400))]);
+        }
+      } finally {
+        removeSwipePeek(session);
+        swipeTurning = false;
+      }
+    };
     const settleSwipe = event => {
       const session = swipeSession;
       if (!session || event.pointerId !== session.pointerId) return;
       swipeSession = null;
-      const image = paneQuery(paneId, '#modalMedia img.preview-image');
       const dx = event.clientX - session.startX;
       const dy = event.clientY - session.startY;
       if (Math.hypot(dx, dy) > 15) swipeClickSuppressUntil = Date.now() + 400;
-      if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-        withActivePane(paneId, () => movePreview(dx < 0 ? 1 : -1));
-        broadcastPaneAction(pane => {
-          if (pane.previewId) movePreview(dx < 0 ? 1 : -1);
-        });
+      const delta = dx < 0 ? 1 : -1;
+      const velocity = swipeVelocity(session, event);
+      const far = Math.abs(dx) > Math.max(70, session.width * .25);
+      const flick = Math.abs(dx) > 24 && Math.abs(velocity) > .45 && Math.sign(velocity) === Math.sign(dx);
+      if ((far || flick) && Math.abs(dx) > Math.abs(dy) * 1.4 && session.canTurn[delta]) {
+        turnPreviewBySwipe(session, delta, velocity);
         return;
       }
       if (dy > 90 && dy > Math.abs(dx) * 1.4) {
+        removeSwipePeek(session);
+        releaseSwipeImage(session.image);
         withActivePane(paneId, () => closePreview());
         return;
       }
-      if (image) {
-        image.style.transition = 'transform .18s ease';
-        image.style.transform = '';
-        setTimeout(() => {
-          if (image.isConnected) image.style.transition = '';
-        }, 220);
-      }
+      slideSwipeBack(session);
     };
     const pinchGeometry = () => {
       const [first, second] = [...previewPointers.values()];
@@ -8120,14 +8246,15 @@ function bindPaneEvents(paneId) {
           if (!image) return;
           pane.previewZoom.dragging = false;
           if (swipeSession) {
+            removeSwipePeek(swipeSession);
+            releaseSwipeImage(swipeSession.image);
             swipeSession = null;
-            image.style.transform = '';
           }
           pinchBase = { ...pinchGeometry(), scale: pane.previewZoom.mode === 'fit' ? 1 : pane.previewZoom.scale };
           return;
         }
         if (!image || pane.previewZoom.mode === 'fit') {
-          swipeSession = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
+          if (!swipeTurning) swipeSession = startSwipeSession(event, image);
           return;
         }
       }
@@ -8146,8 +8273,9 @@ function bindPaneEvents(paneId) {
       if (!pane) return;
       if (swipeSession && event.pointerId === swipeSession.pointerId && previewPointers.size === 1 && pane.previewZoom.mode === 'fit') {
         previewPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        const image = paneQuery(paneId, '#modalMedia img.preview-image');
-        if (image) image.style.transform = `translateX(${event.clientX - swipeSession.startX}px)`;
+        swipeSession.samples.push({ t: event.timeStamp, x: event.clientX });
+        if (swipeSession.samples.length > 8) swipeSession.samples.shift();
+        paintSwipe(swipeSession, event.clientX - swipeSession.startX);
         return;
       }
       if (previewPointers.has(event.pointerId)) {
@@ -8191,7 +8319,7 @@ function bindPaneEvents(paneId) {
       const pane = paneById(paneId);
       tapSession = null;
       if (!pane || !event.isPrimary || event.button !== 0) return;
-      if (pane.previewZoom.mode !== 'fit' || event.target.closest(PREVIEW_TAP_EXCLUDED)) return;
+      if (swipeTurning || pane.previewZoom.mode !== 'fit' || event.target.closest(PREVIEW_TAP_EXCLUDED)) return;
       tapSession = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
     });
     previewModal.addEventListener('pointermove', event => {
@@ -8218,6 +8346,7 @@ function bindPaneEvents(paneId) {
   }
 }
 
+const PREVIEW_SWIPE_GAP = 24;
 const PREVIEW_TAP_SLOP = 10;
 const PREVIEW_TAP_MAX_MS = 500;
 const PREVIEW_TAP_EXCLUDED = 'button, a, input, select, textarea, video, audio, embed, iframe, .text-preview, #slideshowControls, #modalRating';
