@@ -1758,7 +1758,12 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .asset-grid.list {
   display: flex;
   flex-direction: column;
+  /* Rows span the pane: the inherited flex-start shrank each row to its own
+     content, so the fr columns started at a different x on every row. */
+  align-items: stretch;
   gap: 2px;
+  /* The trailing size column is fixed for the same reason. */
+  --list-meta-width: 132px;
 }
 .asset-grid.list .item-card {
   /* The justified flex-basis would become the row height in this column
@@ -1767,7 +1772,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   display: grid;
   /* The list triage rows follow --thumb so Cmd/Ctrl +/- resizes them too; the
      thumbnail is a quarter of the grid thumb (168px -> 42px at the default). */
-  grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px auto;
+  grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px var(--list-meta-width);
   align-items: center;
   column-gap: 10px;
   padding: 4px 8px;
@@ -1794,15 +1799,15 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .asset-grid.list .card-list-date { color: #74757a; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* A squeezed pane sheds the softer columns before the name and the size. */
 @container (max-width: 620px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) minmax(0, 1fr) 62px var(--list-meta-width); }
   .asset-grid.list .card-list-date { display: none; }
 }
 @container (max-width: 500px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) 62px auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) 62px var(--list-meta-width); }
   .asset-grid.list .card-list-tags { display: none; }
 }
 @container (max-width: 400px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) auto; }
+  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) var(--list-meta-width); }
   .asset-grid.list .card-list-rating { display: none; }
 }
 /* A four-way vertical split leaves ~185px per pane, where even the dimensions
@@ -1823,7 +1828,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 .asset-grid.list .thumb-wrap img { object-fit: cover; }
 .asset-grid.list .card-name { margin: 0; font-size: 12px; }
-.asset-grid.list .card-meta { margin: 0; font-size: 11px; white-space: nowrap; }
+.asset-grid.list .card-meta { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; font-variant-numeric: tabular-nums; }
 .asset-grid.list .card-stars,
 .asset-grid.list .format-badge,
 .asset-grid.list .pin-badge { display: none; }
