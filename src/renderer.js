@@ -3952,6 +3952,14 @@ function whenWorkspaceFree(handler) {
   };
 }
 
+// Outside-click checks read the event path, fixed when the click was
+// dispatched: a colour swatch or tag chip re-renders itself out of the DOM
+// in its own handler, and target.closest() then found no panel and closed
+// the filter popover under the user (B3-03).
+function clickWithin(event, selector) {
+  return event.composedPath().some(node => node instanceof Element && node.matches(selector));
+}
+
 function blockingSurfaceOpen() {
   return Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) ||
     ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
@@ -8518,16 +8526,16 @@ function bindEvents() {
     if (input) updateTagColor(input.dataset.tagColor, input.value);
   });
   document.addEventListener('click', event => {
-    if (!event.target.closest('#filterButton, #filterPopover')) {
+    if (!clickWithin(event, '#filterButton, #filterPopover')) {
       $('#filterPopover').classList.add('hidden');
       renderFilterState();
     }
-    if (!event.target.closest('#paneLayoutButton, #paneLayoutPopover')) {
+    if (!clickWithin(event, '#paneLayoutButton, #paneLayoutPopover')) {
       $('#paneLayoutPopover').classList.add('hidden');
       $('#paneLayoutButton').setAttribute('aria-expanded', 'false');
     }
-    if (!event.target.closest('#libraryButton, #libraryPopover')) closeLibraryPopover();
-    if (!event.target.closest('.sort-select-control')) {
+    if (!clickWithin(event, '#libraryButton, #libraryPopover')) closeLibraryPopover();
+    if (!clickWithin(event, '.sort-select-control')) {
       for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) {
         p.classList.add('hidden');
       }
@@ -8729,7 +8737,7 @@ function bindEvents() {
     // menu that same long-press just opened. Cards were exempted by selector;
     // the folder tree and the pane heading need the shared timestamp.
     if (Date.now() < suppressTouchClickUntil) return;
-    if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton') && !event.target.closest('.new-window-control')) hideContextMenu();
+    if (!clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control')) hideContextMenu();
   });
   for (const selector of ['#itemName', '#itemURL']) {
     $(selector).addEventListener('input', markDirty);
