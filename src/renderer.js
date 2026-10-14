@@ -163,6 +163,8 @@ const $ = selector => {
   }
   return document.querySelector(selector);
 };
+// The pane the user is really in while withActivePane borrows another one.
+let foregroundPaneId = null;
 const state = {
   connected: false,
   library: null,
@@ -618,8 +620,18 @@ function paneById(id) {
 }
 function withActivePane(id, callback) {
   const previous = state.activePaneId;
+  const outerForeground = foregroundPaneId;
+  if (foregroundPaneId === null) foregroundPaneId = previous;
   state.activePaneId = id;
-  try { return callback(); } finally { state.activePaneId = previous; }
+  try { return callback(); } finally {
+    state.activePaneId = previous;
+    foregroundPaneId = outerForeground;
+  }
+}
+// True while running on behalf of a pane the user is not in. The inspector,
+// search and filter controls and the sidebar belong to the real active pane.
+function renderingBackgroundPane() {
+  return foregroundPaneId !== null && state.activePaneId !== foregroundPaneId;
 }
 function isEditableElement(target = document.activeElement) {
   return Boolean(target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
@@ -5043,11 +5055,12 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.historyIndex = 0;
   }
   state.query = nextQuery;
-  renderQueryControls();
+  const background = renderingBackgroundPane();
+  if (!background) renderQueryControls();
   if (changed) rememberViewPosition();
   state.restoreScroll = changed && restoreScroll ? state.viewMemory.get(descriptorKey(view)) || null : null;
   applyView(view);
-  if (view.kind === 'folder') revealFolderPath(view.id);
+  if (view.kind === 'folder' && !background) revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
   // Leaving this pane's folder is local navigation, not a preview-close gesture.
   closePreview({ commitSelection: false, skipDiscard: true, syncBroadcast: false });
@@ -5065,12 +5078,16 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
       renderGrid({ preserveScroll: false });
     }
   }
-  renderInspector();
-  renderFolderTree();
+  // A background pane (its folder deleted elsewhere) must not redraw the
+  // shared inspector: that would drop the active pane's edit in progress.
+  if (!background) {
+    renderInspector();
+    renderFolderTree();
+  }
   renderLocation();
   if (refreshView) refresh({ reset: true, preserveScroll: false, quiet: restoring });
   // Picking a destination from the drawer should reveal the result.
-  if (isCompactLayout()) closeDrawers();
+  if (isCompactLayout() && !background) closeDrawers();
   saveSessionState();
   return true;
 }
