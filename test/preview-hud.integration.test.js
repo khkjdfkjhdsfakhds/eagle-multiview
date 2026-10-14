@@ -10,7 +10,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 
 const execFileAsync = promisify(execFile);
 
-test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, and the HUD fades out after inactivity', { timeout: 20000 }, async () => {
+test('preview HUD: the desktop app hides ×, the web client shows it, and the HUD fades out after inactivity', { timeout: 20000 }, async () => {
   const electron = require('electron');
   const runner = require.resolve('../test-support/preview-hud-probe.cjs');
   const env = { ...process.env };
@@ -20,14 +20,10 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_HUD '));
   assert.ok(line, `missing preview HUD result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_HUD '.length));
-  // Desktop app keeps the three buttons hidden (Esc/arrows cover those actions).
+  // Desktop app keeps the close button hidden (Esc covers it).
   assert.equal(result.desktop.close, 'none', 'desktop hides the close button');
-  assert.equal(result.desktop.prev, 'none', 'desktop hides the previous button');
-  assert.equal(result.desktop.next, 'none', 'desktop hides the next button');
-  // Web client shows the HUD buttons.
+  // Web client shows the close button; items switch by tapping the sides.
   assert.equal(result.web.close, 'grid', 'web client shows the close button');
-  assert.equal(result.web.prev, 'grid', 'web client shows the previous button');
-  assert.equal(result.web.next, 'grid', 'web client shows the next button');
   assert.equal(result.web.rating, 'flex', 'web client shows touch rating controls');
   assert.equal(result.web.slideshow, 'flex', 'web client shows slideshow controls');
   assert.equal(result.web.previewBackground, 'none', 'web client does not expose unrelated preview-view controls');
@@ -36,24 +32,15 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   assert.ok(result.web.closeOpacity < 1, 'the web close button is semi-transparent, not opaque');
   // After inactivity the HUD fades out.
   assert.ok(result.hudHidden.closeOpacity < 0.01, `the HUD fades to nearly transparent (got ${result.hudHidden.closeOpacity})`);
-  assert.ok(result.hudHidden.close === 'grid' && result.hudHidden.prev === 'grid', 'fading keeps the buttons present for the transition');
-  // Touch web client keeps only ‹ ›; swipe down, Back and Esc close, and the
-  // inspector rates.
-  assert.deepEqual(result.touch, { coarse: true, prev: 'grid', next: 'grid', close: 'none', caption: 'none', rating: 'none', slideshow: 'none' });
-  // Touch has no hover to wake the HUD, so ‹ › stay dim and tappable after it idles out.
-  assert.ok(Math.abs(result.touchIdle.nextOpacity - 0.35) < 0.01, `touch keeps › semi-transparent when idle (got ${result.touchIdle.nextOpacity})`);
-  assert.equal(result.touchIdle.nextPointer, 'auto', 'touch keeps › tappable when idle');
-  assert.ok(result.touchIdle.prevOpacity < 0.01, 'a disabled end arrow still fades out on touch');
-  assert.equal(result.touchIdle.prevPointer, 'none', 'a disabled end arrow is not tappable when idle');
-  // A tap leaves a sticky :hover on touch; the arrow must not flash bright.
-  assert.equal(result.touchHover.hovered, true, 'the probe forced :hover on ›');
-  assert.ok(Math.abs(result.touchHover.opacity - 0.35) < 0.01, `a tapped › keeps its resting opacity (got ${result.touchHover.opacity})`);
-  assert.equal(result.touchHover.background, 'rgba(0, 0, 0, 0.32)', 'a tapped › keeps its resting background');
+  assert.equal(result.hudHidden.close, 'grid', 'fading keeps the button present for the transition');
+  // Touch web client floats nothing over the picture; swipe down, Back and Esc
+  // close, the inspector rates, and side taps switch items.
+  assert.deepEqual(result.touch, { coarse: true, close: 'none', caption: 'none', rating: 'none', slideshow: 'none' });
 });
 
 test('preview HUD rules are scoped to the web client only', () => {
   const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
-  // The show rules must target body.web-client so the desktop app stays hidden.
+  // The show rule must target body.web-client so the desktop app stays hidden.
   assert.ok(styles.includes('body.web-client .content-pane .modal-close'), 'the show rule targets body.web-client');
-  assert.ok(styles.includes('body.web-client .content-pane .modal-nav'), 'the show rule targets body.web-client');
+  assert.ok(!styles.includes('.modal-nav'), 'no ‹ › button styles remain');
 });

@@ -28,13 +28,22 @@ async function run() {
       Object.defineProperty(ev, 'pointerType', { value: 'touch' });
       target.dispatchEvent(ev);
     };
+    // Tapping the right third of a pane's preview steps to the next item.
+    const tapNext = targetPane => {
+      const media = targetPane.querySelector('#modalMedia');
+      const box = targetPane.querySelector('#previewModal').getBoundingClientRect();
+      const init = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0,
+        clientX: box.left + box.width * 5 / 6, clientY: box.top + box.height / 2 };
+      media.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 }));
+      media.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0 }));
+    };
     // First tap selects, the second tap on the selected item opens it.
     touchClick(card);
     await wait(120);
     touchClick(card);
     await wait(120);
     const afterTap = read();
-    activePane.querySelector('#nextPreview').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    tapNext(activePane);
     await wait(120);
     const afterNext = read();
     activePane.querySelector('#closePreview').dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -62,7 +71,7 @@ async function run() {
       .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await wait(120);
     const afterPreviewOpen = read();
-    siblingPane.querySelector('#nextPreview').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    tapNext(siblingPane);
     await wait(120);
     const afterPreviewNext = read();
     const star = siblingPane.querySelector('#modalRating [data-preview-rating="4"]');

@@ -15,7 +15,7 @@ test('the preview carries its own rating row', () => {
   assert.ok(renderer.includes('function renderPreviewRating(item)'));
   assert.ok(renderer.includes('function ratePreviewItem(rating)'));
   // Repainted from one place, so it can never disagree with the item shown.
-  assert.ok(renderer.includes('  renderPreviewRating(item);\n  $(\'#prevPreview\').disabled'));
+  assert.ok(renderer.includes('  renderPreviewRating(item);\n  pingPreviewHUD();'));
   assert.ok(renderer.includes("if (state.previewId) updatePreviewChrome("), 'a rating repaints the row');
   assert.ok(styles.includes('.modal-star.filled { color: #ffce69; }'));
 });

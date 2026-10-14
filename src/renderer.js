@@ -143,7 +143,7 @@ const paneScopedSelectors = new Set([
   '#backButton', '#forwardButton', '#upButton', '#breadcrumb', '#viewTitle', '#resultCount', '#sortSelect',
   '#sortSelectButton', '#sortSelectLabel', '#sortPopover', '#sortCascadeDivider', '#sortCascadeItem', '#sortCascadeCheck',
   '#viewModeGroup', '#gridScroller', '#emptyState', '#emptyRetryButton', '#itemGrid', '#loadIndicator', '#scrollTopButton', '#dropOverlay',
-  '#previewModal', '#modalMedia', '#closePreview', '#prevPreview', '#nextPreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
+  '#previewModal', '#modalMedia', '#closePreview', '#slideshowControls', '#slideshowToggle', '#slideshowInterval',
   '#previewBackground', '#previewGrayscale', '#modalRating', '#modalCaption', '#textEditor', '#textStatus'
 ]);
 const $ = selector => {
@@ -819,11 +819,9 @@ function paneMarkup(id, index) {
         <button id="previewGrayscale" class="slideshow-button preview-view-button" type="button" title="灰度查看（G）" aria-label="灰度查看" aria-pressed="false">灰</button>
       </div>
       <button id="closePreview" class="modal-close" type="button" aria-label="关闭预览">×</button>
-      <button id="prevPreview" class="modal-nav prev" type="button" aria-label="上一个">‹</button>
       <div id="modalMedia" class="modal-media"></div>
       <div id="modalRating" class="modal-rating" role="group" aria-label="评分（按 0-5）"></div>
       <div id="modalCaption" class="modal-caption"></div>
-      <button id="nextPreview" class="modal-nav next" type="button" aria-label="下一个">›</button>
     </div>
   </section>`;
 }
@@ -4282,8 +4280,6 @@ function updatePreviewChrome(item) {
     : position;
   caption.title = fileName;
   renderPreviewRating(item);
-  $('#prevPreview').disabled = index <= 0;
-  $('#nextPreview').disabled = index < 0 || (index >= items.length - 1 && !state.hasMore);
   pingPreviewHUD();
 }
 
@@ -7849,20 +7845,6 @@ function bindPaneEvents(paneId) {
       activatePane(paneId);
       withActivePane(paneId, () => closePreview());
     });
-    query('#prevPreview')?.addEventListener('click', () => {
-      activatePane(paneId);
-      withActivePane(paneId, () => movePreview(-1));
-      broadcastPaneAction(pane => {
-        if (pane.previewId) movePreview(-1);
-      });
-    });
-    query('#nextPreview')?.addEventListener('click', () => {
-      activatePane(paneId);
-      withActivePane(paneId, () => movePreview(1));
-      broadcastPaneAction(pane => {
-        if (pane.previewId) movePreview(1);
-      });
-    });
     query('#slideshowToggle')?.addEventListener('click', event => {
       event.stopPropagation();
       activatePane(paneId);
@@ -8028,7 +8010,52 @@ function bindPaneEvents(paneId) {
     };
     previewModal.addEventListener('pointerup', releasePreviewPointer);
     previewModal.addEventListener('pointercancel', releasePreviewPointer);
+    // E-reader style paging: a quick, still tap on the left or right third of
+    // the preview steps to the previous or next item; the middle third does
+    // nothing. Drags, swipes, pinches, taps on media controls or the TXT editor,
+    // and any tap while the image is zoomed keep their own meaning.
+    let tapSession = null;
+    previewModal.addEventListener('pointerdown', event => {
+      const pane = paneById(paneId);
+      tapSession = null;
+      if (!pane || !event.isPrimary || event.button !== 0) return;
+      if (pane.previewZoom.mode !== 'fit' || event.target.closest(PREVIEW_TAP_EXCLUDED)) return;
+      tapSession = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
+    });
+    previewModal.addEventListener('pointermove', event => {
+      if (tapSession?.pointerId !== event.pointerId) return;
+      if (Math.hypot(event.clientX - tapSession.x, event.clientY - tapSession.y) > PREVIEW_TAP_SLOP) tapSession = null;
+    });
+    previewModal.addEventListener('pointercancel', () => { tapSession = null; });
+    previewModal.addEventListener('pointerup', event => {
+      const session = tapSession;
+      tapSession = null;
+      const pane = paneById(paneId);
+      if (!session || session.pointerId !== event.pointerId || !pane?.previewId) return;
+      if (pane.previewZoom.mode !== 'fit' || previewPointers.size > 0) return;
+      if (Math.hypot(event.clientX - session.x, event.clientY - session.y) > PREVIEW_TAP_SLOP) return;
+      if (event.timeStamp - session.time > PREVIEW_TAP_MAX_MS) return;
+      const delta = previewTapZoneDelta(previewModal.getBoundingClientRect(), event.clientX);
+      if (!delta) return;
+      activatePane(paneId);
+      withActivePane(paneId, () => movePreview(delta));
+      broadcastPaneAction(other => {
+        if (other.previewId) movePreview(delta);
+      });
+    });
   }
+}
+
+const PREVIEW_TAP_SLOP = 10;
+const PREVIEW_TAP_MAX_MS = 500;
+const PREVIEW_TAP_EXCLUDED = 'button, a, input, select, textarea, video, audio, embed, iframe, .text-preview, #slideshowControls, #modalRating';
+// Left third steps back, right third steps forward, the middle third is inert.
+function previewTapZoneDelta(box, clientX) {
+  if (!box.width) return 0;
+  const ratio = (clientX - box.left) / box.width;
+  if (ratio < 1 / 3) return -1;
+  if (ratio > 2 / 3) return 1;
+  return 0;
 }
 
 function bindEvents() {
@@ -8438,8 +8465,6 @@ function bindEvents() {
   });
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);
-  $('#prevPreview').addEventListener('click', () => movePreview(-1));
-  $('#nextPreview').addEventListener('click', () => movePreview(1));
   $('#slideshowToggle').addEventListener('click', event => {
     event.stopPropagation();
     toggleSlideshow();

@@ -30,7 +30,7 @@ test('sync panes only while previewing; grid selection and mutations stay pane-l
   assert.equal(result.afterTap.pane0.preview, 'item-2', 'active pane previewed the tapped card');
   assert.equal(result.afterTap.pane1.preview, 'item-2', 'sibling pane synced the touch-tap preview');
 
-  // Pressing next in the active pane advances both panes to the same item.
+  // Tapping the right third in the active pane advances both panes to the same item.
   assert.equal(result.afterNext.pane0.preview, 'item-3', 'active pane advanced to next preview');
   assert.equal(result.afterNext.pane1.preview, 'item-3', 'sibling pane synced the preview navigation');
 
