@@ -70,7 +70,9 @@
   let transportGeneration = 0;
   let disposed = false;
   const activeUploadControllers = new Set();
-  const uploadTimeoutMs = 120000;
+  // Idle, not total: a large video on slow Wi-Fi keeps going as long as
+  // bytes move, and only a stalled upload is abandoned.
+  const uploadIdleTimeoutMs = 120000;
 
   function isCurrentTransport(generation) {
     return !disposed && generation === transportGeneration;
@@ -331,56 +333,92 @@
     } finally { thumbnailJobs.delete(data.requestId); }
   }
 
+  // XHR rather than fetch: only XHR reports upload progress, which drives the
+  // idle timeout and the progress shown while importing.
+  function postUpload(url, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let idleTimer = null;
+      let settled = false;
+      let reason = 'network';
+      const handle = { abort: () => { reason = 'disposed'; xhr.abort(); } };
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(idleTimer);
+        activeUploadControllers.delete(handle);
+        callback(value);
+      };
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { reason = 'timeout'; xhr.abort(); }, uploadIdleTimeoutMs);
+      };
+      const fail = () => settle(reject, Object.assign(new Error(reason), { reason }));
+      activeUploadControllers.add(handle);
+      xhr.open('POST', url);
+      xhr.setRequestHeader('x-eaglemv-client', String(clientId));
+      if (xhr.upload) {
+        xhr.upload.onprogress = event => {
+          armIdle();
+          onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
+        };
+      }
+      xhr.onload = () => {
+        let body = null;
+        try { body = JSON.parse(xhr.responseText); } catch {}
+        settle(resolve, { status: xhr.status, body });
+      };
+      xhr.onerror = fail;
+      xhr.onabort = fail;
+      xhr.ontimeout = fail;
+      armIdle();
+      xhr.send(file);
+    });
+  }
+
   async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
-    const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [] };
-    for (const file of files) {
-      if (disposed) break;
-      const controller = new AbortController();
-      let timeoutTimer = null;
-      let timedOut = false;
-      activeUploadControllers.add(controller);
+    const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [], unknown: [], notSubmitted: [] };
+    const fileName = file => file?.name || '未命名文件';
+    // Files after a stop are listed, never silently dropped.
+    const stopAt = index => { outcome.notSubmitted.push(...files.slice(index).map(fileName)); };
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      if (disposed) { stopAt(index); break; }
+      const query = new URLSearchParams({ name: fileName(file) });
+      if (folderId) query.set('folderId', folderId);
+      if (libraryPath) query.set('libraryPath', libraryPath);
+      emit('upload:progress', { index, total: files.length, name: fileName(file), loaded: 0, size: file.size || 0 });
       try {
-        const query = new URLSearchParams({ name: file.name || '未命名文件' });
-        if (folderId) query.set('folderId', folderId);
-        if (libraryPath) query.set('libraryPath', libraryPath);
-        timeoutTimer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, uploadTimeoutMs);
-        const response = await fetch(`/upload?${query}`, {
-          method: 'POST',
-          headers: { 'x-eaglemv-client': String(clientId) },
-          body: file,
-          signal: controller.signal
+        const { status, body } = await postUpload(`/upload?${query}`, file, (loaded, size) => {
+          emit('upload:progress', { index, total: files.length, name: fileName(file), loaded, size });
         });
-        if (response.status === 401) {
+        if (status === 401) {
           location.replace('/login');
-          outcome.rejected.push({ path: file.name, message: '登录已过期' });
+          outcome.rejected.push({ path: fileName(file), message: '登录已过期' });
+          stopAt(index + 1);
           break;
         }
-        const body = await response.json();
         if (body?.ok) {
           outcome.count += body.result.count || 0;
           outcome.ready += body.result.ready || 0;
           outcome.ids.push(...(body.result.ids || []));
           outcome.rejected.push(...(body.result.rejected || []));
         } else {
-          outcome.rejected.push({ path: file.name, message: body?.message || '上传失败' });
+          outcome.rejected.push({ path: fileName(file), message: body?.message || '上传失败' });
         }
       } catch (error) {
-        const transportError = error?.name === 'TypeError';
-        const message = timedOut
+        // The host may already have the file: report it as unverified and
+        // never replay it or the rest of the batch automatically.
+        const message = error?.reason === 'timeout'
           ? '上传超时，结果可能不确定'
-          : (disposed ? '页面已关闭，结果可能不确定' : '连接中断，结果可能不确定');
-        outcome.rejected.push({ path: file.name, message: error?.name === 'AbortError' || transportError || timedOut || disposed
-          ? message
-          : (error?.message || message) });
-        if (timedOut || disposed || error?.name === 'AbortError' || transportError) break;
-      } finally {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        activeUploadControllers.delete(controller);
+          : (disposed || error?.reason === 'disposed' ? '页面已关闭，结果可能不确定' : '连接中断，结果可能不确定');
+        outcome.unknown.push(fileName(file));
+        outcome.error = { message };
+        stopAt(index + 1);
+        break;
       }
     }
+    emit('upload:progress', null);
     return outcome;
   }
 
@@ -494,6 +532,7 @@
       if (!files.length) return { canceled: true };
       return uploadBrowserFiles(files, data);
     },
+    onUploadProgress: callback => on('upload:progress', callback),
     importClipboard: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     pathForFile: () => null,
     showInFinder: async () => false,

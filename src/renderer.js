@@ -5460,7 +5460,8 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
       if (result.canceled) return;
     }
     if (!result.count) {
-      toast(result.error || result.duplicateFailed ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
+      const uncertain = result.unknown?.length || result.notSubmitted?.length;
+      toast(result.error || result.duplicateFailed || uncertain ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
       return;
     }
     if (result.nativeDecisionPending) {
@@ -9246,6 +9247,12 @@ function bindHubEvents() {
   window.eagleMV.onFolderUsed(payload => {
     if (!payload?.folderId || payload.libraryPath !== state.library?.path) return;
     rememberRecentFolderUsage(payload.folderId);
+  });
+  // Web uploads report bytes so a long upload is visibly alive.
+  window.eagleMV.onUploadProgress?.(progress => {
+    if (!progress || !state.importing) return;
+    const percent = progress.size ? Math.min(100, Math.floor(progress.loaded / progress.size * 100)) : 0;
+    setSyncStatus(`正在上传 ${progress.index + 1}/${progress.total} · ${percent}%`);
   });
   window.eagleMV.onPinsChanged(payload => {
     if (payload.libraryPath !== state.library?.path) return;

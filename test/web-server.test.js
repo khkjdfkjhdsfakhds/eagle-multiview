@@ -416,6 +416,54 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   fs.rmSync(uploadDir, { recursive: true, force: true });
 });
 
+// W-02: uploads end when they stall, not after a fixed total time.
+test('uploads time out when idle, not while bytes keep arriving', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-idle-'));
+  const imports = [];
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths }) => {
+      imports.push(fs.readFileSync(paths[0], 'utf8'));
+      return { count: 1, ready: 1, ids: ['NEW'], rejected: [] };
+    },
+    uploadDir,
+    loginFailureDelayMs: 0,
+    uploadIdleTimeoutMs: 300
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const upload = (name, chunks, gapMs, { endAfter = true } = {}) => new Promise(resolve => {
+    const req = http.request({ host: '127.0.0.1', port, path: `/upload?name=${name}`, method: 'POST',
+      headers: { Cookie: cookie, 'x-eaglemv-client': '1', 'Transfer-Encoding': 'chunked' } }, res => {
+      const parts = [];
+      res.on('data', part => parts.push(part));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(parts).toString() }));
+    });
+    req.on('error', error => resolve({ error: error.code || error.message }));
+    (async () => {
+      for (const chunk of chunks) { req.write(chunk); await wait(gapMs); }
+      if (endAfter) req.end();
+    })();
+  });
+  // Eight chunks 150 ms apart run well past the 300 ms idle limit in total.
+  const slow = await upload('slow.bin', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 150);
+  assert.equal(JSON.parse(slow.body).ok, true, 'a slow upload that keeps moving completes');
+  assert.deepEqual(imports, ['abcdefgh']);
+  const stalled = await upload('stalled.bin', ['x'], 0, { endAfter: false });
+  assert.ok(stalled.error || JSON.parse(stalled.body).ok === false, 'a stalled upload is cut off');
+  assert.deepEqual(imports, ['abcdefgh'], 'a stalled upload is never imported');
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
 test('transformIndexHTML adds PWA tags for the web build only', () => {
   const html = '<head>\n<meta http-equiv="Content-Security-Policy" content="x">\n</head>\n<body><script src="renderer.js"></script></body>';
   const transformed = require('../lib/web-server').transformIndexHTML(html);

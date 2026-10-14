@@ -74,6 +74,9 @@ contextBridge.exposeInMainWorld('eagleMV', {
   retrySiteImport: data => ipcRenderer.invoke('site:retry', data),
   cancelSiteImport: data => ipcRenderer.invoke('site:cancel', data),
   importSiteSelection: data => ipcRenderer.invoke('site:import', data),
+  // Byte progress exists only for web uploads; desktop imports read local
+  // paths, so the host never sends this channel.
+  onUploadProgress: callback => on('upload:progress', callback),
   importClipboard: data => ipcRenderer.invoke('items:import-clipboard', data),
   pathForFile: file => webUtils.getPathForFile(file),
   showInFinder: id => ipcRenderer.invoke('item:show-in-finder', id),

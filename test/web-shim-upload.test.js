@@ -39,6 +39,28 @@ function createHarness({ fetchImpl = () => uploadResponse() } = {}) {
     }
   }
 
+  // Uploads go through XHR for progress; this fake routes them through the
+  // same fetchImpl so each test describes the server reply once.
+  class FakeXMLHttpRequest {
+    constructor() { this.upload = {}; this.headers = {}; }
+    open(method, url) { this.method = method; this.url = url; }
+    setRequestHeader(name, value) { this.headers[name] = value; }
+    abort() { this.controller?.abort(); }
+    send(body) {
+      this.controller = new AbortController();
+      const options = { method: this.method, body, headers: this.headers, signal: this.controller.signal, xhr: this };
+      fetches.push({ url: this.url, options });
+      Promise.resolve(fetchImpl(this.url, options, fetches.length - 1)).then(async response => {
+        this.status = response.status;
+        this.responseText = JSON.stringify(await response.json());
+        this.onload?.();
+      }, () => {
+        if (this.controller.signal.aborted) this.onabort?.();
+        else this.onerror?.();
+      });
+    }
+  }
+
   const document = {
     body: { appendChild() {} },
     fullscreenElement: null,
@@ -82,6 +104,7 @@ function createHarness({ fetchImpl = () => uploadResponse() } = {}) {
       }
     },
     WebSocket: FakeWebSocket,
+    XMLHttpRequest: FakeXMLHttpRequest,
     fetch(url, options = {}) {
       fetches.push({ url, options });
       return fetchImpl(url, options, fetches.length - 1);
@@ -193,6 +216,7 @@ test('a 401 stops the remaining batch immediately and enters login', async () =>
   assert.deepEqual(harness.replacements, ['/login']);
   assert.equal(result.count, 0);
   assert.deepEqual(result.rejected, [{ path: 'first.png', message: '登录已过期' }]);
+  assert.deepEqual(result.notSubmitted, ['must-not-upload.png'], 'files after the stop are listed, not dropped');
 });
 
 test('a disconnected upload reports an uncertain result and never replays the batch', async () => {
@@ -207,8 +231,10 @@ test('a disconnected upload reports an uncertain result and never replays the ba
 
   assert.equal(harness.fetches.length, 1);
   assert.equal(result.count, 0);
-  assert.match(result.rejected[0].message, /结果可能不确定/);
-  assert.match(result.rejected[0].message, /连接中断/);
+  assert.deepEqual(result.unknown, ['unknown.png']);
+  assert.deepEqual(result.notSubmitted, ['must-not-upload.png']);
+  assert.match(result.error.message, /结果可能不确定/);
+  assert.match(result.error.message, /连接中断/);
 });
 
 test('an upload timeout aborts once, reports an uncertain result, and does not continue', async () => {
@@ -231,8 +257,10 @@ test('an upload timeout aborts once, reports an uncertain result, and does not c
   const result = await resultPromise;
 
   assert.equal(harness.fetches.length, 1);
-  assert.match(result.rejected[0].message, /上传超时/);
-  assert.match(result.rejected[0].message, /结果可能不确定/);
+  assert.deepEqual(result.unknown, ['slow.mov']);
+  assert.deepEqual(result.notSubmitted, ['must-not-upload.mov']);
+  assert.match(result.error.message, /上传超时/);
+  assert.match(result.error.message, /结果可能不确定/);
 });
 
 test('pagehide abandons an in-flight upload and a rebuilt shim does not restore it', async () => {
@@ -248,6 +276,30 @@ test('pagehide abandons an in-flight upload and a rebuilt shim does not restore 
   const rebuilt = createHarness();
 
   assert.equal(harness.fetches.length, 1);
-  assert.match(result.rejected[0].message, /结果可能不确定/);
+  assert.deepEqual(result.unknown, ['in-flight.png']);
+  assert.match(result.error.message, /结果可能不确定/);
   assert.equal(rebuilt.fetches.length, 0, 'new WebView/shim instances must not restore upload requests');
+});
+
+test('upload progress keeps a long upload alive and is reported', async () => {
+  let xhr = null;
+  let reply;
+  const harness = createHarness({
+    fetchImpl: (_url, options) => { xhr = options.xhr; return new Promise(resolve => { reply = resolve; }); }
+  });
+  const progress = [];
+  harness.window.eagleMV.onUploadProgress(entry => progress.push(entry));
+  const resultPromise = harness.window.eagleMV.importItems({ paths: [{ name: 'big.mov', size: 10 }] });
+  const idle = () => harness.timers.filter(timer => timer.delay === 120_000 && !timer.cleared);
+  const first = idle()[0];
+  assert.ok(first, 'an idle timer is armed when the upload starts');
+  xhr.upload.onprogress({ loaded: 5, total: 10, lengthComputable: true });
+  assert.equal(first.cleared, true, 'progress resets the idle timer');
+  assert.equal(idle().length, 1);
+  reply(uploadResponse({ ids: ['BIG'] }));
+  const result = await resultPromise;
+  assert.deepEqual(result.ids, ['BIG']);
+  assert.deepEqual(result.notSubmitted, []);
+  assert.deepEqual(progress.filter(Boolean).map(entry => [entry.index, entry.total, entry.loaded, entry.size]), [[0, 1, 0, 10], [0, 1, 5, 10]]);
+  assert.equal(progress.at(-1), null, 'the progress feed ends when the batch ends');
 });
