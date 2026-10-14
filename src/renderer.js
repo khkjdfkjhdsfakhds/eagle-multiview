@@ -260,6 +260,9 @@ const trashUndoStack = [];
 let trashMutationInFlight = 0;
 // Per pane: the rating whose writes are still in flight (setSelectionRating).
 const ratingQueues = new Map();
+// The library the extras on screen belong to, and the newest load (H-11).
+let libraryExtrasLibrary = null;
+let libraryExtrasToken = 0;
 
 // 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
 // has focus, otherwise undoing the last delete. An open dialog swallows it so
@@ -9928,33 +9931,42 @@ async function applyLibraryChange(payload) {
 async function loadLibraryExtras() {
   const libraryPath = state.library?.path;
   if (!libraryPath) return;
-  state.manualOrdersReady = false;
-  if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;}
+  const token = ++libraryExtrasToken;
+  // Reloading the same library keeps the manual orders usable meanwhile;
+  // only a library switch empties them (B3-08). Dragging a sidebar folder
+  // during any library change used to say the order was not ready yet.
+  if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;state.manualOrdersReady=false;}
   if (state.folderCoversLibrary !== libraryPath) {
     state.localFolderCovers = { revision: 0, covers: {} };
     state.folderCoversReady = false;
     state.folderCoversLibrary = libraryPath;
   }
   const [pins, tags, tagGroups, recentFolders, tagColors, orders, covers] = await Promise.all([
-    window.eagleMV.getPins({ libraryPath }).catch(() => ({})),
-    window.eagleMV.getTags().catch(() => []),
-    window.eagleMV.getTagGroups().catch(() => []),
-    window.eagleMV.getRecentFolders().catch(() => []),
-    window.eagleMV.getTagColors({ libraryPath }).catch(() => ({})),
+    window.eagleMV.getPins({ libraryPath }).catch(() => null),
+    window.eagleMV.getTags().catch(() => null),
+    window.eagleMV.getTagGroups().catch(() => null),
+    window.eagleMV.getRecentFolders().catch(() => null),
+    window.eagleMV.getTagColors({ libraryPath }).catch(() => null),
     window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null,
     window.eagleMV.getFolderCovers?.({ libraryPath }).catch(error => {toast(`封面设置读取失败：${error.message}`,5000);return null;}) ?? null
   ]);
-  if (state.library?.path !== libraryPath) return;
-  state.localPins = pins || {};
+  // A newer load supersedes this one, and its answer may already be shown.
+  if (state.library?.path !== libraryPath || token !== libraryExtrasToken) return;
+  // A failed read keeps what this library already showed instead of wiping
+  // every pin and tag colour off screen; a new library starts empty.
+  const sameLibrary = libraryExtrasLibrary === libraryPath;
+  libraryExtrasLibrary = libraryPath;
+  const kept = (value, current, empty) => value ?? (sameLibrary ? current : empty);
+  state.localPins = kept(pins, state.localPins, {});
   if (covers) acceptFolderCovers({ libraryPath, ...covers });
   for (const [key,order] of Object.entries(orders || {})) {
     if ((state.localOrders[key]?.revision || 0) <= order.revision) state.localOrders[key]=order;
   }
-  state.manualOrdersReady = Boolean(orders);
-  state.availableTags = tags || [];
-  state.tagGroups = tagGroups || [];
-  state.recentFolders = recentFolders || [];
-  state.tagColors = tagColors || {};
+  if (orders) state.manualOrdersReady = true;
+  state.availableTags = kept(tags, state.availableTags, []);
+  state.tagGroups = kept(tagGroups, state.tagGroups, []);
+  state.recentFolders = kept(recentFolders, state.recentFolders, []);
+  state.tagColors = kept(tagColors, state.tagColors, {});
   renderTagSuggestions();
   renderTagColors();
 }
