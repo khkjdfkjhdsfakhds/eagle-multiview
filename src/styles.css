@@ -2264,6 +2264,16 @@ body.web-client .content-pane .slideshow-controls .preview-view-button { display
   opacity: 0;
   pointer-events: none;
 }
+/* Touch has no hover to wake the HUD, so ‹ › stay on the picture, dim, after
+   the rest of the HUD fades. This also settles the sticky :hover a tap leaves. */
+@media (pointer: coarse) {
+  .preview-modal.hud-hidden .modal-nav:not(:disabled) {
+    opacity: .35;
+    background: rgba(0, 0, 0, .32);
+    color: rgba(255, 255, 255, .7);
+    pointer-events: auto;
+  }
+}
 /* The path strip grows to the same font size as the view title so it is easy
    to read and, on touch, easy to tap, while staying dim and low-presence. The
    taller path row pushes the divider and the title row down. This applies on
