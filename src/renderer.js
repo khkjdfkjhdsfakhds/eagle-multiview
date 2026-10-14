@@ -834,7 +834,7 @@ function paneMarkup(id, index) {
               <option value="type">文件类型</option>
               <option value="random">随机</option>
             </select>
-            <div id="sortPopover" class="sort-popover hidden" role="menu" aria-label="排序选项">
+            <div id="sortPopover" class="sort-popover hidden" popover="manual" role="menu" aria-label="排序选项">
               <div class="sort-popover-options">
                 <button type="button" class="sort-popover-option" data-sort="default">Eagle 顺序</button>
                 <button type="button" class="sort-popover-option" data-sort="name">名称</button>
@@ -1622,6 +1622,32 @@ const sortOptionLabels = {
   type: '文件类型',
   random: '随机'
 };
+
+// The pane clips its overflow and, as a size container, is the containing
+// block even for fixed descendants, so a popover taller than a split pane was
+// cut off (P7-13). The top layer escapes both without moving the element out
+// of its pane; it is then placed from the button, flipping up when there is
+// no room below and scrolling when neither side fits.
+function showSortPopover(popover, button) {
+  if (!popover || !button || typeof popover.showPopover !== 'function') return;
+  if (!popover.matches(':popover-open')) popover.showPopover();
+  popover.classList.add('top-layer');
+  popover.style.maxHeight = '';
+  const margin = 8;
+  const anchor = button.getBoundingClientRect();
+  const below = window.innerHeight - anchor.bottom - 4 - margin;
+  const above = anchor.top - 4 - margin;
+  let height = popover.offsetHeight;
+  const up = height > below && above > below;
+  if (height > (up ? above : below)) {
+    height = Math.max(120, up ? above : below);
+    popover.style.maxHeight = `${height}px`;
+  }
+  const width = popover.offsetWidth;
+  const left = Math.min(Math.max(margin, anchor.right - width), window.innerWidth - width - margin);
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(up ? anchor.top - 4 - height : anchor.bottom + 4)}px`;
+}
 
 function renderSortControls() {
   renderViewModeControls();
@@ -7842,6 +7868,7 @@ function bindPaneEvents(paneId) {
     if (opening) {
       renderSortControls();
       popover.classList.remove('hidden');
+      showSortPopover(popover, query('#sortSelectButton'));
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'true');
     }
   });
@@ -8726,6 +8753,12 @@ function bindEvents() {
   $('#tagColorManager').addEventListener('change', event => {
     const input = event.target.closest('[data-tag-color]');
     if (input) updateTagColor(input.dataset.tagColor, input.value);
+  });
+  // The sort popover is placed in window coordinates when it opens; a window
+  // or splitter resize would leave it floating away from its button.
+  window.addEventListener('resize', () => {
+    for (const popover of document.querySelectorAll('.sort-popover.top-layer:not(.hidden)')) popover.classList.add('hidden');
+    for (const button of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) button.setAttribute('aria-expanded', 'false');
   });
   document.addEventListener('click', event => {
     if (!clickWithin(event, '#filterButton, #filterPopover')) {

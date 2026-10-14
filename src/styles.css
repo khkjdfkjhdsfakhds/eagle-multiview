@@ -1298,6 +1298,15 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .sort-popover.hidden {
   display: none;
 }
+/* Shown in the top layer (see showSortPopover): placed by script. */
+.sort-popover.top-layer {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  color: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .sort-popover-options {
   display: flex;
   flex-direction: column;
