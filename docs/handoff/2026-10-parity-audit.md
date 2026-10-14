@@ -996,7 +996,7 @@ W-05（App 内 PDF 预览）、W-09（iPhone 主屏与横屏刘海）、A-05（�
 | B2-07 | 后台栏刷新时计数校正调用 `renderFolderTree`，此时代理指向后台栏，侧栏高亮跳到后台栏的文件夹 | Bug｜低 | 源码确认 | `renderer.js:2615,2665-2701,2830,2845` | `renderFolderTree` 固定按活动栏判断 |
 | B2-08 | 追加分页没有“无进展”保护：服务端 data 为空仍可能返回 `hasMore`，`needsViewportFill`/`continueBackfill` 会 0ms 间隔反复请求同一页 | Bug/性能｜低 | 推测待验证 | `renderer.js:2821,2839-2844,2922-2931`、`eagle-client.js:213`、`data-hub.js:379` | `nextOffset <= offset` 或无新增时置 `hasMore=false` |
 | ~~B2-09~~（第三轮核查：不成立，main 从不发送这三个命令，所有真实调用都传了 `ids`，仅属代码整洁） | `addSelectionToFolder`、`addTagToSelection` 只认 `payload.ids`，`removeSelectionFromFolder` 空载荷直接抛 TypeError；同类的移动和评分有回退 | Bug｜低 | 源码确认 | `renderer.js:3992,4002,4046,4052,4062` | 统一 `payload?.ids || [...pane.selected]` |
-| B2-10 | `setPinned` 先赋值 `localPins` 再检查资料库是否已切换，请求中切库会用旧库置顶表覆盖新库 | Bug｜低 | 源码确认 | `renderer.js:3822,3830` | 先比对库路径再赋值 |
+| B2-10 | `setPinned` 先赋值 `localPins` 再检查资料库是否已切换，请求中切库会用旧库置顶表覆盖新库 | Bug｜低 | 源码确认 | `renderer.js:3822,3830` | 先比对库路径再赋值。**已修复（2026-10-14）**，新增 `pin-library-switch` 探针 |
 | ~~B2-11~~（第三轮核查：不成立，关栏时 `++pane.refreshToken`（`renderer.js:1179`），finally 的令牌判断（`:2908`）不通过） | 刷新过程中关闭分栏，`finally` 在已删除栏的上下文里执行，`$()` 回退到第一栏，隐藏其载入提示、可能闪出“这里还没有素材” | Bug｜低 | 源码确认 | `renderer.js:154,591,2828,2908-2913` | `finally` 先判断栏仍存在 |
 | B2-12 | `collectPatch` 对名称、URL trim，标签按 `normalizeTags` 载入；名为“photo ”的素材只改备注也会被静默改名，重复或带空格的标签同理 | 逻辑自洽｜低 | 推测待验证（取决于 Eagle 是否允许首尾空格） | `renderer.js:1795,3111,3543,3547` | 对 base 用同一归一化后比较，只发用户实际改过的字段 |
 | B2-13（补充 P2-07） | “实际大小”分支本身不生效：`renderPreviewZoom` 始终写内联 `max-width/height:100%`，样式表也没有 `.preview-actual` | Bug｜低 | 源码确认 | `renderer.js:4186-4189` | actual 模式清除内联限制，按 natural 尺寸显示 |
@@ -1050,7 +1050,7 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 - 已完成：P0-1、P0-2、P0-3、P0-4（三项）、P0-5、P0-7、P0-8、P0-9、P0-10、P0-11、P0-6 的 S-01、P5-03/W-04、W-01/S-11（Web 端）、B4-02、B4-05、B4-07、E-14。
 - P0 已全部处理（各条未做部分见条目内说明）。下一项：P1“选择与快捷键”组，从 B2-01（评分或批量操作后选择被拉回）开始，按清单顺序往下。P0-6 只剩 H-15 余项（待定取舍）、B4-02 权限请求、W-01 的 Android 部分。
 - 本机验证（2026-10-14）：结果与本机新增的 4 项修复见 `2026-10-p0-fixes-local-handoff.md` 第六节。B4-02 权限请求已补；P0 剩余为 H-15 余项、W-01 Android 部分、E-06 文件夹数量确认、BUG-02 色板、B3-04 原版语义。
-- P1 进度（按 `2026-10-p0-fixes-local-handoff.md` 第七节的顺序）：D-07 + B2-06、E-07、B1-02 已修复。F-03（⌥ 拖动复制前确认）要先看原版、待用户定，暂跳过。下一项：B2-10。
+- P1 进度（按 `2026-10-p0-fixes-local-handoff.md` 第七节的顺序）：D-07 + B2-06、E-07、B1-02、B2-10 已修复。F-03（⌥ 拖动复制前确认）要先看原版、待用户定，暂跳过。下一项：W-02。
 
 ## 三轮合并优先级清单（2026-10-13，云会话，取代上文第一轮清单的排序）
 

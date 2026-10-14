@@ -3862,7 +3862,7 @@ async function setPinned(ids, pinned, paneId = state.activePaneId) {
   const operationToken = beginForegroundOperation(pinned ? '正在置顶素材…' : '正在取消置顶…', { key: `pins:${paneId}` });
   if (!operationToken) return;
   try {
-    state.localPins = await window.eagleMV.setPins({
+    const pins = await window.eagleMV.setPins({
       libraryPath,
       folderId,
       ids,
@@ -3870,7 +3870,9 @@ async function setPinned(ids, pinned, paneId = state.activePaneId) {
       syncToEagle: true,
       eaglePins: Object.fromEntries(ids.map(id => [id, pane.itemMap.get(id)?.pinned?.[folderId] ?? null]))
     });
+    // The reply is the old library's pin table once the library has switched.
     if (state.library?.path !== libraryPath) return;
+    state.localPins = pins;
     if (paneById(paneId)) schedulePaneGridRender(paneId);
     if (state.activePaneId === paneId) renderInspector();
     toast(pinned ? `已置顶 ${ids.length} 个素材，并同步到 Eagle` : `已取消置顶，并同步到 Eagle`);
