@@ -945,11 +945,41 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 @container (min-width: 340px) {
   body.compact-layout .content-heading .view-mode-group { display: inline-flex; }
 }
+/* Extreme splits keep the view title and counts readable: the sort button
+   shrinks to an icon instead of disappearing (P7-12). */
+.sort-select-icon { display: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 @container (max-width: 340px) {
-  /* Keep the view title and counts readable in extreme splits; sorting can
-     wait until the pane is widened. */
-  .content-heading .sort-controls { display: none; }
+  .content-heading .sort-select-label,
+  .content-heading .sort-select-chevron { display: none; }
+  .content-heading .sort-select-icon { display: block; }
+  .content-heading .sort-select-button { width: 30px; padding: 0; justify-content: center; }
 }
+/* The sort popover carries the layout choice whenever the pane hides its
+   layout buttons (the same conditions as the rules above). */
+.sort-popover-layout,
+.sort-popover-layout-divider { display: none; }
+@container (max-width: 460px) {
+  .sort-popover-layout { display: flex; }
+  .sort-popover-layout-divider { display: block; }
+}
+@container (min-width: 340px) {
+  body.compact-layout .sort-popover-layout,
+  body.compact-layout .sort-popover-layout-divider { display: none; }
+}
+.sort-popover-layout { gap: 2px; padding: 2px; }
+.sort-popover-layout-button {
+  flex: 1 1 0;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #86878d;
+  cursor: pointer;
+}
+.sort-popover-layout-button:hover { background: rgba(255, 255, 255, .06); color: #e9eaed; }
+.sort-popover-layout-button.active { background: rgba(0, 114, 239, .22); color: #f7f8f8; }
 .content-pane .nav-button { width: 28px; height: 28px; }
 .content-pane .sort-select { max-width: 112px; height: 34px; font-size: 12px; }
 .content-pane .grid-scroller { padding: 5px 11px 12px; }
@@ -2573,6 +2603,7 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .context-menu-row.disabled { opacity: .35; pointer-events: none; }
 .context-menu-row.danger:hover { background: #9b3c4b; }
 .context-menu-leading { width: 18px; height: 18px; display: grid; place-items: center; color: #bfc4cd; }
+.context-menu-check { font-size: 12px; line-height: 1; }
 .context-menu-row:hover .context-menu-leading, .context-menu-row.submenu-open .context-menu-leading { color: white; }
 .context-menu-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; }
 .context-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

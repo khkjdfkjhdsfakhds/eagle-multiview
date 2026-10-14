@@ -820,6 +820,7 @@ function paneMarkup(id, index) {
           </div>
           <div class="sort-select-control">
             <button id="sortSelectButton" class="sort-select-button" type="button" aria-haspopup="menu" aria-expanded="false" title="当前栏排序">
+              <svg class="sort-select-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h8M4 14.5h4"></path></svg>
               <span id="sortSelectLabel" class="sort-select-label">Eagle 顺序</span>
               <svg class="sort-select-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
             </button>
@@ -835,6 +836,13 @@ function paneMarkup(id, index) {
               <option value="random">随机</option>
             </select>
             <div id="sortPopover" class="sort-popover hidden" popover="manual" role="menu" aria-label="排序选项">
+              <div class="sort-popover-layout" role="group" aria-label="当前栏布局">
+                <button type="button" class="sort-popover-layout-button" data-view-mode="justified" title="自适应" aria-label="自适应">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="grid" title="网格" aria-label="网格">${uiIcon('layoutGrid', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
+              </div>
+              <div class="sort-popover-divider sort-popover-layout-divider"></div>
               <div class="sort-popover-options">
                 <button type="button" class="sort-popover-option" data-sort="default">Eagle 顺序</button>
                 <button type="button" class="sort-popover-option" data-sort="name">名称</button>
@@ -1586,6 +1594,9 @@ function firstSelectedInViewOrder() {
 }
 
 function renderViewModeControls() {
+  for (const button of $('#sortPopover')?.querySelectorAll('[data-view-mode]') || []) {
+    button.classList.toggle('active', button.dataset.viewMode === (state.viewMode || 'justified'));
+  }
   const group = $('#viewModeGroup');
   if (!group) return;
   for (const button of group.querySelectorAll('[data-view-mode]')) {
@@ -1680,6 +1691,56 @@ function renderSortControls() {
 }
 
 // Persist the active pane's sort choice for its current view, then re-render.
+function applySortDirection(direction) {
+  if (direction !== 'asc' && direction !== 'desc') return false;
+  state.sortDir = direction;
+  if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
+    sortMemory.rememberCascade(state.library?.path, state.currentView.id, state.library?.folders, state.sort, state.sortDir, Date.now());
+  }
+  commitSortChange();
+  return true;
+}
+
+// One sort choice for the pane's popover and the blank-area menu's 排序方式:
+// through the pane's own select, so random reshuffles and manual checks stay
+// in one place.
+function applySortFromMenu(sort, paneId = state.activePaneId) {
+  if (!activatePane(paneId)) return false;
+  if (sort === 'random' && state.sort === 'random') {
+    state.randomSeed = nextRandomSeed();
+    commitSortChange();
+    return true;
+  }
+  const select = paneQuery(paneId, '#sortSelect');
+  if (!select) return false;
+  select.value = sort;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function sortMenuMarkup(paneId = state.activePaneId) {
+  const pane = paneById(paneId);
+  const current = pane?.sort || 'default';
+  const sortable = Boolean(pane?.sort) && !['default', 'random', 'manual'].includes(pane.sort);
+  const direction = effectiveSortDir(pane?.sort, pane?.sortDir);
+  const options = ['default', 'name', 'added', 'newest', 'size', 'resolution', 'rating', 'type', 'random'].map(sort => contextMenuRow({
+    label: sortOptionLabels[sort], checked: current === sort, action: 'set-sort', payload: { sort, paneId }
+  }));
+  const directions = [['asc', '升序'], ['desc', '降序']].map(([dir, label]) => contextMenuRow({
+    label, checked: sortable && direction === dir, disabled: !sortable, action: 'set-sort-dir', payload: { dir, paneId }
+  }));
+  return [...options, '<div class="context-menu-separator"></div>', ...directions].join('');
+}
+
+const viewModeLabels = { justified: '自适应', grid: '网格', waterfall: '瀑布流', list: '列表' };
+function viewModeMenuMarkup(paneId = state.activePaneId) {
+  const current = paneById(paneId)?.viewMode || 'justified';
+  const icons = { justified: 'layoutJustified', grid: 'layoutGrid', waterfall: 'layoutWaterfall', list: 'layoutList' };
+  return Object.keys(viewModeLabels).map(mode => contextMenuRow({
+    icon: icons[mode], label: viewModeLabels[mode], checked: current === mode, action: 'set-view-mode', payload: { mode, paneId }
+  })).join('');
+}
+
 function commitSortChange() {
   sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
   renderSortControls();
@@ -5854,12 +5915,14 @@ function bindTagEditor(kind) {
   });
 }
 
-function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false }) {
+function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null }) {
   const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"` : '';
-  const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}`;
+  const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}${checked ? ' checked' : ''}`;
   const child = submenu ? `<span class="context-menu-arrow">›</span><div class="context-submenu">${submenu}</div>` : '';
-  return `<div class="${className}" role="menuitem"${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
-    <span class="context-menu-leading">${uiIcon(icon, 'context-menu-icon')}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(keyboardPlatform.shortcutText(shortcut))}</span>` : ''}${child}
+  // A choice row (checked true/false) leads with a check mark, like a native menu.
+  const leading = checked === null ? uiIcon(icon, 'context-menu-icon') : (checked ? '<span class="context-menu-check" aria-hidden="true">✓</span>' : '');
+  return `<div class="${className}" role="${checked === null ? 'menuitem' : 'menuitemradio'}"${checked === null ? '' : ` aria-checked="${checked ? 'true' : 'false'}"`}${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
+    <span class="context-menu-leading">${leading}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(keyboardPlatform.shortcutText(shortcut))}</span>` : ''}${child}
   </div>`;
 }
 
@@ -6235,6 +6298,9 @@ function contextMenuMarkup(data) {
       '<div class="context-menu-separator"></div>',
       ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing })] : []),
       contextMenuRow({ icon: 'refresh', label: '刷新所有分栏', action: 'refresh-all', disabled: !state.connected }),
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'more', label: '排序方式', submenu: sortMenuMarkup(data.paneId) }),
+      contextMenuRow({ icon: 'layoutJustified', label: '布局', submenu: viewModeMenuMarkup(data.paneId) }),
       contextMenuRow({ icon: 'layoutGrid', label: '分栏布局', submenu: paneLayoutMenuMarkup(data.paneId) })
     ].join('');
   }
@@ -6465,6 +6531,18 @@ async function executeContextAction(action, payload) {
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
+  if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
+  if (action === 'set-sort-dir') {
+    const paneId = payload.paneId || data.paneId;
+    if (paneId && !activatePane(paneId)) return false;
+    return applySortDirection(payload.dir);
+  }
+  if (action === 'set-view-mode') {
+    const paneId = payload.paneId || data.paneId || state.activePaneId;
+    if (!activatePane(paneId)) return false;
+    setPaneViewMode(payload.mode, paneId);
+    return true;
+  }
   if (action === 'set-pane-layout') {
     const paneId = payload.paneId || data.paneId;
     if (paneId && !activatePane(paneId)) return false;
@@ -7873,20 +7951,17 @@ function bindPaneEvents(paneId) {
     }
   });
   query('#sortPopover')?.addEventListener('click', event => {
+    const layoutBtn = event.target.closest('[data-view-mode]');
+    if (layoutBtn) {
+      activatePane(paneId);
+      setPaneViewMode(layoutBtn.dataset.viewMode, paneId);
+      query('#sortPopover')?.classList.add('hidden');
+      query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
+      return;
+    }
     const optionBtn = event.target.closest('[data-sort]');
     if (optionBtn) {
-      activatePane(paneId);
-      const targetSort = optionBtn.dataset.sort;
-      if (targetSort === 'random' && state.sort === 'random') {
-        state.randomSeed = nextRandomSeed();
-        commitSortChange();
-      } else {
-        const select = query('#sortSelect');
-        if (select) {
-          select.value = targetSort;
-          select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }
+      applySortFromMenu(optionBtn.dataset.sort, paneId);
       query('#sortPopover')?.classList.add('hidden');
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
       return;
@@ -7894,20 +7969,7 @@ function bindPaneEvents(paneId) {
     const dirBtn = event.target.closest('[data-sort-dir]');
     if (dirBtn && !dirBtn.disabled) {
       activatePane(paneId);
-      const targetDir = dirBtn.dataset.sortDir;
-      if (targetDir === 'asc' || targetDir === 'desc') {
-        state.sortDir = targetDir;
-        if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
-          sortMemory.rememberCascade(
-            state.library?.path,
-            state.currentView.id,
-            state.library?.folders,
-            state.sort,
-            state.sortDir,
-            Date.now()
-          );
-        }
-        commitSortChange();
+      if (applySortDirection(dirBtn.dataset.sortDir)) {
         query('#sortPopover')?.classList.add('hidden');
         query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
       }
