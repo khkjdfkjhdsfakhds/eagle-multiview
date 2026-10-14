@@ -7301,7 +7301,9 @@ async function handlePaneItemDrop(context) {
     operationToken = null;
     // Refresh the drop target now, but do not hold the native drop completion
     // open while every other pane performs a network query.
-    await withTimeout(refresh({ reset: true, preserveScroll: true, paneId: targetPaneId }), 12000, '刷新目标栏超时');
+    // The move is done; a slow refresh must not be reported as a failed move.
+    await withTimeout(refresh({ reset: true, preserveScroll: true, paneId: targetPaneId }), 12000, '刷新目标栏超时')
+      .catch(error => console.warn('Drop target refresh after a completed drop:', error.message));
     setTimeout(() => refreshAllPanes({ reset: true, preserveScroll: true }).catch(() => {}), 0);
   } catch (error) {
     toast(`${move ? '移动' : '复制'}失败：${error.message}`, 4200);
@@ -8123,38 +8125,60 @@ function bindPaneEvents(paneId) {
     activatePane(paneId);
     refresh({ reset: true, preserveScroll: true, paneId });
   });
+  // A drag only passing over this pane must not activate it: that would
+  // rebuild the shared sidebar and inspector mid-drag (and could raise a
+  // discard confirm inside the native drag session). The drop activates it.
+  // The overlay and its depth counter are this pane's own, never the active
+  // pane's, so enter/leave pairs of neighbouring panes cannot cross.
   scroller.addEventListener('dragenter', event => {
     const fallbackIds = activeDraggedItemIds();
     if (classifyDrop(event.dataTransfer, fallbackIds) === 'unsupported') return;
     event.preventDefault();
-    if (!activatePane(paneId)) {
-      clearDragUI();
-      return;
-    }
-    if (!hasCapability('importLocal') || !shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
-    state.dragDepth += 1;
-    $('#dropOverlay').classList.remove('hidden');
+    const pane = paneById(paneId);
+    if (!pane || !hasCapability('importLocal') || !shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
+    pane.dragDepth = (pane.dragDepth || 0) + 1;
+    query('#dropOverlay').classList.remove('hidden');
   });
+  // Items let go in the folder they came from are already there: refuse the
+  // drop with the cursor instead of acting or reporting it.
+  const dropsIntoSourceFolder = () => {
+    const drag = state.internalDrag;
+    if (!drag?.active) return false;
+    const sameWindow = !drag.sourceWindowId || drag.sourceWindowId === state.windowId;
+    if (sameWindow && (drag.sourcePaneId || state.dragSourcePaneId) === paneId) return true;
+    const view = paneById(paneId)?.currentView;
+    return Boolean(drag.sourceFolderId && view?.kind === 'folder' && view.id === drag.sourceFolderId);
+  };
   scroller.addEventListener('dragover', event => {
     const fallbackIds = activeDraggedItemIds();
     const dropKind = classifyDrop(event.dataTransfer, fallbackIds);
     if (dropKind === 'unsupported') return;
     event.preventDefault();
+    if (dropKind === 'internal-items' && dropsIntoSourceFolder()) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
     event.dataTransfer.dropEffect = dropKind === 'internal-items' && sourceFolderId && !event.altKey ? 'move' : 'copy';
   });
   scroller.addEventListener('dragleave', () => {
-    if ($('#dropOverlay').classList.contains('hidden')) return;
-    state.dragDepth = Math.max(0, state.dragDepth - 1);
-    if (!state.dragDepth) $('#dropOverlay').classList.add('hidden');
+    const overlay = query('#dropOverlay');
+    const pane = paneById(paneId);
+    if (!pane || overlay.classList.contains('hidden')) return;
+    pane.dragDepth = Math.max(0, (pane.dragDepth || 0) - 1);
+    if (!pane.dragDepth) overlay.classList.add('hidden');
   });
   scroller.addEventListener('drop', event => {
     event.preventDefault();
+    const drop = resolveItemDrop(event);
+    if (drop.kind === 'internal-items' && dropsIntoSourceFolder()) {
+      clearDragUI();
+      return;
+    }
     if (!activatePane(paneId)) {
       clearDragUI();
       return;
     }
-    const drop = resolveItemDrop(event);
     if (drop.kind === 'internal-items') {
       const context = paneItemDropContext(paneId, event, drop);
       if (!context) {
