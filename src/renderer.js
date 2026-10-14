@@ -102,8 +102,14 @@ function setSortCascadeEnabled(enabled) {
     for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
     state.sortCascade = sortCascadeEnabled;
   }
-  const cascadeCheck = $('#sortCascadeCheck');
-  if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+  syncSortCascadeChecks();
+}
+
+// "包含子文件夹" is one preference for every pane and window, so every pane's
+// checkbox must show it: a stale unchecked box in a background pane would
+// hide that its next sort change rewrites the whole subtree (B1-02).
+function syncSortCascadeChecks() {
+  for (const check of document.querySelectorAll('.sort-cascade-check')) check.checked = sortCascadeEnabled;
 }
 
 // Another MultiView window may update the shared sort preferences.
@@ -115,8 +121,7 @@ window.addEventListener('storage', event => {
       for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
       state.sortCascade = sortCascadeEnabled;
     }
-    const cascadeCheck = $('#sortCascadeCheck');
-    if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+    syncSortCascadeChecks();
   }
 });
 const { createOperationTracker } = window.EagleMVOperationState;
@@ -1599,7 +1604,7 @@ function renderSortControls() {
     if (divider) divider.classList.toggle('hidden', !isFolder);
     if (cascadeItem) cascadeItem.classList.toggle('hidden', !isFolder);
     const cascadeCheck = $('#sortCascadeCheck');
-    if (cascadeCheck) cascadeCheck.checked = Boolean(state.sortCascade);
+    if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
   }
 }
 
@@ -7526,6 +7531,7 @@ function bindPaneEvents(paneId) {
       b.setAttribute('aria-expanded', 'false');
     }
     if (opening) {
+      renderSortControls();
       popover.classList.remove('hidden');
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'true');
     }
@@ -7555,7 +7561,7 @@ function bindPaneEvents(paneId) {
       const targetDir = dirBtn.dataset.sortDir;
       if (targetDir === 'asc' || targetDir === 'desc') {
         state.sortDir = targetDir;
-        if (state.sortCascade && state.currentView?.kind === 'folder') {
+        if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
           sortMemory.rememberCascade(
             state.library?.path,
             state.currentView.id,
@@ -7595,7 +7601,7 @@ function bindPaneEvents(paneId) {
     // Picking 随机 deals a new order; re-picking it from the dropdown fires no
     // change event, which is why the direction button doubles as reshuffle.
     if (state.sort === 'random') state.randomSeed = nextRandomSeed();
-    if (state.sortCascade && state.currentView?.kind === 'folder') {
+    if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
       sortMemory.rememberCascade(
         state.library?.path,
         state.currentView.id,
