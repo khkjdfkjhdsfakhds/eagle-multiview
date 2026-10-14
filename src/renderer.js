@@ -5579,6 +5579,57 @@ function requestBackAction() {
   return window.EagleMVBack.request();
 }
 
+// A phone or tablet browser (not the Android shell, which sends its own back
+// key) has no back semantics of its own: the gesture left the page with a
+// preview, a drawer or a selection still up (W-08). While back has something
+// to close, one sentinel history entry sits above the page; popping it runs
+// the same back router, and it is re-armed while more remains. With nothing
+// left it is removed, so the next back leaves the page as usual.
+const browserBackGuard = isWebClient && !window.eagleMV.shellApp && typeof history?.pushState === 'function';
+document.body.classList.toggle('browser-back', browserBackGuard);
+let backGuardArmed = false;
+let backGuardDisarming = false;
+let backGuardSyncQueued = false;
+
+function hasBackTarget() {
+  if (activeMarquee?.started || document.querySelector('dialog[open], .sort-popover:not(.hidden), .tag-suggestion-popover:not(.hidden)')) return true;
+  const surfaces = ['#folderDialog', '#webAccessDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#tagColorManager', '#filterPopover', '#paneLayoutPopover', '#libraryPopover', '#previewModal'];
+  if (surfaces.some(selector => $(selector) && !$(selector).classList.contains('hidden'))) return true;
+  return Boolean(state.openDrawer || state.selected.size || state.selectedFolderCard || state.historyIndex > 0);
+}
+
+function syncBrowserBackGuard() {
+  backGuardSyncQueued = false;
+  if (!browserBackGuard || backGuardDisarming) return;
+  const wanted = hasBackTarget();
+  if (wanted && !backGuardArmed) {
+    history.pushState({ eaglemvBackGuard: true }, '');
+    backGuardArmed = true;
+  } else if (!wanted && backGuardArmed && history.state?.eaglemvBackGuard) {
+    backGuardArmed = false;
+    backGuardDisarming = true;
+    history.back();
+  }
+}
+
+function scheduleBackGuardSync() {
+  if (!browserBackGuard || backGuardSyncQueued) return;
+  backGuardSyncQueued = true;
+  setTimeout(syncBrowserBackGuard, 0);
+}
+
+if (browserBackGuard) {
+  window.addEventListener('popstate', () => {
+    if (backGuardDisarming) { backGuardDisarming = false; return; }
+    if (!backGuardArmed) return;
+    backGuardArmed = false;
+    requestBackAction();
+    syncBrowserBackGuard();
+  });
+  // Surfaces open and close on user input, so re-check after each one.
+  for (const type of ['click', 'pointerup', 'keyup', 'touchend']) document.addEventListener(type, scheduleBackGuardSync, true);
+}
+
 function parentView() {
   return resolveParentView(state.library?.folders, state.currentView);
 }

@@ -2358,7 +2358,9 @@ body.web-client .content-pane .slideshow-controls .preview-view-button { display
 /* Touch web client (Android): nothing floats over the picture. Swipe down,
    system Back and Esc close it; the inspector rates. */
 @media (pointer: coarse) {
-  body.web-client .content-pane .preview-modal .modal-close,
+  /* A plain browser keeps the close button: its back gesture is not the
+     Android shell's back key (W-08). */
+  body.web-client:not(.browser-back) .content-pane .preview-modal .modal-close,
   body.web-client .content-pane .preview-modal .modal-caption,
   body.web-client .content-pane .preview-modal .modal-rating,
   body.web-client .content-pane .preview-modal .slideshow-controls { display: none !important; }
