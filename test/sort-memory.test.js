@@ -75,8 +75,11 @@ test('the view chokepoint restores memory and sort changes persist through one h
   assert.ok(html.includes('<script src="sort-memory.js"></script>'));
   const applyStart = renderer.indexOf('function applyView(view)');
   const applyFn = renderer.slice(applyStart, renderer.indexOf('\n}', applyStart));
-  assert.ok(applyFn.includes('sortMemory.recall(state.library?.path, descriptorKey(view))'),
+  assert.ok(applyFn.includes('const remembered = rememberedSortFor(view);'),
     'restore must live in applyView so every navigation path gets it');
+  assert.ok(renderer.includes('sortMemory.recall(state.library?.path, descriptorKey(view))'));
+  // A new pane skips applyView and reads the memory itself (B1-01).
+  assert.ok(renderer.includes('const remembered = rememberedSortFor(currentView);'));
   assert.ok(applyFn.includes("state.sort = remembered?.sort || 'default';"));
   const commitStart = renderer.indexOf('function commitSortChange()');
   const commitFn = renderer.slice(commitStart, renderer.indexOf('\n}', commitStart));

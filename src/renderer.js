@@ -470,7 +470,11 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     slideshow: { timer: null, intervalMs: source.slideshow?.intervalMs || 4000 }
   };
   if (fresh) {
-    pane.sortDir = 'auto';
+    // A new pane opens its view without passing through applyView, so it
+    // reads the remembered sort here (B1-01).
+    const remembered = rememberedSortFor(currentView);
+    pane.sort = remembered?.sort || 'default';
+    pane.sortDir = remembered?.sortDir || 'auto';
     pane.randomSeed = nextRandomSeed();
     pane.viewMemory = new Map();
   }
@@ -5143,12 +5147,16 @@ function applyView(view) {
   // Eagle remembers the sort per folder. Restoring here — the one place the
   // current view is assigned — covers every navigation path, including the
   // startup root view and library switches.
-  const remembered = view.kind === 'folder'
-    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders)
-    : sortMemory.recall(state.library?.path, descriptorKey(view));
+  const remembered = rememberedSortFor(view);
   state.sort = remembered?.sort || 'default';
   state.sortDir = remembered?.sortDir || 'auto';
   renderSortControls();
+}
+
+function rememberedSortFor(view) {
+  return view?.kind === 'folder'
+    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders)
+    : sortMemory.recall(state.library?.path, descriptorKey(view));
 }
 
 // Leaving a view keeps its scroll offset and loaded-item count so back/up
