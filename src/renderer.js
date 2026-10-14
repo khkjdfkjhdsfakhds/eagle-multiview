@@ -643,6 +643,7 @@ function withActivePane(id, callback) {
 function renderingBackgroundPane() {
   return foregroundPaneId !== null && state.activePaneId !== foregroundPaneId;
 }
+const KEYBOARD_ACTIVATED_CONTROLS = 'button, a[href], summary, [role="button"], [role="menuitem"], [role="option"], [role="tab"]';
 function isEditableElement(target = document.activeElement) {
   return Boolean(target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
 }
@@ -9204,8 +9205,12 @@ function bindEvents() {
       openWithDefault(state.previewId || [...state.selected][0]);
       return;
     }
-    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); enterFolderFromGrid(state.selectedFolderCard); }
-    else if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
+    // Enter and Space on a keyboard-focused button or link activate it (B3-05);
+    // a button that merely kept focus after a mouse click does not count, so
+    // Space after clicking a toolbar button still opens or closes the preview.
+    const keyboardControl = Boolean(event.target?.closest?.(KEYBOARD_ACTIVATED_CONTROLS) && event.target.matches?.(':focus-visible'));
+    if (!editable && !keyboardControl && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); enterFolderFromGrid(state.selectedFolderCard); }
+    else if (!editable && !keyboardControl && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
     if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault();
       toggleSlideshow();
@@ -9221,14 +9226,14 @@ function bindEvents() {
       togglePreviewGrayscale();
       return;
     }
-    if (!editable && event.code === 'Space' && previewOpen) {
+    if (!editable && !keyboardControl && event.code === 'Space' && previewOpen) {
       event.preventDefault();
       // Eagle: space toggles playback while a video/audio preview is open;
       // for stills it keeps closing the preview.
       const media = $('#modalMedia video, #modalMedia audio');
       if (media) media.paused ? media.play().catch(() => {}) : media.pause();
       else closePreview();
-    } else if (!editable && event.code === 'Space' && state.selected.size) {
+    } else if (!editable && !keyboardControl && event.code === 'Space' && state.selected.size) {
       event.preventDefault();
       const first = firstSelectedInViewOrder();
       if (first) {
