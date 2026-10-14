@@ -257,6 +257,8 @@ const state = {
 // the inverse API patch while this window remains open.
 const trashUndoStack = [];
 let trashMutationInFlight = 0;
+// Per pane: the rating whose writes are still in flight (setSelectionRating).
+const ratingQueues = new Map();
 
 // 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
 // has focus, otherwise undoing the last delete. An open dialog swallows it so
@@ -282,7 +284,15 @@ async function undoLastTrash() {
   if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资料库已切换', 3500); return; }
   const operationToken = beginForegroundOperation('正在撤销删除…', { key: `trash-undo:${paneId}` });
   if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
   trashMutationInFlight += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    trashMutationInFlight -= 1;
+    endForegroundOperation(operationToken);
+  };
   setSyncStatus('正在撤销删除…');
   try {
     const outcome = await runItemBatch(entry.ids, async id => {
@@ -294,15 +304,15 @@ async function undoLastTrash() {
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成撤销');
     entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
     if (!entry.ids.length) trashUndoStack.pop();
-    pane.selected = new Set(outcome.failed);
+    settleBatchSelection(pane, selectionBefore, outcome.failed);
+    release();
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length ? `已撤销 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败` : `已撤销删除 ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4200 : 2400);
   } catch (error) {
     toast(`撤销删除失败：${error.message}`, 4000);
   } finally {
-    trashMutationInFlight -= 1;
     setSyncStatus('所有窗口已同步');
-    endForegroundOperation(operationToken);
+    release();
   }
 }
 window.state = state;
@@ -3982,7 +3992,16 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   const action = deleted ? '移入废纸篓' : '恢复';
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
   if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
   trashMutationInFlight += 1;
+  // The lock covers the writes only; the refresh after them is a plain read.
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    trashMutationInFlight -= 1;
+    endForegroundOperation(operationToken);
+  };
   setSyncStatus(`正在${action}…`);
   try {
     const outcome = await runItemBatch(ids, async id => {
@@ -4006,8 +4025,8 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
         if (!trashUndoStack[index].ids.length) trashUndoStack.splice(index, 1);
       }
     }
-    pane.selected = new Set(outcome.failed);
-    if (state.activePaneId === paneId) renderInspector();
+    if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
+    release();
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length
       ? `已${action} ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
@@ -4015,9 +4034,8 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
   } finally {
-    trashMutationInFlight -= 1;
     setSyncStatus('所有窗口已同步');
-    endForegroundOperation(operationToken);
+    release();
   }
 }
 
@@ -4037,19 +4055,24 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
   const pane = paneById(paneId);
   if (!pane) return false;
   const libraryPath = state.library?.path;
-  const operationToken = beginForegroundOperation(message, { key: `set:${paneId}:${field}` });
+  let operationToken = beginForegroundOperation(message, { key: `set:${paneId}:${field}` });
   if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
   setSyncStatus(message);
   try {
     const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
       id, field, ...delta, libraryPath
     }), 'Eagle 批量修改请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
-    pane.selected = new Set(outcome.failed.length || !keepSelection ? outcome.failed : ids);
-    if (state.activePaneId === paneId) renderInspector();
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed.length || !keepSelection ? outcome.failed : ids);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
+    const settledSelection = new Set(pane.selected);
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
-    if (keepSelection && !outcome.failed.length) {
-      const visibleIds = new Set(pane.items.map(item => item.id));
+    const visibleIds = new Set(pane.items.map(item => item.id));
+    if (ownsSelection && keepSelection && !outcome.failed.length
+      && sameSelection(pane, new Set([...settledSelection].filter(id => visibleIds.has(id))))) {
       pane.selected = new Set(ids.filter(id => visibleIds.has(id)));
       if (state.activePaneId === paneId) withActivePane(paneId, () => {
         updateCardSelectionStyles();
@@ -4097,16 +4120,18 @@ async function moveSelectionToFolder(payload) {
     return;
   }
   const delta = folderMoveDelta(payload?.sourceFolderIds || paneFolderScope(pane, sourceFolderId), folderId);
-  const operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
+  let operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
   if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
   setSyncStatus('正在移动到文件夹…');
   try {
     const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
       id, field: 'folders', ...delta, libraryPath
     }), 'Eagle 移动请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成移动');
-    pane.selected = new Set(outcome.failed);
-    if (state.activePaneId === paneId) renderInspector();
+    if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length
       ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
@@ -4147,24 +4172,46 @@ async function setSelectionRating(payload) {
   if (!ids.length || !state.connected) return;
   if (!pane) return;
   const libraryPath = state.library?.path;
-  const operationToken = beginForegroundOperation('正在设置评分…', { key: `rating:${paneId}` });
-  if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
+  // Ratings of one pane queue behind each other instead of refusing a key
+  // pressed while the previous write is still out ("3, →, 4" rates both).
+  let operationToken = beginForegroundOperation('正在设置评分…');
+  const previousTurn = ratingQueues.get(paneId);
+  let endTurn;
+  const turn = new Promise(resolve => { endTurn = resolve; });
+  ratingQueues.set(paneId, turn);
+  const finishTurn = () => {
+    endTurn();
+    if (ratingQueues.get(paneId) === turn) ratingQueues.delete(paneId);
+  };
   setSyncStatus('正在设置评分…');
   try {
+    await previousTurn;
+    if (state.library?.path !== libraryPath || !paneById(paneId)) return;
     const outcome = await runItemBatch(ids, async id => {
       const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({ id, patch: { star: rating }, base: item, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      // A queued rating of the same item must compare against this write,
+      // not the pre-refresh copy, or it reads as a cross-window conflict.
+      const index = pane.items.findIndex(candidate => candidate.id === id);
+      if (index >= 0 && result?.item) {
+        pane.items[index] = result.item;
+        pane.itemMap?.set(id, result.item);
+      }
       return result;
     }, 'Eagle 评分请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成评分');
     // Rating never removes anything from the view, so the selection survives —
     // Eagle keeps it too, and dropping it after every keystroke made rating a
     // run of items needlessly awkward. Failures stay selected on their own.
-    pane.selected = new Set(outcome.failed.length
+    const next = outcome.failed.length
       ? outcome.failed
-      : ids.filter(id => pane.items.some(item => item.id === id)));
-    if (state.activePaneId === paneId) renderInspector();
+      : ids.filter(id => pane.items.some(item => item.id === id));
+    if (settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
+    finishTurn();
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     if (state.previewId) updatePreviewChrome(itemById(state.previewId) || { id: state.previewId, name: '', ext: '' });
     toast(outcome.failed.length
@@ -4173,6 +4220,7 @@ async function setSelectionRating(payload) {
   } catch (error) {
     toast(`评分失败：${error.message}`, 4000);
   } finally {
+    finishTurn();
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
@@ -6947,6 +6995,18 @@ async function settleWithConcurrency(values, worker, concurrency = 4) {
   return results;
 }
 
+// A batch leaves its result selection behind only if the user has not picked
+// something else while it ran; otherwise "rate A, → to B" snapped back to A.
+function sameSelection(pane, snapshot) {
+  return pane.selected.size === snapshot.size && [...snapshot].every(id => pane.selected.has(id));
+}
+
+function settleBatchSelection(pane, snapshot, next) {
+  if (!sameSelection(pane, snapshot)) return false;
+  pane.selected = new Set(next);
+  return true;
+}
+
 async function runItemBatch(ids, worker, timeoutMessage) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
   const results = await settleWithConcurrency(uniqueIds, id => withTimeout(
@@ -7072,7 +7132,7 @@ async function handlePaneItemDrop(context) {
   if (!state.connected) { toast('Eagle 未连接，暂时无法修改归类', 3500); return true; }
   if (!targetFolderId) { toast('请将素材拖入一个具体文件夹栏', 3500); return true; }
   if (sourceFolderId && sourceFolderId === targetFolderId) { toast('素材已经在这个文件夹中'); return true; }
-  const operationToken = beginForegroundOperation(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`, { key: `pane-drop:${targetPaneId}` });
+  let operationToken = beginForegroundOperation(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`, { key: `pane-drop:${targetPaneId}` });
   if (!operationToken) return true;
   setSyncStatus(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`);
   try {
@@ -7117,6 +7177,8 @@ async function handlePaneItemDrop(context) {
 
     toast(`${move ? '已移动' : '已复制'} ${succeeded} 个素材到当前栏${failed.length ? ` · ${failed.length} 个失败` : ''}`);
     if (state.library?.path === libraryPath) markFolderUsed(targetFolderId, libraryPath);
+    endForegroundOperation(operationToken);
+    operationToken = null;
     // Refresh the drop target now, but do not hold the native drop completion
     // open while every other pane performs a network query.
     await withTimeout(refresh({ reset: true, preserveScroll: true, paneId: targetPaneId }), 12000, '刷新目标栏超时');
@@ -8731,8 +8793,9 @@ function bindEvents() {
     const pane = paneById(paneId);
     const ids = [...(pane?.selected || [])];
     const libraryPath = state.library?.path;
-    const operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
+    let operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
     if (!operationToken) return;
+    const selectionBefore = new Set(pane.selected);
     setSyncStatus('正在合并标签…');
     try {
       const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
@@ -8743,11 +8806,13 @@ function bindEvents() {
       // (removeTagFromSelection passes keepSelection) — the items are all
       // still on screen, and losing them after one tag makes the second tag a
       // re-selection chore.
-      pane.selected = new Set(outcome.failed.length
+      settleBatchSelection(pane, selectionBefore, outcome.failed.length
         ? outcome.failed
         : ids.filter(id => pane.items.some(item => item.id === id)));
       $('#batchTagInput').value = '';
       setTagValues('batch', [], false);
+      endForegroundOperation(operationToken);
+      operationToken = null;
       await refresh({ reset: true, preserveScroll: true, paneId });
       if (state.activePaneId === paneId) withActivePane(paneId, () => {
         updateCardSelectionStyles();

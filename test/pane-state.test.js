@@ -459,7 +459,7 @@ test('bulk folder, rating, and trash operations use bounded batches with partial
     assert.ok(start >= 0, `${functionName} exists`);
     assert.ok(handler.includes('runItemBatch('), `${functionName} batches Eagle writes`);
   }
-  assert.ok(source.includes('pane.selected = new Set(outcome.failed);'));
+  assert.ok(source.includes('settleBatchSelection(pane, selectionBefore, outcome.failed)'));
 });
 
 test('trash deletion records an inverse operation and Control+Z restores it through the conflict-safe mutation path', () => {
@@ -493,7 +493,7 @@ test('slow bulk mutations remain bound to the pane that started them', () => {
     const end = Math.min(...candidates);
     const handler = source.slice(start, end);
     assert.ok(handler.includes('paneId'), `${functionName} captures a pane id`);
-    assert.ok(handler.includes('pane.selected = new Set(outcome.failed'), `${functionName} restores failures in its source pane`);
+    assert.ok(handler.includes('settleBatchSelection(pane, selectionBefore'), `${functionName} restores failures in its source pane`);
     assert.ok(handler.includes('paneId }'), `${functionName} refreshes its source pane`);
   }
 });

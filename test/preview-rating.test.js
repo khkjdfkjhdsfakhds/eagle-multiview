@@ -36,9 +36,11 @@ test('operations that leave items on screen keep the selection', () => {
   // keepSelection (which tag *removal* already used — the two were
   // inconsistent). Trash and move still clear, because their items leave;
   // undoing a delete likewise keeps only the items that failed to come back.
-  const keep = renderer.match(/pane\.selected = new Set\(outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: ids\.filter\(id => pane\.items\.some\(item => item\.id === id\)\)\);/g) || [];
+  // (B2-01: each only applies while the selection is still the one the
+  // operation started from — see batch-selection.integration.test.js.)
+  const keep = renderer.match(/(?:const next = |settleBatchSelection\(pane, selectionBefore, )outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: ids\.filter\(id => pane\.items\.some\(item => item\.id === id\)\)\)?;/g) || [];
   assert.strictEqual(keep.length, 2, '评分与批量加标签各一处');
-  const clears = renderer.match(/pane\.selected = new Set\(outcome\.failed\);/g) || [];
+  const clears = renderer.match(/settleBatchSelection\(pane, selectionBefore, outcome\.failed\)/g) || [];
   assert.strictEqual(clears.length, 3, '只剩废纸篓、移动与撤销删除三处仍然清空');
 });
 
