@@ -129,6 +129,9 @@ const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
 let thumbnailRevision = 0;
+// The single item the inspector last rendered, so a re-render of it can
+// update in place (see renderInspector).
+let inspectorShown = null;
 const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id) + (kind === 'thumb' && thumbnailRevision ? `?v=${thumbnailRevision}` : '');
 // Host-bound entry points (Finder, native drag, host dialogs…) check this
 // table; the web shim serves the same keys with false so they hide cleanly.
@@ -3208,6 +3211,7 @@ function renderInspector() {
   $('#noSelection').classList.toggle('hidden', count !== 0);
   $('#inspectorContent').classList.toggle('hidden', count !== 1);
   $('#multiSelection').classList.toggle('hidden', count < 2);
+  if (count !== 1) inspectorShown = null;
   if (count >= 2) {
     $('#multiCount').textContent = count;
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
@@ -3248,7 +3252,7 @@ function renderInspector() {
   }
   const id = [...state.selected][0];
   const item = itemById(id);
-  if (!item) return;
+  if (!item) { inspectorShown = null; return; }
   if (state.selectedBase?.id !== id) {
     clearInspectorAutoSave();
     state.inspectorEditing = false;
@@ -3286,12 +3290,23 @@ function renderInspector() {
   }
   updateURLActions();
   resizeAnnotation();
-  $('#previewBox').innerHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
+  // A refresh that re-renders the item already shown (a rating, a tag,
+  // another window's change) updates it in place: rebuilding the thumbnail,
+  // re-reading the file's generation metadata (which hides the section and
+  // collapses an open workflow) and blanking the comments would flash the
+  // whole inspector for an edit that touched none of them (B2-05).
+  const shown = inspectorShown;
+  const sameItem = shown?.paneId === state.activePaneId && shown.libraryPath === state.library?.path && shown.id === id;
+  const fileKey = JSON.stringify([item.modificationTime, item.size, item.ext]);
+  inspectorShown = { paneId: state.activePaneId, libraryPath: state.library?.path, id, fileKey };
+  const previewHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
+  if (!sameItem || shown.previewHTML !== previewHTML) $('#previewBox').innerHTML = previewHTML;
+  inspectorShown.previewHTML = previewHTML;
   renderItemPalette(item);
   $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span><span><em>修改日期</em>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
-  loadGenerationMetadata(item);
+  if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
-  loadComments(item);
+  loadComments(item, { quiet: sameItem });
   $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓…';
   const canPin = state.currentView.kind === 'folder';
   $('#pinButton').disabled = !canPin || !state.connected;
@@ -3339,7 +3354,8 @@ async function loadComments(item, context = {}) {
   if (!item?.id || !commentContextMatches(target)) return false;
   state.commentsToken = (Number.isFinite(state.commentsToken) ? state.commentsToken : 0) + 1;
   const token = state.commentsToken;
-  $('#itemComments').innerHTML = '<span class="muted">正在读取…</span>';
+  // A quiet reload keeps the comments on screen until the new ones arrive.
+  if (!context.quiet) $('#itemComments').innerHTML = '<span class="muted">正在读取…</span>';
   try {
     const comments = await window.eagleMV.getComments({ id: item.id, libraryPath });
     if (token !== state.commentsToken || !commentContextMatches(target)) return false;
