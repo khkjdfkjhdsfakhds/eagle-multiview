@@ -343,7 +343,7 @@ function paneCreationOrder(id) {
 const paneStateKeys = [
   'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase', 'selectionAnchor',
   'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query', 'sortCascade',
-  'viewMemory', 'restoreScroll',
+  'viewMemory', 'restoreScroll', 'filterLock',
   'previewId', 'previewZoom', 'previewView', 'previewToken', 'textSession', 'textSaving', 'slideshow'
 ];
 // Eagle offers four grid layouts; 'justified' is our default, as it is there.
@@ -462,6 +462,8 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     draggingItemIds: null,
     scrollTop: fresh ? 0 : (Number(source.scrollTop) || 0),
     query: fresh ? createQuery() : cloneQuery(source.query),
+    // Eagle's 锁定筛选: keep the search and filters when the view changes.
+    filterLock: fresh ? false : Boolean(source.filterLock),
     viewMemory: new Map(source.viewMemory || []),
     restoreScroll: null,
     previewId: fresh ? null : (source.previewId || null),
@@ -1740,6 +1742,13 @@ function filtersActive() {
 function renderFilterState() {
   const active = filtersActive();
   $('#clearFiltersButton').classList.toggle('hidden', !active);
+  // Offered while something is filtered, as Eagle shows its lock button.
+  const lock = $('#lockFiltersButton');
+  lock.classList.toggle('hidden', !active);
+  lock.classList.toggle('active', Boolean(state.filterLock));
+  lock.setAttribute('aria-pressed', String(Boolean(state.filterLock)));
+  $('#filterButton').classList.toggle('locked', Boolean(state.filterLock) && active);
+  $('#filterButton').title = state.filterLock && active ? '筛选已锁定：切换文件夹时保留' : '打开筛选器';
   $('#filterButton').classList.toggle('active', active || !$('#filterPopover').classList.contains('hidden'));
   const count = queryFilterCount(state.query);
   $('#filterCount').textContent = count;
@@ -2079,6 +2088,7 @@ async function updateTagColor(tag, color) {
 
 function clearFilters() {
   state.query = createQuery();
+  state.filterLock = false;
   renderQueryControls();
   refresh({ reset: true, preserveScroll: false, paneId: state.activePaneId });
 }
@@ -5209,8 +5219,12 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
   const currentQuery = cloneQuery(state.query);
-  const nextQuery = query ? cloneQuery(query) : exitSearch && view.kind === 'folder' && currentQuery.search
-    ? queryWithoutSearch(currentQuery)
+  // Like Eagle, moving to another view starts without the search and filters
+  // unless they are locked (R2-04); they used to follow every navigation and
+  // silently narrow the next folder. History passes the query it restores.
+  const nextQuery = query ? cloneQuery(query)
+    : changed && !state.filterLock ? createQuery()
+    : exitSearch && view.kind === 'folder' && currentQuery.search ? queryWithoutSearch(currentQuery)
     : currentQuery;
   if (record && changed) {
     const recorded = recordViewNavigation(
@@ -5280,7 +5294,7 @@ function navigateHistory(delta) {
   const previousQuery = state.query;
   state.query = target.hasQuery ? cloneQuery(target.query) : createQuery();
   state.historyIndex = next;
-  if (!navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true })) {
+  if (!navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true, query: state.query })) {
     state.historyIndex -= delta;
     state.query = previousQuery;
     renderQueryControls();
@@ -8592,6 +8606,11 @@ function bindEvents() {
     if (button.dataset.commentAction === 'remove') removeComment(row.dataset.commentId);
   });
   $('#clearFiltersButton').addEventListener('click', clearFilters);
+  $('#lockFiltersButton').addEventListener('click', () => {
+    state.filterLock = !state.filterLock;
+    renderFilterState();
+    toast(state.filterLock ? '已锁定筛选：切换文件夹时保留搜索与筛选' : '已解除筛选锁定', 2400);
+  });
   $('#filterButton').addEventListener('click', () => {
     $('#filterPopover').classList.toggle('hidden');
     renderFilterState();

@@ -165,8 +165,19 @@ async function run() {
     pathInput.dispatchEvent(new Event('input', { bubbles: true }));
     pathInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await until(() => paneSnapshot(panes()[0]).current === 'Beta');
-    assert(firstPaneState.query.search === 'keep-search', '路径导航丢失当前分栏搜索状态');
+    // Eagle clears the search when the view changes unless it is locked (R2-04).
+    assert(firstPaneState.query.search === '', '路径导航没有像 Eagle 一样清空搜索');
     assert(firstPaneState.history.length > historyBeforePathNavigation, '路径导航没有记录历史');
+    firstPaneState.query.search = 'keep-search';
+    firstPaneState.filterLock = true;
+    pathInput = beginPathEdit(panes()[0]);
+    pathInput.value = 'Alpha / Beta / Gamma';
+    pathInput.dispatchEvent(new Event('input', { bubbles: true }));
+    pathInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await until(() => paneSnapshot(panes()[0]).current === 'Gamma');
+    assert(firstPaneState.query.search === 'keep-search', '锁定筛选后路径导航丢失搜索');
+    firstPaneState.filterLock = false;
+    firstPaneState.query.search = '';
 
     go(firstPaneId, { kind: 'folder', id: 'delta-folder' });
     await until(() => paneSnapshot(panes()[0]).current === 'Delta');
