@@ -58,4 +58,8 @@ async function run() {
   window.destroy();
 }
 
-run().catch(error => { console.error(error.stack || error); process.exitCode = 1; }).finally(() => app.quit());
+run().catch(error => { console.error(error.stack || error); process.exitCode = 1; }).finally(() => {
+  // An unsaved inspector edit would hold windows open through the close protocol.
+  for (const open of BrowserWindow.getAllWindows()) open.destroy();
+  app.quit();
+});

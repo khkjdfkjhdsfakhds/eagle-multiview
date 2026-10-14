@@ -3640,29 +3640,50 @@ function persistInspectorDraft(draft, remove = false) {
   }
 }
 function offerInspectorDraftRecovery(id) {
+  const current = state.selectedBase;
   let source;
+  let sourceStorageKey;
   try {
+    const obsolete = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith('eaglemv.inspectorDraft.v1.')) continue;
       const candidate = JSON.parse(localStorage.getItem(key) || 'null');
-      if (candidate?.id === id && candidate.libraryPath === state.library?.path && candidate.values && candidate.base
-        && candidate.key !== inspectorDraftKey(state.activePaneId, id)) { source = candidate; break; }
+      if (!(candidate?.id === id && candidate.libraryPath === state.library?.path && candidate.values && candidate.base
+        && candidate.key !== inspectorDraftKey(state.activePaneId, id))) continue;
+      // A copy that matches Eagle's current values has nothing left to
+      // recover; offering it again would only stage a false conflict.
+      if (current?.id === id && !Object.keys(inspectorDraftPatch({ values: candidate.values, base: current })).length) {
+        if (!inspectorDrafts.has(candidate.key)) obsolete.push(key);
+        continue;
+      }
+      if (!source) { source = candidate; sourceStorageKey = key; }
     }
+    for (const key of obsolete) localStorage.removeItem(key);
   } catch {}
   if (!source) return;
   const paneId = state.activePaneId;
   const banner = $('#staleBanner');
   delete banner.dataset.conflictDraftKey;
   banner.classList.remove('hidden');
-  banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button>';
-  banner.querySelector('button').addEventListener('click', () => {
-    if (state.activePaneId !== paneId || state.library?.path !== source.libraryPath || !state.selected.has(id)) return;
+  banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button><button type="button" class="small-action" data-draft-action="discard">丢弃</button>';
+  const stillHere = () => state.activePaneId === paneId && state.library?.path === source.libraryPath && state.selected.has(id);
+  banner.querySelector('[data-draft-action="recover"]').addEventListener('click', () => {
+    if (!stillHere()) return;
     if (state.inspectorDirty && !confirm('恢复草稿将替换当前未保存的素材信息，是否继续？')) return;
     const draft = { ...structuredClone(source), key: inspectorDraftKey(paneId, id), paneId, saving: null, revision: 1 };
     inspectorDrafts.set(draft.key, draft);
-    persistInspectorDraft(draft);
+    // The copy moves to this pane; leaving the source would offer it again
+    // after saving, with a stale base that turns into a false conflict.
+    if (persistInspectorDraft(draft)) {
+      try { localStorage.removeItem(sourceStorageKey); } catch {}
+    }
     renderInspector();
+  });
+  banner.querySelector('[data-draft-action="discard"]').addEventListener('click', () => {
+    if (!stillHere() || !confirm('丢弃这份素材信息草稿？丢弃后无法恢复。')) return;
+    try { localStorage.removeItem(sourceStorageKey); } catch {}
+    banner.classList.add('hidden');
   });
 }
 function captureInspectorDraft() {
