@@ -255,23 +255,24 @@ const importPaths = createImportService({
   itemCache: hub.itemCache
 });
 const creationQueues = new Map();
+let copyRunSequence = 0;
 
 // Eagle answers duplicates only after the whole upload queue drains, so a
 // per-batch polling window misses late dialogs in a large copy. The keeper
 // stays resident for the entire run and answers every duplicate that targets a
 // folder this run created.
-async function startDuplicateKeeper({ libraryPath, folderIds = [], ids = [], ttlMs = 900000 }) {
+async function startDuplicateKeeper({ libraryPath, runId, folderIds = [], ids = [], ttlMs = 900000 }) {
   await hub.ensureLibraryPath(libraryPath);
   await client.request('/api/script/inject', { method: 'POST', body: {
-    script: startKeepingCopiesScript({ libraryPath, folderIds, ids, ttlMs })
+    script: startKeepingCopiesScript({ libraryPath, runId, folderIds, ids, ttlMs })
   } });
 }
 
-async function stopDuplicateKeeper(libraryPath) {
+async function stopDuplicateKeeper(libraryPath, runId) {
   if (!libraryPath) return;
   try {
     await client.request('/api/script/inject', { method: 'POST', body: {
-      script: stopKeepingCopiesScript({ libraryPath })
+      script: stopKeepingCopiesScript({ libraryPath, runId })
     } });
   } catch {}
 }
@@ -279,22 +280,23 @@ async function stopDuplicateKeeper(libraryPath) {
 // A folder copy must not depend on when Eagle decides its duplicates: files
 // aimed at the folders this copy just created are added directly, and anything
 // Eagle still holds back is restored into its visible list before we verify.
-async function startCopyImportHandling({ libraryPath, folderIds = [] }) {
+// Each copy passes its own runId so concurrent copies never clear each other.
+async function startCopyImportHandling({ libraryPath, runId, folderIds = [] }) {
   await hub.ensureLibraryPath(libraryPath);
   await client.request('/api/script/inject', { method: 'POST', body: {
-    script: startCopyImportModeScript({ libraryPath, folderIds })
+    script: startCopyImportModeScript({ libraryPath, runId, folderIds })
   } });
-  await startDuplicateKeeper({ libraryPath, folderIds });
+  await startDuplicateKeeper({ libraryPath, runId, folderIds });
 }
 
-async function stopCopyImportHandling(libraryPath) {
+async function stopCopyImportHandling(libraryPath, runId) {
   if (!libraryPath) return;
   try {
     await client.request('/api/script/inject', { method: 'POST', body: {
-      script: stopCopyImportModeScript({ libraryPath })
+      script: stopCopyImportModeScript({ libraryPath, runId })
     } });
   } catch {}
-  await stopDuplicateKeeper(libraryPath);
+  await stopDuplicateKeeper(libraryPath, runId);
 }
 
 function enqueueCreation(key, operation) {
@@ -600,7 +602,8 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       groups.get(target).push(original);
     }
   }
-  await startCopyImportHandling({ libraryPath, folderIds: [...created.values()] });
+  const copyRunId = `copy-${process.pid}-${++copyRunSequence}`;
+  await startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] });
   try {
   for (const group of groups.values()) {
     await hub.ensureLibraryPath(libraryPath);
@@ -673,7 +676,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   return { ok: true, id: created.get(source.id), folderCount: created.size, copiedItems,
     folderMap: Object.fromEntries(created), itemMap: Object.fromEntries(copiedItemsBySourceId) };
   } finally {
-    await stopCopyImportHandling(libraryPath);
+    await stopCopyImportHandling(libraryPath, copyRunId);
   }
   } catch (error) {
     if (copyStarted) {

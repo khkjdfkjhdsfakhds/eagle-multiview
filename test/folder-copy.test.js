@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const { pathToFileURL } = require('node:url');
 const { loadMain } = require('../test-support/main-data-harness.cjs');
 const { folderCoverItemId } = require('../lib/eagle-native-sync');
+const { startCopyImportModeScript, stopCopyImportModeScript, startKeepingCopiesScript } = require('../lib/eagle-duplicate-choice');
 
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -272,4 +273,23 @@ test('a copy whose duplicate decision never lands is restored instead of failing
   assert.equal(fixture.scope.__eaglemvCopyImportMode, undefined);
   const orders = JSON.parse(await fs.readFile(path.join(fixture.root, 'user-data', 'state', 'manual-order.json'))).libraries[fixture.orderKey];
   assert.deepEqual(orders['["folder:copy-child","items"]'].ids, ['copy-2']);
+});
+
+test('a finished copy leaves a concurrent copy’s Eagle patches in place (E-07)', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const { scope, libraryPath } = fixture;
+  // Another copy into its own folder is still running when this one finishes.
+  const other = { $bodyScope: scope, document: { querySelector: () => null }, angular: { element: () => ({ isolateScope: () => null }) },
+    setInterval: () => 7, clearInterval: () => {} };
+  vm.runInNewContext(startCopyImportModeScript({ libraryPath, runId: 'other-run', folderIds: ['other-copy'] }), other);
+  vm.runInNewContext(startKeepingCopiesScript({ libraryPath, runId: 'other-run', folderIds: ['other-copy'] }), other);
+  const result = await fixture.copy();
+  assert.equal(result.copiedItems, 3);
+  assert.equal(scope.isDuplicateImage({ name: 'one.txt', folders: ['other-copy'] }), false, 'the other copy still bypasses the duplicate queue');
+  assert.ok(scope.isDuplicateImage({ name: 'one.txt', folders: ['copy-folder'] }), 'this copy’s folders go back to Eagle’s check');
+  assert.deepEqual(Object.keys(scope.__eaglemvCopyKeeper.runs), ['other-run']);
+  assert.notEqual(scope.__eaglemvCopyKeeper.timer, null, 'the keeper keeps running for the other copy');
+  vm.runInNewContext(stopCopyImportModeScript({ libraryPath, runId: 'other-run' }), other);
+  assert.equal(scope.isDuplicateImage, fixture.originalIsDuplicateImage);
 });

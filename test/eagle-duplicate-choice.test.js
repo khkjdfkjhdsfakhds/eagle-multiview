@@ -70,15 +70,46 @@ test('resident keeper expires and ignores a switched library', () => {
   vm.runInNewContext(startKeepingCopiesScript({ libraryPath: '/fixture.library', folderIds: ['copy-folder'] }), other.context());
   assert.equal(other.intervals.size, 0, 'a keeper must not run against another library');
 });
-test('a new copy run stops owning the previous run\u2019s folders', () => {
-  const fixture = keeperFixture([{ id: 'later', folders: ['first-copy-folder'] }]);
-  vm.runInNewContext(startKeepingCopiesScript({ libraryPath: '/fixture.library', folderIds: ['first-copy-folder'] }), fixture.context());
-  vm.runInNewContext(startKeepingCopiesScript({ libraryPath: '/fixture.library', folderIds: ['second-copy-folder'] }), fixture.context());
+test('concurrent copy runs keep their own folders until each one stops', () => {
+  const fixture = keeperFixture([]);
+  const lib = '/fixture.library';
+  vm.runInNewContext(startKeepingCopiesScript({ libraryPath: lib, runId: 'a', folderIds: ['a-folder'] }), fixture.context());
+  vm.runInNewContext(startKeepingCopiesScript({ libraryPath: lib, runId: 'b', folderIds: ['b-folder'] }), fixture.context());
+  assert.equal(fixture.intervals.size, 1, 'runs share one resident timer');
+  fixture.queue.push({ id: 'a-1', folders: ['a-folder'] }, { id: 'b-1', folders: ['b-folder'] });
+  fixture.tick(); fixture.tick();
+  assert.deepEqual(fixture.saved, ['a-1', 'b-1'], 'a later run must not drop the earlier run\u2019s folders');
+  vm.runInNewContext(stopKeepingCopiesScript({ libraryPath: lib, runId: 'b' }), fixture.context());
+  assert.equal(fixture.intervals.size, 1, 'stopping one run keeps the keeper for the other');
+  fixture.queue.push({ id: 'a-2', folders: ['a-folder'] });
   fixture.tick();
-  assert.deepEqual(fixture.saved, [], 'the finished run must not answer dialogs for its old folders');
-  fixture.queue.unshift({ id: 'ours', folders: ['second-copy-folder'] });
+  assert.deepEqual(fixture.saved, ['a-1', 'b-1', 'a-2']);
+  fixture.queue.length = 0;
+  fixture.queue.push({ id: 'b-late', folders: ['b-folder'] });
   fixture.tick();
-  assert.deepEqual(fixture.saved, ['ours']);
+  assert.deepEqual(fixture.saved, ['a-1', 'b-1', 'a-2'], 'a finished run must not answer dialogs for its old folders');
+  vm.runInNewContext(stopKeepingCopiesScript({ libraryPath: lib, runId: 'a' }), fixture.context());
+  assert.equal(fixture.intervals.size, 0, 'the last run stops the timer');
+});
+
+test('copy import mode stays patched until the last concurrent run stops', () => {
+  const existing = { id: 'existing', name: 'same.txt', folders: ['other-folder'] };
+  const scope = {
+    libraryPath: '/fixture.library',
+    isDuplicateImage(image) { return image?.name === existing.name ? existing : false; }
+  };
+  const original = scope.isDuplicateImage;
+  const lib = '/fixture.library';
+  vm.runInNewContext(startCopyImportModeScript({ libraryPath: lib, runId: 'a', folderIds: ['a-folder'] }), { $bodyScope: scope });
+  vm.runInNewContext(startCopyImportModeScript({ libraryPath: lib, runId: 'b', folderIds: ['b-folder'] }), { $bodyScope: scope });
+  assert.equal(scope.isDuplicateImage({ name: 'same.txt', folders: ['a-folder'] }), false);
+  assert.equal(scope.isDuplicateImage({ name: 'same.txt', folders: ['b-folder'] }), false);
+  vm.runInNewContext(stopCopyImportModeScript({ libraryPath: lib, runId: 'b' }), { $bodyScope: scope });
+  assert.equal(scope.isDuplicateImage({ name: 'same.txt', folders: ['a-folder'] }), false, 'stopping B must not unpatch A');
+  assert.equal(scope.isDuplicateImage({ name: 'same.txt', folders: ['b-folder'] }), existing, 'B\u2019s folders go back to Eagle\u2019s check');
+  vm.runInNewContext(stopCopyImportModeScript({ libraryPath: lib, runId: 'a' }), { $bodyScope: scope });
+  assert.equal(scope.isDuplicateImage, original);
+  assert.equal(scope.__eaglemvCopyImportMode, undefined);
 });
 
 test('native keep-both chooses only this import and never applies to all duplicates', () => {
