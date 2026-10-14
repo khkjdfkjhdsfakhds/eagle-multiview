@@ -59,7 +59,12 @@ app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-cross-pan
     ({ root, point } = await dropOnPane(paneB.id, { alt: true }));
     assert(root.dataset.folderNodeDrop === 'allowed', 'other pane refused the option drag');
     root.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: window.__dt, altKey: true, ...point }));
+    // F-03: the copy waits for confirmation.
+    await until(() => document.querySelector('.feature-dialog[open] [data-feature-submit]')?.disabled === false, 'copy confirmation shown');
+    assert(calls('copy-folder').length === before, 'option drag copied before confirmation');
+    document.querySelector('.feature-dialog[open] [data-feature-submit]').click();
     await until(() => calls('copy-folder').length === before + 1, 'cross-pane copy submitted');
+    await until(() => document.querySelector('#toast')?.textContent.includes('已复制'), 'copy finished');
     payload = calls('copy-folder').at(-1).payload;
     assert(payload.sourceId === 'mv-folder', 'copy source was ' + payload.sourceId);
     assert(payload.parentId === 'eagle-folder', 'copy parent was ' + payload.parentId);

@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   mutateFolder: data => ipcRenderer.invoke('folder:mutate', data),
   moveFolder: data => ipcRenderer.invoke('folder:move', data),
   copyFolder: data => ipcRenderer.invoke('folder:copy', data),
+  copyFolderPlan: data => ipcRenderer.invoke('folder:copy-plan', data),
   markFolderUsed: data => ipcRenderer.send('folder:used', data),
   importItems: data => ipcRenderer.invoke('items:import', data),
   startSiteImport: data => ipcRenderer.invoke('site:start', data),

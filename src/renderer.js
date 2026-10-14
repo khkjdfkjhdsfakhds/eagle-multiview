@@ -5956,6 +5956,7 @@ function contextMenuMarkup(data) {
       revealInPaneMenuMarkup(data),
       restoreFolderCoverMenu(data.targetFolderId),
       ...(data.targetFolderId && window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.targetFolderId } })] : []),
+      ...(data.targetFolderId && window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.targetFolderId } })] : []),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : [])
@@ -5966,6 +5967,7 @@ function contextMenuMarkup(data) {
       revealInPaneMenuMarkup(data),
       restoreFolderCoverMenu(data.folderId),
       ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.folderId } })] : []),
+      ...(window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.folderId } })] : []),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
       contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } })
@@ -6199,6 +6201,7 @@ async function executeContextAction(action, payload) {
   if (action === 'site-import') return siteFeatureUI().open();
   if (action === 'pinterest-help') return window.eagleMV.openExternal('https://docs-cn.eagle.cool/article/828-import-from-pinterest');
   if (action === 'move-folder-node') return selectedFeatureUI().moveFolder(payload.folderId);
+  if (action === 'copy-folder-node') return selectedFeatureUI().copyFolder(payload.folderId);
   if (action === 'save-smart-folder') return saveCurrentViewAsSmartFolder();
   if (action === 'rename-smart-folder') return renameSmartFolder(payload.id);
   if (action === 'remove-smart-folder') return removeSmartFolder(payload.id);

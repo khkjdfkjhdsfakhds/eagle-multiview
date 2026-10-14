@@ -228,8 +228,8 @@ test('folder drags advertise copy for Option and move otherwise on every drop ta
   assert.ok(source.includes("event.dataTransfer.dropEffect = valid ? (event.altKey ? 'copy' : 'move') : 'none';"),
     'dragover advertises copy with Option and move otherwise');
   assert.ok(source.includes("const copy = event.altKey;"), 'drop reads the Option modifier');
-  assert.ok(source.includes("? copyFolder(payload.id, target.parentId, ctx)"),
-    'Option drop copies the folder subtree');
+  assert.ok(source.includes("? copyFolder(payload.id, target.parentId, ctx, target.placement)"),
+    'Option drop copies the folder subtree (after confirmation) at the drop position');
   assert.ok(source.includes(": moveFolder(payload.id, target.parentId, { ...ctx, sourceId: payload.id,"),
     'plain drop moves the folder');
   assert.ok(source.includes("const parentId = context().paneDestination?.(pane.dataset.paneId);"),

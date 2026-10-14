@@ -520,6 +520,7 @@
     importSiteSelection: data => invoke('site:import', [data]),
     moveFolder: data => invoke('folder:move', [data]),
     copyFolder: data => invoke('folder:copy', [data]),
+    copyFolderPlan: data => invoke('folder:copy-plan', [data]),
     markFolderUsed: data => send('folder:used', [data]),
     importItems: async (data = {}) => {
       // Dropped/pasted browser File objects arrive via `paths`; without them

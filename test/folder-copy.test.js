@@ -293,3 +293,26 @@ test('a finished copy leaves a concurrent copy’s Eagle patches in place (E-07)
   vm.runInNewContext(stopCopyImportModeScript({ libraryPath, runId: 'other-run' }), other);
   assert.equal(scope.isDuplicateImage, fixture.originalIsDuplicateImage);
 });
+
+// F-03: the confirmation counts what a copy would take without writing.
+test('planning a folder copy counts folders and items and writes nothing', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const plan = await fixture.main.planFolderCopy({ sourceId: 'source', libraryPath: fixture.libraryPath });
+  assert.deepEqual(plain(plan), { ok: true, folderCount: 2, itemCount: 3 });
+  assert.deepEqual(fixture.folderCreates, []);
+  assert.deepEqual(fixture.imports, []);
+  await assert.rejects(fixture.main.planFolderCopy({ sourceId: 'source', parentId: 'source-child', libraryPath: fixture.libraryPath }), /不能复制到自身/);
+});
+
+test('a copy dropped on an insertion line lands next to that sibling', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const result = await fixture.main.copyFolderTree({ sourceId: 'source', libraryPath: fixture.libraryPath,
+    decisionTimeoutMs: 250, itemWaitMs: 250, anchorId: 'same-name-sibling', position: 'before' });
+  assert.equal(result.placed, true);
+  assert.deepEqual(fixture.folders.map(folder => folder.id), ['source', 'copy-folder', 'same-name-sibling']);
+  const plainCopy = await setupFixture();
+  t.after(() => fs.rm(plainCopy.root, { recursive: true, force: true }));
+  assert.equal((await plainCopy.copy()).placed, null, 'without a placement the copy keeps Eagle’s default position');
+});

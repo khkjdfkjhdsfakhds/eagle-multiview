@@ -347,12 +347,14 @@ function siblingFolders(folders, parentId) {
   return findFolder(folders, parentId)?.children || [];
 }
 
-async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin = null, decisionTimeoutMs = 12000, itemWaitMs = null }) {
+// Reads what a folder copy would take: the subtree and every item filed in
+// it, in each folder's Eagle order. Shared by the copy and its confirmation.
+async function collectFolderCopySource({ sourceId, parentId = null, libraryPath }) {
   await hub.ensureLibraryPath(libraryPath);
   const folders = await client.folderTree();
   const source = findFolder(folders, sourceId);
-  if (!source) throw new Error('来源文件夹已不存在，请刷新后重新拖动');
-  if (parentId && !findFolder(folders, parentId)) throw new Error('目标文件夹已不存在，请刷新后重新拖动');
+  if (!source) throw new Error('来源文件夹已不存在，请刷新后重新选择');
+  if (parentId && !findFolder(folders, parentId)) throw new Error('目标文件夹已不存在，请刷新后重新选择');
   const sourceIds = new Set();
   const walk = (folder, parent) => {
     sourceIds.add(folder.id);
@@ -360,8 +362,6 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   };
   const tree = walk(source, null);
   if (sourceIds.has(parentId)) throw new Error('不能复制到自身或其子文件夹');
-  const sourceFolders = new Map();
-  (function collect(node) { sourceFolders.set(node.folder.id, node.folder); node.children.forEach(collect); })(tree);
   const memberships = new Map();
   const folderItemOrder = new Map();
   for (const folderId of sourceIds) {
@@ -381,6 +381,19 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     }
     folderItemOrder.set(folderId, orderedIds);
   }
+  return { tree, sourceIds, memberships, folderItemOrder };
+}
+
+// Read-only numbers for the copy confirmation (F-03): nothing is written.
+async function planFolderCopy({ sourceId, parentId = null, libraryPath }) {
+  const { sourceIds, memberships } = await collectFolderCopySource({ sourceId, parentId, libraryPath });
+  return { ok: true, folderCount: sourceIds.size, itemCount: memberships.size };
+}
+
+async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin = null, decisionTimeoutMs = 12000, itemWaitMs = null, anchorId = null, position = null }) {
+  const { tree, sourceIds, memberships, folderItemOrder } = await collectFolderCopySource({ sourceId, parentId, libraryPath });
+  const sourceFolders = new Map();
+  (function collect(node) { sourceFolders.set(node.folder.id, node.folder); node.children.forEach(collect); })(tree);
   const originals = await resolveItemFiles([...memberships.keys()]);
   const missing = originals.filter(entry => !entry.filePath);
   if (missing.length) throw new Error(`${missing.length} 个素材原文件无法读取，未开始复制文件夹`);
@@ -425,6 +438,21 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     for (const child of node.children) await orderChildren(child);
   };
   await orderChildren(tree);
+  // A drop on a sibling's insertion line asks for the copy next to it.
+  let placed = null;
+  if (anchorId && ['before', 'after'].includes(position)) {
+    placed = false;
+    await hub.ensureLibraryPath(libraryPath);
+    const siblingIds = siblingFolders(await client.folderTree(), parentId).map(folder => folder.id);
+    const copyId = created.get(sourceId);
+    if (siblingIds.includes(anchorId) && siblingIds.includes(copyId)) {
+      const ids = siblingIds.filter(id => id !== copyId);
+      ids.splice(ids.indexOf(anchorId) + (position === 'after' ? 1 : 0), 0, copyId);
+      placed = await setFolderSiblingOrder({
+        client, ensureLibraryPath: value => hub.ensureLibraryPath(value), libraryPath, parent: parentId, ids
+      });
+    }
+  }
   const originalsById = new Map(originals.map(original => [original.id, original]));
   const finalizeLocalCopies = async () => {
     const folderMap = Object.fromEntries(created);
@@ -584,7 +612,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     await finalizeLocalCopies();
     await hub.ensureLibraryPath(libraryPath);
     await hub.connect({ notify: true, origin });
-    return { ok: true, id: created.get(source.id), folderCount: created.size, copiedItems: 0,
+    return { ok: true, id: created.get(sourceId), folderCount: created.size, copiedItems: 0, placed,
       folderMap: Object.fromEntries(created), itemMap: {} };
   }
   // Group by the first source folder that owns each item. Eagle's import API
@@ -673,7 +701,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   await finalizeLocalCopies();
   await hub.ensureLibraryPath(libraryPath);
   await hub.connect({ notify: true, origin });
-  return { ok: true, id: created.get(source.id), folderCount: created.size, copiedItems,
+  return { ok: true, id: created.get(sourceId), folderCount: created.size, copiedItems, placed,
     folderMap: Object.fromEntries(created), itemMap: Object.fromEntries(copiedItemsBySourceId) };
   } finally {
     await stopCopyImportHandling(libraryPath, copyRunId);
@@ -1890,28 +1918,37 @@ function setupIPC() {
   handleRPC('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
   handleRPC('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  // The confirmed Eagle tree now owns these sibling lists. Remove older local
+  // overlays so every window displays the confirmed placement.
+  const resetFolderOrderOverlays = async (libraryPath, parentIds, message) => {
+    manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
+    for (const parentId of new Set(parentIds)) {
+      const scope = parentId === null ? 'root' : `folder:${parentId}`;
+      const orders = await manualOrderStore.get(libraryPath);
+      const order = orders[JSON.stringify([scope, 'folders'])];
+      if (!order?.ids.length) continue;
+      const reset = await manualOrderStore.move({ libraryPath, scope, kind: 'folders', reset: true, revision: order.revision });
+      if (!reset.ok) throw new Error(message);
+      broadcast('manual-order:changed', { libraryPath, scope, kind: 'folders', orders: reset.orders });
+    }
+  };
   handleRPC('folder:move', async (event, mutation) => {
     const result = await hub.moveFolder({ ...mutation, origin: event.sender.id });
     if (result.ok && !result.noop) {
-      // The confirmed Eagle tree now owns both affected sibling lists. Remove
-      // older local overlays so every window displays the confirmed placement.
-      manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
-      for (const parentId of new Set([mutation.baseParentId, mutation.parentId])) {
-        const scope = parentId === null ? 'root' : `folder:${parentId}`;
-        const orders = await manualOrderStore.get(mutation.libraryPath);
-        const order = orders[JSON.stringify([scope, 'folders'])];
-        if (!order?.ids.length) continue;
-        const reset = await manualOrderStore.move({ libraryPath: mutation.libraryPath, scope, kind: 'folders', reset: true, revision: order.revision });
-        if (!reset.ok) throw new Error('文件夹已移动，但其他窗口正在排序；请刷新核对，不要重复移动');
-        broadcast('manual-order:changed', { libraryPath: mutation.libraryPath, scope, kind: 'folders', orders: reset.orders });
-      }
+      await resetFolderOrderOverlays(mutation.libraryPath, [mutation.baseParentId, mutation.parentId],
+        '文件夹已移动，但其他窗口正在排序；请刷新核对，不要重复移动');
     }
     return result;
   });
+  handleRPC('folder:copy-plan', (_event, request) => planFolderCopy(request));
   handleRPC('folder:copy', async (event, mutation) => {
     const result = await enqueueCreation(`folder-copy:${path.resolve(mutation.libraryPath)}:${mutation.sourceId}:${mutation.parentId || 'root'}`,
       () => copyFolderTree({ ...mutation, origin: event.sender.id }));
     broadcast('hub:query-invalidated', { reason: 'folder-copy', libraryPath: mutation.libraryPath, origin: event.sender.id });
+    if (result?.placed) {
+      await resetFolderOrderOverlays(mutation.libraryPath, [mutation.parentId ?? null],
+        '文件夹已复制，但其他窗口正在排序；请刷新核对，不要重复复制');
+    }
     return result;
   });
   onRPC('folder:used', (event, payload = {}) => {
