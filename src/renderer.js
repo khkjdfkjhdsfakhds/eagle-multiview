@@ -8835,6 +8835,13 @@ function bindEvents() {
     renderFilterState();
     toast(state.filterLock ? '已锁定筛选：切换文件夹时保留搜索与筛选' : '已解除筛选锁定', 2400);
   });
+  // The search box's icon, padding and shortcut hint are part of the field:
+  // a tap there (a finger rarely lands on the 18px-tall input) focuses it (W-07).
+  document.querySelector('.search-box')?.addEventListener('pointerdown', event => {
+    if (event.target.closest('input, button, select')) return;
+    event.preventDefault();
+    $('#searchInput').focus();
+  });
   $('#filterButton').addEventListener('click', () => {
     $('#filterPopover').classList.toggle('hidden');
     renderFilterState();

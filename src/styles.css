@@ -2933,6 +2933,29 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   }
   /* Menu rows sized for a fingertip rather than a cursor. */
   .context-menu-row { min-height: 38px; }
+  /* Small icon controls keep their look but take a 44px hit area: the
+     transparent ::after grows to 44px around each one (never smaller than the
+     control itself) without moving anything (W-07). */
+  .panel-button, .nav-button, .view-mode-button, .popover-close, .color-filter-swatch,
+  .small-action, .comment-action, .sort-select-button, .sort-popover-layout-button { position: relative; }
+  .panel-button::after, .nav-button::after, .view-mode-button::after, .popover-close::after, .color-filter-swatch::after,
+  .small-action::after, .comment-action::after, .sort-select-button::after, .sort-popover-layout-button::after {
+    position: absolute;
+    top: min(0px, calc(50% - 22px));
+    right: min(0px, calc(50% - 22px));
+    bottom: min(0px, calc(50% - 22px));
+    left: min(0px, calc(50% - 22px));
+    content: "";
+  }
+  /* The layout group clipped its buttons' hit areas to its own 28px, and the
+     grid below painted over the parts that reach past the heading. */
+  .view-mode-group { overflow: visible; }
+  .content-pane .content-heading { position: relative; z-index: 1; }
+  /* The path strip's crumbs (which clip their own overflow for the ellipsis)
+     get the row's full height; a tap beside one would start path editing. */
+  .content-pane .content-heading { grid-template-rows: 40px auto; min-height: 96px; }
+  .content-pane .heading-path-row { padding-top: 0; padding-bottom: 0; }
+  .content-pane .heading-path-row .breadcrumb { height: 40px; line-height: 40px; }
   /* The desktop sidebar matches Eagle's 26px rows, which is too tight for a
      finger; the tree connector follows the row's vertical centre. */
   .folder-row { height: 40px; }
