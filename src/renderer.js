@@ -9243,12 +9243,16 @@ function bindEvents() {
       event.preventDefault();
       selectAllItems();
     }
-    if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
+    // In the preview ⌘C copies the item on screen, like ⌘⌥C and ⌘Enter do:
+    // Eagle's preview moves the selection along as it pages, so its ⌘C
+    // always means the viewed item (B3-01).
+    const copyIds = selectedActionIds({ includePreview: previewOpen });
+    if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && copyIds.length) {
       const selection = window.getSelection?.();
       const hasTextSelection = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
       if (!hasTextSelection) {
         event.preventDefault();
-        copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
+        copySelectedFiles(copyIds).catch(error => toast(`复制失败：${error.message}`, 4000));
       }
     }
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
