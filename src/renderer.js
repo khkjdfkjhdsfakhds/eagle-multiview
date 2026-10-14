@@ -4604,9 +4604,35 @@ function textDraftRecord(session) {
   return { draftId: session.draftId, libraryPath: session.libraryPath, id: session.id, revision: session.revision,
     content: session.content, base: session.fingerprint, original: session.original, updatedAt: Date.now() };
 }
+// Typing persists the draft on a short throttle instead of per key: every
+// write serializes the whole text (up to 5 MB) into localStorage and sends it
+// over IPC to the host store (R2-01). Blur, save, close and discard still
+// write at once through persistTextDraft, which also cancels pending writes.
+const TEXT_DRAFT_LOCAL_DELAY = 300;
+const TEXT_DRAFT_HOST_DELAY = 1000;
+function queueTextDraftPersist(session) {
+  session.localDraftTimer ||= setTimeout(() => {
+    session.localDraftTimer = null;
+    persistLocalTextDraft(session, textDraftRecord(session));
+  }, TEXT_DRAFT_LOCAL_DELAY);
+  session.hostDraftTimer ||= setTimeout(() => {
+    session.hostDraftTimer = null;
+    persistHostTextDraft(session, textDraftRecord(session));
+  }, TEXT_DRAFT_HOST_DELAY);
+}
+function flushTextDraft(session) {
+  if (session?.localDraftTimer || session?.hostDraftTimer) persistTextDraft(session);
+}
 function persistTextDraft(session) {
   if (!session) return;
+  clearTimeout(session.localDraftTimer);
+  clearTimeout(session.hostDraftTimer);
+  session.localDraftTimer = session.hostDraftTimer = null;
   const record = textDraftRecord(session);
+  persistLocalTextDraft(session, record);
+  persistHostTextDraft(session, record);
+}
+function persistLocalTextDraft(session, record) {
   try {
     if (session.dirty || session.saving) localStorage.setItem(TEXT_DRAFT_PREFIX + session.draftId, JSON.stringify(record));
     else localStorage.removeItem(TEXT_DRAFT_PREFIX + session.draftId);
@@ -4615,6 +4641,8 @@ function persistTextDraft(session) {
     session.storageError = true;
     textSessionStatus(session, '草稿存储空间不足；请保持窗口开启并保存或复制正文');
   }
+}
+function persistHostTextDraft(session, record) {
   const { draftId, libraryPath, id, revision, content, base } = record;
   const identity = { draftId, libraryPath, id, revision };
   if (session.dirty || session.saving) {
@@ -4745,7 +4773,7 @@ function renderTextPreview(session) {
     session.dirty = session.content !== session.original;
     if (session.blocked !== 'conflict') session.blocked = false;
     if (session.dirty && !session.content.length && !session.blocked) session.blocked = 'empty';
-    persistTextDraft(session);
+    queueTextDraftPersist(session);
     textSessionStatus(session, session.blocked === 'conflict'
       ? '外部内容已变化；草稿已保留，重新载入前请核对或复制正文'
       : session.dirty ? (session.content.length ? '编辑中 · 草稿已保留' : EMPTY_TEXT_DRAFT_STATUS) : '已保存');
@@ -4753,7 +4781,10 @@ function renderTextPreview(session) {
   });
   editor.addEventListener('compositionstart', () => { session.composing = true; clearTimeout(session.autoSaveTimer); });
   editor.addEventListener('compositionend', () => { session.composing = false; queueTextAutoSave(session); });
-  editor.addEventListener('blur', () => queueTextAutoSave(session, { immediate: true }));
+  editor.addEventListener('blur', () => {
+    flushTextDraft(session);
+    queueTextAutoSave(session, { immediate: true });
+  });
   editor.addEventListener('keydown', event => {
     if (event.key === 'Tab') {
       event.preventDefault();
