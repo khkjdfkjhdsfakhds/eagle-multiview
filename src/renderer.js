@@ -3938,6 +3938,20 @@ function closeDuplicateDialog(choice = null) {
   resolve?.(choice);
 }
 
+// Menu commands arrive over IPC, past the keydown guard, so each one checks
+// for itself that nothing modal covers the workspace it would act on (F-05).
+// An open context menu just gives way, as a native one would.
+function whenWorkspaceFree(handler) {
+  return (...args) => {
+    if (!$('#contextMenu').classList.contains('hidden')) hideContextMenu();
+    if (blockingSurfaceOpen() || document.querySelector('dialog[open]')) {
+      toast('请先完成或关闭当前对话框', 2200);
+      return undefined;
+    }
+    return handler(...args);
+  };
+}
+
 function blockingSurfaceOpen() {
   return Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) ||
     ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
@@ -9463,42 +9477,42 @@ function bindHubEvents() {
     approvedWindowClose = true;
     window.eagleMV.confirmClose();
   });
-  window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
+  window.eagleMV.onTrashSelection(whenWorkspaceFree(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true)));
   window.eagleMV.onUndoDelete?.(() => routeUndoCommand());
-  window.eagleMV.onPinSelection(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId));
-  window.eagleMV.onAddToFolder(payload => addSelectionToFolder(payload));
-  window.eagleMV.onMoveToFolder(payload => moveSelectionToFolder(payload));
-  window.eagleMV.onRemoveFromFolder(payload => removeSelectionFromFolder(payload));
-  window.eagleMV.onAddTag(payload => addTagToSelection(payload));
-  window.eagleMV.onSetRating(payload => setSelectionRating(payload));
-  window.eagleMV.onSetTagColor(async payload => {
+  window.eagleMV.onPinSelection(whenWorkspaceFree(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId)));
+  window.eagleMV.onAddToFolder(whenWorkspaceFree(payload => addSelectionToFolder(payload)));
+  window.eagleMV.onMoveToFolder(whenWorkspaceFree(payload => moveSelectionToFolder(payload)));
+  window.eagleMV.onRemoveFromFolder(whenWorkspaceFree(payload => removeSelectionFromFolder(payload)));
+  window.eagleMV.onAddTag(whenWorkspaceFree(payload => addTagToSelection(payload)));
+  window.eagleMV.onSetRating(whenWorkspaceFree(payload => setSelectionRating(payload)));
+  window.eagleMV.onSetTagColor(whenWorkspaceFree(async payload => {
     const tag = String(payload?.tag || '').trim();
     if (!tag) return;
     const color = await askTagColor(tag);
     if (color !== null) updateTagColor(tag, color);
-  });
-  window.eagleMV.onRenameRequest(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000)));
-  window.eagleMV.onImportRequest(() => importFiles());
-  window.eagleMV.onSiteImportRequest?.(() => siteFeatureUI().open());
-  window.eagleMV.onWebAccessRequest(() => openWebAccessDialog());
-  window.eagleMV.onCreateFolderRequest(() => {
+  }));
+  window.eagleMV.onRenameRequest(whenWorkspaceFree(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000))));
+  window.eagleMV.onImportRequest(whenWorkspaceFree(() => importFiles()));
+  window.eagleMV.onSiteImportRequest?.(whenWorkspaceFree(() => siteFeatureUI().open()));
+  window.eagleMV.onWebAccessRequest(whenWorkspaceFree(() => openWebAccessDialog()));
+  window.eagleMV.onCreateFolderRequest(whenWorkspaceFree(() => {
     const paneId = state.activePaneId;
     const parentId = folderCreationParentForPane(paneId);
     createFolder(parentId, Boolean(parentId), paneId).catch(error => toast(`创建失败：${error.message}`, 4000));
-  });
-  window.eagleMV.onCreateDocumentRequest(payload => {
+  }));
+  window.eagleMV.onCreateDocumentRequest(whenWorkspaceFree(payload => {
     const paneId = state.activePaneId;
     createNewDocument(payload?.type, { folderId: folderCreationParentForPane(paneId), paneId })
       .catch(error => toast(`新建文件失败：${error.message}`, 4000));
-  });
-  window.eagleMV.onCreateSmartFolderRequest(() => {
+  }));
+  window.eagleMV.onCreateSmartFolderRequest(whenWorkspaceFree(() => {
     createSmartFolderFromNewMenu().catch(error => toast(`智能文件夹创建失败：${error.message}`, 4200));
-  });
+  }));
   window.eagleMV.onNewWindowRequest(requestDefaultNewWindow);
-  window.eagleMV.onOpenView?.(view => {
+  window.eagleMV.onOpenView?.(whenWorkspaceFree(view => {
     if (!view || !state.library) return;
     if (!navigate(view, { restoreScroll: true })) toast('无法打开 MultiView 当前路径', 3200);
-  });
+  }));
   window.eagleMV.onFolderUsed(payload => {
     if (!payload?.folderId || payload.libraryPath !== state.library?.path) return;
     rememberRecentFolderUsage(payload.folderId);
