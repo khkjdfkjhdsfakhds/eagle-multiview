@@ -210,7 +210,7 @@ test('smart folder management uses Eagle v2 endpoints', async () => {
   await client.updateSmartFolder('smart-1', { name: 'PNG' });
   await client.removeSmartFolder('smart-1');
   assert.deepEqual(client.calls.map(call => call.path), [
-    '/api/v2/smartFolder/get?limit=1000',
+    '/api/v2/smartFolder/get?limit=1000&offset=0',
     '/api/v2/smartFolder/create',
     '/api/v2/smartFolder/update',
     '/api/v2/smartFolder/remove'
@@ -322,4 +322,27 @@ test('getItem still finds items in the trash, so a delete can be undone', async 
   assert.deepEqual(trashed.paths, ['/api/v2/item/get', '/api/item/info']);
   await assert.rejects(new TrashClient(null).getItem('gone'), /素材不存在/);
   await assert.rejects(new TrashClient({ id: 'other' }).getItem('T1'), /素材不存在/);
+});
+
+test('tags, tag groups and smart folders page through every record (B2-02)', async () => {
+  const client = new RecordingClient();
+  const tags = Array.from({ length: 2345 }, (_, index) => ({ name: `tag-${index}`, imageCount: index }));
+  client.request = async path => {
+    client.calls.push({ path });
+    const url = new URL(path, 'http://unused');
+    const offset = Number(url.searchParams.get('offset') || 0);
+    const limit = Number(url.searchParams.get('limit') || 1000);
+    const source = url.pathname === '/api/v2/tag/get' ? tags : [];
+    return { data: source.slice(offset, offset + limit), total: source.length, offset, limit };
+  };
+  const listed = await client.listTags();
+  assert.equal(listed.length, 2345);
+  assert.deepEqual(listed.at(-1), { name: 'tag-2344', imageCount: 2344 });
+  assert.deepEqual(client.calls.map(call => call.path), [
+    '/api/v2/tag/get?limit=1000&offset=0',
+    '/api/v2/tag/get?limit=1000&offset=1000',
+    '/api/v2/tag/get?limit=1000&offset=2000'
+  ]);
+  assert.deepEqual(await client.listTagGroups(), []);
+  assert.deepEqual(await client.listSmartFolders(), []);
 });
