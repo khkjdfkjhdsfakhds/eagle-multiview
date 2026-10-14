@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   // paths, so the host never sends this channel.
   onUploadProgress: callback => on('upload:progress', callback),
   importClipboard: data => ipcRenderer.invoke('items:import-clipboard', data),
+  importURL: data => ipcRenderer.invoke('items:import-url', data),
   pathForFile: file => webUtils.getPathForFile(file),
   showInFinder: id => ipcRenderer.invoke('item:show-in-finder', id),
   filePath: id => ipcRenderer.invoke('item:file-path', id),

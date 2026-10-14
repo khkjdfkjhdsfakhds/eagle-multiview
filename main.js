@@ -1533,6 +1533,29 @@ function filterTrashItems(items, query = {}) {
   return filtered;
 }
 
+// One web address into Eagle: an image is downloaded, anything else becomes
+// a bookmark. `image` marks an address taken from a dragged <img>: like Eagle,
+// it is downloaded unless the server says it is a page, even when HEAD fails
+// (hotlink-protected images often refuse it).
+async function importURLItem({ url: value, folderId, libraryPath, image = false, reason = 'clipboard-url' }) {
+  const url = normalizeClipboardURL(value);
+  if (!url) throw new Error('只能添加 http 或 https 网址');
+  await hub.ensureLibraryPath(libraryPath);
+  let contentType = '';
+  try {
+    const response = await net.fetch(url, { method: 'HEAD' });
+    contentType = response.headers.get('content-type') || '';
+  } catch (error) {
+    if (!image) throw new Error(`无法读取网址：${error.message}`);
+  }
+  const kind = image && !/html/i.test(contentType) ? 'image' : clipboardURLKind(contentType);
+  const result = kind === 'image'
+    ? await client.addSiteAsset({ url, name: path.basename(new URL(url).pathname) || undefined, website: url }, folderId)
+    : await client.addBookmark({ url }, folderId);
+  broadcast('hub:query-invalidated', { reason, libraryPath });
+  return { count: 1, ready: 0, ids: result?.id ? [result.id] : [], rejected: [], source: 'url', url, kind };
+}
+
 async function importClipboard({ folderId, libraryPath, clipboardText = '' }, importWithDecision) {
   const filePaths = clipboardFilePaths(clipboard);
   if (filePaths.length) return { ...(await importWithDecision({ paths: filePaths, folderId, libraryPath })), source: 'files' };
@@ -1541,20 +1564,7 @@ async function importClipboard({ folderId, libraryPath, clipboardText = '' }, im
   if (image.isEmpty()) {
     const url = normalizeClipboardURL(clipboardText || clipboard.readText());
     if (!url) return { count: 0, ready: 0, rejected: [], source: 'empty' };
-    await hub.ensureLibraryPath(libraryPath);
-    let contentType = '';
-    try {
-      const response = await net.fetch(url, { method: 'HEAD' });
-      contentType = response.headers.get('content-type') || '';
-    } catch (error) {
-      throw new Error(`无法读取网址：${error.message}`);
-    }
-    const kind = clipboardURLKind(contentType);
-    const result = kind === 'image'
-      ? await client.addSiteAsset({ url, name: path.basename(new URL(url).pathname) || undefined, website: url }, folderId)
-      : await client.addBookmark({ url }, folderId);
-    broadcast('hub:query-invalidated', { reason: 'clipboard-url', libraryPath });
-    return { count: 1, ready: 0, ids: result?.id ? [result.id] : [], rejected: [], source: 'url', url, kind };
+    return importURLItem({ url, folderId, libraryPath });
   }
   const temporaryDir = path.join(app.getPath('temp'), 'Eagle MultiView Paste');
   await fsp.mkdir(temporaryDir, { recursive: true });
@@ -1604,7 +1614,7 @@ async function installProtocol() {
 // the entry points via its capabilities table, and the web RPC rejects them.
 const HOST_ONLY_CHANNELS = new Set([
   'item:thumbnail-file', 'item:thumbnail-clipboard',
-  'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard',
+  'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard', 'items:import-url',
   'item:show-in-finder', 'item:open-default', 'items:export', 'items:open-other',
   'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
   'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
@@ -2223,6 +2233,9 @@ function setupIPC() {
     }
   });
   handleRPC('items:import-clipboard', (event, data) => importClipboard(data, payload => rpcRegistry.get('items:import')(event, payload)));
+  handleRPC('items:import-url', (_event, { url, image, folderId, libraryPath } = {}) => (
+    importURLItem({ url, image: Boolean(image), folderId, libraryPath, reason: 'drop-url' })
+  ));
   handleRPC('item:show-in-finder', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return false;

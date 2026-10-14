@@ -38,10 +38,19 @@ const {
   hasType: dragHasType,
   readItemIds,
   isInternalItemDrag,
-  classifyDrop,
-  shouldShowImportOverlay,
-  resolveDrop
+  droppedURL
 } = window.EagleMVDragDrop;
+// A drag that starts in this page (an inspector image, a link) carries
+// MultiView's own media addresses, never a web image to import. Item drags
+// cancel the default session and are recognised as items on their own.
+let pageDragActive = false;
+window.addEventListener('dragstart', event => { pageDragActive = !event.defaultPrevented; });
+const classifyDrop = (dataTransfer, fallbackIds = []) =>
+  window.EagleMVDragDrop.classifyDrop(dataTransfer, fallbackIds, { allowURL: !pageDragActive });
+const shouldShowImportOverlay = (dataTransfer, fallbackIds = []) =>
+  window.EagleMVDragDrop.shouldShowImportOverlay(dataTransfer, fallbackIds, { allowURL: !pageDragActive });
+const resolveDrop = (dataTransfer, options = {}) =>
+  window.EagleMVDragDrop.resolveDrop(dataTransfer, { ...options, allowURL: !pageDragActive });
 const {
   exceedsThreshold: marqueeExceedsThreshold,
   normalizeRect: marqueeNormalizeRect,
@@ -5698,7 +5707,9 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}) };
     let result = source === 'clipboard'
       ? await window.eagleMV.importClipboard(payload)
-      : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
+      : source === 'url'
+        ? await window.eagleMV.importURL({ ...payload, url: target.url, image: Boolean(target.image) })
+        : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
     if (result.canceled) return;
     if (result.needsDuplicateDecision) {
       const rejected = result.rejected || [];
@@ -5710,7 +5721,10 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     }
     if (!result.count) {
       const uncertain = result.unknown?.length || result.notSubmitted?.length;
-      toast(result.error || result.duplicateFailed || uncertain ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
+      toast(result.error || result.duplicateFailed || uncertain ? importResultMessage(result)
+        : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片'
+        : source === 'url' ? (result.source === 'unsupported' ? '网页端暂不支持拖入网址；请在主机窗口中拖入' : '没有可导入的网址')
+        : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
       return;
     }
     if (result.nativeDecisionPending) {
@@ -7088,16 +7102,27 @@ function externalDropImportables(dataTransfer) {
 
 function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId) {
   const importable = externalDropImportables(dataTransfer);
-  if (!importable.length) {
-    clearDragUI();
-    return false;
-  }
   const libraryPath = state.library?.path;
-  scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId }));
-  return true;
+  if (importable.length) {
+    scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId }));
+    return true;
+  }
+  // A browser image or link imports its address, like Eagle (D-08).
+  const link = dragHasType(dataTransfer, 'Files') ? null : droppedURL(dataTransfer);
+  clearDragUI();
+  if (link && /^https?:/i.test(link.url)) {
+    scheduleDropTask(() => importFiles(null, 'url', { folderId, libraryPath, paneId, url: link.url, image: link.image }));
+    return true;
+  }
+  toast(link?.url.startsWith('blob:') ? '这张图片是浏览器的临时地址，无法直接添加；请先存到本地再拖入'
+    : link?.url.startsWith('data:') ? '暂不支持直接拖入网页内嵌图片；请先存到本地再拖入'
+    : dragHasType(dataTransfer, 'Files') ? '无法读取拖入的项目（例如“照片”App 中的照片）；请先导出到 Finder 再拖入'
+    : '只能拖入文件、网页图片或网址', 4600);
+  return false;
 }
 
 function resetDragState() {
+  pageDragActive = false;
   state.dragDepth = 0;
   state.draggingItemIds = null;
   state.dragSourcePaneId = null;
@@ -8231,7 +8256,7 @@ function bindPaneEvents(paneId) {
   scroller.addEventListener('drop', event => {
     event.preventDefault();
     const drop = resolveItemDrop(event);
-    if (drop.kind === 'internal-items' && dropsIntoSourceFolder()) {
+    if (drop.kind === 'unsupported' || (drop.kind === 'internal-items' && dropsIntoSourceFolder())) {
       clearDragUI();
       return;
     }
@@ -8249,18 +8274,8 @@ function bindPaneEvents(paneId) {
       scheduleDropTask(() => handlePaneItemDrop(context));
       return;
     }
-    const importable = externalDropImportables(event.dataTransfer);
-    if (!importable.length) {
-      clearDragUI();
-      return;
-    }
     const targetPane = paneById(paneId);
-    const target = {
-      paneId,
-      libraryPath: state.library?.path,
-      folderId: targetPane?.currentView.kind === 'folder' ? targetPane.currentView.id : null
-    };
-    scheduleDropTask(() => importFiles(importable, 'drop', target));
+    scheduleExternalFolderImport(event.dataTransfer, targetPane?.currentView.kind === 'folder' ? targetPane.currentView.id : null, paneId);
   });
   const previewModal = query('#previewModal');
   if (previewModal) {

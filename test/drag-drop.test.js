@@ -33,7 +33,36 @@ test('while hovering, a native file drag is treated as internal only when a sess
   assert.equal(isInternalItemDrag(dataTransfer, ['A']), true);
   assert.equal(shouldShowImportOverlay(dataTransfer, ['A']), false);
   // Text and URL drags never borrow session ids.
-  assert.equal(classifyDrop(transfer(['text/uri-list']), ['A']), 'unsupported');
+  assert.notEqual(classifyDrop(transfer(['text/uri-list']), ['A']), 'internal-items');
+});
+
+test('a web image or link from a browser imports like Finder files (D-08)', () => {
+  const { droppedURL } = require('../src/drag-drop');
+  for (const types of [['text/uri-list'], ['text/html'], ['text/plain']]) {
+    assert.equal(classifyDrop(transfer(types)), 'external-files', types[0]);
+    assert.equal(shouldShowImportOverlay(transfer(types)), true, types[0]);
+    assert.equal(resolveDrop(transfer(types)).kind, 'external-files', types[0]);
+    // Drags that start in this page carry MultiView's own media addresses.
+    assert.equal(classifyDrop(transfer(types), [], { allowURL: false }), 'unsupported', types[0]);
+    assert.equal(resolveDrop(transfer(types), { allowURL: false }).kind, 'unsupported', types[0]);
+  }
+  // Folder and reorder drags of this app are never web addresses.
+  assert.equal(classifyDrop(transfer(['application/x-eagle-multiview-folder', 'text/html'])), 'unsupported');
+  // The dragged picture's <img src> wins over the page link, like Eagle.
+  assert.deepEqual(droppedURL(transfer(['text/html', 'text/uri-list'], {
+    'text/html': '<a href="https://site.test/page"><img alt="x" src="https://cdn.test/a.jpg?w=1&amp;h=2"></a>',
+    'text/uri-list': 'https://site.test/page'
+  })), { url: 'https://cdn.test/a.jpg?w=1&h=2', image: true });
+  assert.deepEqual(droppedURL(transfer(['text/uri-list'], { 'text/uri-list': '# comment\r\nhttps://site.test/page\r\n' })),
+    { url: 'https://site.test/page', image: false });
+  assert.deepEqual(droppedURL(transfer(['text/plain'], { 'text/plain': '  https://site.test/x  ' })),
+    { url: 'https://site.test/x', image: false });
+  // Inline and temporary browser images are reported as such, not dropped.
+  assert.equal(droppedURL(transfer(['text/html'], { 'text/html': '<img src="blob:https://site.test/1">' })).url, 'blob:https://site.test/1');
+  assert.match(droppedURL(transfer(['text/html'], { 'text/html': '<img src="data:image/png;base64,AAAA">' })).url, /^data:image\/png/);
+  // Plain words and non-web links are not addresses.
+  assert.equal(droppedURL(transfer(['text/plain'], { 'text/plain': 'just words' })), null);
+  assert.equal(droppedURL(transfer(['text/uri-list'], { 'text/uri-list': 'file:///Users/u/a.png' })), null);
 });
 
 const LIBRARY = '/Users/u/Pictures/Main.library';
@@ -88,7 +117,9 @@ test('on drop, HTML5 item data and synthetic in-page drags keep their session', 
   assert.deepEqual(resolveDrop(transfer([]), { sessionIds: ['A'] }),
     { kind: 'internal-items', ids: ['A'], fromSession: true });
   assert.equal(resolveDrop(transfer([])).kind, 'unsupported');
-  assert.equal(resolveDrop(transfer(['text/plain']), { sessionIds: ['A'] }).kind, 'unsupported');
+  // Text never borrows session ids: from a browser it may be a URL import.
+  assert.equal(resolveDrop(transfer(['text/plain']), { sessionIds: ['A'] }).kind, 'external-files');
+  assert.equal(resolveDrop(transfer(['text/plain']), { sessionIds: ['A'], allowURL: false }).kind, 'unsupported');
 });
 
 test('library item ids come only from <library>/images/<id>.info/<file>', () => {
@@ -119,7 +150,8 @@ test('shows the import overlay for files that genuinely come from outside MultiV
 test('classifies internal items, external files, and unsupported drags at one boundary', () => {
   assert.equal(classifyDrop(transfer([ITEM_TYPE], { [ITEM_TYPE]: '["A"]' })), 'internal-items');
   assert.equal(classifyDrop(transfer(['Files'])), 'external-files');
-  assert.equal(classifyDrop(transfer(['text/plain'])), 'unsupported');
+  assert.equal(classifyDrop(transfer(['text/plain']), [], { allowURL: false }), 'unsupported');
+  assert.equal(classifyDrop(transfer(['application/x-other'])), 'unsupported');
 });
 
 test('falls back to the active session when custom drag data is malformed', () => {

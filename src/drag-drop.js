@@ -34,14 +34,49 @@
     return readItemIds(dataTransfer, fallbackIds).length > 0;
   }
 
-  function classifyDrop(dataTransfer, fallbackIds = []) {
+  // A web page image or link (dragged from a browser) carries no file, only
+  // its address. It imports like Finder files, so it shares their kind. Drags
+  // that start inside this page (its own <img> and links) pass
+  // `allowURL: false`: those addresses are MultiView's own media.
+  const URL_TYPES = ['text/uri-list', 'text/html', 'text/plain'];
+  function hasURLData(dataTransfer) {
+    // Folder and reorder drags of this app carry their own types.
+    const types = Array.from(dataTransfer?.types || []);
+    if (types.some(type => String(type).startsWith('application/x-eagle-multiview'))) return false;
+    return URL_TYPES.some(type => types.includes(type));
+  }
+
+  function classifyDrop(dataTransfer, fallbackIds = [], { allowURL = true } = {}) {
     if (isInternalItemDrag(dataTransfer, fallbackIds)) return 'internal-items';
     if (hasType(dataTransfer, 'Files')) return 'external-files';
+    if (allowURL && hasURLData(dataTransfer)) return 'external-files';
     return 'unsupported';
   }
 
-  function shouldShowImportOverlay(dataTransfer, fallbackIds = []) {
-    return classifyDrop(dataTransfer, fallbackIds) === 'external-files';
+  function absoluteWebURL(value) {
+    try {
+      const url = new URL(String(value || '').trim());
+      return ['http:', 'https:', 'data:', 'blob:'].includes(url.protocol) ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Drop-time address of a dragged web image or link, read like Eagle: the
+  // first <img src> of the HTML flavour wins (a dragged picture), then the
+  // URL list, then plain text that is a URL. `image` says it came from <img>.
+  function droppedURL(dataTransfer) {
+    const read = type => { try { return dataTransfer?.getData?.(type) || ''; } catch { return ''; } };
+    const source = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/i.exec(read('text/html'))?.[1];
+    const image = absoluteWebURL(source?.replace(/&amp;/g, '&'));
+    if (image) return { url: image, image: true };
+    const listed = read('text/uri-list').split(/\r?\n/).map(line => line.trim()).find(line => line && !line.startsWith('#'));
+    const link = absoluteWebURL(listed) || absoluteWebURL(read('text/plain'));
+    return link && /^https?:/i.test(link) ? { url: link, image: false } : null;
+  }
+
+  function shouldShowImportOverlay(dataTransfer, fallbackIds = [], options = {}) {
+    return classifyDrop(dataTransfer, fallbackIds, options) === 'external-files';
   }
 
   function normalizePath(value) {
@@ -64,7 +99,7 @@
   // the library; leftover session ids never turn Finder files into a move.
   // `fromSession` says whether the session's source folder/pane describe
   // this drop.
-  function resolveDrop(dataTransfer, { sessionIds = [], sessionFiles = [], libraryPaths = [], paths = [] } = {}) {
+  function resolveDrop(dataTransfer, { sessionIds = [], sessionFiles = [], libraryPaths = [], paths = [], allowURL = true } = {}) {
     const session = [...new Set((sessionIds || []).filter(Boolean))];
     if (hasType(dataTransfer, ITEM_TYPE)) {
       return { kind: 'internal-items', ids: readItemIds(dataTransfer, session), fromSession: true };
@@ -92,6 +127,7 @@
     if (hasNoTypes(dataTransfer) && session.length) {
       return { kind: 'internal-items', ids: session, fromSession: true };
     }
+    if (allowURL && hasURLData(dataTransfer)) return { kind: 'external-files', ids: [], fromSession: false };
     return { kind: 'unsupported', ids: [], fromSession: false };
   }
 
@@ -102,6 +138,7 @@
     readItemIds,
     isInternalItemDrag,
     classifyDrop,
+    droppedURL,
     shouldShowImportOverlay,
     libraryItemIdFromPath,
     resolveDrop

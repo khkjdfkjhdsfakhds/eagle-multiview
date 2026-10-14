@@ -535,6 +535,7 @@
     },
     onUploadProgress: callback => on('upload:progress', callback),
     importClipboard: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
+    importURL: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     pathForFile: () => null,
     showInFinder: async () => false,
     filePath: id => invoke('item:file-path', [id]),
