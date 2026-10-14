@@ -40,6 +40,11 @@ test('preview HUD: the desktop app hides ‹ › ×, the web client shows them, 
   // Touch web client keeps only ‹ ›; swipe down, Back and Esc close, and the
   // inspector rates.
   assert.deepEqual(result.touch, { coarse: true, prev: 'grid', next: 'grid', close: 'none', caption: 'none', rating: 'none', slideshow: 'none' });
+  // Touch has no hover to wake the HUD, so ‹ › stay dim and tappable after it idles out.
+  assert.ok(Math.abs(result.touchIdle.nextOpacity - 0.35) < 0.01, `touch keeps › semi-transparent when idle (got ${result.touchIdle.nextOpacity})`);
+  assert.equal(result.touchIdle.nextPointer, 'auto', 'touch keeps › tappable when idle');
+  assert.ok(result.touchIdle.prevOpacity < 0.01, 'a disabled end arrow still fades out on touch');
+  assert.equal(result.touchIdle.prevPointer, 'none', 'a disabled end arrow is not tappable when idle');
 });
 
 test('preview HUD rules are scoped to the web client only', () => {

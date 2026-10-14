@@ -51,6 +51,26 @@ async function run() {
     return { coarse: matchMedia('(pointer: coarse)').matches, prev: display('prevPreview'), next: display('nextPreview'),
       close: display('closePreview'), caption: display('modalCaption'), rating: display('modalRating'), slideshow: display('slideshowControls') };
   })()`);
+  // Touch: after the HUD idles out, ‹ › stay dim and tappable; a disabled end stays hidden.
+  result.touchIdle = await window.webContents.executeJavaScript(`(async () => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const modal = document.querySelector('.content-pane .preview-modal');
+    const prev = document.querySelector('#prevPreview');
+    const next = document.querySelector('#nextPreview');
+    prev.disabled = true;
+    next.disabled = false;
+    // Check the settled rule, not the fade: a hidden window throttles transitions.
+    prev.style.transition = next.style.transition = 'none';
+    modal.classList.add('hud-hidden');
+    await wait(50);
+    const style = el => getComputedStyle(el);
+    const out = { nextOpacity: parseFloat(style(next).opacity), nextPointer: style(next).pointerEvents,
+      prevOpacity: parseFloat(style(prev).opacity), prevPointer: style(prev).pointerEvents };
+    prev.disabled = false;
+    prev.style.transition = next.style.transition = '';
+    modal.classList.remove('hud-hidden');
+    return out;
+  })()`);
   process.stdout.write(`EAGLEMV_HUD ${JSON.stringify(result)}\n`);
   window.destroy(); app.quit();
 }
