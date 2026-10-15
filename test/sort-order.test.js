@@ -7,7 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { compareBySort, defaultSortDir, effectiveSortDir } = require('../src/pane-state');
+const { compareBySort, defaultSortDir, effectiveSortDir, itemDates } = require('../src/pane-state');
 
 const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
 const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
@@ -57,16 +57,40 @@ test('type groups by extension and default sort keeps Eagle order', () => {
   assert.equal(compareBySort('default', 'auto', items[0], items[1]), 0);
 });
 
-test('添加日期 sorts by btime, independently of the file modification time', () => {
-  // Eagle keeps these as two separate sorts because they disagree in practice:
-  // an old file imported today is newest by btime and oldest by mtime.
-  assert.deepEqual(sortIds('added', 'auto'), ['b', 'a', 'c'], 'newest import first by default');
-  assert.deepEqual(sortIds('added', 'asc'), ['c', 'a', 'b']);
-  assert.notDeepEqual(sortIds('added', 'auto'), sortIds('newest', 'auto'));
-  assert.equal(defaultSortDir('added'), 'desc');
-  assert.equal(compareBySort('added', 'auto', { id: 'x', btime: 5 }, { id: 'y', btime: 5 }), 0);
+test('添加日期, 修改日期 and 创建日期 read the same fields as Eagle (P1-04)', () => {
+  // Eagle's inspector, sorts and rule matcher: 添加日期 is modificationTime
+  // (when the item entered the library), 创建日期 is the file's btime and
+  // 修改日期 its mtime, both falling back to modificationTime. A file rewritten
+  // in place keeps its 添加日期 but gets a new btime.
+  const dated = [
+    { id: 'old', modificationTime: 100, btime: 900, mtime: 50 },
+    { id: 'new', modificationTime: 300, btime: 10, mtime: 20 },
+    { id: 'bare', modificationTime: 200 }
+  ];
+  const order = (sort, dir) => [...dated].sort((a, b) => compareBySort(sort, dir, a, b)).map(item => item.id);
+  assert.deepEqual(order('added', 'auto'), ['new', 'bare', 'old'], 'latest import first');
+  assert.deepEqual(order('added', 'asc'), ['old', 'bare', 'new']);
+  assert.deepEqual(order('created', 'auto'), ['old', 'bare', 'new'], 'btime, bare falls back to modificationTime');
+  assert.deepEqual(order('newest', 'auto'), ['bare', 'old', 'new'], 'mtime, bare falls back to modificationTime');
+  for (const sort of ['added', 'created', 'newest']) assert.equal(defaultSortDir(sort), 'desc');
+  assert.equal(compareBySort('added', 'auto', { id: 'x', modificationTime: 5, btime: 1 }, { id: 'y', modificationTime: 5, btime: 9 }), 0);
   // Items predating the field sort as epoch rather than throwing them around.
-  assert.equal(compareBySort('added', 'asc', { id: 'x' }, { id: 'y', btime: 1 }), -1);
+  assert.equal(compareBySort('added', 'asc', { id: 'x' }, { id: 'y', modificationTime: 1 }), -1);
+});
+
+test('itemDates gives the inspector the same three dates the sorts use', () => {
+  assert.deepEqual(itemDates({ modificationTime: 100, btime: 900, mtime: 50 }), { added: 100, created: 900, modified: 50 });
+  assert.deepEqual(itemDates({ modificationTime: 200 }), { added: 200, created: 200, modified: 200 });
+  assert.deepEqual(itemDates(null), { added: 0, created: 0, modified: 0 });
+});
+
+test('the sort menus name the dates as Eagle does and offer 创建日期', () => {
+  for (const markup of ['<option value="newest">修改日期</option>', '<option value="created">创建日期</option>',
+    'data-sort="newest">修改日期<', 'data-sort="created">创建日期<', "newest: '修改日期'", "created: '创建日期'"]) {
+    assert.ok(renderer.includes(markup), markup);
+  }
+  assert.ok(!renderer.includes('最近修改'));
+  assert.match(renderer, /\['default', 'name', 'added', 'newest', 'created', 'size'/);
 });
 
 test('pane markup offers rating/type options and direction options in popover', () => {

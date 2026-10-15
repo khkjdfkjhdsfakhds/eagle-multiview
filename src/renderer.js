@@ -71,6 +71,7 @@ const {
   normalizeRange: normalizeQueryRange,
   effectiveSortDir,
   compareBySort: compareItemsBySort,
+  itemDates,
   sharedTags: computeSharedTags,
   appendableTailCount,
   paneLayoutSpecs,
@@ -838,7 +839,8 @@ function paneMarkup(id, index) {
               <option value="default">Eagle 顺序</option>
               <option value="name">名称</option>
               <option value="added">添加日期</option>
-              <option value="newest">最近修改</option>
+              <option value="newest">修改日期</option>
+              <option value="created">创建日期</option>
               <option value="size">文件大小</option>
               <option value="resolution">分辨率</option>
               <option value="rating">评分</option>
@@ -857,7 +859,8 @@ function paneMarkup(id, index) {
                 <button type="button" class="sort-popover-option" data-sort="default">Eagle 顺序</button>
                 <button type="button" class="sort-popover-option" data-sort="name">名称</button>
                 <button type="button" class="sort-popover-option" data-sort="added">添加日期</button>
-                <button type="button" class="sort-popover-option" data-sort="newest">最近修改</button>
+                <button type="button" class="sort-popover-option" data-sort="newest">修改日期</button>
+                <button type="button" class="sort-popover-option" data-sort="created">创建日期</button>
                 <button type="button" class="sort-popover-option" data-sort="size">文件大小</button>
                 <button type="button" class="sort-popover-option" data-sort="resolution">分辨率</button>
                 <button type="button" class="sort-popover-option" data-sort="rating">评分</button>
@@ -1482,6 +1485,14 @@ function formatBytes(bytes) {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
+// Eagle's inspector format, yyyy/MM/dd HH:mm.
+function formatDateTime(time) {
+  const date = new Date(Number(time) || 0);
+  if (!Number(time) || Number.isNaN(date.getTime())) return '—';
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp', 'heic', 'tif', 'tiff']);
 function isImageItem(item) { return imageExtensions.has(String(item?.ext || '').toLowerCase()); }
 // Originals Chromium cannot decode whose preview rides Eagle's generated
@@ -1636,7 +1647,8 @@ const sortOptionLabels = {
   manual: '自定义顺序',
   name: '名称',
   added: '添加日期',
-  newest: '最近修改',
+  newest: '修改日期',
+  created: '创建日期',
   size: '文件大小',
   resolution: '分辨率',
   rating: '评分',
@@ -1733,7 +1745,7 @@ function sortMenuMarkup(paneId = state.activePaneId) {
   const current = pane?.sort || 'default';
   const sortable = Boolean(pane?.sort) && !['default', 'random', 'manual'].includes(pane.sort);
   const direction = effectiveSortDir(pane?.sort, pane?.sortDir);
-  const options = ['default', 'name', 'added', 'newest', 'size', 'resolution', 'rating', 'type', 'random'].map(sort => contextMenuRow({
+  const options = ['default', 'name', 'added', 'newest', 'created', 'size', 'resolution', 'rating', 'type', 'random'].map(sort => contextMenuRow({
     label: sortOptionLabels[sort], checked: current === sort, action: 'set-sort', payload: { sort, paneId }
   }));
   const directions = [['asc', '升序'], ['desc', '降序']].map(([dir, label]) => contextMenuRow({
@@ -2812,7 +2824,7 @@ function itemCardMarkup(item) {
 function listRowColumns(item) {
   const tags = (item.tags || []).map(String).filter(Boolean);
   const rating = Math.max(0, Math.min(5, Number(item.star) || 0));
-  const added = Number(item.btime) || 0;
+  const { added } = itemDates(item);
   return `<div class="card-list-tags" title="${escapeHTML(tags.join('、'))}">${tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('')}</div>
       <div class="card-list-rating"${rating ? ` title="${rating} 星"` : ''}>${rating ? '★'.repeat(rating) : ''}</div>
       <div class="card-list-date" title="添加日期">${added ? new Date(added).toLocaleDateString('zh-CN') : ''}</div>`;
@@ -3430,7 +3442,11 @@ function renderInspector() {
   if (!sameItem || shown.previewHTML !== previewHTML) $('#previewBox').innerHTML = previewHTML;
   inspectorShown.previewHTML = previewHTML;
   renderItemPalette(item);
-  $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span><span><em>修改日期</em>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
+  $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span>${(() => {
+    const dates = itemDates(item);
+    return [['添加日期', dates.added], ['创建日期', dates.created], ['修改日期', dates.modified]]
+      .map(([label, time]) => `<span title="${formatDateTime(time)}"><em>${label}</em>${formatDateTime(time)}</span>`).join('');
+  })()}`;
   if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
   loadComments(item, { quiet: sameItem });

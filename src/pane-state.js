@@ -266,22 +266,32 @@
     };
   }
 
+  // The three dates as Eagle reads them (P1-04): 添加日期 is modificationTime,
+  // when the item entered the library; 创建日期 and 修改日期 are the file's
+  // btime and mtime, each falling back to modificationTime. A file rewritten
+  // in place keeps its 添加日期 but gets new file dates.
+  function itemDates(item) {
+    const added = Number(item?.modificationTime) || 0;
+    return {
+      added,
+      created: Number(item?.btime) || added,
+      modified: Number(item?.mtime) || added
+    };
+  }
+
   // Ascending base comparators; direction is applied as a factor so every
   // sort key stays stable (equal keys keep Eagle's original order).
   const sortComparators = {
     name: (a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'),
-    // Eagle separates 添加日期 from 修改日期: btime is when the item entered the
-    // library, modificationTime is when the file itself last changed. They are
-    // genuinely different orders — an old file imported today sorts first by
-    // one and last by the other.
-    added: (a, b) => (a?.btime || 0) - (b?.btime || 0),
-    newest: (a, b) => (a?.modificationTime || 0) - (b?.modificationTime || 0),
+    added: (a, b) => itemDates(a).added - itemDates(b).added,
+    newest: (a, b) => itemDates(a).modified - itemDates(b).modified,
+    created: (a, b) => itemDates(a).created - itemDates(b).created,
     size: (a, b) => (a?.size || 0) - (b?.size || 0),
     resolution: (a, b) => ((a?.width || 0) * (a?.height || 0)) - ((b?.width || 0) * (b?.height || 0)),
     rating: (a, b) => (Number(a?.star) || 0) - (Number(b?.star) || 0),
     type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en')
   };
-  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
+  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', created: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
 
   // Eagle's 随机 sort. A shuffle has to be stable: the grid re-renders on every
   // lazy page and re-sorts each time, so drawing fresh randomness per compare
@@ -507,6 +517,7 @@
     defaultSortDir,
     effectiveSortDir,
     compareBySort,
+    itemDates,
     randomRank,
     sharedTags,
     appendableTailCount,

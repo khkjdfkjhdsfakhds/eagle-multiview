@@ -48,10 +48,10 @@ test('inspector renders a dominant-color palette from item.palettes', () => {
   assert.match(styles, /\.palette-swatch\s*\{/);
 });
 
-test('file-info rows are labeled (格式/大小/尺寸/修改日期)', () => {
+test('file-info rows are labeled (格式/大小/尺寸/添加·创建·修改日期)', () => {
   assert.ok(renderer.includes('<em>格式</em>'));
   assert.ok(renderer.includes('<em>尺寸</em>'));
-  assert.ok(renderer.includes('<em>修改日期</em>'));
+  assert.ok(renderer.includes("[['添加日期', dates.added], ['创建日期', dates.created], ['修改日期', dates.modified]]"));
 });
 
 test('PDF preview enables the Chromium plugin viewer', () => {

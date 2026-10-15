@@ -232,7 +232,8 @@
       clientOnly: true,
       normalize: normalizeRange,
       isActive: rangeActive,
-      match: (item, value) => inRange(item.btime, value)
+      // 添加日期 is Eagle's modificationTime, not the file's btime (P1-04).
+      match: (item, value) => inRange(item.modificationTime, value)
     },
     {
       key: 'pixels',

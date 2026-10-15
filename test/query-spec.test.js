@@ -163,7 +163,8 @@ test('range filters store one {min, max} key so the badge counts them once', () 
 });
 
 test('size / pixels / added match the right field on each item', () => {
-  const item = { id: 'a', size: 10 * 1024 * 1024, width: 4000, height: 2000, btime: 2000 };
+  // 添加日期 is Eagle's modificationTime; btime is the file's creation date.
+  const item = { id: 'a', size: 10 * 1024 * 1024, width: 4000, height: 2000, modificationTime: 2000, btime: 9000 };
   const matches = query => matchesConstraints(item, createQuery(query));
   assert.equal(matches({ size: { min: 5 * 1024 * 1024 } }), true);
   assert.equal(matches({ size: { min: 20 * 1024 * 1024 } }), false);
