@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   switchLibrary: data => ipcRenderer.invoke('library:switch', data),
   identity: () => ipcRenderer.invoke('hub:identity'),
   query: query => ipcRenderer.invoke('hub:query', query),
+  viewStats: query => ipcRenderer.invoke('hub:view-stats', query),
   locateItem: data => ipcRenderer.invoke('hub:locate-item', data),
   getRecentFolders: () => ipcRenderer.invoke('hub:recent-folders'),
   getTrashItems: data => ipcRenderer.invoke('hub:trash-items', data),

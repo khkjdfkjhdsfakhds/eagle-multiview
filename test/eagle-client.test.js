@@ -346,3 +346,30 @@ test('tags, tag groups and smart folders page through every record (B2-02)', asy
   assert.deepEqual(await client.listTagGroups(), []);
   assert.deepEqual(await client.listSmartFolders(), []);
 });
+
+test('viewStats sums size over every page, reading only id and size', async () => {
+  const client = new RecordingClient();
+  const rows = Array.from({ length: 2300 }, (_, index) => ({ id: `i${index}`, size: index % 3 }));
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    const { offset, limit } = options.body;
+    return { data: rows.slice(offset, offset + limit), total: rows.length };
+  };
+  const stats = await client.viewStats({ folderId: 'f-1', search: '  ' });
+  assert.deepEqual(stats, { count: 2300, size: rows.reduce((sum, row) => sum + row.size, 0) });
+  assert.equal(client.calls.length, 3);
+  for (const call of client.calls) {
+    assert.equal(call.path, '/api/v2/item/get');
+    assert.deepEqual(call.options.body.fields, ['id', 'size']);
+    assert.deepEqual(call.options.body.folders, ['f-1']);
+    assert.equal(call.options.body.limit, 1000);
+  }
+});
+
+test('viewStats leaves searches, random and client-filtered views alone', async () => {
+  const client = new RecordingClient();
+  assert.equal(await client.viewStats({ search: 'cat' }), null);
+  assert.equal(await client.viewStats({ random: true }), null);
+  assert.equal(await client.viewStats({ color: '#ff0000' }), null);
+  assert.equal(client.calls.length, 0);
+});

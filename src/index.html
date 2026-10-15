@@ -188,6 +188,21 @@
         <p>选择一个素材查看详情</p>
         <small>多个窗口可以停留在不同文件夹和搜索结果中</small>
       </div>
+      <div id="categoryInspector" class="category-inspector hidden">
+        <section class="inspector-section">
+          <div class="inspector-field">
+            <input id="categoryName" aria-label="名称" placeholder="名称" autocomplete="off">
+          </div>
+          <div class="inspector-field">
+            <textarea id="categoryDescription" aria-label="描述" placeholder="描述" rows="1"></textarea>
+          </div>
+        </section>
+        <section class="inspector-section">
+          <h3>基本信息</h3>
+          <div id="categoryMeta" class="item-meta"></div>
+        </section>
+        <small id="categoryHint" class="category-hint"></small>
+      </div>
       <div id="inspectorContent" class="inspector-content hidden">
         <div id="previewBox" class="preview-box"></div>
         <div id="itemPalette" class="item-palette hidden" aria-label="主色调" title="主色调（点击复制色值）"></div>

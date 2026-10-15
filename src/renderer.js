@@ -3348,6 +3348,7 @@ function renderInspector() {
   renderSelectionBar();
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
+  if (count) $('#categoryInspector').classList.add('hidden');
   $('#inspectorContent').classList.toggle('hidden', count !== 1);
   $('#multiSelection').classList.toggle('hidden', count < 2);
   if (count !== 1) inspectorShown = null;
@@ -3372,15 +3373,7 @@ function renderInspector() {
     state.comments = [];
     $('#itemComments').innerHTML = '<span class="muted">选择单个素材查看评论</span>';
     $('#generationMetadataSection').classList.add('hidden');
-    const folder = state.selectedFolderCard ? findFolder(state.library?.folders, state.selectedFolderCard) : null;
-    if (folder) {
-      const direct = Number(folder.imageCount) || 0;
-      const descendants = Number(folder.descendantImageCount) || direct;
-      $('#noSelection').innerHTML = `<div class="inspector-folder-icon">${eagleIcon('ic-filter-item-folder.svg', 'inspector-folder-svg')}</div>
-        <h2 title="${escapeHTML(folder.name)}">${escapeHTML(folder.name)}</h2>
-        <p>${direct.toLocaleString()} 个直属文件 · ${(folder.children || []).length.toLocaleString()} 个子文件夹</p>
-        ${descendants !== direct ? `<small>共含 ${descendants.toLocaleString()} 个后代文件<br>双击或按 Return 进入</small>` : '<small>双击或按 Return 进入</small>'}`;
-    } else {
+    if (!renderCategoryInspector()) {
       $('#noSelection').innerHTML = '<div class="inspector-placeholder"><img src="brand-icon.png" alt=""></div><p>选择一个素材查看详情</p><small>多个窗口可以停留在不同文件夹和搜索结果中</small>';
     }
     state.selectedBase = null;
@@ -7085,22 +7078,28 @@ async function renameFolderById(folderId) {
   if (!confirmDiscardChanges()) return;
   const nextName = await requestNameDialog({ title: '重命名文件夹', initialValue: folder.name || '', submitLabel: '重命名' });
   if (nextName === null || nextName === folder.name) return;
+  return renameFolderTo(folder, nextName);
+}
+
+// Shared by the rename dialog and the inspector's name field; baseName is the
+// name the user started from, for the cross-window conflict check.
+async function renameFolderTo(folder, nextName, { baseName = folder.name } = {}) {
   const libraryPath = state.library?.path;
   const operationToken = beginForegroundOperation('正在重命名文件夹…', { key: `rename-folder:${libraryPath}:${folder.id}` });
-  if (!operationToken) return;
+  if (!operationToken) return false;
   setSyncStatus('正在重命名…');
   try {
     let result = await window.eagleMV.mutateFolder({
       id: folder.id,
       name: nextName,
-      baseName: folder.name,
+      baseName,
       libraryPath
     });
     if (result?.conflict) {
       const overwrite = confirm(`这个文件夹已在 Eagle 或另一个窗口中重命名为“${result.current?.name || '未命名'}”。\n\n按“确定”覆盖为当前名称；按“取消”载入最新名称。`);
       if (!overwrite) {
         scheduleRefresh();
-        return;
+        return false;
       }
       result = await window.eagleMV.mutateFolder({
         id: folder.id,
@@ -7127,8 +7126,9 @@ async function renameFolderById(folderId) {
     revealFolderPath(folder.id);
     renderFolderTree();
     renderGrid({ preserveScroll: true });
-    if (state.selectedFolderCard === folder.id) renderInspector();
+    if (!state.selected.size) renderInspector();
     toast('文件夹已重命名');
+    return true;
   } finally {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
@@ -7138,9 +7138,9 @@ async function renameFolderById(folderId) {
 // Colour and description writes (P1-12, P2-05). Eagle has no conflict
 // prompt, but another window may have changed the same field since this one
 // drew it: ask before overwriting, as a rename does.
-async function writeFolderProperties(folder, patch, { label, done }) {
+async function writeFolderProperties(folder, patch, { label, done, base = null }) {
   const libraryPath = state.library?.path;
-  const base = Object.fromEntries(Object.keys(patch).map(field => [field, folder[field] ?? '']));
+  base ||= Object.fromEntries(Object.keys(patch).map(field => [field, folder[field] ?? '']));
   const operationToken = beginForegroundOperation(label, { key: `folder-properties:${libraryPath}:${folder.id}` });
   if (!operationToken) return false;
   setSyncStatus(label);
@@ -7173,6 +7173,146 @@ async function writeFolderProperties(folder, patch, { label, done }) {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
+}
+
+// With no item selected the inspector describes the selected folder card, or
+// else the view itself, as Eagle's does (P2-05): a folder's name and
+// description are editable there; every view shows its file count and size.
+let categoryShown = null;
+let categoryStatsRevision = 0;
+const categoryStatsCache = new Map();
+
+function categoryTarget() {
+  const pane = paneById(state.activePaneId);
+  const card = Boolean(state.selectedFolderCard);
+  const view = card ? { kind: 'folder', id: state.selectedFolderCard } : state.currentView;
+  if (!pane || !state.library || !view || ['tags', 'recent'].includes(view.kind)) return null;
+  const folder = view.kind === 'folder' ? findFolder(state.library.folders, view.id) : null;
+  if (view.kind === 'folder' && !folder) return null;
+  return {
+    key: `${state.library.path}|${descriptorKey(view)}`,
+    view, folder, card,
+    name: folder ? folder.name || '' : state.viewTitle,
+    locked: Boolean(folder?.password),
+    editable: Boolean(folder && !folder.password && state.connected),
+    // Count and size are of the view itself, without the search and filters.
+    query: view.kind === 'trash' ? null : paneItemQuery({ ...pane, query: createQuery() }, view)
+  };
+}
+
+function categoryStats(target) {
+  if (!target.query || target.locked || !window.eagleMV.viewStats) return null;
+  const key = `${state.library?.path}|${categoryStatsRevision}|${JSON.stringify(target.query)}`;
+  if (categoryStatsCache.has(key)) return categoryStatsCache.get(key);
+  categoryStatsCache.set(key, 'pending');
+  window.eagleMV.viewStats(target.query)
+    .then(stats => categoryStatsCache.set(key, stats || null), () => categoryStatsCache.set(key, null))
+    .finally(() => { if (categoryShown && !state.selected.size) renderCategoryInspector(); });
+  return 'pending';
+}
+
+function resizeCategoryDescription() {
+  const field = $('#categoryDescription');
+  field.style.height = 'auto';
+  field.style.height = `${Math.max(field.scrollHeight, 38)}px`;
+}
+
+function renderCategoryInspector() {
+  const target = categoryTarget();
+  $('#categoryInspector').classList.toggle('hidden', !target);
+  $('#noSelection').classList.toggle('hidden', Boolean(target));
+  if (!target) { categoryShown = null; return false; }
+  const nameField = $('#categoryName');
+  const descriptionField = $('#categoryDescription');
+  const same = categoryShown?.key === target.key;
+  // Never overwrite a field the user is typing in; a broadcast of their own
+  // earlier save would otherwise undo the characters typed since.
+  const keepName = same && document.activeElement === nameField;
+  const keepDescription = same && document.activeElement === descriptionField;
+  if (!keepName) nameField.value = target.name;
+  nameField.readOnly = !target.editable;
+  nameField.title = target.locked ? '该文件夹已加密，MultiView 无法解锁（Eagle API 限制）' : '';
+  descriptionField.closest('.inspector-field').classList.toggle('hidden', !target.editable);
+  if (!keepDescription) descriptionField.value = target.folder?.description || '';
+  resizeCategoryDescription();
+  categoryShown = {
+    key: target.key,
+    folderId: target.folder?.id || null,
+    baseName: keepName ? categoryShown.baseName : target.name,
+    baseDescription: keepDescription ? categoryShown.baseDescription : target.folder?.description || ''
+  };
+  const stats = categoryStats(target);
+  const filtered = queryFiltersActive(state.query) || String(state.query.search || '').trim();
+  const count = stats && stats !== 'pending' ? stats.count
+    : target.card ? Number(target.folder.imageCount) || 0
+      : !filtered && !state.estimatedTotal ? state.total : null;
+  const size = stats === 'pending' ? '计算中…' : stats ? formatBytes(stats.size) : '—';
+  const rows = target.locked ? [['状态', '已加密']] : [
+    ['文件数', Number.isFinite(count) ? count.toLocaleString() : '—'],
+    ['占用空间', size],
+    ...(target.folder?.modificationTime ? [['添加日期', formatDateTime(target.folder.modificationTime)]] : [])
+  ];
+  $('#categoryMeta').innerHTML = rows.map(([label, value]) => `<span title="${escapeHTML(value)}"><em>${label}</em>${escapeHTML(value)}</span>`).join('');
+  $('#categoryHint').textContent = target.card ? '双击或按 Return 进入' : '';
+  return true;
+}
+
+async function commitCategoryName() {
+  const shown = categoryShown;
+  const field = $('#categoryName');
+  if (!shown?.folderId || field.readOnly) return;
+  const next = field.value.trim();
+  if (!next || next === shown.baseName) { field.value = shown.baseName; return; }
+  const folder = findFolder(state.library?.folders, shown.folderId);
+  if (!folder) return;
+  shown.baseName = next;
+  try {
+    if (!await renameFolderTo(folder, next, { baseName: folder.name })) renderCategoryInspector();
+  } catch (error) {
+    toast(`重命名失败：${error.message}`, 4000);
+    renderCategoryInspector();
+  }
+}
+
+async function commitCategoryDescription() {
+  const shown = categoryShown;
+  const value = $('#categoryDescription').value;
+  if (!shown?.folderId || value === shown.baseDescription) return;
+  const folder = findFolder(state.library?.folders, shown.folderId);
+  if (!folder) return;
+  const base = shown.baseDescription;
+  shown.baseDescription = value;
+  try {
+    const saved = await writeFolderProperties(folder, { description: value }, { label: '正在保存文件夹描述…', base: { description: base } });
+    if (!saved && categoryShown === shown) shown.baseDescription = base;
+  } catch (error) {
+    if (categoryShown === shown) shown.baseDescription = base;
+    toast(`描述未保存：${error.message}`, 4000);
+  }
+}
+
+function bindCategoryInspector() {
+  const nameField = $('#categoryName');
+  const descriptionField = $('#categoryDescription');
+  nameField.addEventListener('keydown', event => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') { event.preventDefault(); nameField.blur(); }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      nameField.value = categoryShown?.baseName ?? nameField.value;
+      nameField.blur();
+    }
+  });
+  nameField.addEventListener('blur', () => { commitCategoryName(); });
+  descriptionField.addEventListener('input', resizeCategoryDescription);
+  descriptionField.addEventListener('keydown', event => {
+    if (event.isComposing || event.key !== 'Escape') return;
+    event.preventDefault();
+    descriptionField.value = categoryShown?.baseDescription ?? descriptionField.value;
+    resizeCategoryDescription();
+    descriptionField.blur();
+  });
+  descriptionField.addEventListener('blur', () => { commitCategoryDescription(); });
 }
 
 async function setFolderColor(folderId, color) {
@@ -9248,6 +9388,7 @@ function bindEvents() {
     markDirty();
     queueInspectorAutoSave({ immediate: true });
   });
+  bindCategoryInspector();
   $('#itemAnnotation').addEventListener('input', () => { resizeAnnotation(); markDirty(); });
   $('#itemAnnotation').addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   $('#itemPalette').addEventListener('click', event => {
@@ -9945,6 +10086,9 @@ function bindHubEvents() {
     // Metadata is auto-saved on input/blur. A close request is the final
     // flush for a very recent edit instead of a discard prompt.
     if (state.inspectorDirty) await saveInspector();
+    // A folder name or description still being typed is saved, not dropped.
+    if (document.activeElement === $('#categoryName')) await commitCategoryName();
+    if (document.activeElement === $('#categoryDescription')) await commitCategoryDescription();
     const failedDrafts = [...inspectorDrafts.values()].filter(draft => Object.keys(inspectorDraftPatch(draft)).length);
     const failedDraft = failedDrafts[0];
     if (failedDraft) {
@@ -10081,6 +10225,8 @@ function bindHubEvents() {
     // every pane here rebuilds both grids behind the editor and makes an
     // unrelated pane visibly flash after each autosave.
     if (payload?.reason === 'text-saved') return;
+    categoryStatsRevision += 1;
+    categoryStatsCache.clear();
     scheduleRefresh();
   });
 }
@@ -10221,6 +10367,8 @@ function renderReconciledLibraryPanes() {
   // would discard an in-progress metadata edit. A folder-card inspector is
   // safe to redraw once its ID is present in the fresh tree.
   if (active?.selectedFolderCard && findFolder(state.library?.folders, active.selectedFolderCard)) renderInspector();
+  // The view inspector (no selection) shows folder names and descriptions.
+  else if (active && !active.selected.size) renderInspector();
 }
 
 async function confirmMissingCurrentFolders(folderIds, payload) {

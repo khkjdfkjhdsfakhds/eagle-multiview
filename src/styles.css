@@ -1969,6 +1969,11 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .inspector-empty small { max-width: 230px; color: #77787d; line-height: 1.55; }
 .inspector-empty h2 { max-width: 100%; margin: 14px 0 0; overflow: hidden; color: #f0f0f2; font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-placeholder { width: 72px; height: 72px; border-radius: 21px; opacity: .78; }
+/* No selection: the folder or view itself, as in Eagle's inspector (P2-05). */
+#categoryName { font-size: 14px; font-weight: 600; }
+#categoryName[readonly] { border-color: transparent; background: transparent; padding-left: 0; padding-right: 0; cursor: default; }
+.category-hint { display: block; margin-top: 4px; color: #77787d; font-size: 11px; }
+.category-hint:empty { display: none; }
 .inspector-folder-icon {
   width: 72px;
   height: 58px;

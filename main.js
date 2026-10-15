@@ -1806,6 +1806,7 @@ function setupIPC() {
     return { switched: true, library: result.library };
   });
   handleRPC('hub:query', (_event, query) => hub.query(query));
+  handleRPC('hub:view-stats', (_event, query) => hub.viewStats(query));
   handleRPC('hub:locate-item', (_event, { query, id } = {}) => hub.locateItem(query || {}, id));
   handleRPC('hub:recent-folders', () => client.listRecentFolders());
   handleRPC('hub:trash-items', async (_event, { libraryPath, ...query }) => {
