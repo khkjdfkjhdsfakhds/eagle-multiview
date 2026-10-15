@@ -513,6 +513,7 @@
     createFolder: data => invoke('folder:create', [data]),
     createDocument: data => invoke('document:create', [data]),
     mutateFolder: data => invoke('folder:mutate', [data]),
+    updateFolderProperties: data => invoke('folder:update-properties', [data]),
     startSiteImport: data => invoke('site:start', [data]),
     nextSiteImport: data => invoke('site:next', [data]),
     retrySiteImport: data => invoke('site:retry', [data]),

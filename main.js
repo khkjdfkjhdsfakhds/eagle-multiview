@@ -1928,6 +1928,7 @@ function setupIPC() {
   handleRPC('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
   handleRPC('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:update-properties', (event, mutation) => hub.updateFolderProperties({ ...mutation, origin: event.sender.id }));
   // The confirmed Eagle tree now owns these sibling lists. Remove older local
   // overlays so every window displays the confirmed placement.
   const resetFolderOrderOverlays = async (libraryPath, parentIds, message) => {

@@ -6013,6 +6013,22 @@ function bindTagEditor(kind) {
   });
 }
 
+// Eagle's folder menu ends with a row of colour dots: 无 plus the eight
+// colours /api/v2/folder/update accepts (P1-12). Each dot is its own action.
+const folderMenuColors = Object.freeze(['', 'red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink']);
+function folderColorMenuRows(folderId) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !window.eagleMV.updateFolderProperties) return [];
+  const current = String(folder.iconColor || '').toLowerCase();
+  const disabled = !state.connected;
+  const swatches = folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="文件夹颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="set-folder-color" data-context-payload="${escapeHTML(JSON.stringify({ folderId, color }))}"></button>`;
+  }).join('');
+  return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`];
+}
+
 function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null }) {
   const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"` : '';
   const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}${checked ? ' checked' : ''}`;
@@ -6371,7 +6387,8 @@ function contextMenuMarkup(data) {
       ...(data.targetFolderId && window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.targetFolderId } })] : []),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
-      ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : [])
+      ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : []),
+      ...(data.targetFolderId ? folderColorMenuRows(data.targetFolderId) : [])
     ].join('');
   }
   if (data.kind === 'folder') {
@@ -6382,7 +6399,8 @@ function contextMenuMarkup(data) {
       ...(window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.folderId } })] : []),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
-      contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } })
+      contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } }),
+      ...folderColorMenuRows(data.folderId)
     ].join('');
   }
   if (data.kind === 'workspace') {
@@ -6627,6 +6645,7 @@ async function executeContextAction(action, payload) {
   if (action === 'new-window-root') return openNewWindowAt('root');
   if (action === 'new-window-eagle') return openNewWindowAt('eagle');
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
+  if (action === 'set-folder-color') return setFolderColor(payload.folderId, payload.color);
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
   if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
@@ -7114,6 +7133,53 @@ async function renameFolderById(folderId) {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
+}
+
+// Colour and description writes (P1-12, P2-05). Eagle has no conflict
+// prompt, but another window may have changed the same field since this one
+// drew it: ask before overwriting, as a rename does.
+async function writeFolderProperties(folder, patch, { label, done }) {
+  const libraryPath = state.library?.path;
+  const base = Object.fromEntries(Object.keys(patch).map(field => [field, folder[field] ?? '']));
+  const operationToken = beginForegroundOperation(label, { key: `folder-properties:${libraryPath}:${folder.id}` });
+  if (!operationToken) return false;
+  setSyncStatus(label);
+  try {
+    let result = await window.eagleMV.updateFolderProperties({ id: folder.id, patch, base, libraryPath });
+    if (result?.conflict) {
+      const fieldNames = { iconColor: '颜色', description: '描述' };
+      const fields = result.conflicts.map(conflict => fieldNames[conflict.field] || conflict.field).join('、');
+      const overwrite = confirm(`这个文件夹的${fields}已在 Eagle 或另一个窗口中修改。\n\n按“确定”用你的修改覆盖；按“取消”载入最新内容。`);
+      if (!overwrite) {
+        scheduleRefresh();
+        return false;
+      }
+      result = await window.eagleMV.updateFolderProperties({ id: folder.id, patch, base, force: true, libraryPath });
+    }
+    if (!result?.ok) throw new Error('修改未完成');
+    if (state.library?.folders) {
+      const confirmed = result.folder || { ...folder, ...patch };
+      state.library.folders = overlayFolder(state.library.folders, folder.id, {
+        iconColor: confirmed.iconColor || undefined,
+        description: confirmed.description ?? folder.description
+      });
+    }
+    renderFolderTree();
+    renderGrid({ preserveScroll: true });
+    if (!state.selected.size) renderInspector();
+    if (done) toast(done);
+    return true;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+async function setFolderColor(folderId, color) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !state.connected || !folderMenuColors.includes(color)) return false;
+  if (String(folder.iconColor || '').toLowerCase() === color) return false;
+  return writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' });
 }
 
 async function renameSelection() {
