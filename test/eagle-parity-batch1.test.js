@@ -31,9 +31,9 @@ test('number keys 0-5 set the selection rating like Eagle', () => {
   assert.ok(handler.includes('if (previewOpen) ratePreviewItem(Number(event.key));') || handler.includes('ratePreviewItem(rating);'));
 });
 
-test('grid cards render a star overlay only when rated', () => {
-  assert.ok(renderer.includes("Number(item.star) > 0 ? `<span class=\"card-stars\""));
-  assert.match(styles, /\.card-stars\s*\{/);
+test('grid cards carry no star overlay, like Eagle (rating is a 显示简介 choice)', () => {
+  assert.ok(!renderer.includes('card-stars'));
+  assert.ok(!styles.includes('.card-stars'));
 });
 
 test('inspector renders a dominant-color palette from item.palettes', () => {

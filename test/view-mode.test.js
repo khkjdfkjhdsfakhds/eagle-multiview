@@ -42,7 +42,7 @@ test('waterfall uses CSS columns and list restyles rows without overlays', () =>
   assert.match(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*columns:/);
   assert.match(cssSource, /\.asset-grid\.waterfall \.item-card\s*\{[^}]*break-inside: avoid/);
   assert.match(cssSource, /\.asset-grid\.list \.item-card\s*\{[^}]*grid-template-columns/);
-  assert.match(cssSource, /\.asset-grid\.list \.card-stars,\s*\n\.asset-grid\.list \.format-badge,\s*\n\.asset-grid\.list \.pin-badge \{ display: none; \}/);
+  assert.match(cssSource, /\.asset-grid\.list \.annotation-badge,\s*\n\.asset-grid\.list \.format-badge,\s*\n\.asset-grid\.list \.pin-badge \{ display: none; \}/);
   // The justified filler pseudo-element belongs to that one mode: every layout
   // now carries its own class, including the default.
   assert.ok(cssSource.includes('.asset-grid.justified::after'));
@@ -61,7 +61,7 @@ test('the grid layout uses equal square cells', () => {
 });
 
 test('the list layout earns extra columns, and only there', () => {
-  assert.ok(rendererSource.includes("${state.viewMode === 'list' ? listRowColumns(item) : ''}"),
+  assert.ok(rendererSource.includes("const list = state.viewMode === 'list';") && rendererSource.includes("${list ? listRowColumns(item) : ''}"),
     'a grid of thousands must not carry three dead nodes per card');
   assert.ok(rendererSource.includes('function listRowColumns(item)'));
   assert.ok(rendererSource.includes('class="card-list-tags"'));

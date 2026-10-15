@@ -1418,6 +1418,13 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   accent-color: #0072ef;
   margin: 0;
 }
+/* 显示 switches (P1-06, P1-07); 显示简介 carries its own picker. */
+.sort-popover-toggles { display: flex; flex-direction: column; }
+.sort-popover-toggles .sort-popover-item { white-space: nowrap; }
+.card-meta-toggle { justify-content: space-between; cursor: default; }
+.card-meta-toggle > label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.card-meta-toggle select { max-width: 76px; min-height: 0; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+.card-meta-toggle select:disabled { opacity: .45; }
 .sort-dir-button {
   width: 30px;
   height: 30px;
@@ -1759,19 +1766,6 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   text-transform: uppercase;
   backdrop-filter: blur(7px);
 }
-.card-stars {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  padding: 1px 5px;
-  border-radius: 6px;
-  background: rgba(12, 14, 18, .74);
-  color: #ffce69;
-  font-size: 10px;
-  line-height: 1.3;
-  letter-spacing: 1px;
-  pointer-events: none;
-}
 .item-palette { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0 2px; }
 .palette-swatch {
   width: 22px;
@@ -1810,6 +1804,29 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   backdrop-filter: blur(8px);
 }
 .card-name { margin: 8px 4px 2px; overflow: hidden; color: #f8f9fb; font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.card-ext { color: rgba(248, 249, 251, .55); }
+.annotation-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(4, 6, 10, .72);
+  color: #e6e8ec;
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+/* 显示 switches, global like Eagle's. The list layout keeps its columns. */
+body.hide-card-name :is(.asset-grid.justified, .asset-grid.grid, .asset-grid.waterfall) .card-name,
+body.hide-card-meta :is(.asset-grid.justified, .asset-grid.grid, .asset-grid.waterfall) .card-meta,
+body.hide-card-ext .card-ext,
+body.hide-card-ext-label .format-badge,
+body.hide-card-annotation .annotation-badge { display: none; }
 .card-meta { margin: 0 4px 4px; overflow: hidden; color: rgba(248, 249, 251, .6); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 /* 瀑布流：CSS 多栏，卡片保持各自纵横比自然堆叠。 */
 .asset-grid.waterfall {
@@ -1898,7 +1915,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .asset-grid.list .thumb-wrap img { object-fit: cover; }
 .asset-grid.list .card-name { margin: 0; font-size: 12px; }
 .asset-grid.list .card-meta { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; font-variant-numeric: tabular-nums; }
-.asset-grid.list .card-stars,
+.asset-grid.list .annotation-badge,
 .asset-grid.list .format-badge,
 .asset-grid.list .pin-badge { display: none; }
 .empty-state { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; padding: 30px; color: var(--muted); text-align: center; }

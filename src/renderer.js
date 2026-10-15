@@ -145,6 +145,14 @@ window.addEventListener('storage', event => {
   subfoldersCollapsed = event.newValue === 'true';
   if (typeof state !== 'undefined' && Array.isArray(state.panes)) renderSubfolderSections();
 });
+// Eagle's 布局 panel switches: card lines and 显示子文件夹内容, one global
+// setting shared by every pane and window (P1-06, P1-07).
+const cardDisplayAPI = window.EagleMVCardDisplay;
+let cardDisplay = cardDisplayAPI.parse(null);
+try { cardDisplay = cardDisplayAPI.parse(localStorage.getItem(cardDisplayAPI.STORAGE_KEY)); } catch {}
+window.addEventListener('storage', event => {
+  if (event.key === cardDisplayAPI.STORAGE_KEY) adoptCardDisplay(cardDisplayAPI.parse(event.newValue));
+});
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
@@ -875,8 +883,20 @@ function paneMarkup(id, index) {
               <div id="sortCascadeDivider" class="sort-popover-divider"></div>
               <label id="sortCascadeItem" class="sort-popover-item sort-cascade-item">
                 <input type="checkbox" id="sortCascadeCheck" class="sort-cascade-check">
-                <span>包含子文件夹</span>
+                <span>排序应用到子文件夹</span>
               </label>
+              <div class="sort-popover-divider"></div>
+              <div class="sort-popover-toggles" role="group" aria-label="显示">
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="subfolderContent"><span>显示子文件夹内容</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="name"><span>显示名称</span></label>
+                <div class="sort-popover-item card-meta-toggle">
+                  <label><input type="checkbox" class="sort-cascade-check" data-card-display="meta"><span>显示简介</span></label>
+                  <select data-card-meta-type aria-label="简介内容">${cardDisplayAPI.META_TYPES.map(([type, label]) => `<option value="${type}">${label}</option>`).join('')}</select>
+                </div>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="ext"><span>显示扩展名</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="extLabel"><span>显示扩展名标签</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="annotation"><span>显示标注数</span></label>
+              </div>
             </div>
           </div>
         </div>
@@ -1513,7 +1533,12 @@ function compareItemsForView(a, b) {
 }
 
 function manualScope(view) { return view.id ? `${view.kind}:${view.id}` : view.kind; }
-function supportsManual(view) { return ['root','folder','all','unfiled','untagged','smart'].includes(view.kind); }
+// A folder showing its subfolders' files mixes items the folder's own order
+// does not hold, so it has no custom order while 显示子文件夹内容 is on.
+function supportsManual(view) {
+  if (view.kind === 'folder' && cardDisplay.subfolderContent) return false;
+  return ['root','folder','all','unfiled','untagged','smart'].includes(view.kind);
+}
 function manualOrder(view, kind) { return state.localOrders[window.EagleMVManualOrder.key(manualScope(view),kind)]; }
 function acceptManualOrders(payload) {
   if (payload.libraryPath !== state.library?.path) return;
@@ -1710,6 +1735,7 @@ function renderSortControls() {
     const cascadeCheck = $('#sortCascadeCheck');
     if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
   }
+  renderCardDisplayControls();
 }
 
 // Persist the active pane's sort choice for its current view, then re-render.
@@ -2777,6 +2803,66 @@ function renderGrid({ preserveScroll = true } = {}) {
   scheduleVisibleItemWatch();
 }
 
+function applyCardDisplayClasses() {
+  const body = document.body;
+  body.classList.toggle('hide-card-name', !cardDisplay.name);
+  body.classList.toggle('hide-card-meta', !cardDisplay.meta);
+  body.classList.toggle('hide-card-ext', !cardDisplay.ext);
+  body.classList.toggle('hide-card-ext-label', !cardDisplay.extLabel);
+  body.classList.toggle('hide-card-annotation', !cardDisplay.annotation);
+}
+
+function renderCardDisplayControls() {
+  for (const input of document.querySelectorAll('[data-card-display]')) input.checked = Boolean(cardDisplay[input.dataset.cardDisplay]);
+  for (const select of document.querySelectorAll('[data-card-meta-type]')) {
+    select.value = cardDisplay.metaType;
+    select.disabled = !cardDisplay.meta;
+  }
+}
+
+// Every pane and window follows one setting: here, through setCardDisplay;
+// elsewhere, through the storage event.
+function adoptCardDisplay(next) {
+  const previous = cardDisplay;
+  cardDisplay = next;
+  applyCardDisplayClasses();
+  renderCardDisplayControls();
+  if (typeof state === 'undefined' || !Array.isArray(state.panes)) return;
+  if (previous.metaType !== next.metaType) {
+    for (const pane of state.panes) {
+      withActivePane(pane.id, () => {
+        // The meta line is in the card markup: rebuild, not append.
+        if ($('#itemGrid')) $('#itemGrid')._gridPrefix = null;
+        renderGrid({ preserveScroll: true });
+      });
+    }
+  }
+  if (previous.subfolderContent !== next.subfolderContent) {
+    categoryStatsRevision += 1;
+    categoryStatsCache.clear();
+    for (const pane of state.panes) {
+      if (pane.currentView.kind === 'folder') refresh({ reset: true, preserveScroll: false, paneId: pane.id });
+    }
+    renderSortControls();
+  }
+}
+
+function setCardDisplay(patch) {
+  const next = cardDisplayAPI.normalize({ ...cardDisplay, ...patch });
+  try { localStorage.setItem(cardDisplayAPI.STORAGE_KEY, JSON.stringify(next)); } catch {}
+  adoptCardDisplay(next);
+}
+
+function bindCardDisplayControls() {
+  applyCardDisplayClasses();
+  document.addEventListener('change', event => {
+    const toggle = event.target.closest?.('[data-card-display]');
+    if (toggle) { setCardDisplay({ [toggle.dataset.cardDisplay]: toggle.checked }); return; }
+    const select = event.target.closest?.('[data-card-meta-type]');
+    if (select) setCardDisplay({ metaType: select.value });
+  });
+}
+
 function setSubfoldersCollapsed(collapsed) {
   if (subfoldersCollapsed === collapsed) return;
   subfoldersCollapsed = collapsed;
@@ -2803,17 +2889,20 @@ function itemCardMarkup(item) {
   const thumbURL = mediaURL('thumb', item.id);
   const originalURL = mediaURL('original', item.id);
   const aspect = itemThumbnailAspect(item);
+  const annotations = cardDisplayAPI.annotationCount(item);
+  // The list layout keeps its own columns; the 显示 switches shape the grids.
+  const list = state.viewMode === 'list';
   return `
     <article class="item-card ${state.selected.has(item.id) ? 'selected' : ''} ${itemIsPinned(item) ? 'pinned' : ''}" data-id="${escapeHTML(item.id)}" draggable="true" tabindex="0" style="--item-aspect: ${aspect.toFixed(4)}">
       <div class="thumb-wrap">
         <img loading="lazy" src="${thumbURL}" alt="${escapeHTML(item.name)}"${isGif ? ` data-gif-static="${thumbURL}" data-gif-animated="${originalURL}"` : ''}>
         ${itemIsPinned(item) ? `<span class="pin-badge" title="已在当前文件夹置顶">${eagleIcon('ic-toolbar-pin.svg', 'pin-icon')}</span>` : ''}
-        ${(isGif || (!isImageItem(item) && item.ext)) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
-        ${Number(item.star) > 0 ? `<span class="card-stars" title="${Number(item.star)} 星">${'★'.repeat(Number(item.star))}</span>` : ''}
+        ${cardDisplayAPI.hasFormatLabel(item) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
+        ${annotations ? `<span class="annotation-badge" title="${annotations} 个标注">${annotations}</span>` : ''}
       </div>
-      <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
-      ${state.viewMode === 'list' ? listRowColumns(item) : ''}
-      <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
+      <div class="card-name" title="${escapeHTML(item.name)}${ext ? `.${escapeHTML(ext)}` : ''}">${escapeHTML(item.name)}${ext ? `<span class="card-ext">.${escapeHTML(ext)}</span>` : ''}</div>
+      ${list ? listRowColumns(item) : ''}
+      <div class="card-meta">${list ? `${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}` : escapeHTML(cardDisplayAPI.metaText(item, cardDisplay.metaType, { formatBytes, formatDateTime, itemDates }))}</div>
     </article>`;
 }
 
@@ -3039,7 +3128,8 @@ function paneItemQuery(pane, currentView = pane.currentView) {
     isUntagged: currentView.kind === 'untagged',
     random: currentView.kind === 'random'
   };
-  if (query.folderId && String(query.search || '').trim()) {
+  // A search, or 显示子文件夹内容, covers the folder's whole subtree.
+  if (query.folderId && (String(query.search || '').trim() || cardDisplay.subfolderContent)) {
     const folderIds = [];
     const visit = nodes => (nodes || []).forEach(folder => {
       if (folder.id === query.folderId) {
@@ -3125,7 +3215,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       }
       // Only an unfiltered folder total is the folder's own count; a search
       // also counts subfolder matches and a filter counts a subset (B2-03).
-      if (currentView.kind === 'folder' && !queryFiltersActive(query)) reconcileLocalFolderCount(currentView.id, state.total);
+      if (currentView.kind === 'folder' && !queryFiltersActive(query) && !(query.folderIds?.length > 1)) reconcileLocalFolderCount(currentView.id, state.total);
       renderResultCount();
       $('#viewTitle').textContent = state.viewTitle;
       renderLocation();
@@ -6009,6 +6099,11 @@ function bindTagEditor(kind) {
 // Eagle's folder menu ends with a row of colour dots: 无 plus the eight
 // colours /api/v2/folder/update accepts (P1-12). Each dot is its own action.
 const folderMenuColors = Object.freeze(['', 'red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink']);
+// Eagle's folder menu toggles the same global 显示子文件夹内容 switch.
+function subfolderContentMenuRow() {
+  return '<div class="context-menu-separator"></div>' + contextMenuRow({ label: '在父文件夹显示子文件夹内容', checked: cardDisplay.subfolderContent, action: 'toggle-subfolder-content' });
+}
+
 function folderColorMenuRows(folderId) {
   const folder = findFolder(state.library?.folders, folderId);
   if (!folder || !window.eagleMV.updateFolderProperties) return [];
@@ -6381,6 +6476,7 @@ function contextMenuMarkup(data) {
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : []),
+      ...(data.targetFolderId ? [subfolderContentMenuRow()] : []),
       ...(data.targetFolderId ? folderColorMenuRows(data.targetFolderId) : [])
     ].join('');
   }
@@ -6393,6 +6489,7 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
       contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } }),
+      subfolderContentMenuRow(),
       ...folderColorMenuRows(data.folderId)
     ].join('');
   }
@@ -6642,6 +6739,7 @@ async function executeContextAction(action, payload) {
   if (action === 'new-window-eagle') return openNewWindowAt('eagle');
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
   if (action === 'set-folder-color') return setFolderColor(payload.folderId, payload.color);
+  if (action === 'toggle-subfolder-content') return setCardDisplay({ subfolderContent: !cardDisplay.subfolderContent });
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
   if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
@@ -9392,6 +9490,7 @@ function bindEvents() {
     queueInspectorAutoSave({ immediate: true });
   });
   bindCategoryInspector();
+  bindCardDisplayControls();
   $('#itemAnnotation').addEventListener('input', () => { resizeAnnotation(); markDirty(); });
   $('#itemAnnotation').addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   $('#itemPalette').addEventListener('click', event => {

@@ -373,3 +373,21 @@ test('viewStats leaves searches, random and client-filtered views alone', async 
   assert.equal(await client.viewStats({ color: '#ff0000' }), null);
   assert.equal(client.calls.length, 0);
 });
+
+test('viewStats counts a folder with its subfolders by matching folders locally', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', size: 1, folders: ['parent'] },
+    { id: 'b', size: 2, folders: ['child'] },
+    { id: 'c', size: 4, folders: ['elsewhere'] },
+    { id: 'd', size: 8, folders: ['child', 'elsewhere'] }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  const stats = await client.viewStats({ folderId: 'parent', folderIds: ['parent', 'child'] });
+  assert.deepEqual(stats, { count: 3, size: 11 });
+  assert.equal('folders' in client.calls[0].options.body, false);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'size', 'folders']);
+});

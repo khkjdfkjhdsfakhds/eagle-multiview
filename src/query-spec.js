@@ -101,7 +101,22 @@
         const ids = Array.isArray(context?.query?.folderIds) && context.query.folderIds.length ? context.query.folderIds : [value];
         return (item.folders || []).some(folderId => ids.includes(folderId));
       },
-      applyBody: (value, body) => { body.folders = Array.isArray(body._folderIds) ? body._folderIds : [value]; }
+      // /api/v2/item/get keeps only items in *every* listed folder, so a
+      // folder widened to its subtree is matched locally (folderIds below).
+      applyBody: (value, body) => {
+        if (Array.isArray(body._folderIds) && body._folderIds.length > 1) return;
+        body.folders = Array.isArray(body._folderIds) && body._folderIds.length ? body._folderIds : [value];
+      }
+    },
+    {
+      // The open folder plus its descendants, set per view (a search, or
+      // 显示子文件夹内容); never part of the stored filters.
+      key: 'folderIds',
+      inQuery: false,
+      clientOnly: true,
+      normalize: value => (Array.isArray(value) ? [...value] : null),
+      isActive: value => Array.isArray(value) && value.length > 1,
+      match: (item, value) => (item.folders || []).some(folderId => value.includes(folderId))
     },
     {
       key: 'smartFolderId',

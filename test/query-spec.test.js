@@ -134,9 +134,11 @@ test('itemQueryBody produces the historical API body', () => {
   assert.deepEqual(itemQueryBody({ rating: 0 }), { rating: 0 });
 });
 
-test('folder search expands the API folder constraint to descendant ids', () => {
+test('folder search leaves descendant ids to the local match, not the API body', () => {
+  // The API keeps only items in every listed folder; sending the subtree
+  // would return the items filed in all of them, usually none.
   assert.deepEqual(itemQueryBody({ folderId: 'parent', folderIds: ['parent', 'child', 'deep'], search: 'needle' }), {
-    folders: ['parent', 'child', 'deep'], keywords: ['needle']
+    keywords: ['needle']
   });
 });
 
@@ -250,4 +252,17 @@ test('search scope narrows the search to one field and is inert without text', (
   assert.equal(itemQueryBody(scoped).searchScope, undefined);
   // The scope is not a filter badge entry; Eagle shows it with the search box.
   assert.equal(filterCount(scoped), 1, 'only the search text counts');
+});
+
+test('a folder widened to its subtree is matched locally: the API ANDs several folders (P1-06)', () => {
+  const widened = { folderId: 'A', folderIds: ['A', 'B'] };
+  assert.equal(needsClientScan(widened), true);
+  assert.equal('folders' in itemQueryBody(widened), false, 'several folders must not reach the API, which requires all of them');
+  assert.equal(matchesConstraints({ id: '1', folders: ['B'] }, widened), true);
+  assert.equal(matchesConstraints({ id: '2', folders: ['A', 'C'] }, widened), true);
+  assert.equal(matchesConstraints({ id: '3', folders: ['C'] }, widened), false);
+  const single = { folderId: 'A', folderIds: ['A'] };
+  assert.equal(needsClientScan(single), false);
+  assert.deepEqual(itemQueryBody(single).folders, ['A']);
+  assert.equal('folderIds' in createQuery(widened), false, 'the subtree is derived per view, never stored with filters');
 });
