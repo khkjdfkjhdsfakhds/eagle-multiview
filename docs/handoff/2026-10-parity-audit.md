@@ -1214,5 +1214,5 @@ B4-02 补充一个更现实的触发入口：renderer 没有 document 级 `drago
 ### 附：构建配置（主会话补看 `package.json`）
 
 - **B5-01（安全，低，源码确认）没有配置 Electron fuses**：`RunAsNode`、`EnableNodeCliInspectArguments`、`EnableNodeOptionsEnvironmentVariable` 都保持默认开启，`EnableEmbeddedAsarIntegrityValidation` 没有开。用的是 ad-hoc 签名（`"identity": "-"`），又没有 hardened runtime，本机任意进程都能用 `ELECTRON_RUN_AS_NODE` 或 `--inspect` 借这个应用的身份运行代码；替换 asar 也不会被发现。建议用 electron-builder 的 `electronFuses` 关闭前三项，打开 asar 完整性校验。改完后，需要在本机确认打包、启动和自动更新的 `codesign --verify` 都正常。
-- **B5-02（工程，低）`npm test` 是 `node --test`，没有 `--test-force-exit`**，和 CLAUDE.md 写的命令不一致。探针残留的句柄可能让测试进程挂住不退出。建议补上这个参数。
+- **B5-02（工程，低）`npm test` 是 `node --test`，没有 `--test-force-exit`**，和 CLAUDE.md 写的命令不一致。探针残留的句柄可能让测试进程挂住不退出。建议补上这个参数。**已修复（2026-10-15）**：`test` 脚本改为 `node --test --test-force-exit`。
 - 只出 arm64 一种架构（`--arm64`），Intel Mac 不支持。这是已知取舍，记录在此备查。
