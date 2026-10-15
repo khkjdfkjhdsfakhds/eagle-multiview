@@ -347,3 +347,19 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 本机待核对：卡片带扩展名、简介切换各选项、标注数角标（资源库里只有 5 个素材有标注）、关闭名称/简介后的网格观感；大文件夹（几千个子文件夹）开启子文件夹内容时的等待时间。
 
 下一步（按报告推荐顺序）：B 检查器 → A 菜单栏（快捷键冲突待定）→ C 筛选条 → F 标签管理。
+
+## 十四、第 6 组 B 检查器：未开始，只做了摸底（2026-10-15）
+
+用户因额度暂停，B 没有任何代码改动。下次接手可直接按下面做（范围用户已同意：文件夹区块、星级评分、字段顺序、多选结构）。
+
+原版依据（Eagle `js/directives/inspector*.html`，详见 `2026-10-group6-eagle-research.md` B 节）：单选顺序为 名称 → 注释 → 链接 → 标签 → 文件夹 → 标注 → 基本信息（星级、尺寸、时长、大小、格式、添加/创建/修改日期）；多选同一结构：最多 5 张缩略图堆叠、“已选 N 个文件”（≥100 警告色）、注释与链接可批量改、共同标签、共同文件夹、星级、合计大小。
+
+现有代码摸底（`src/renderer.js`）：
+- 评分是 `#itemRating` 下拉，`collectPatch`、草稿恢复、冲突回填都读它的 value。建议保留为隐藏控件，星星按钮改它的值再派发 change，复用全部保存逻辑；星星样式可抄预览的 `renderPreviewRating` / `.modal-star`。
+- 文件夹 chip：数据用 `item.folders` + `findFolder`（颜色用 `folderColorDot`，路径用 `itemFolderLocations`）；× 用 `mutateSelectionSet([id], 'folders', { remove: [folderId] }, …, { keepSelection: true })`（不要用 `removeSelectionFromFolder`，它按 `paneFolderScope` 删整棵子树）；+ 用 `showFolderAssignmentPicker(ids)`。
+- 多选面板在 `src/index.html` 的 `#multiSelection`；现有逻辑：`renderSharedTags`（`pane-state.sharedTags`，可仿写 sharedFolders）、`#batchTagButton` 批量加标签、`#batchRating` → `setSelectionRating`、`#batchTrashButton`。批量注释/链接需新写，仿 `setSelectionRating` 用 `window.eagleMV.mutate({ id, patch, base: item })` 逐个写（字段级冲突检查已在 hub 里）。
+- 改结构后要跑：`eagle-parity-batch1`、`multi-select-inspector`、`inspector-*` 集成测试，它们断言了部分 DOM。
+
+当前状态：分支 `claude/kind-lamport-48izv4` 领先远端约 47 个提交，未推送、未合 main；全量 863/863。测试副本（appId `local.eagle.multiview.branchtest`，含 E 为止的全部改动）在本会话临时目录构建并正在运行，调试端口 9333；验收完退出、`lsregister -u` 注销、删除构建目录。正式安装未动。第十二、十三节的本机待核对项仍待用户验收。
+
+剩余顺序：B 检查器 → A 菜单栏（快捷键冲突待定）→ C 筛选条 → F 标签管理；P2 可定项（B3-04、D-10、R2-03、P7-22）未做。
