@@ -6557,8 +6557,11 @@ function showContextMenuAt(x, y, data) {
     libraryPath: state.library?.path, coverRevisions: state.localFolderCovers.covers };
   const menu = $('#contextMenu');
   menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind));
-  menu.innerHTML = contextMenuMarkup(state.contextMenu)
-    + ((!data.kind || ['workspace', 'folder', 'sidebar', 'smart-folder', 'items', 'item'].includes(data.kind)) ? swapPanesMenuMarkup() : '');
+  const body = contextMenuMarkup(state.contextMenu);
+  const swap = (!data.kind || ['workspace', 'folder', 'sidebar', 'smart-folder', 'items', 'item'].includes(data.kind)) ? swapPanesMenuMarkup() : '';
+  // A folder menu ends with its colour dots; keep them a block of their own.
+  const endsWithColors = /<div class="context-menu-colors"[^]*<\/button><\/div>$/.test(body);
+  menu.innerHTML = body + (swap && endsWithColors ? '<div class="context-menu-separator"></div>' : '') + swap;
   menu.classList.remove('hidden');
   // Narrow screens get a bottom sheet instead of a cursor-anchored panel: the
   // menu is 294px wide and its submenus fly out another 270px, which on a
