@@ -216,6 +216,7 @@
   - 检查器的“修改日期”也显示 `modificationTime`（`renderer.js:3140`）。
 
   Eagle 的 item 同时有 `btime`/`mtime`（文件时间）和 `modificationTime`/`lastModified`（库内时间），哪个对应原版的“添加日期”“修改日期”“创建日期”需要本机对照：导入一个旧文件，看原版这三个日期分别显示什么。CLAUDE.md 只写了“`btime` 可用”，没有确认语义。
+  - **已修复（2026-10-15）**：读 Eagle 4.0.0 源码（检查器模板、`sortRawData`、`rule-match.js`）：添加日期 = `modificationTime`，创建日期 = `btime || modificationTime`，修改日期 = `mtime || modificationTime`。本机资源库里 66 个素材的 `btime` 晚于 `modificationTime`（文件被原地重写过），印证 `btime` 是文件时间。排序与筛选的“添加日期”、列表日期列改用 `modificationTime`；“最近修改”改名“修改日期”并改用 `mtime`；新增“创建日期”排序（P1-03 的一半，“时长”仍缺）；检查器文件信息显示三种日期。共用 `pane-state.itemDates`。
 - **P1-05（逻辑自洽，中低，源码确认）“包含子文件夹”复选框名不副实。** 它不是原版视图设置里的“显示子文件夹内容”，实际作用是：勾选时立刻把当前排序**一次性**写入所有子文件夹的排序记忆（`src/renderer.js:7458-7471`）。而且它是全局开关，所有栏、所有窗口共享（`:94-105`）；取消勾选也不会撤销已写入的排序。
   - 方案：改成一个菜单动作“将此排序应用到所有子文件夹”，不再用复选框。“显示子文件夹内容”另做，见 P1-06。
 
