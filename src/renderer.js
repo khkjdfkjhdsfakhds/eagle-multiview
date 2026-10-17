@@ -2975,7 +2975,7 @@ function tagManagerBodyMarkup(view) {
 function tagManagerNavRow({ mode, groupId = '', label, count, icon = 'tag', color = '' }, view) {
   const active = view.mode === mode && (mode !== 'group' || view.groupId === groupId);
   return `<button type="button" class="tm-nav${active ? ' active' : ''}" data-tm-mode="${mode}"${groupId ? ` data-tm-group="${escapeHTML(groupId)}"` : ''} title="${escapeHTML(label)}">
-    ${color ? `<span class="tm-group-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : uiIcon(icon, 'tm-nav-icon')}<span class="tm-nav-name">${escapeHTML(label)}</span><span class="tm-nav-count">${count ? count.toLocaleString() : ''}</span>
+    ${color ? `<span class="tm-group-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : uiIcon(icon, 'tm-nav-icon')}<span class="tm-nav-name">${escapeHTML(label)}</span><span class="tm-nav-count">${count || mode === 'group' ? count.toLocaleString() : ''}</span>
   </button>`;
 }
 
