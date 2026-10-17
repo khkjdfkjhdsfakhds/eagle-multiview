@@ -35,7 +35,6 @@ test('pane navigation, layout, and sort controls match the primary toolbar scale
   assert.match(cssSource, /\.view-mode-button \{[\s\S]*?width: 28px;[\s\S]*?height: 28px;/);
   assert.match(cssSource, /\.view-mode-svg \{ width: 16px; height: 16px;/);
   assert.match(cssSource, /\.content-pane \.sort-select \{ max-width: 112px; height: 34px; font-size: 12px; \}/);
-  assert.match(cssSource, /\.sort-dir-button \{[\s\S]*?width: 30px;[\s\S]*?height: 30px;[\s\S]*?font-size: 14px;/);
 });
 
 test('waterfall uses CSS columns and list restyles rows without overlays', () => {

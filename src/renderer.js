@@ -9610,7 +9610,7 @@ function bindPaneEvents(paneId) {
   });
   query('#scrollTopButton').addEventListener('click', () => {
     activatePane(paneId);
-    scroller.scrollTo({ top: 0, behavior: 'smooth' });
+    scroller.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   });
   query('#emptyRetryButton').addEventListener('click', () => {
     activatePane(paneId);
