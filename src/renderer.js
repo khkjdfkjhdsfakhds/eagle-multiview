@@ -11031,8 +11031,19 @@ function bindEvents() {
 }
 
 // --- Web access settings (desktop only; the menu triggers command:web-access)
+// What the host last reported, to tell unapplied edits apart (F-08).
+let webAccessApplied = null;
+function webAccessFormValues() {
+  return { enabled: $('#webAccessEnabled').checked, port: String($('#webAccessPort').value).trim(), requireKey: !$('#webAccessNoKey').checked };
+}
+
 function closeWebAccessDialog() {
+  const form = webAccessFormValues();
+  if (webAccessApplied && !$('#webAccessDialog').classList.contains('hidden')
+      && (form.enabled !== webAccessApplied.enabled || form.port !== webAccessApplied.port || form.requireKey !== webAccessApplied.requireKey)
+      && !confirm('有尚未应用的修改，关闭后将放弃。仍要关闭？')) return false;
   $('#webAccessDialog').classList.add('hidden');
+  return true;
 }
 
 function renderWebAccessStatus(status) {
@@ -11045,6 +11056,7 @@ function renderWebAccessStatus(status) {
   $('#webAccessKey').textContent = status.key || '启用后自动生成';
   $('#webAccessCopyKey').disabled = !status.key;
   $('#webAccessNoKey').checked = status.requireKey === false;
+  webAccessApplied = webAccessFormValues();
   const addresses = $('#webAccessAddresses');
   if (status.running && status.addresses?.length) {
     addresses.innerHTML = status.addresses.map((entry, index) => `
@@ -11085,12 +11097,21 @@ function bindWebAccessDialog() {
   });
   $('#webAccessSaveButton').addEventListener('click', async () => {
     const button = $('#webAccessSaveButton');
+    const form = webAccessFormValues();
+    const port = Number(form.port);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      toast('端口需为 1024–65535 之间的整数', 3600);
+      $('#webAccessPort').focus();
+      return;
+    }
+    if (form.enabled && !form.requireKey && webAccessApplied?.requireKey !== false
+        && !confirm('免密访问后，同一网络里的任何设备都能读写整个资源库。确定开启？')) return;
     button.disabled = true;
     try {
       const status = await window.eagleMV.setWebAccess({
-        enabled: $('#webAccessEnabled').checked,
-        port: Number($('#webAccessPort').value) || 41600,
-        requireKey: !$('#webAccessNoKey').checked
+        enabled: form.enabled,
+        port,
+        requireKey: form.requireKey
       });
       renderWebAccessStatus(status);
       if (status?.error) toast(`Web 服务启动失败：${status.error}`, 4600);
