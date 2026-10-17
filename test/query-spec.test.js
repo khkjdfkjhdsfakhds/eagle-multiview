@@ -20,7 +20,14 @@ test('createQuery keeps the historical shape and defaults', () => {
     search: '',
     searchScope: '',
     tags: [],
-    ext: '',
+    tagsExclude: [],
+    tagLogic: 'OR',
+    noTags: false,
+    folderInclude: [],
+    folderExclude: [],
+    folderLogic: 'OR',
+    ext: [],
+    extExclude: [],
     rating: null,
     annotation: '',
     url: '',
@@ -28,8 +35,19 @@ test('createQuery keeps the historical shape and defaults', () => {
     color: '',
     size: null,
     added: null,
+    addedPresets: [],
+    addedMonths: [],
+    modified: null,
+    modifiedPresets: [],
+    modifiedMonths: [],
+    duration: null,
+    durationUnit: 's',
+    comments: '',
+    commentsText: '',
     pixels: null
   });
+  // A remembered single-format filter from before the format list.
+  assert.deepEqual(createQuery({ ext: '.PNG' }).ext, ['png']);
   const normalized = createQuery({ tags: ['a', 'a', '', 'b'], rating: '3', search: 42, folderId: '' });
   assert.deepEqual(normalized.tags, ['a', 'b']);
   assert.equal(normalized.rating, null);
@@ -69,7 +87,8 @@ test('matchesConstraints derives every client-side predicate from the table', ()
   assert.equal(matchesConstraints({ ...item, folders: [] }, { unfiled: true }), true);
   assert.equal(matchesConstraints(item, { isUntagged: true }), false);
   assert.equal(matchesConstraints(item, { tags: ['red'] }), true);
-  assert.equal(matchesConstraints(item, { tags: ['red', 'missing'] }), false);
+  assert.equal(matchesConstraints(item, { tags: ['red', 'missing'] }), true, 'Eagle starts on 任意 (OR)');
+  assert.equal(matchesConstraints(item, { tags: ['red', 'missing'], tagLogic: 'AND' }), false);
   assert.equal(matchesConstraints(item, { ext: 'png' }), true);
   assert.equal(matchesConstraints(item, { rating: 3 }), true);
   assert.equal(matchesConstraints(item, { rating: 0 }), false);
@@ -146,9 +165,13 @@ test('every spec row is fully declared', () => {
   for (const entry of spec) {
     assert.equal(typeof entry.key, 'string');
     assert.equal(typeof entry.normalize, 'function');
+    // A companion row only stores a setting another row reads.
+    if (!entry.isActive && !entry.match && !entry.applyBody && !entry.filter && !entry.clientOnly) continue;
     assert.equal(typeof entry.isActive, 'function');
     assert.ok(entry.match || entry.applyBody, `${entry.key} 既无 match 也无 applyBody`);
-    if (entry.clientOnly) assert.equal(entry.applyBody, undefined, `${entry.key} 是 clientOnly 却声明了 applyBody`);
+    // A per-value clientOnly (tags, formats) still sends what the API can
+    // evaluate; an unconditional one never reaches the body.
+    if (entry.clientOnly === true) assert.equal(entry.applyBody, undefined, `${entry.key} 是 clientOnly 却声明了 applyBody`);
   }
 });
 
@@ -265,4 +288,108 @@ test('a folder widened to its subtree is matched locally: the API ANDs several f
   assert.equal(needsClientScan(single), false);
   assert.deepEqual(itemQueryBody(single).folders, ['A']);
   assert.equal('folderIds' in createQuery(widened), false, 'the subtree is derived per view, never stored with filters');
+});
+
+test('tag rules follow Eagle: 任意 / 全部 / 完全相同, excluded tags and 未标签', () => {
+  const items = {
+    ab: { id: 'ab', tags: ['a', 'b'] },
+    a: { id: 'a', tags: ['a'] },
+    c: { id: 'c', tags: ['c'] },
+    none: { id: 'none', tags: [] }
+  };
+  const pass = query => Object.values(items).filter(item => matchesConstraints(item, createQuery(query))).map(item => item.id);
+  assert.deepEqual(pass({ tags: ['a', 'c'] }), ['ab', 'a', 'c']);
+  assert.deepEqual(pass({ tags: ['a', 'b'], tagLogic: 'AND' }), ['ab']);
+  assert.deepEqual(pass({ tags: ['a'], tagLogic: 'EQUAL' }), ['a']);
+  // OR with an excluded tag keeps anything that lacks it (Eagle's union).
+  assert.deepEqual(pass({ tagsExclude: ['a'] }), ['c', 'none']);
+  assert.deepEqual(pass({ tags: ['c'], tagsExclude: ['a'], tagLogic: 'AND' }), ['c']);
+  assert.deepEqual(pass({ noTags: true }), ['none']);
+  assert.deepEqual(pass({ tags: ['c'], noTags: true }), ['c', 'none']);
+  assert.deepEqual(pass({ tags: ['c'], noTags: true, tagLogic: 'AND' }), []);
+  // One badge entry for the whole tag rule.
+  assert.equal(filterCount(createQuery({ tags: ['a', 'b'], tagsExclude: ['c'], noTags: true })), 1);
+  // The API's tags parameter only serves rules it cannot widen past.
+  assert.deepEqual(itemQueryBody(createQuery({ tags: ['a'] })).tags, ['a']);
+  assert.equal(needsClientScan(createQuery({ tags: ['a'] })), false);
+  assert.equal(needsClientScan(createQuery({ tags: ['a', 'b'] })), true);
+  assert.equal(itemQueryBody(createQuery({ tags: ['a', 'b'] })).tags, undefined);
+  assert.deepEqual(itemQueryBody(createQuery({ tags: ['a', 'b'], tagLogic: 'AND' })).tags, ['a', 'b']);
+  assert.equal(needsClientScan(createQuery({ tags: ['a', 'b'], tagLogic: 'AND' })), false);
+  assert.deepEqual(itemQueryBody(createQuery({ tags: ['a'], tagLogic: 'EQUAL' })).tags, ['a'], 'EQUAL is narrowed by the AND body');
+  assert.equal(needsClientScan(createQuery({ tags: ['a'], tagLogic: 'EQUAL' })), true);
+  assert.equal(itemQueryBody(createQuery({ tags: ['a'], noTags: true })).tags, undefined);
+});
+
+test('folder filter: direct membership, include / exclude, 未分类', () => {
+  const items = [
+    { id: 'x', folders: ['F1'] },
+    { id: 'xy', folders: ['F1', 'F2'] },
+    { id: 'y', folders: ['F2'] },
+    { id: 'none', folders: [] }
+  ];
+  const pass = query => items.filter(item => matchesConstraints(item, createQuery(query))).map(item => item.id);
+  assert.deepEqual(pass({ folderInclude: ['F1', 'F2'] }), ['x', 'xy', 'y']);
+  assert.deepEqual(pass({ folderInclude: ['F1', 'F2'], folderLogic: 'AND' }), ['xy']);
+  assert.deepEqual(pass({ folderInclude: ['F1'], folderLogic: 'EQUAL' }), ['x']);
+  assert.deepEqual(pass({ folderExclude: ['F1'] }), ['y', 'none']);
+  assert.deepEqual(pass({ folderInclude: ['NoFolders'] }), ['none']);
+  assert.equal(needsClientScan(createQuery({ folderInclude: ['F1'] })), true);
+  assert.deepEqual(itemQueryBody(createQuery({ folderInclude: ['F1'] })), {});
+  assert.equal(filterCount(createQuery({ folderInclude: ['F1'], folderExclude: ['F2'] })), 1);
+});
+
+test('format list: several formats and excluded ones', () => {
+  const items = ['png', 'JPG', 'mp4'].map(ext => ({ id: ext, ext }));
+  const pass = query => items.filter(item => matchesConstraints(item, createQuery(query))).map(item => item.id);
+  assert.deepEqual(pass({ ext: ['png', 'jpg'] }), ['png', 'JPG']);
+  assert.deepEqual(pass({ extExclude: ['mp4'] }), ['png', 'JPG']);
+  assert.equal(needsClientScan(createQuery({ ext: ['png'] })), false);
+  assert.deepEqual(itemQueryBody(createQuery({ ext: ['png'] })), { ext: 'png' });
+  assert.equal(needsClientScan(createQuery({ ext: ['png', 'jpg'] })), true);
+  assert.deepEqual(itemQueryBody(createQuery({ ext: ['png', 'jpg'] })), {});
+  assert.equal(needsClientScan(createQuery({ ext: ['png'], extExclude: ['jpg'] })), true);
+});
+
+test('dates: quick ranges widen each other and the custom range; months narrow', () => {
+  const { matchDateRules } = require('../src/query-spec');
+  const now = new Date(2026, 9, 17, 15, 0, 0).getTime();
+  const day = 86400000;
+  const at = (offsetDays, field = 'modificationTime') => ({ [field]: now - offsetDays * day });
+  const added = (item, query) => matchDateRules('added', item, createQuery(query), now);
+  assert.equal(added(at(0), { addedPresets: ['today'] }), true);
+  assert.equal(added(at(1), { addedPresets: ['today'] }), false);
+  assert.equal(added(at(1), { addedPresets: ['yesterday'] }), true);
+  assert.equal(added(at(6), { addedPresets: ['last7'] }), true);
+  assert.equal(added(at(8), { addedPresets: ['last7'] }), false);
+  assert.equal(added(at(8), { addedPresets: ['last7', 'last30'] }), true);
+  // A custom range is one more option alongside the quick ones.
+  const old = now - 400 * day;
+  assert.equal(added({ modificationTime: old }, { addedPresets: ['last7'], added: { min: old - day, max: old + day } }), true);
+  assert.equal(added(at(0), { addedMonths: ['2026/10'] }), true);
+  assert.equal(added(at(0), { addedMonths: ['2026/09'] }), false);
+  // 修改日期 reads the file's mtime, falling back to the added time.
+  const modified = (item, query) => matchDateRules('modified', item, createQuery(query), now);
+  assert.equal(modified({ modificationTime: now, mtime: now - 40 * day }, { modifiedPresets: ['last30'] }), false);
+  assert.equal(modified({ modificationTime: now }, { modifiedPresets: ['today'] }), true);
+  assert.equal(filterCount(createQuery({ addedPresets: ['today'], addedMonths: ['2026/10'] })), 1);
+  assert.equal(needsClientScan(createQuery({ modifiedPresets: ['today'] })), true);
+  assert.deepEqual(itemQueryBody(createQuery({ modifiedPresets: ['today'] })), {});
+});
+
+test('duration and 标注 filters', () => {
+  const clip = { id: 'clip', duration: 90 };
+  const still = { id: 'still' };
+  const matches = (item, query) => matchesConstraints(item, createQuery(query));
+  assert.equal(matches(clip, { duration: { min: 60 } }), true);
+  assert.equal(matches(clip, { duration: { max: 60 } }), false);
+  assert.equal(matches(still, { duration: { max: 60 } }), false, 'an image has no duration to compare');
+  const noted = { id: 'n', comments: [{ annotation: '左手 需要修' }, { annotation: '背景' }] };
+  assert.equal(matches(noted, { comments: 'has' }), true);
+  assert.equal(matches(still, { comments: 'has' }), false);
+  assert.equal(matches(still, { comments: 'none' }), true);
+  assert.equal(matches(noted, { comments: 'has', commentsText: '左手,背景' }), true);
+  assert.equal(matches(noted, { comments: 'has', commentsText: '左手, 天空' }), false);
+  // The keywords alone filter nothing, as Eagle greys them out.
+  assert.equal(filtersActive(createQuery({ commentsText: '左手' })), false);
 });

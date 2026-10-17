@@ -30,8 +30,10 @@ const {
   folderMoveDelta,
   folderScopeRemovable,
   searchFolders,
+  flattenFolders: flattenFolderTree,
   itemFolderLocations
 } = window.EagleMVFolderNavigation;
+const { NO_FOLDER } = window.EagleMVQuerySpec;
 const { formatEaglePath, resolveEaglePath } = window.EagleMVLogicalPath;
 const { paneLayoutPopoverPosition } = window.EagleMVLayoutPopover;
 const {
@@ -1930,6 +1932,187 @@ function renderColorFilter() {
   }).join('');
 }
 
+// Eagle's rule switch for the tag and folder filters (任意 / 全部 / 完全相同).
+const filterLogicChoices = Object.freeze([
+  ['OR', '任意', '任意 (OR)：包含其中任意一个'],
+  ['AND', '全部', '全部 (AND)：同时包含全部'],
+  ['EQUAL', '相同', '完全相同：恰好是这些，不多不少']
+]);
+const datePresetChoices = Object.freeze([
+  ['today', '今日'], ['yesterday', '昨日'], ['last7', '最近 7 日'],
+  ['last30', '最近 30 日'], ['last90', '最近 90 日'], ['last365', '最近 365 日']
+]);
+const FILTER_LIST_LIMIT = 400;
+
+// Counts beside formats, folders and months, read over the active pane's
+// view without its filters when the panel is open (Eagle counts what the
+// view holds). Null while loading or where the view cannot be paged.
+let filterFacets = { key: '', data: null, pending: false };
+
+function filterFacetsQuery() {
+  const pane = activePane();
+  if (!pane || !state.library || ['trash', 'tags', 'recent', 'random'].includes(pane.currentView?.kind)) return null;
+  return paneItemQuery({ ...pane, query: createQuery() }, pane.currentView);
+}
+
+function ensureFilterFacets() {
+  if ($('#filterPopover')?.classList.contains('hidden') || !window.eagleMV.viewFacets) return;
+  const query = filterFacetsQuery();
+  const key = query ? `${state.library?.path}|${categoryStatsRevision}|${JSON.stringify(query)}` : '';
+  if (key === filterFacets.key) return;
+  filterFacets = { key, data: null, pending: Boolean(query) };
+  if (!query) return;
+  window.eagleMV.viewFacets(query)
+    .then(data => { if (filterFacets.key === key) filterFacets = { key, data: data || null, pending: false }; },
+      () => { if (filterFacets.key === key) filterFacets = { key, data: null, pending: false }; })
+    .finally(() => { if (filterFacets.key === key) renderFilterLists(); });
+}
+
+function renderFilterLogic() {
+  for (const box of document.querySelectorAll('[data-filter-logic]')) {
+    const current = state.query[box.dataset.filterLogic] || 'OR';
+    box.innerHTML = filterLogicChoices.map(([value, label, title]) => `<button type="button" class="filter-logic-option${current === value ? ' active' : ''}" role="radio" aria-checked="${current === value}" data-logic-value="${value}" title="${title}">${label}</button>`).join('');
+  }
+}
+
+function filterCheckRow({ attr, value, label, title = label, count = null, checked = false, excluded = false, leading = '', depth = 0 }) {
+  const mark = excluded ? 'excluded' : checked ? 'checked' : '';
+  return `<button type="button" class="filter-check-row${mark ? ` ${mark}` : ''}" ${attr}="${escapeHTML(value)}" aria-pressed="${checked || excluded}" title="${escapeHTML(title)}${excluded ? '（已排除）' : ''}"${depth ? ` style="--depth:${Math.min(depth, 8)}"` : ''}>
+    <span class="filter-checkbox" aria-hidden="true"></span>${leading}<span class="filter-check-name">${escapeHTML(label)}</span>${count === null ? '' : `<span class="filter-check-count">${Number(count).toLocaleString()}</span>`}
+  </button>`;
+}
+
+// Re-rendering a list the user is scrolling must not jump it to the top.
+function setListHTML(list, html) {
+  if (!list) return;
+  const top = list.scrollTop;
+  list.innerHTML = html;
+  list.scrollTop = top;
+}
+
+function filterListStatus(rows, { loading, empty }) {
+  if (rows.length) return rows.join('');
+  return `<span class="filter-check-empty">${filterFacets.pending ? loading : empty}</span>`;
+}
+
+function renderFolderFilterList() {
+  const list = $('#folderFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.folders || null;
+  const included = new Set(state.query.folderInclude || []);
+  const excluded = new Set(state.query.folderExclude || []);
+  const keyword = ($('#folderFilterSearch')?.value || '').trim().toLocaleLowerCase('zh-CN');
+  const marked = id => included.has(id) || excluded.has(id);
+  const rows = [];
+  const unfiledCount = counts ? counts[NO_FOLDER] || 0 : null;
+  if ((!keyword || '未分类'.includes(keyword)) && (unfiledCount === null || unfiledCount > 0 || marked(NO_FOLDER))) {
+    rows.push(filterCheckRow({ attr: 'data-filter-folder', value: NO_FOLDER, label: '未分类', count: unfiledCount, checked: included.has(NO_FOLDER), excluded: excluded.has(NO_FOLDER) }));
+  }
+  // Without a keyword, the tree's indentation gives each name its context;
+  // a search lists matches flat, with the whole path.
+  for (const folder of flattenFolderTree(state.library?.folders || [])) {
+    if (rows.length >= FILTER_LIST_LIMIT) break;
+    const count = counts ? counts[folder.id] || 0 : null;
+    if (count === 0 && !marked(folder.id)) continue;
+    if (keyword && !folder.path.toLocaleLowerCase('zh-CN').includes(keyword)) continue;
+    const node = findFolder(state.library?.folders, folder.id);
+    rows.push(filterCheckRow({
+      attr: 'data-filter-folder', value: folder.id, label: keyword ? folder.path : folder.name, title: folder.path,
+      count, checked: included.has(folder.id), excluded: excluded.has(folder.id),
+      leading: folderColorDot(node, 'filter-folder-dot'), depth: keyword ? 0 : folder.depth
+    }));
+  }
+  if (rows.length >= FILTER_LIST_LIMIT) rows.push('<span class="filter-check-empty">结果较多，请输入关键字缩小范围</span>');
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计文件夹…', empty: keyword ? '没有匹配的文件夹' : '没有找到相关项目' }));
+}
+
+function renderExtFilterList() {
+  const list = $('#extFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.exts || {};
+  const included = new Set(state.query.ext || []);
+  const excluded = new Set(state.query.extExclude || []);
+  const keyword = ($('#extFilterSearch')?.value || '').trim().replace(/^\./, '').toLowerCase();
+  const exts = [...new Set([...Object.keys(counts), ...included, ...excluded])]
+    .filter(ext => !keyword || ext.includes(keyword))
+    .sort((left, right) => (counts[right] || 0) - (counts[left] || 0) || left.localeCompare(right));
+  const rows = exts.map(ext => filterCheckRow({
+    attr: 'data-filter-ext', value: ext, label: ext.toUpperCase(),
+    count: filterFacets.data ? counts[ext] || 0 : null, checked: included.has(ext), excluded: excluded.has(ext)
+  }));
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计格式…', empty: keyword ? '没有匹配的格式' : '没有找到相关项目' }));
+}
+
+function renderDateFilters() {
+  for (const box of document.querySelectorAll('[data-date-presets]')) {
+    const chosen = new Set(state.query[`${box.dataset.datePresets}Presets`] || []);
+    box.innerHTML = datePresetChoices.map(([value, label]) => `<button type="button" class="filter-preset${chosen.has(value) ? ' active' : ''}" data-date-preset="${value}" aria-pressed="${chosen.has(value)}">${label}</button>`).join('');
+  }
+  for (const list of document.querySelectorAll('[data-month-list]')) {
+    const key = list.dataset.monthList;
+    const counts = filterFacets.data?.[`${key}Months`] || {};
+    const chosen = new Set(state.query[`${key}Months`] || []);
+    const months = [...new Set([...Object.keys(counts), ...chosen])].sort().reverse();
+    const rows = months.map(month => {
+      const [year, number] = month.split('/');
+      return filterCheckRow({ attr: 'data-filter-month', value: month, label: `${year} 年 ${Number(number)} 月`, count: filterFacets.data ? counts[month] || 0 : null, checked: chosen.has(month) });
+    });
+    setListHTML(list, filterListStatus(rows, { loading: '正在统计月份…', empty: '没有找到相关项目' }));
+    // A chosen month stays in sight when the panel reopens.
+    const details = list.closest('details');
+    if (details && chosen.size) details.open = true;
+  }
+}
+
+function renderFilterLists() {
+  renderFilterLogic();
+  const noTags = $('#noTagsFilter');
+  if (noTags) noTags.checked = Boolean(state.query.noTags);
+  renderFolderFilterList();
+  renderExtFilterList();
+  renderDateFilters();
+  for (const button of document.querySelectorAll('[data-comments-state]')) {
+    const active = state.query.comments === button.dataset.commentsState;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  const commentsText = $('#commentsTextFilter');
+  if (commentsText) commentsText.disabled = state.query.comments !== 'has';
+  const unit = $('#durationUnitFilter');
+  if (unit) unit.value = state.query.durationUnit || 's';
+}
+
+// One edit of the active pane's filters: apply, redraw the panel, re-query.
+function updateActiveQuery(mutate) {
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  if (!pane) return;
+  mutate(pane.query);
+  renderTagEditor('filter');
+  renderFilterLists();
+  renderFilterState();
+  schedulePaneFilterRefresh(paneId);
+}
+
+// Left-click ticks (and lifts an exclusion), right-click excludes (and lifts
+// a tick), and the same click again clears, as in Eagle's filter menus.
+function toggleIncludeExclude(query, includeKey, excludeKey, value, exclude) {
+  const included = new Set(query[includeKey] || []);
+  const excluded = new Set(query[excludeKey] || []);
+  const [target, other] = exclude ? [excluded, included] : [included, excluded];
+  if (target.has(value)) target.delete(value);
+  else { target.add(value); other.delete(value); }
+  query[includeKey] = [...included];
+  query[excludeKey] = [...excluded];
+}
+
+function toggleListValue(query, key, value) {
+  const values = new Set(query[key] || []);
+  if (values.has(value)) values.delete(value);
+  else values.add(value);
+  query[key] = [...values];
+}
+
 // Range filters are stored as one {min, max} query key but edited through two
 // inputs, so a binding names which end it drives and how the panel's unit maps
 // to the stored one (MB and megapixels to raw counts, dates to timestamps).
@@ -1956,12 +2139,19 @@ const dateRange = end => ({
   }
 });
 
+// The duration range is stored in seconds and shown in the chosen unit.
+const durationUnitSeconds = Object.freeze({ s: 1, m: 60, h: 3600 });
+const durationScale = () => durationUnitSeconds[state.query.durationUnit] || 1;
+const durationRange = {
+  parse: value => (value === '' ? null : Number(value) * durationScale()),
+  toInput: value => (Number.isFinite(value) ? String(Math.round(value / durationScale() * 1000) / 1000) : '')
+};
+
 // Simple-value filter inputs bind declaratively; tags (chip editor) and
 // color (swatch row) keep their bespoke widgets.
 const filterInputBindings = [
   { key: 'search', selector: '#searchInput', event: 'input' },
   { key: 'searchScope', selector: '#searchScopeFilter', event: 'change' },
-  { key: 'ext', selector: '#extFilter', event: 'input', parse: value => normalizeExtension(value) },
   { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
   { key: 'shape', selector: '#shapeFilter', event: 'change' },
   { key: 'annotation', selector: '#annotationFilter', event: 'input' },
@@ -1971,7 +2161,12 @@ const filterInputBindings = [
   { key: 'pixels', part: 'min', selector: '#pixelsMinFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
   { key: 'pixels', part: 'max', selector: '#pixelsMaxFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
   { key: 'added', part: 'min', selector: '#addedFromFilter', event: 'change', ...dateRange(false) },
-  { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) }
+  { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) },
+  { key: 'modified', part: 'min', selector: '#modifiedFromFilter', event: 'change', ...dateRange(false) },
+  { key: 'modified', part: 'max', selector: '#modifiedToFilter', event: 'change', ...dateRange(true) },
+  { key: 'duration', part: 'min', selector: '#durationMinFilter', event: 'input', ...durationRange },
+  { key: 'duration', part: 'max', selector: '#durationMaxFilter', event: 'input', ...durationRange },
+  { key: 'commentsText', selector: '#commentsTextFilter', event: 'input' }
 ];
 
 function filterBindingValue(query, binding) {
@@ -1988,6 +2183,8 @@ function renderQueryControls() {
   }
   renderColorFilter();
   renderTagEditor('filter');
+  ensureFilterFacets();
+  renderFilterLists();
   renderFilterState();
 }
 
@@ -2007,16 +2204,17 @@ function normalizeTags(tags) {
   return [...new Set((tags || []).map(tag => String(tag).trim()).filter(Boolean))];
 }
 
-function tagChipHTML(tag, { removeAttr = 'data-remove-tag', removeLabel = `移除 ${tag}`, disabled = false } = {}) {
+function tagChipHTML(tag, { removeAttr = 'data-remove-tag', removeLabel = `移除 ${tag}`, disabled = false, excluded = false } = {}) {
   const color = state.tagColors[tag];
-  return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" ${removeAttr}="${escapeHTML(tag)}" aria-label="${escapeHTML(removeLabel)}"${disabled ? ' disabled' : ''}>×</button></span>`;
+  return `<span class="tag-chip${excluded ? ' excluded' : ''}"${excluded ? ' title="已排除：右键改回包含"' : ''}${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" ${removeAttr}="${escapeHTML(tag)}" aria-label="${escapeHTML(removeLabel)}"${disabled ? ' disabled' : ''}>×</button></span>`;
 }
 
 function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
   if (!chips) return;
-  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag)).join('');
+  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag)).join('')
+    + (kind === 'filter' ? (state.query.tagsExclude || []).map(tag => tagChipHTML(tag, { removeAttr: 'data-remove-excluded-tag', removeLabel: `取消排除 ${tag}`, excluded: true })).join('') : '');
   const input = $(config.input);
   if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
 }
@@ -2035,11 +2233,26 @@ function setTagValues(kind, tags, changed = true) {
   }
 }
 
+// The filter takes "-name" as an excluded tag, as Eagle's search does.
+function addTagEntries(kind, entries) {
+  const values = normalizeTags(entries);
+  if (kind !== 'filter') {
+    setTagValues(kind, [...tagValues(kind), ...values]);
+    return;
+  }
+  const excluded = values.filter(value => value.length > 1 && value.startsWith('-')).map(value => value.slice(1).trim()).filter(Boolean);
+  const included = values.filter(value => !(value.length > 1 && value.startsWith('-')));
+  updateActiveQuery(query => {
+    query.tags = normalizeTags([...(query.tags || []).filter(tag => !excluded.includes(tag)), ...included]);
+    query.tagsExclude = normalizeTags([...(query.tagsExclude || []).filter(tag => !included.includes(tag)), ...excluded]);
+  });
+}
+
 function commitTagInput(kind) {
   const input = $(tagEditors[kind].input);
   const pending = normalizeTags(input.value.split(/[,，\n]+/));
   if (!pending.length) return false;
-  setTagValues(kind, [...tagValues(kind), ...pending]);
+  addTagEntries(kind, pending);
   input.value = '';
   renderTagSuggestionPopover(kind, { open: true });
   return true;
@@ -2055,8 +2268,8 @@ const schedulePaneFilterRefresh = debounceByKey(paneId => {
 
 function tagSuggestionRecords(kind) {
   const input = $(tagEditors[kind].input);
-  const needle = input?.value.trim().toLocaleLowerCase() || '';
-  const selected = new Set(tagValues(kind));
+  const needle = (input?.value.trim().toLocaleLowerCase() || '').replace(kind === 'filter' ? /^-/ : /^$/, '');
+  const selected = new Set([...tagValues(kind), ...(kind === 'filter' ? state.query.tagsExclude || [] : [])]);
   return state.availableTags
     .map(tag => {
       const name = tagName(tag);
@@ -2116,7 +2329,7 @@ function openTagSuggestions(kind) {
 function chooseTagSuggestion(kind, name) {
   const input = $(tagEditors[kind].input);
   if (!name || !input) return;
-  setTagValues(kind, [...tagValues(kind), name]);
+  addTagEntries(kind, [kind === 'filter' && input.value.trim().startsWith('-') ? `-${name}` : name]);
   input.value = '';
   renderTagSuggestionPopover(kind, { open: true });
   input.focus();
@@ -2182,6 +2395,8 @@ function createSmartFolderFromNewMenu() {
     // outside-click handler closed it again within the same click (B1-03).
     setTimeout(() => {
       $('#filterPopover').classList.remove('hidden');
+      ensureFilterFacets();
+      renderFilterLists();
       renderFilterState();
       $('#searchInput').focus();
     }, 0);
@@ -2324,10 +2539,6 @@ async function switchToLibrary(libraryPath, name) {
   } catch (error) {
     toast(`切换资料库失败：${error.message}`, 4600);
   }
-}
-
-function normalizeExtension(value) {
-  return String(value || '').trim().toLowerCase().replace(/^\.+/, '');
 }
 
 // Only the web client turns narrow side panels into overlay drawers. Desktop
@@ -6324,11 +6535,24 @@ function bindTagEditor(kind) {
     const text = event.clipboardData?.getData('text') || '';
     if (!/[,，\n]/.test(text)) return;
     event.preventDefault();
-    setTagValues(kind, [...tagValues(kind), ...text.split(/[,，\n]+/)]);
+    addTagEntries(kind, text.split(/[,，\n]+/));
   });
   chips.addEventListener('click', event => {
     const button = event.target.closest('[data-remove-tag]');
     if (button) removeTag(kind, button.dataset.removeTag);
+    const excluded = event.target.closest('[data-remove-excluded-tag]');
+    if (excluded) updateActiveQuery(query => { query.tagsExclude = (query.tagsExclude || []).filter(tag => tag !== excluded.dataset.removeExcludedTag); });
+  });
+  // Right-click turns a filter tag into an excluded one and back (Eagle's
+  // 排除 on the tag list).
+  if (kind === 'filter') chips.addEventListener('contextmenu', event => {
+    const chip = event.target.closest('.tag-chip');
+    const button = chip?.querySelector('[data-remove-tag], [data-remove-excluded-tag]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const tag = button.dataset.removeTag ?? button.dataset.removeExcludedTag;
+    updateActiveQuery(query => toggleIncludeExclude(query, 'tags', 'tagsExclude', tag, button.dataset.removeTag !== undefined));
   });
   popover?.addEventListener('pointerdown', event => {
     const suggestion = event.target.closest('[data-tag-suggestion]');
@@ -9467,6 +9691,8 @@ function bindEvents() {
   });
   $('#filterButton').addEventListener('click', () => {
     $('#filterPopover').classList.toggle('hidden');
+    ensureFilterFacets();
+    renderFilterLists();
     renderFilterState();
   });
   $('#saveSmartFolderButton').addEventListener('click', () => saveCurrentViewAsSmartFolder().catch(error => toast(`智能文件夹保存失败：${error.message}`, 4200)));
@@ -9593,6 +9819,55 @@ function bindEvents() {
     renderFilterState();
     schedulePaneFilterRefresh(paneId);
   });
+  $('#filterPopover').addEventListener('click', event => {
+    const logic = event.target.closest('[data-logic-value]');
+    if (logic) {
+      const key = logic.closest('[data-filter-logic]').dataset.filterLogic;
+      updateActiveQuery(query => { query[key] = logic.dataset.logicValue; });
+      return;
+    }
+    const folder = event.target.closest('[data-filter-folder]');
+    if (folder) return updateActiveQuery(query => toggleIncludeExclude(query, 'folderInclude', 'folderExclude', folder.dataset.filterFolder, false));
+    const ext = event.target.closest('[data-filter-ext]');
+    if (ext) return updateActiveQuery(query => toggleIncludeExclude(query, 'ext', 'extExclude', ext.dataset.filterExt, false));
+    const preset = event.target.closest('[data-date-preset]');
+    if (preset) {
+      const key = `${preset.closest('[data-date-presets]').dataset.datePresets}Presets`;
+      return updateActiveQuery(query => toggleListValue(query, key, preset.dataset.datePreset));
+    }
+    const month = event.target.closest('[data-filter-month]');
+    if (month) {
+      const key = `${month.closest('[data-month-list]').dataset.monthList}Months`;
+      return updateActiveQuery(query => toggleListValue(query, key, month.dataset.filterMonth));
+    }
+    const comments = event.target.closest('[data-comments-state]');
+    if (comments) {
+      updateActiveQuery(query => { query.comments = query.comments === comments.dataset.commentsState ? '' : comments.dataset.commentsState; });
+      if (state.query.comments === 'has') $('#commentsTextFilter').focus();
+    }
+  });
+  $('#filterPopover').addEventListener('contextmenu', event => {
+    const folder = event.target.closest('[data-filter-folder]');
+    const ext = event.target.closest('[data-filter-ext]');
+    if (!folder && !ext) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (folder) updateActiveQuery(query => toggleIncludeExclude(query, 'folderInclude', 'folderExclude', folder.dataset.filterFolder, true));
+    else updateActiveQuery(query => toggleIncludeExclude(query, 'ext', 'extExclude', ext.dataset.filterExt, true));
+  });
+  $('#noTagsFilter').addEventListener('change', event => updateActiveQuery(query => { query.noTags = event.target.checked; }));
+  $('#folderFilterSearch').addEventListener('input', renderFolderFilterList);
+  $('#extFilterSearch').addEventListener('input', renderExtFilterList);
+  // The numbers stay and are read in the new unit, as in Eagle.
+  $('#durationUnitFilter').addEventListener('change', event => updateActiveQuery(query => {
+    const before = durationUnitSeconds[query.durationUnit] || 1;
+    const after = durationUnitSeconds[event.target.value] || 1;
+    query.durationUnit = event.target.value;
+    if (query.duration) {
+      const scale = value => (Number.isFinite(value) ? value / before * after : null);
+      query.duration = normalizeQueryRange({ min: scale(query.duration.min), max: scale(query.duration.max) });
+    }
+  }));
   $('#sizeSlider').addEventListener('input', event => applyThumbnailSize(event.target.value));
   $('#folderTree').addEventListener('click', event => {
     // A long-press just opened the menu; its synthetic click must not also

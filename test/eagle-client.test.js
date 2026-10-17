@@ -132,7 +132,7 @@ test('forwards Eagle v2 untagged and metadata filters', async () => {
 
 test('random view uses Eagle random ordering endpoint', async () => {
   const client = new RecordingClient();
-  await client.queryItems({ random: true, offset: 0, limit: 12, search: 'cat', ext: 'png', tags: ['ref', 'blue'] });
+  await client.queryItems({ random: true, offset: 0, limit: 12, search: 'cat', ext: 'png', tags: ['ref', 'blue'], tagLogic: 'AND' });
   assert.match(client.calls[0].path, /^\/api\/item\/list\?/);
   assert.match(client.calls[0].path, /orderBy=RANDOM/);
   assert.match(client.calls[0].path, /keyword=cat/);
@@ -390,4 +390,28 @@ test('viewStats counts a folder with its subfolders by matching folders locally'
   assert.deepEqual(stats, { count: 3, size: 11 });
   assert.equal('folders' in client.calls[0].options.body, false);
   assert.deepEqual(client.calls[0].options.body.fields, ['id', 'size', 'folders']);
+});
+
+test('viewFacets counts formats, folders (with 未分类) and months over the view', async () => {
+  const client = new RecordingClient();
+  const may = new Date(2026, 4, 3).getTime();
+  const june = new Date(2026, 5, 9).getTime();
+  const rows = [
+    { id: 'a', ext: 'PNG', folders: ['f1'], modificationTime: may },
+    { id: 'b', ext: 'png', folders: ['f1', 'f2'], modificationTime: june, mtime: may },
+    { id: 'c', ext: 'mp4', folders: [], modificationTime: june }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  assert.deepEqual(await client.viewFacets({}), {
+    total: 3,
+    exts: { png: 2, mp4: 1 },
+    folders: { f1: 2, f2: 1, NoFolders: 1 },
+    addedMonths: { '2026/05': 1, '2026/06': 2 },
+    modifiedMonths: { '2026/05': 2, '2026/06': 1 }
+  });
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'ext', 'folders', 'modificationTime', 'mtime']);
+  assert.equal(await client.viewFacets({ search: 'cat' }), null);
 });

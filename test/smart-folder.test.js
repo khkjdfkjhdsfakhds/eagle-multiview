@@ -58,3 +58,30 @@ test('a searched folder or root saves what the view shows (S-05)', () => {
   // The unsearched root still shows only unfiled items.
   assert.deepEqual(buildSmartFolderConditions({ kind: 'root' }, { tags: ['t'] }).conditions[0].rules[0], { property: 'folders', method: 'empty' });
 });
+
+test('tag, folder and format lists convert with Eagle rule methods', () => {
+  const build = query => buildSmartFolderConditions({ kind: 'all' }, query);
+  assert.deepEqual(build({ tags: ['a', 'b'] }).conditions, [
+    { match: 'OR', boolean: 'TRUE', rules: [{ property: 'tags', method: 'union', value: ['a', 'b'] }] }
+  ]);
+  assert.deepEqual(build({ tags: ['a'], tagsExclude: ['x'], tagLogic: 'EQUAL' }).conditions[0].rules, [
+    { property: 'tags', method: 'equal', value: ['a'] },
+    { property: 'tags', method: 'identity', value: ['x'] }
+  ]);
+  assert.deepEqual(build({ tags: ['a'], noTags: true }).conditions[0].rules, [
+    { property: 'tags', method: 'union', value: ['a'] },
+    { property: 'tags', method: 'empty' }
+  ]);
+  assert.deepEqual(build({ folderInclude: ['F1', 'NoFolders'], folderLogic: 'AND' }).conditions[0].rules, [
+    { property: 'folders', method: 'intersection', value: ['F1'] },
+    { property: 'folders', method: 'empty' }
+  ]);
+  assert.match(build({ folderInclude: ['F1'], folderExclude: ['NoFolders'] }).unsupported, /文件夹/);
+  assert.deepEqual(build({ ext: ['png', 'jpg'] }).conditions, [
+    { match: 'OR', boolean: 'TRUE', rules: [{ property: 'type', method: 'equal', value: 'png' }, { property: 'type', method: 'equal', value: 'jpg' }] }
+  ]);
+  assert.match(build({ extExclude: ['gif'] }).unsupported, /格式/);
+  for (const [query, label] of [[{ modifiedPresets: ['today'] }, '修改日期'], [{ duration: { min: 5 } }, '时长'], [{ comments: 'has' }, '标注']]) {
+    assert.match(build(query).unsupported, new RegExp(label));
+  }
+});

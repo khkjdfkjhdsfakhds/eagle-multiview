@@ -71,6 +71,139 @@
     return true;
   }
 
+  const list = value => (Array.isArray(value) ? value : []);
+  const uniqueStrings = value => [...new Set(list(value).map(String).filter(Boolean))];
+  const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
+
+  // Eagle's tag and folder filters share one rule switch: 任意 (OR), 全部
+  // (AND) and 完全相同 (the item has exactly the chosen ones). Eagle starts
+  // on OR.
+  const LOGICS = ['OR', 'AND', 'EQUAL'];
+  const DEFAULT_LOGIC = 'OR';
+
+  // Mirrors Eagle's filterData for tags (app.bundle.js): under OR an item
+  // passes on any included tag, *or* on carrying none of the excluded ones,
+  // and 未标签 adds the untagged items; under AND/EQUAL every rule narrows.
+  function matchTagRules(item, query) {
+    const tags = list(item?.tags);
+    const includes = uniqueStrings(query?.tags);
+    const excludes = uniqueStrings(query?.tagsExclude);
+    const logic = pick(query?.tagLogic, LOGICS, DEFAULT_LOGIC);
+    const untagged = !tags.length;
+    if (logic === 'OR') {
+      if (includes.length || excludes.length) {
+        if (includes.some(tag => tags.includes(tag))) return true;
+        if (excludes.length && !excludes.some(tag => tags.includes(tag))) return true;
+        return Boolean(query?.noTags) && untagged;
+      }
+      return query?.noTags ? untagged : true;
+    }
+    if (includes.length) {
+      if (logic === 'EQUAL' && tags.length !== includes.length) return false;
+      if (!includes.every(tag => tags.includes(tag))) return false;
+    }
+    if (excludes.some(tag => tags.includes(tag))) return false;
+    if (query?.noTags && !untagged) return false;
+    return true;
+  }
+
+  // Eagle lists 未分类 among the folders it filters by.
+  const NO_FOLDER = 'NoFolders';
+
+  function matchFolderRules(item, query) {
+    const folders = list(item?.folders);
+    const includes = uniqueStrings(query?.folderInclude);
+    const excludes = uniqueStrings(query?.folderExclude);
+    const logic = pick(query?.folderLogic, LOGICS, DEFAULT_LOGIC);
+    const holds = id => (id === NO_FOLDER ? !folders.length : folders.includes(id));
+    if (logic === 'OR') {
+      if (includes.some(holds)) return true;
+      return excludes.length > 0 && !excludes.some(holds);
+    }
+    if (includes.length) {
+      if (logic === 'EQUAL' && folders.length !== includes.filter(id => id !== NO_FOLDER).length) return false;
+      if (!includes.every(holds)) return false;
+    }
+    return !excludes.some(holds);
+  }
+
+  const normalizeExtensions = value => {
+    const raw = Array.isArray(value) ? value : String(value ?? '').split(/[\s,，]+/);
+    return [...new Set(raw.map(ext => String(ext ?? '').trim().replace(/^\./, '').toLowerCase()).filter(Boolean))];
+  };
+
+  function matchExtensionRules(item, query) {
+    const ext = String(item?.ext || '').toLowerCase();
+    const includes = normalizeExtensions(query?.ext);
+    if (includes.length && !includes.includes(ext)) return false;
+    return !normalizeExtensions(query?.extExclude).includes(ext);
+  }
+
+  // Eagle's quick date ranges (今天 … 最近 365 日). They are kept as names so a
+  // remembered filter stays relative to the day it is used, and several
+  // chosen ones, plus a custom range, widen each other as in Eagle.
+  const DATE_PRESETS = ['today', 'yesterday', 'last7', 'last30', 'last90', 'last365'];
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+  const normalizePresets = value => uniqueStrings(value).filter(name => DATE_PRESETS.includes(name));
+  const normalizeMonths = value => uniqueStrings(value).filter(month => /^\d{4}\/\d{2}$/.test(month));
+
+  function matchesDatePreset(time, name, now) {
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    const today = midnight.getTime();
+    if (name === 'today') return time >= today;
+    if (name === 'yesterday') return time >= today - ONE_DAY && time < today;
+    const days = Number(name.slice(4));
+    return now - time < days * ONE_DAY;
+  }
+
+  function monthKey(time) {
+    const date = new Date(time);
+    return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  // 添加日期 is Eagle's modificationTime and 修改日期 the file's mtime, falling
+  // back to the former as Eagle does (P1-04).
+  const dateFields = {
+    added: item => Number(item?.modificationTime) || 0,
+    modified: item => Number(item?.mtime) || Number(item?.modificationTime) || 0
+  };
+
+  function dateRuleActive(key, value, query) {
+    return rangeActive(value) || normalizePresets(query?.[`${key}Presets`]).length > 0 || normalizeMonths(query?.[`${key}Months`]).length > 0;
+  }
+
+  function matchDateRules(key, item, query, now = Date.now()) {
+    const time = dateFields[key](item);
+    const range = normalizeRange(query?.[key]);
+    const presets = normalizePresets(query?.[`${key}Presets`]);
+    if (range || presets.length) {
+      const inPreset = presets.some(name => matchesDatePreset(time, name, now));
+      if (!inPreset && !(range && inRange(time, range))) return false;
+    }
+    const months = normalizeMonths(query?.[`${key}Months`]);
+    return !months.length || months.includes(monthKey(time));
+  }
+
+  // Seconds. Unlike the size range, an item with no duration (a still image)
+  // never passes a duration filter, as in Eagle.
+  function matchDuration(item, range) {
+    const duration = Number(item?.duration);
+    if (!Number.isFinite(duration) || item?.duration === undefined || item?.duration === null) return false;
+    return inRange(duration, range);
+  }
+
+  // 标注 (Eagle's comments): 有标注 optionally narrowed by comma-separated
+  // keywords that must each appear in some comment, or 没有标注.
+  const COMMENT_STATES = ['has', 'none'];
+  function matchCommentRules(item, value, query) {
+    const comments = list(item?.comments);
+    if (value === 'none') return !comments.length;
+    if (!comments.length) return false;
+    const keywords = String(query?.commentsText ?? '').split(/[,，]/).map(word => lower(word.trim())).filter(Boolean);
+    return keywords.every(keyword => comments.some(comment => lower(comment?.annotation).includes(keyword)));
+  }
+
   // One row per query field; everything else derives from this table:
   // pane defaults/clone (createQuery), filter badge state (filtersActive/
   // filterCount), client-side matching (matchesConstraints), the
@@ -83,7 +216,11 @@
   //   pane's persisted query object
   // - filter: true → user-visible filter, counted in the filter badge
   // - clientOnly: true → the Eagle API cannot evaluate it; an active value
-  //   must route through the client-side scan pipeline
+  //   must route through the client-side scan pipeline. A function decides
+  //   per value (several formats need the scan, one does not)
+  // - rows with only normalize hold a companion setting of another row (the
+  //   tag rule switch, excluded formats); that row's isActive/match read it
+  //   from the query
   // - normalize(raw) → canonical value stored by createQuery
   // - isActive(value, query) → the value constrains results; the whole query
   //   is available for fields that only bite in combination (search scope is
@@ -91,7 +228,9 @@
   // - match(item, value, context) → client predicate; context carries the
   //   whole query plus any resolved lookups. Omit when the server evaluates
   //   the field (full-text search)
-  // - applyBody(value, body) → server body mapping; omit for client-only
+  // - applyBody(value, body, query) → server body mapping; omit for
+  //   client-only. It may only narrow to a superset of the client match,
+  //   since the scan pipeline sends the same body
   const spec = [
     {
       key: 'folderId',
@@ -167,22 +306,57 @@
         return terms.every(term => haystack.includes(term));
       }
     },
+    // One badge entry for the whole tag rule: included tags, excluded ones
+    // (right-click in the panel) and 未标签. The API's tags parameter keeps
+    // items holding every listed tag, so it serves AND and narrows EQUAL; the
+    // rest goes through the scan.
     {
       key: 'tags',
       filter: true,
-      normalize: value => [...new Set((value || []).map(String).filter(Boolean))],
-      isActive: value => (value || []).length > 0,
-      match: (item, value) => value.every(tag => (item.tags || []).includes(tag)),
-      applyBody: (value, body) => { body.tags = value; }
+      normalize: uniqueStrings,
+      isActive: (value, query) => list(value).length > 0 || uniqueStrings(query?.tagsExclude).length > 0 || Boolean(query?.noTags),
+      clientOnly: (value, query) => {
+        const logic = pick(query?.tagLogic, LOGICS, DEFAULT_LOGIC);
+        return uniqueStrings(query?.tagsExclude).length > 0 || Boolean(query?.noTags) || logic === 'EQUAL' || (logic === 'OR' && list(value).length > 1);
+      },
+      match: (item, _value, context) => matchTagRules(item, context?.query),
+      applyBody: (value, body, query) => {
+        const tags = uniqueStrings(value);
+        if (!tags.length) return;
+        const plainOr = tags.length === 1 && !uniqueStrings(query?.tagsExclude).length && !query?.noTags;
+        if (pick(query?.tagLogic, LOGICS, DEFAULT_LOGIC) !== 'OR' || plainOr) body.tags = tags;
+      }
     },
+    { key: 'tagsExclude', normalize: uniqueStrings },
+    { key: 'tagLogic', normalize: value => pick(value, LOGICS, DEFAULT_LOGIC) },
+    { key: 'noTags', normalize: Boolean },
+    // 文件夹 filter (not the open folder): direct membership, include and
+    // exclude, under the same rule switch as tags.
+    {
+      key: 'folderInclude',
+      filter: true,
+      clientOnly: true,
+      normalize: uniqueStrings,
+      isActive: (value, query) => list(value).length > 0 || uniqueStrings(query?.folderExclude).length > 0,
+      match: (item, _value, context) => matchFolderRules(item, context?.query)
+    },
+    { key: 'folderExclude', normalize: uniqueStrings },
+    { key: 'folderLogic', normalize: value => pick(value, LOGICS, DEFAULT_LOGIC) },
+    // 格式: any of the ticked extensions, none of the excluded ones. A single
+    // one is still the API's ext parameter.
     {
       key: 'ext',
       filter: true,
-      normalize: value => String(value ?? ''),
-      isActive: Boolean,
-      match: (item, value) => String(item.ext || '').toLowerCase() === String(value).toLowerCase(),
-      applyBody: (value, body) => { body.ext = value; }
+      normalize: normalizeExtensions,
+      isActive: (value, query) => normalizeExtensions(value).length > 0 || normalizeExtensions(query?.extExclude).length > 0,
+      clientOnly: (value, query) => normalizeExtensions(value).length !== 1 || normalizeExtensions(query?.extExclude).length > 0,
+      match: (item, _value, context) => matchExtensionRules(item, context?.query),
+      applyBody: (value, body) => {
+        const exts = normalizeExtensions(value);
+        if (exts.length === 1) body.ext = exts[0];
+      }
     },
+    { key: 'extExclude', normalize: normalizeExtensions },
     {
       key: 'rating',
       filter: true,
@@ -246,10 +420,40 @@
       filter: true,
       clientOnly: true,
       normalize: normalizeRange,
-      isActive: rangeActive,
-      // 添加日期 is Eagle's modificationTime, not the file's btime (P1-04).
-      match: (item, value) => inRange(item.modificationTime, value)
+      isActive: (value, query) => dateRuleActive('added', value, query),
+      match: (item, _value, context) => matchDateRules('added', item, context?.query)
     },
+    { key: 'addedPresets', normalize: normalizePresets },
+    { key: 'addedMonths', normalize: normalizeMonths },
+    {
+      key: 'modified',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: (value, query) => dateRuleActive('modified', value, query),
+      match: (item, _value, context) => matchDateRules('modified', item, context?.query)
+    },
+    { key: 'modifiedPresets', normalize: normalizePresets },
+    { key: 'modifiedMonths', normalize: normalizeMonths },
+    {
+      key: 'duration',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => matchDuration(item, value)
+    },
+    // The unit the panel shows the duration range in; the range is seconds.
+    { key: 'durationUnit', normalize: value => pick(value, ['s', 'm', 'h'], 's') },
+    {
+      key: 'comments',
+      filter: true,
+      clientOnly: true,
+      normalize: value => pick(value, COMMENT_STATES, ''),
+      isActive: Boolean,
+      match: (item, value, context) => matchCommentRules(item, value, context?.query)
+    },
+    { key: 'commentsText', normalize: value => String(value ?? '') },
     {
       key: 'pixels',
       filter: true,
@@ -300,7 +504,12 @@
 
   // Any active field that forces the client-side scan pipeline outright.
   function needsClientScan(query) {
-    return spec.some(entry => entry.clientOnly && entry.isActive(query?.[entry.key], query));
+    return spec.some(entry => {
+      if (!entry.clientOnly || !entry.isActive) return false;
+      const value = query?.[entry.key];
+      if (!entry.isActive(value, query)) return false;
+      return typeof entry.clientOnly === 'function' ? entry.clientOnly(value, query) : true;
+    });
   }
 
   function itemQueryBody(query) {
@@ -309,7 +518,7 @@
     for (const entry of spec) {
       if (!entry.applyBody) continue;
       const value = query?.[entry.key];
-      if (entry.isActive(value, query)) entry.applyBody(value, body);
+      if (entry.isActive(value, query)) entry.applyBody(value, body, query);
     }
     delete body._folderIds;
     return body;
@@ -328,6 +537,11 @@
     matchesColor,
     normalizeRange,
     rangeActive,
-    inRange
+    inRange,
+    normalizeExtensions,
+    monthKey,
+    matchDateRules,
+    NO_FOLDER,
+    DATE_PRESETS
   };
 });

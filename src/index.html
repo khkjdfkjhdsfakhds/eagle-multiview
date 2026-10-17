@@ -56,16 +56,23 @@
                 <option value="url">仅来源</option>
               </select>
             </label>
-            <label>文件格式
-              <input id="extFilter" list="extensionSuggestions" placeholder="例如 png、pdf、mov" autocomplete="off">
-            </label>
-            <label>评分
-              <select id="ratingFilter" title="评分">
-                <option value="">全部评分</option>
-                <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
-                <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
-              </select>
-            </label>
+            <div class="field-group filter-section" role="group" aria-labelledby="filterTagLabel">
+              <div class="filter-section-head"><label id="filterTagLabel" for="filterTagInput">标签</label><div class="filter-logic" data-filter-logic="tagLogic" role="radiogroup" aria-label="标签逻辑"></div></div>
+              <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选：右键标签切换为排除，输入 -标签 直接排除">
+                <div id="filterTagChips" class="tag-chips"></div>
+                <input id="filterTagInput" placeholder="筛选标签…" autocomplete="off">
+              </div>
+              <label class="filter-check"><input id="noTagsFilter" type="checkbox">未标签</label>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="folderFilterLabel">
+              <div class="filter-section-head"><span id="folderFilterLabel">文件夹</span><div class="filter-logic" data-filter-logic="folderLogic" role="radiogroup" aria-label="文件夹逻辑"></div></div>
+              <input id="folderFilterSearch" type="search" placeholder="搜索文件夹…" autocomplete="off" aria-label="搜索文件夹">
+              <div id="folderFilterList" class="filter-check-list" aria-label="文件夹"></div>
+              <small class="filter-hint">单击选择 · 右键排除</small>
+            </div>
+            <div class="field-group" role="group" aria-labelledby="colorFilterLabel"><span id="colorFilterLabel">颜色</span>
+              <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
+            </div>
             <label>形状
               <select id="shapeFilter" title="图片形状">
                 <option value="">全部形状</option>
@@ -76,16 +83,39 @@
                 <option value="panoramic-portrait">全景纵向</option>
               </select>
             </label>
-            <div class="field-group" role="group" aria-labelledby="colorFilterLabel"><span id="colorFilterLabel">颜色</span>
-              <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
-            </div>
-            <label>文件大小（MB）
-              <div class="filter-range">
-                <input id="sizeMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小文件大小（MB）">
-                <span class="filter-range-dash" aria-hidden="true">–</span>
-                <input id="sizeMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大文件大小（MB）">
-              </div>
+            <label>评分
+              <select id="ratingFilter" title="评分">
+                <option value="">全部评分</option>
+                <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
+                <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
+              </select>
             </label>
+            <div class="field-group filter-section" role="group" aria-labelledby="extFilterLabel">
+              <span id="extFilterLabel">格式</span>
+              <input id="extFilterSearch" type="search" placeholder="搜索格式…" autocomplete="off" aria-label="搜索格式">
+              <div id="extFilterList" class="filter-check-list" aria-label="格式"></div>
+              <small class="filter-hint">单击选择 · 右键排除</small>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="addedFilterLabel">
+              <span id="addedFilterLabel">添加日期</span>
+              <div class="filter-presets" data-date-presets="added" aria-label="添加日期快捷区间"></div>
+              <div class="filter-range">
+                <input id="addedFromFilter" type="date" autocomplete="off" aria-label="添加日期起">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="addedToFilter" type="date" autocomplete="off" aria-label="添加日期止">
+              </div>
+              <details class="filter-months" data-date-months="added"><summary>按月份</summary><div class="filter-check-list" data-month-list="added"></div></details>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="modifiedFilterLabel">
+              <span id="modifiedFilterLabel">修改日期</span>
+              <div class="filter-presets" data-date-presets="modified" aria-label="修改日期快捷区间"></div>
+              <div class="filter-range">
+                <input id="modifiedFromFilter" type="date" autocomplete="off" aria-label="修改日期起">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="modifiedToFilter" type="date" autocomplete="off" aria-label="修改日期止">
+              </div>
+              <details class="filter-months" data-date-months="modified"><summary>按月份</summary><div class="filter-check-list" data-month-list="modified"></div></details>
+            </div>
             <label>分辨率（百万像素）
               <div class="filter-range">
                 <input id="pixelsMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小百万像素">
@@ -93,25 +123,35 @@
                 <input id="pixelsMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大百万像素">
               </div>
             </label>
-            <label>添加日期
-              <div class="filter-range">
-                <input id="addedFromFilter" type="date" autocomplete="off" aria-label="添加日期起">
+            <label>时长
+              <div class="filter-range filter-range-unit">
+                <input id="durationMinFilter" type="number" min="0" step="any" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最短时长">
                 <span class="filter-range-dash" aria-hidden="true">–</span>
-                <input id="addedToFilter" type="date" autocomplete="off" aria-label="添加日期止">
+                <input id="durationMaxFilter" type="number" min="0" step="any" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最长时长">
+                <select id="durationUnitFilter" aria-label="时长单位"><option value="s">秒</option><option value="m">分</option><option value="h">时</option></select>
               </div>
             </label>
+            <label>文件大小（MB）
+              <div class="filter-range">
+                <input id="sizeMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小文件大小（MB）">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="sizeMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大文件大小（MB）">
+              </div>
+            </label>
+            <div class="field-group filter-section" role="group" aria-labelledby="commentsFilterLabel">
+              <span id="commentsFilterLabel">标注</span>
+              <div class="filter-presets" id="commentsFilter">
+                <button type="button" class="filter-preset" data-comments-state="has" aria-pressed="false">有标注</button>
+                <button type="button" class="filter-preset" data-comments-state="none" aria-pressed="false">没有标注</button>
+              </div>
+              <input id="commentsTextFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="标注关键字">
+            </div>
             <label>备注包含
               <input id="annotationFilter" placeholder="筛选备注" autocomplete="off">
             </label>
             <label>来源包含
               <input id="urlFilter" placeholder="筛选来源 URL" autocomplete="off">
             </label>
-            <div class="field-group" role="group" aria-labelledby="filterTagLabel"><label id="filterTagLabel" for="filterTagInput">标签</label>
-              <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
-                <div id="filterTagChips" class="tag-chips"></div>
-                <input id="filterTagInput" placeholder="筛选标签…" autocomplete="off">
-              </div>
-            </div>
             <button id="toggleTagColorsButton" type="button" class="tag-colors-toggle">管理标签颜色</button>
             <div id="tagColorManager" class="tag-color-manager hidden"></div>
             <button id="saveSmartFolderButton" class="filter-save-smart" type="button">保存为智能文件夹</button>
@@ -401,12 +441,6 @@
     </div>
   </div>
   <datalist id="tagSuggestions"></datalist>
-  <datalist id="extensionSuggestions">
-    <option value="jpg"></option><option value="jpeg"></option><option value="png"></option><option value="webp"></option>
-    <option value="gif"></option><option value="svg"></option><option value="heic"></option><option value="tif"></option><option value="tiff"></option>
-    <option value="psd"></option><option value="pdf"></option><option value="txt"></option><option value="mp4"></option><option value="mov"></option>
-    <option value="webm"></option><option value="mp3"></option><option value="wav"></option><option value="aiff"></option>
-  </datalist>
   <script src="folder-navigation.js"></script>
   <script src="eagle-logical-path.js"></script>
   <script src="pane-layout-popover-position.js"></script>

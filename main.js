@@ -8,6 +8,7 @@ const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
+const querySpec = require('./src/query-spec');
 const { buildIdentity } = require('./lib/app-identity');
 const { ThumbnailOperations } = require('./lib/thumbnail-operations');
 const { fileInDirectory } = require('./lib/item-paths');
@@ -1527,10 +1528,10 @@ function filterTrashItems(items, query = {}) {
     const words = keyword.split(/\s+/).filter(Boolean);
     filtered = filtered.filter(item => words.every(word => `${item.name || ''} ${(item.tags || []).join(' ')} ${item.annotation || ''}`.toLocaleLowerCase('zh-CN').includes(word)));
   }
-  if (query.tags?.length) filtered = filtered.filter(item => query.tags.every(tag => (item.tags || []).includes(tag)));
-  if (query.ext) filtered = filtered.filter(item => String(item.ext || '').toLowerCase() === String(query.ext).toLowerCase());
-  if (Number.isInteger(query.rating)) filtered = filtered.filter(item => Number(item.star || 0) === query.rating);
-  return filtered;
+  // Every panel filter applies here too, through the same table as the
+  // other views; the keyword search above and the folder context do not.
+  const filters = { ...querySpec.createQuery(query), search: '', folderId: null, smartFolderId: null };
+  return filtered.filter(item => querySpec.matchesConstraints({ ...item, isDeleted: false }, filters));
 }
 
 // One web address into Eagle: an image is downloaded, anything else becomes
@@ -1807,6 +1808,7 @@ function setupIPC() {
   });
   handleRPC('hub:query', (_event, query) => hub.query(query));
   handleRPC('hub:view-stats', (_event, query) => hub.viewStats(query));
+  handleRPC('hub:view-facets', (_event, query) => hub.viewFacets(query));
   handleRPC('hub:locate-item', (_event, { query, id } = {}) => hub.locateItem(query || {}, id));
   handleRPC('hub:recent-folders', () => client.listRecentFolders());
   handleRPC('hub:trash-items', async (_event, { libraryPath, ...query }) => {
