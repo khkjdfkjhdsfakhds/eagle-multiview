@@ -475,15 +475,20 @@
       id: pane?.id || `pane-${index + 1}`,
       view: pane?.view || (pane?.currentView ? { ...pane.currentView } : { kind: 'root' }),
       sort: pane?.sort || 'default',
-      sortDir: pane?.sortDir || 'auto'
+      sortDir: pane?.sortDir || 'auto',
+      // Pane ids are renumbered on every launch, so the layout mode and the
+      // active pane travel by position (B1-04).
+      ...(pane?.viewMode && pane.viewMode !== 'justified' ? { viewMode: pane.viewMode } : {})
     }));
+    const resolvedActiveId = activePaneId || (normalizedPanes[0]?.id || 'pane-1');
     return {
       layout: validLayout,
       splitRatios: {
         cols: Array.isArray(ratios.cols) ? [...ratios.cols] : ['1fr'],
         rows: Array.isArray(ratios.rows) ? [...ratios.rows] : ['1fr']
       },
-      activePaneId: activePaneId || (normalizedPanes[0]?.id || 'pane-1'),
+      activePaneId: resolvedActiveId,
+      activeIndex: Math.max(0, normalizedPanes.findIndex(pane => pane.id === resolvedActiveId)),
       panes: normalizedPanes
     };
   }

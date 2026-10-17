@@ -114,6 +114,9 @@ contextBridge.exposeInMainWorld('eagleMV', {
   listTextDrafts: data => ipcRenderer.invoke('text-draft:list', data),
   removeTextDraft: data => ipcRenderer.invoke('text-draft:remove', data),
   onStatus: callback => on('hub:status', callback),
+  // A desktop window keeps its webContents id for life; only the web client's
+  // socket id changes on reconnect.
+  onIdentityChanged: () => () => {},
   onLibraryChanged: callback => on('hub:library-changed', callback),
   onItemsChanged: callback => on('hub:items-changed', callback),
   onQueryInvalidated: callback => on('hub:query-invalidated', callback),

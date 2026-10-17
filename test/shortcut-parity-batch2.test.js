@@ -13,13 +13,16 @@ const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'
 const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));
 const keydown = renderer.slice(keydownStart, renderer.indexOf('\n  });', keydownStart));
 
-test('F2 renames only a single, non-editing selection', () => {
+// F2 reaches the same rename as ⌘R: one item, a selected folder card, the
+// focused folder row or the current folder (B3-11).
+test('F2 renames like Cmd+R outside text fields and the preview', () => {
   const index = keydown.indexOf("event.key === 'F2'");
   assert.ok(index >= 0);
   const line = keydown.slice(keydown.lastIndexOf('if (', index), keydown.indexOf('{', index));
   assert.ok(line.includes('!editable'));
   assert.ok(line.includes('!previewOpen'));
-  assert.ok(line.includes('state.selected.size === 1'));
+  assert.ok(!line.includes('state.selected.size === 1'));
+  assert.ok(line.includes("event.key.toLowerCase() === 'r'"), 'F2 and Cmd+R share one branch');
   const branch = keydown.slice(index, index + 300);
   assert.ok(branch.includes('requestRenameSelection()'));
 });

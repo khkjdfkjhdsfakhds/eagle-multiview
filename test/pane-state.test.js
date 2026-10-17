@@ -571,6 +571,7 @@ test('createSessionState conforms to eaglemv.sessionState schema specification',
   assert.equal(session.layout, 'vertical2');
   assert.deepEqual(session.splitRatios, { cols: ['1fr', '1fr'], rows: ['1fr'] });
   assert.equal(session.activePaneId, 'pane-1');
+  assert.equal(session.activeIndex, 1, 'the active pane is also kept by position (B1-04)');
   assert.equal(session.panes.length, 2);
   assert.deepEqual(session.panes[0], {
     id: 'pane-0',
@@ -584,6 +585,19 @@ test('createSessionState conforms to eaglemv.sessionState schema specification',
     sort: 'name',
     sortDir: 'asc'
   });
+});
+
+test('session state keeps each pane\'s layout mode by position (B1-04)', () => {
+  const session = createSessionState({
+    activePaneId: 'pane-7',
+    panes: [
+      { id: 'pane-6', currentView: { kind: 'root' }, viewMode: 'justified' },
+      { id: 'pane-7', currentView: { kind: 'all' }, viewMode: 'list' }
+    ]
+  });
+  assert.equal(session.activeIndex, 1);
+  assert.equal(session.panes[0].viewMode, undefined);
+  assert.equal(session.panes[1].viewMode, 'list');
 });
 
 test('calculateSplitRatios clamps proportions within min size limits', () => {

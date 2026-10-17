@@ -236,7 +236,10 @@ test('the filter panel and the spec table stay in step', () => {
   assert.ok(renderer.includes('? normalizeQueryRange({ ...pane.query[binding.key], [binding.part]: parsed })'));
   // Dates are parsed in local time and the end of the range covers its day.
   assert.ok(renderer.includes("const date = new Date(`${value}T00:00:00`);"));
-  assert.ok(renderer.includes('return end ? date.getTime() + 86399999 : date.getTime();'));
+  // The end is the next local midnight minus 1 ms, so a DST day of 23 or 25
+  // hours is still covered exactly (B1-05).
+  assert.ok(renderer.includes('return end ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime() - 1 : date.getTime();'));
+  assert.ok(!renderer.includes('86399999'));
 });
 
 test('search scope narrows the search to one field and is inert without text', () => {

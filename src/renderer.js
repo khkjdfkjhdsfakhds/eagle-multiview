@@ -929,7 +929,7 @@ function paneMarkup(id, index) {
         <button id="slideshowToggle" class="slideshow-button" type="button" title="幻灯片播放（S）" aria-pressed="false" aria-label="幻灯片播放">▶</button>
         <select id="slideshowInterval" class="slideshow-interval" aria-label="幻灯片间隔">
           <option value="2000">2 秒</option>
-          <option value="4000">4 秒</option>
+          <option value="4000" selected>4 秒</option>
           <option value="6000">6 秒</option>
           <option value="10000">10 秒</option>
         </select>
@@ -1233,6 +1233,7 @@ function restoreSavedSessionPanes() {
         const view = validateSessionView(saved.view, state.library?.folders, state.library?.smartFolders);
         pane.sort = saved.sort || 'default';
         pane.sortDir = saved.sortDir || 'auto';
+        if (paneViewModes.has(saved.viewMode)) pane.viewMode = saved.viewMode;
         withActivePane(pane.id, () => {
           applyView(view);
           if (saved.sort) {
@@ -1253,7 +1254,9 @@ function restoreSavedSessionPanes() {
         });
       }
     }
-    if (session.activePaneId && state.panes.some(p => p.id === session.activePaneId)) {
+    const activeByIndex = Number.isInteger(session.activeIndex) ? state.panes[session.activeIndex] : null;
+    if (activeByIndex) activatePane(activeByIndex.id);
+    else if (session.activePaneId && state.panes.some(p => p.id === session.activePaneId)) {
       activatePane(session.activePaneId);
     }
   } else {
@@ -1674,6 +1677,7 @@ function setPaneViewMode(mode, paneId = state.activePaneId) {
     renderViewModeControls();
     renderGrid({ preserveScroll: true });
   });
+  saveSessionState();
 }
 
 const sortOptionLabels = {
@@ -1848,11 +1852,15 @@ function currentFolder() {
 
 function visibleChildFolders() {
   if (!state.library) return [];
-  if (state.currentView.kind === 'recent') return state.recentFolders || [];
-  let folders = state.currentView.kind === 'root'
-    ? (state.library.folders || [])
-    : (currentFolder()?.children || []);
-  folders = window.EagleMVManualOrder.sort(folders,manualOrder(state.currentView,'folders'));
+  let folders;
+  // 最近使用 filters by the search box like every other folder list (B1-08).
+  if (state.currentView.kind === 'recent') folders = state.recentFolders || [];
+  else {
+    folders = state.currentView.kind === 'root'
+      ? (state.library.folders || [])
+      : (currentFolder()?.children || []);
+    folders = window.EagleMVManualOrder.sort(folders,manualOrder(state.currentView,'folders'));
+  }
   const keyword = state.query.search.trim().toLocaleLowerCase('zh-CN');
   return keyword ? folders.filter(folder => folder.name.toLocaleLowerCase('zh-CN').includes(keyword)) : folders;
 }
@@ -2137,7 +2145,7 @@ const dateRange = end => ({
     if (!value) return null;
     const date = new Date(`${value}T00:00:00`);
     if (Number.isNaN(date.getTime())) return null;
-    return end ? date.getTime() + 86399999 : date.getTime();
+    return end ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime() - 1 : date.getTime();
   },
   toInput: value => {
     if (!Number.isFinite(value)) return '';
@@ -4448,7 +4456,7 @@ async function editComment(commentId) {
   const libraryPath = state.library?.path;
   const item = pane.items.find(candidate => candidate.id === id);
   const annotation = await askText({ title: '编辑评论', fieldLabel: '评论内容', initialValue: comment.annotation || '', submitLabel: '保存' });
-  if (annotation === null || annotation.trim() === comment.annotation) return;
+  if (annotation === null || !annotation.trim() || annotation.trim() === String(comment.annotation || '').trim()) return;
   const operationToken = beginForegroundOperation('正在更新评论…', { key: `comment:${libraryPath}:${id}` });
   if (!operationToken) return;
   try {
@@ -4526,7 +4534,9 @@ function metadataViewerSection() { return $('#generationMetadataSection'); }
 
 function metadataViewerIsFocused(event = null) {
   const section = metadataViewerSection();
-  if (!section || section.classList.contains('hidden')) return false;
+  // A multi-select hides the single-item inspector around the viewer without
+  // touching the viewer's own class, so check it is really on screen (B2-15).
+  if (!section || section.classList.contains('hidden') || !section.offsetParent) return false;
   return metadataViewerFocused || section.contains(document.activeElement) || Boolean(event?.target && section.contains(event.target));
 }
 
@@ -5578,8 +5588,11 @@ function renderPreviewZoom() {
   const fit = zoom.mode === 'fit';
   image.classList.toggle('preview-actual', !fit);
   image.classList.toggle('dragging', Boolean(zoom.dragging));
-  image.style.maxWidth = '100%';
-  image.style.maxHeight = '100%';
+  // 原始大小 shows one image pixel per CSS pixel; every other mode starts
+  // from the fitted size (B2-13).
+  const actual = zoom.mode === 'actual';
+  image.style.maxWidth = actual ? 'none' : '100%';
+  image.style.maxHeight = actual ? 'none' : '100%';
   image.style.width = 'auto';
   image.style.height = 'auto';
   image.style.transform = (zoom.x === 0 && zoom.y === 0 && zoom.scale === 1)
@@ -6273,6 +6286,8 @@ function renderSlideshow() {
   button.setAttribute('aria-pressed', String(playing));
   button.title = playing ? '暂停幻灯片（S）' : '幻灯片播放（S）';
   button.setAttribute('aria-label', playing ? '暂停幻灯片' : '幻灯片播放');
+  const interval = $('#slideshowInterval');
+  if (interval) interval.value = String(state.slideshow.intervalMs);
   $('#previewModal').classList.toggle('slideshow-playing', playing);
 }
 
@@ -8708,7 +8723,7 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
           if ('totalCount' in pane) pane.totalCount = pane.total;
           movedIds.forEach(id => pane.selected.delete(id));
-          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (movedIds.has(pane.selectedBase?.id)) pane.selectedBase = null;
           if (pane.id === state.activePaneId) {
             renderResultCount();
             updateScrollUI();
@@ -8797,7 +8812,7 @@ async function handlePaneItemDrop(context) {
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
           if ('totalCount' in pane) pane.totalCount = pane.total;
           movedIds.forEach(id => pane.selected.delete(id));
-          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (movedIds.has(pane.selectedBase?.id)) pane.selectedBase = null;
           if (pane.id === state.activePaneId) {
             renderResultCount();
             updateScrollUI();
@@ -9191,9 +9206,9 @@ function bindPaneEvents(paneId) {
     }
     if (!activatePane(paneId)) stopRejectedActivation(event);
   }, true);
-  query('#backButton').addEventListener('click', () => { activatePane(paneId); requestBackAction(); });
-  query('#forwardButton').addEventListener('click', () => { activatePane(paneId); navigateHistory(1); });
-  query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
+  query('#backButton').addEventListener('click', () => { if (activatePane(paneId)) requestBackAction(); });
+  query('#forwardButton').addEventListener('click', () => { if (activatePane(paneId)) navigateHistory(1); });
+  query('#upButton').addEventListener('click', () => { if (activatePane(paneId)) navigateUp(); });
   const pathRow = root.querySelector('.heading-path-row');
   const breadcrumb = query('#breadcrumb');
   // Folder crumbs take items like sidebar rows. The library root takes only
@@ -9272,7 +9287,7 @@ function bindPaneEvents(paneId) {
   });
   query('#sortSelectButton')?.addEventListener('click', event => {
     event.stopPropagation();
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     const popover = query('#sortPopover');
     if (!popover) return;
     const opening = popover.classList.contains('hidden');
@@ -9292,7 +9307,7 @@ function bindPaneEvents(paneId) {
   query('#sortPopover')?.addEventListener('click', event => {
     const layoutBtn = event.target.closest('[data-view-mode]');
     if (layoutBtn) {
-      activatePane(paneId);
+      if (!activatePane(paneId)) return;
       setPaneViewMode(layoutBtn.dataset.viewMode, paneId);
       query('#sortPopover')?.classList.add('hidden');
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
@@ -9307,7 +9322,7 @@ function bindPaneEvents(paneId) {
     }
     const dirBtn = event.target.closest('[data-sort-dir]');
     if (dirBtn && !dirBtn.disabled) {
-      activatePane(paneId);
+      if (!activatePane(paneId)) return;
       if (applySortDirection(dirBtn.dataset.sortDir)) {
         query('#sortPopover')?.classList.add('hidden');
         query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
@@ -9315,7 +9330,7 @@ function bindPaneEvents(paneId) {
     }
   });
   query('#sortCascadeCheck')?.addEventListener('change', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) { syncSortCascadeChecks(); return; }
     const checked = event.target.checked;
     setSortCascadeEnabled(checked);
     if (checked && state.currentView?.kind === 'folder') {
@@ -9331,7 +9346,7 @@ function bindPaneEvents(paneId) {
     }
   });
   query('#sortSelect').addEventListener('change', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     if (event.target.value==='manual' && (!supportsManual(state.currentView) || !state.manualOrdersReady)) {renderSortControls();return;}
     state.sort = event.target.value;
     state.sortDir = 'auto';
@@ -9354,11 +9369,11 @@ function bindPaneEvents(paneId) {
   query('#viewModeGroup').addEventListener('click', event => {
     const button = event.target.closest('[data-view-mode]');
     if (!button) return;
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     setPaneViewMode(button.dataset.viewMode, paneId);
   });
   query('#itemGrid').addEventListener('click', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     if (Date.now() < suppressTouchClickUntil) return;
     if (event.target.closest('[data-toggle-subfolders]')) {
       setSubfoldersCollapsed(!subfoldersCollapsed);
@@ -9428,7 +9443,7 @@ function bindPaneEvents(paneId) {
   bindTagManagerEvents(paneId, query('#itemGrid'));
   query('#itemGrid').addEventListener('dblclick', event => {
     if (Date.now() - lastTouchGridTapAt < 600) return;
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     const tagChip = event.target.closest('[data-tm-tag]');
     if (tagChip) { searchItemsWithTags([tagChip.dataset.tmTag]); return; }
     const groupRow = event.target.closest('[data-tm-group]');
@@ -9631,11 +9646,11 @@ function bindPaneEvents(paneId) {
     if (!pane.loading && pane.hasMore && element.scrollTop + element.clientHeight > element.scrollHeight - 500) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#scrollTopButton').addEventListener('click', () => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     scroller.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   });
   query('#emptyRetryButton').addEventListener('click', () => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     refresh({ reset: true, preserveScroll: true, paneId });
   });
   // A drag only passing over this pane must not activate it: that would
@@ -9754,7 +9769,7 @@ function bindPaneEvents(paneId) {
       event.stopPropagation();
       const star = event.target.closest('[data-preview-rating]');
       if (!star) return;
-      activatePane(paneId);
+      if (!activatePane(paneId)) return;
       const value = Number(star.dataset.previewRating);
       const rating = value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value;
       withActivePane(paneId, () => {
@@ -10843,6 +10858,13 @@ function bindEvents() {
       setTrash(selectedIds, true);
       return;
     }
+    // In an image preview ⌘+/⌘− zoom the image and ⌘0 switches between 原始大小
+    // and fit, as in Eagle (view.zoom.actual is CmdOrCtrl+0 there).
+    if (!editable && previewOpen && previewImage() && primaryKey && !event.altKey) {
+      if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changePreviewZoom(.25); return; }
+      if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changePreviewZoom(-.25); return; }
+      if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); setPreviewZoom(state.previewZoom.mode === 'actual' ? 'fit' : 'actual'); return; }
+    }
     if ((!editable || metadataViewerIsFocused(event)) && (event.metaKey || event.ctrlKey) && !event.altKey) {
       if (metadataViewerIsFocused(event) && (!event.shiftKey || event.code === 'Equal' || event.code === 'NumpadAdd')) {
         if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changeMetadataZoom(1); return; }
@@ -10871,7 +10893,7 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && !event.shiftKey && !event.altKey &&
         ((primaryKey && event.key.toLowerCase() === 'r') ||
-         (!primaryKey && event.key === 'F2' && state.selected.size === 1))) {
+         (!primaryKey && event.key === 'F2'))) {
       event.preventDefault();
       requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
       return;
@@ -11259,6 +11281,10 @@ function bindHubEvents() {
     for (const pane of state.panes) {
       const session = pane.textSession;
       if (!session || payload.id !== session.id) continue;
+      // Our own save echoes back: same content version, or this window's save
+      // still waiting for its receipt (H-07).
+      if (payload.fingerprint && JSON.stringify(payload.fingerprint) === JSON.stringify(session.fingerprint)) continue;
+      if (session.saving && payload.origin != null && payload.origin === state.windowId) continue;
       if (session.dirty || session.saving) {
         textSessionStatus(session, '另一个编辑会话已修改此 TXT；保存时会检查冲突');
         continue;
@@ -11267,6 +11293,7 @@ function bindHubEvents() {
     }
   });
   window.eagleMV.onStatus(payload => setConnection(payload.connected, payload.message));
+  window.eagleMV.onIdentityChanged?.(windowId => { if (windowId) state.windowId = windowId; });
   window.eagleMV.onItemsChanged(payload => {
     if (payload.libraryPath && payload.libraryPath !== state.library?.path) return;
     let touchedSelection = false;
@@ -11332,7 +11359,12 @@ async function drainLibraryChanges() {
     }
   } finally {
     librarySyncRunning = false;
-    if (pendingLibraryChange) scheduleLibraryChange(pendingLibraryChange);
+    // A change that arrived while a failed sync was running must get its own
+    // timer; rescheduling the pending payload against itself was deduplicated
+    // away and left it hanging until the next event (H-06).
+    const leftover = pendingLibraryChange;
+    pendingLibraryChange = null;
+    if (leftover) scheduleLibraryChange(leftover);
   }
 }
 
@@ -11656,69 +11688,75 @@ async function start() {
     const thumbnailSize = Number(localStorage.getItem('eaglemv.thumbnailSize'));
     if (Number.isFinite(thumbnailSize) && thumbnailSize > 0) applyThumbnailSize(thumbnailSize, { persist: false });
   } catch {}
+  // The saved slideshow interval and preview background apply to every pane
+  // restored at launch, not only the active one (B3-09).
   try {
     const interval = Number(localStorage.getItem(SLIDESHOW_INTERVAL_KEY));
     if ([...$('#slideshowInterval').options].some(option => Number(option.value) === interval)) {
-      state.slideshow.intervalMs = interval;
+      for (const pane of state.panes) pane.slideshow.intervalMs = interval;
     }
   } catch {}
-  $('#slideshowInterval').value = String(state.slideshow.intervalMs);
-  renderSlideshow();
   try {
     const stored = JSON.parse(localStorage.getItem(PREVIEW_VIEW_KEY) || 'null');
-    if (PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)) state.previewView.background = stored.background;
-    state.previewView.grayscale = Boolean(stored?.grayscale);
+    for (const pane of state.panes) {
+      if (PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)) pane.previewView.background = stored.background;
+      pane.previewView.grayscale = Boolean(stored?.grayscale);
+    }
   } catch {}
-  renderPreviewView();
+  for (const pane of state.panes) withActivePane(pane.id, () => { renderSlideshow(); renderPreviewView(); });
   renderPanels();
   renderQueryControls();
+  // Only the connection is retried; a failure after it is reported as what
+  // it is instead of "start Eagle", and one chained timer replaces the
+  // overlapping 2.5 s interval (H-05).
+  let connection;
   try {
     state.windowId = await window.eagleMV.identity();
-    const { app, library, hubInstance } = await window.eagleMV.connect();
-    state.library = library;
-    recordAppliedLibrarySnapshot({ library, hubInstance });
-    await loadLibraryExtras();
-    $('#windowTitle').textContent = 'Eagle MultiView';
-    $('.sidebar-library-label').textContent = library.name || '资源库';
-    setConnection(true);
-    renderFolderTree();
-    const initial = await restoreInitialWindowState();
-    if (!initial) restoreSavedSessionPanes();
-    else renderFolderTree();
-    await refreshAllPanes({ reset: true, preserveScroll: false });
-    if (initial?.selectedIds?.length) {
-      const missing = initial.selectedIds.filter(id => !itemById(id));
-      if (missing.length) {
-        const fetched = await Promise.all(missing.map(id => window.eagleMV.getItem(id).catch(() => null)));
-        const pane = activePane();
-        pane.items = [...pane.items, ...fetched.filter(Boolean)];
-      }
-      activePane().selected = new Set(initial.selectedIds.filter(id => itemById(id)));
-      renderGrid({ preserveScroll: true });
-      renderInspector();
-    }
-    if (initial?.previewId && itemById(initial.previewId)) await openPreview(initial.previewId);
-    toast(`已连接 Eagle ${app.version}`);
-  } catch (error) {
+    connection = await window.eagleMV.connect();
+  } catch {
     setConnection(false, '请先启动 Eagle 4');
     $('#resultCount').textContent = '等待 Eagle 启动';
     toast('未连接 Eagle。启动 Eagle 后本窗口会自动重试。', 5000);
-    const retry = setInterval(async () => {
+    const retry = () => setTimeout(async () => {
+      let result;
       try {
-        const result = await window.eagleMV.connect();
-        clearInterval(retry);
-        state.library = result.library;
-        recordAppliedLibrarySnapshot({ library: result.library, hubInstance: result.hubInstance });
-        await loadLibraryExtras();
-        setConnection(true);
-        renderFolderTree();
-        const initial = await restoreInitialWindowState();
-        if (!initial) restoreSavedSessionPanes();
-        else renderFolderTree();
-        await refreshAllPanes({ reset: true, preserveScroll: false });
-      } catch {}
+        if (state.windowId == null) state.windowId = await window.eagleMV.identity();
+        result = await window.eagleMV.connect();
+      } catch { retry(); return; }
+      finishStartup(result).catch(error => toast(`载入窗口失败：${error.message}`, 5000));
     }, 2500);
+    retry();
+    return;
   }
+  await finishStartup(connection).catch(error => toast(`载入窗口失败：${error.message}`, 5000));
+}
+
+async function finishStartup({ app, library, hubInstance }) {
+  state.library = library;
+  recordAppliedLibrarySnapshot({ library, hubInstance });
+  await loadLibraryExtras();
+  $('#windowTitle').textContent = 'Eagle MultiView';
+  $('.sidebar-library-label').textContent = library.name || '资源库';
+  setConnection(true);
+  renderFolderTree();
+  const initial = await restoreInitialWindowState();
+  if (!initial) restoreSavedSessionPanes();
+  else renderFolderTree();
+  await refreshAllPanes({ reset: true, preserveScroll: false });
+  if (initial?.selectedIds?.length) {
+    const missing = initial.selectedIds.filter(id => !itemById(id));
+    if (missing.length) {
+      const fetched = (await Promise.all(missing.map(id => window.eagleMV.getItem(id).catch(() => null)))).filter(Boolean);
+      const pane = activePane();
+      pane.items = [...pane.items, ...fetched];
+      for (const item of fetched) pane.itemMap?.set(item.id, item);
+    }
+    activePane().selected = new Set(initial.selectedIds.filter(id => itemById(id)));
+    renderGrid({ preserveScroll: true });
+    renderInspector();
+  }
+  if (initial?.previewId && itemById(initial.previewId)) await openPreview(initial.previewId);
+  toast(`已连接 Eagle ${app?.version || ''}`.trim());
 }
 
 start();

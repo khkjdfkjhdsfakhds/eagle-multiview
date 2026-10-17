@@ -108,6 +108,9 @@
         clientId = message.payload?.clientId || 0;
         resolveHello(clientId);
         retryDelay = 1000;
+        // Each socket gets a new id; the renderer keys "my own change" on it,
+        // so hand over the new one (H-09). identity() alone settles only once.
+        if (clientId) emit('web:client-id', { clientId });
         if (sessionEverConnected) {
           // Reconnected after a drop: re-sync connection state and make every
           // pane refetch, mirroring what a desktop window sees after a hiccup.
@@ -633,6 +636,7 @@
     listTextDrafts: data => invoke('text-draft:list', [data]),
     removeTextDraft: data => invoke('text-draft:remove', [data]),
     onStatus: callback => on('hub:status', callback),
+    onIdentityChanged: callback => on('web:client-id', payload => callback(payload.clientId)),
     onLibraryChanged: callback => on('hub:library-changed', callback),
     onItemsChanged: callback => on('hub:items-changed', callback),
     onQueryInvalidated: callback => on('hub:query-invalidated', callback),
