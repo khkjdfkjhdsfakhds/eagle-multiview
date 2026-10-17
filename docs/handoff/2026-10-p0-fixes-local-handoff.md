@@ -582,3 +582,43 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 - `npm test` 改为 `node test-support/run-tests.cjs`（参数透传：`npm test -- test/xxx.test.js`）。macOS 上它把 `node_modules/electron` 的 Electron.app 以 APFS 克隆复制到 `node_modules/.cache/eaglemv-test-electron/<版本>/`（每个版本只做一次，约 0.5 秒，不额外占盘），在 Info.plist 写 `LSUIElement`、ad-hoc 重签，再经 electron 包自带的 `ELECTRON_OVERRIDE_DIST_PATH` 让所有探针使用它。实测全程轮询 `lsappinfo`：探针进程都是 `UIElement`，没有一次 `Foreground`。
 - 只在 JS 里 `setActivationPolicy('accessory')` 不够：Dock 图标在任何脚本运行前就已注册，只会“一开就关”地闪一下。`test-support/no-dock.cjs` 预加载仍保留，作为克隆准备失败时的兜底。
 - `AGENTS.override.md`、`.claude/CLAUDE.md` 的跑测命令改为 `npm test`，并说明不要直接 `node --test`。新增 `no-dock` 测试。全量 910/911，失败的是已知并发偶发的 pane-reveal（单跑 3/3 通过）。
+
+## 二十、接手：两次新聊天（2026-10-18）
+
+用户决定：P3 剩下“可直接做”的 25 条全部做；分两次新聊天，**先处理 Dock 闪烁，再另开聊天修这 25 条**。Android、需用户决定、需写资料库核对的仍按第十九节“跳过”处理。
+
+### 新聊天一：Dock 闪烁
+
+- 现状：`859cb0e` 已把 `npm test` 改为 `node test-support/run-tests.cjs`。macOS 上它让 Electron 探针改用 `node_modules/.cache/eaglemv-test-electron/<版本>/` 里标了 `LSUIElement`、ad-hoc 重签的 Electron.app 克隆（经 `ELECTRON_OVERRIDE_DIST_PATH`），`test-support/no-dock.cjs` 预加载作兜底。本会话跑全量时轮询 `lsappinfo list`：探针全是 `type="UIElement"`，没有 `Foreground`。
+- 第一步先问用户**现在在哪种情况下还看到闪烁**，不要假设：是 Codex 或自己直接跑 `node --test`（绕过了 runner）、测试副本或正式版启动、还是 `npm test` 本身仍在闪。按回答排查。
+- 可能的方向：直接 `node --test` 也要不闪（例如让各探针启动时统一走一个启动助手，或在测试文件层面设置 `ELECTRON_OVERRIDE_DIST_PATH`）；Electron 的 helper 子进程或 `open -g` 启动的测试副本是否仍进 Dock；electron 升级后缓存是否自动重建。
+- 验证方法：跑测期间每 0.2 秒执行 `lsappinfo list | grep -i -A1 electron | grep -o 'type="[A-Za-z]*"'`，结果里不能出现 `Foreground`。
+
+### 新聊天二：P3 剩余 25 条（建议按此顺序，分几批提交）
+
+细节都在 `2026-10-parity-audit.md` 对应条目里。
+
+1. 用户能感觉到的（先做）：
+   - **F-12**：选中 PNG/WebP 时每次在主线程整张解码找隐写信息；加缓存（含“没找到”的结果）、改为按需；顺带 SD WebUI/Forge stealth_pnginfo 解析、NovelAI 参数值为对象时显示 `[object Object]`。
+   - **H-08**：Web `/upload` 不走重复检测，重复弹窗出现在 Mac 的 Eagle 里，手机看不到（参照桌面 `items:import` 的 `findDuplicateImports` 流程）。
+   - **E-17**：站点导入一整页共用 30 秒超时，超时后整页丢失；改为保留已载入部分并给出“继续”入口（`lib/site-import.js`）。
+   - **S-04 + S-15**：手动排序 ID 列表只增不减（>20 万后拖动排序失败，每次广播整库 orders）；置顶 `-1` 记录只增不减。校验时裁掉已不存在的 ID，广播只发变化的 key（`lib/manual-order-store.js`、`lib/pin-store.js`、`main.js` 广播处）。
+   - **B1-07**：标签颜色管理只列前 200 个、无搜索；未设色显示成 `#0072ef` 与蓝色无法区分。先确认第 6 组 F 重做后这个入口还在哪里、还剩什么问题。
+2. 性能与健壮性：
+   - **E-02 余项**：PNG 读到第一个 IDAT 就停；解析移入 worker/utilityProcess。**注意**：会改变文本扫描兜底结果，先确认现有元数据测试的预期。
+   - **E-03**：隐写解码改为检查器里按需；magick 已有 20 秒超时（P0），文件名含 `%d` 等格式符时 magick 读取失败（本机已发现，未修）。
+   - **E-04**：每次库变更都对全库 `metadata.json` 做重复扫描并全量拉取；改为只在切库时全量重建，其余按事件 id 增量。
+   - **E-18**：复制文件夹的封面重算调用全库 `calculateImageBinding`+`saveFolder`，顺带改写无关文件夹封面缓存；兜底写死 coverId。涉及 Eagle 内部函数，改前先读 Eagle 代码；实际写入验证需用户同意。
+   - **E-20 余项**：回收站扫描 8 秒超时且任何变更都中止，大库可能一直超时（`lib/trash-scan-service.js`）；TXT 桥接“待核对”任务永不过期（`lib/text-plugin-bridge.js`）。
+   - **H-10**：设一次自定义缩略图，所有窗口所有栏的缩略图重下 4 次；改为按素材 id 维护版本号。
+   - **H-12**：页面从 bfcache 恢复后 WebSocket 不重连（`src/web-shim.js`，推测待验证）。
+   - **H-13**：有旧库检查器草稿时 ⌘⇧R 重新载入窗口静默失效（先确认 B4-03 的 `will-prevent-unload` 处理后是否已不复现）。
+   - **F-09 余项**：更新窗口“检查中”点取消不中止检查（`lib/update-service.js` 需要可中止的 check）。
+   - **W-10**：Web 导出下载令牌 120 秒过期、不能续传、ZIP 无 Content-Length；令牌延长到下载结束，单文件支持 Range（`lib/web-server.js`）。
+   - **S-09**：排序记忆边界问题四条（`src/sort-memory.js`）。
+   - **P7-33 余项**：样式表里被覆盖、不生效的规则（审查文档的行号已过时，需重新定位）。
+3. 测试质量（最后做）：**T-06**（folder-color-lock 只断言源码文本）、**T-07**（瀑布流 CSS columns，D-10 方向先读 Eagle 代码定）、**T-09**（睡 30～60ms 后断言“没发生”）、**T-10**（固定睡眠后正向断言）、**T-11**（interaction-regression 45 处固定 sleep）、**T-13**（review-bugfixes 同一探针启动 4 次，应缓存结果）、**T-18**（data-hub 缺“主进程重启后 revision 归零”用例）。
+
+**规则不变**：跑测一律 `npm test`（全量）或 `npm test -- test/xxx.test.js`；每批 `node --check` 三件 + 全量、本地提交、在本文件追加一节；不推送、不合 main；**不要覆盖 `/Applications`**，GUI 用测试副本（appId `local.eagle.multiview.branchtest`，`open -g -n -a … --args --user-data-dir=<scratchpad>/testdata --remote-debugging-port=9333`，只读）。要写资料库的验证先问用户。
+
+**当前状态**：分支 `claude/kind-lamport-48izv4` 领先远端 63 个提交（含本节），未推送、未合 main；全量 910/911（pane-reveal 并发偶发，单跑通过）；正式安装 1.8.3 未动。上一会话的测试副本可能仍在后台运行（scratchpad 会随会话清理），如在运行：退出后 `lsregister -u` 注销。
