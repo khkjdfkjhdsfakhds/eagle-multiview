@@ -3149,6 +3149,8 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .feature-dialog h2 { margin: 0 0 16px; color: var(--text); font-size: 16px; font-weight: 650; }
 .feature-dialog p { overflow-wrap: anywhere; }
 .feature-dialog label { display: grid; gap: 8px; }
+.feature-body { display: grid; gap: 12px; }
+.feature-body > p { margin: 0; }
 .feature-dialog select, .feature-dialog input:not([type=checkbox]) { width: 100%; min-width: 0; height: 34px; box-sizing: border-box; padding: 0 10px; background-color: var(--content); color: var(--text-soft); border: 1px solid var(--line-strong); border-radius: var(--control-radius); }
 .feature-dialog input:not([type=checkbox]):focus { border-color: rgba(0, 114, 239, .7); box-shadow: 0 0 0 2px rgba(0, 114, 239, .12); outline: none; }
 .feature-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
