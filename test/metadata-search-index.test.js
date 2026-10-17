@@ -115,3 +115,16 @@ test('E-01: metadata edits reuse indexed prompt text, skip non-images and read f
   assert.equal(reads, 8, 'a changed file is read again');
   assert.ok(peak <= 3, `at most three files at a time, saw ${peak}`);
 });
+
+test('a refresh queued for the previous library does not switch the index back (E-05)', async t => {
+  const { index, root } = await makeIndex(t, [{ id: 'one', name: 'one', ext: 'png', tags: [], folders: [], modificationTime: 1 }], new Map());
+  const first = path.join(root, 'library.library');
+  const second = path.join(root, 'other.library');
+  index.scheduleRefresh(first);
+  await index.start(second);
+  assert.equal(index.refreshTimer, null, 'switching library cancels the queued refresh');
+  // A stale timer that slipped through is ignored too.
+  index.scheduleRefresh(first);
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  assert.equal(index.libraryPath, path.resolve(second));
+});

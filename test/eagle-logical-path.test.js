@@ -104,3 +104,11 @@ test('does not invent a second separator or case-insensitive format', () => {
     code: 'not-found'
   });
 });
+
+test('S-10: a trailing space and decomposed text still resolve to the right folder', () => {
+  const { formatEaglePath, resolveEaglePath } = require('../src/eagle-logical-path');
+  const nodes = [{ id: 'plain', name: '参考', children: [] }, { id: 'spaced', name: '参考 ', children: [] }, { id: 'cafe', name: 'café', children: [] }];
+  assert.deepEqual(resolveEaglePath(nodes, formatEaglePath(nodes, 'spaced')).view, { kind: 'folder', id: 'spaced' });
+  assert.deepEqual(resolveEaglePath(nodes, formatEaglePath(nodes, 'plain')).view, { kind: 'folder', id: 'plain' });
+  assert.deepEqual(resolveEaglePath(nodes, 'café').view, { kind: 'folder', id: 'cafe' });
+});

@@ -281,8 +281,11 @@
 
   // Ascending base comparators; direction is applied as a factor so every
   // sort key stays stable (equal keys keep Eagle's original order).
+  // Eagle sorts names case-insensitively with numeric runs compared as numbers
+  // (localeCompare with numeric: true), so 图2 comes before 图10 (S-08).
+  const nameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'accent' });
   const sortComparators = {
-    name: (a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'),
+    name: (a, b) => nameCollator.compare(String(a?.name || ''), String(b?.name || '')),
     added: (a, b) => itemDates(a).added - itemDates(b).added,
     newest: (a, b) => itemDates(a).modified - itemDates(b).modified,
     created: (a, b) => itemDates(a).created - itemDates(b).created,

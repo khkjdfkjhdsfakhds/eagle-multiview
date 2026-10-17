@@ -29,11 +29,18 @@
   }
 
   function resolveEaglePath(nodes, rawValue) {
-    const value = String(rawValue ?? '').trim();
+    // Compare composed (NFC) text, and try the untrimmed value first so a
+    // folder whose name ends in a space resolves to itself, not a neighbour
+    // without the space (S-10).
+    const raw = String(rawValue ?? '').normalize('NFC');
+    const value = raw.trim();
     if (!value) return { ok: true, view: { kind: 'root' } };
     if (hasUnsupportedFormat(value)) return { ok: false, code: 'unsupported-format' };
 
-    const matches = collectPaths(nodes).filter(entry => entry.path === value);
+    const entries = collectPaths(nodes).map(entry => ({ ...entry, key: entry.path.normalize('NFC') }));
+    let matches = entries.filter(entry => entry.key === raw);
+    if (!matches.length) matches = entries.filter(entry => entry.key === value);
+    if (!matches.length) matches = entries.filter(entry => entry.key.trim() === value);
     if (matches.length > 1) return { ok: false, code: 'ambiguous' };
     if (matches.length === 0) return { ok: false, code: 'not-found' };
     return { ok: true, view: { kind: 'folder', id: matches[0].id } };

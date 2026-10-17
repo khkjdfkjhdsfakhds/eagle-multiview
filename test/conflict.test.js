@@ -29,3 +29,10 @@ test('does not conflict when different fields changed', () => {
 test('set delta preserves concurrent values', () => {
   assert.deepEqual(applySetDelta(['a', 'b'], ['c'], ['a']).sort(), ['b', 'c']);
 });
+
+test('a star of 0 or an empty note equals the field Eagle leaves out (S-07)', () => {
+  const { detectConflicts } = require('../lib/conflict');
+  assert.deepEqual(detectConflicts({ id: 'a' }, { star: 0, annotation: '', url: '' }, { star: 3, annotation: '新', url: 'https://x' }), []);
+  assert.deepEqual(detectConflicts({ star: 0 }, {}, { star: 2 }), []);
+  assert.equal(detectConflicts({ star: 4 }, { star: 0 }, { star: 2 }).length, 1, 'a real change elsewhere still conflicts');
+});

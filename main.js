@@ -40,7 +40,7 @@ const { readStealthMetadata } = require('./lib/stealth-metadata-reader');
 const { MetadataSearchIndex } = require('./lib/metadata-search-index');
 const { mimeForPath } = require('./lib/media-mime');
 const { findPreviewImagePath } = require('./lib/preview-image');
-const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
+const { DuplicateIndex, findDuplicateImports, mapWithConcurrency, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createErrorLog } = require('./lib/error-log');
 const { createWebServer, generateAccessKey } = require('./lib/web-server');
 const { qrToSVG } = require('./lib/qr-code');
@@ -84,6 +84,7 @@ const windowRouter = createWindowRouter({
 });
 const windows = new Set();
 const thumbnailCache = new Map();
+const THUMBNAIL_CACHE_LIMIT = 20000;
 const convertedDragIconCache = new Map();
 const metadataCache = new Map();
 const duplicateIndex = new DuplicateIndex();
@@ -144,7 +145,11 @@ async function foregroundMultiViewView() {
       || (Number(b === recent) - Number(a === recent)));
   for (const window of candidates) {
     try {
-      const current = await window.webContents.executeJavaScript('window.__eagleMVCurrentView || null', true);
+      // A hung window must not hold the plugin's request open (B4-08).
+      const current = await Promise.race([
+        window.webContents.executeJavaScript('window.__eagleMVCurrentView || null', true),
+        new Promise(resolve => setTimeout(() => resolve(null), 1000).unref?.())
+      ]);
       if (!current?.view) continue;
       return { window, libraryPath: current.libraryPath || null, view: current.view };
     } catch {}
@@ -632,8 +637,17 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     }
   }
   const copyRunId = `copy-${process.pid}-${++copyRunSequence}`;
-  await startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] });
+  let copyRenewTimer = null;
   try {
+  // Inside the try: if the duplicate keeper fails to start, finally still
+  // restores Eagle's import mode instead of leaving it for the 15-min TTL (B4-09).
+  await startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] });
+  // The Eagle-side patches expire after 15 minutes; a long copy renews them
+  // (same run id, so the run is replaced, not stacked) until it ends (E-08).
+  copyRenewTimer = setInterval(() => {
+    startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] }).catch(() => {});
+  }, 10 * 60 * 1000);
+  copyRenewTimer.unref?.();
   for (const group of groups.values()) {
     await hub.ensureLibraryPath(libraryPath);
     const imported = await importPaths({
@@ -680,6 +694,10 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       const stillMissing = importedIds.filter(id => !ready.some(item => item.id === id));
       throw new Error(`素材“${stillMissing[0] || importedIds[0]}”尚未确认保留两份`);
     }
+    // One write of the supplemental list per group instead of one per item,
+    // which rewrote the whole file N times (S-14).
+    const supplementalIds = [];
+    try {
     for (let index = 0; index < group.length; index += 1) {
       const original = group[index];
       const id = importedIds[index];
@@ -695,7 +713,10 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       const targets = memberships.get(original.id).map(folderId => created.get(folderId));
       copiedItems++;
       if (targets.length > 1) await hub.mutateSet({ id, field: 'folders', add: targets.slice(1), libraryPath, origin });
-      await getSupplementalItemStore().add(libraryPath, [id]);
+      supplementalIds.push(id);
+    }
+    } finally {
+      if (supplementalIds.length) await getSupplementalItemStore().add(libraryPath, supplementalIds);
     }
   }
   await cloneCopiedState();
@@ -705,6 +726,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   return { ok: true, id: created.get(sourceId), folderCount: created.size, copiedItems, placed,
     folderMap: Object.fromEntries(created), itemMap: Object.fromEntries(copiedItemsBySourceId) };
   } finally {
+    clearInterval(copyRenewTimer);
     await stopCopyImportHandling(libraryPath, copyRunId);
   }
   } catch (error) {
@@ -738,10 +760,11 @@ async function hydrateSupplementalItems(libraryPath, { notify = false, attempt =
   const current = () => hub.itemReadIsCurrent(read) && hub.library?.path && path.resolve(hub.library.path) === expectedPath;
   if (!current()) return [];
   const ids = await getSupplementalItemStore().get(libraryPath);
-  const loaded = await Promise.all(ids.map(async id => {
+  // Bounded: a long list must not open thousands of requests at once (S-14).
+  const loaded = await mapWithConcurrency(ids, 8, async id => {
     try { return { id, item: await client.getItem(id) }; }
     catch (error) { return { id, error }; }
-  }));
+  });
   if (!current()) return [];
   await hub.ensureLibraryPath(libraryPath);
   if (!current()) return [];
@@ -1348,9 +1371,16 @@ async function resolveMediaURL(kind, id) {
   }
   if (kind === 'thumb') {
     let filePath = thumbnailCache.get(id);
-    if (!filePath) {
+    if (filePath) {
+      // Least-recently-used order: a hit moves to the back (B4-11).
+      thumbnailCache.delete(id);
+      thumbnailCache.set(id, filePath);
+    } else {
       filePath = await client.thumbnailPath(id);
-      if (filePath) thumbnailCache.set(id, filePath);
+      if (filePath) {
+        thumbnailCache.set(id, filePath);
+        if (thumbnailCache.size > THUMBNAIL_CACHE_LIMIT) thumbnailCache.delete(thumbnailCache.keys().next().value);
+      }
     }
     return filePath && fs.existsSync(filePath) ? pathToFileURL(filePath).toString() : null;
   }
@@ -1543,12 +1573,25 @@ async function importURLItem({ url: value, folderId, libraryPath, image = false,
   const url = normalizeClipboardURL(value);
   if (!url) throw new Error('只能添加 http 或 https 网址');
   await hub.ensureLibraryPath(libraryPath);
+  // Ask for the type with a time limit; a server that refuses HEAD gets a GET
+  // whose body is dropped, and a missing page is not added at all (E-16).
   let contentType = '';
   try {
-    const response = await net.fetch(url, { method: 'HEAD' });
+    let response = await net.fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+    if (response.status === 405 || response.status === 501) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        response = await net.fetch(url, { method: 'GET', signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    }
+    if (!response.ok) throw new Error(`网址返回 ${response.status}`);
     contentType = response.headers.get('content-type') || '';
   } catch (error) {
-    if (!image) throw new Error(`无法读取网址：${error.message}`);
+    if (!image) throw new Error(`无法读取网址：${error.name === 'TimeoutError' ? '超时' : error.message}`);
   }
   const kind = image && !/html/i.test(contentType) ? 'image' : clipboardURLKind(contentType);
   const result = kind === 'image'
@@ -2142,6 +2185,10 @@ function setupIPC() {
       if (result.canceled || !result.filePaths.length) return { canceled: true };
       filePaths = result.filePaths;
     }
+    // Pull focus back from Eagle afterwards only when this window had it when
+    // the import began and the import finished (B4-10).
+    const wasFrontmost = Boolean(parent?.isFocused?.());
+    let finished = false;
     try {
       await hub.ensureLibraryPath(libraryPath);
       const prepared = await prepareImportPaths(filePaths);
@@ -2231,11 +2278,12 @@ function setupIPC() {
         duplicateCount: existingIds.length,
         duplicateFailed
       };
+      finished = true;
       return { canceled: false, ...result };
     } finally {
       // Restoring twice used to hide Eagle's unresolved dialog immediately.
       // Keep-both returns focus only after the renderer confirms completion.
-      if (duplicateChoice !== 'keep-both') focusBrowserWindow(parent);
+      if (duplicateChoice !== 'keep-both' && wasFrontmost && finished) focusBrowserWindow(parent);
     }
   });
   handleRPC('items:import-clipboard', (event, data) => importClipboard(data, payload => rpcRegistry.get('items:import')(event, payload)));
@@ -2665,6 +2713,9 @@ if (!gotLock) {
       message: `Eagle MultiView ${app.getVersion()} 启动（Electron ${process.versions.electron}）`
     });
     installPermissionPolicy(session.defaultSession);
+    // Custom-thumbnail images left behind by a quit inside the 60 s cleanup
+    // window (B4-11); nothing can be using them this early.
+    fsp.rm(path.join(app.getPath('userData'), 'temp', 'thumbnails'), { recursive: true, force: true }).catch(() => {});
     setupMenu();
     setupIPC();
     setupUpdateIPC();
@@ -2676,7 +2727,9 @@ if (!gotLock) {
     startUpdateSchedule().catch(error => logFault('update', '更新检查初始化失败', error));
   });
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // The update window alone is not a main window: clicking the Dock icon
+    // still opens one (B4-06).
+    if (![...windows].some(window => window && !window.isDestroyed())) {
       createWindow(null);
     }
   });

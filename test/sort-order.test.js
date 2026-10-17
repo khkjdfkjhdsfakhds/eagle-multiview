@@ -162,3 +162,9 @@ test('the shuffle is wired to the pane and re-selection', () => {
   assert.ok(renderer.includes("if (state.sort === 'random') state.randomSeed = nextRandomSeed();"), '选中随机时重新洗牌');
   assert.ok(renderer.includes("compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed })"));
 });
+
+test('name sort is natural like Eagle: 图2 before 图10, case ignored (S-08)', () => {
+  const names = ['图10', '图2', '图1', 'b', 'A'];
+  const sorted = names.map(name => ({ name })).sort((a, b) => compareBySort('name', 'asc', a, b)).map(item => item.name);
+  assert.deepEqual(sorted, ['图1', '图2', '图10', 'A', 'b']);
+});
