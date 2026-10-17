@@ -524,3 +524,14 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 - S-14：复制文件夹时补充素材按组一次写入；启动补拉补充素材并发上限 8。
 - 测试：新增 `json-state-file`，并在 conflict、sort-order、zip-stream、new-file-service、eagle-logical-path、import-folder、metadata-search-index 中加用例。全量 902/902。
 - 需要看一眼：名称排序的结果顺序（自然排序）；复制大文件夹（>15 分钟）是否仍自动处理重复。
+
+### 第 3 批（三）：对话框、更新窗口、无障碍、Web
+
+- F-06：“移动文件夹”对话框打开时焦点在搜索框，搜索框/列表里按回车提交；“移动”为主按钮样式（第 1 批 `[data-feature-submit]`）。目标未变时禁用按钮未做（会改变现有探针依赖的行为）。
+- F-09：就绪时按 Esc/关窗等于“稍后”（退出时安装，下载不白费）；“稍后提醒”关窗回到 idle，之后的自动检查会再提醒。检查中“取消”仍不中止检查（只关窗），下载中关窗下载在后台继续、就绪后窗口再弹出——未改。
+- F-10：更新窗口按钮点一次即全部禁用直到下一个状态；`downloadAndPrepare` 在第一个 await 之前占位，重复请求直接返回。
+- F-11：进度条 `role="progressbar"` + `aria-valuenow`；错误信息可选中复制；副标题 `aria-live`。
+- F-13：toast `role="status" aria-live="polite"`；搜索框 `aria-label`；资源库弹层与分栏弹层改为 `role="dialog"`。`user-scalable=no` 保留（网格捏合缩放依赖它，见 renderer 注释）。
+- W-09：Web 端工具栏避让 iOS 状态栏与横屏刘海（`env(safe-area-inset-*)`，其他环境为 0 不变）。**未在 iPhone 实测**。
+- W-12：无悬停的触屏设备隐藏键位提示 `kbd`（平板）。
+- 测试：新增 `dialog-a11y`；`update-service` 增加重复下载用例。全量 908/908。

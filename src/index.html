@@ -15,7 +15,7 @@
   <main class="workspace">
     <aside class="sidebar">
       <div class="sidebar-app-title app-title">
-        <button id="libraryButton" class="library-switch-button" title="切换资源库" aria-haspopup="true" aria-expanded="false">
+        <button id="libraryButton" class="library-switch-button" title="切换资源库" aria-haspopup="dialog" aria-expanded="false">
           <span class="app-mark"><img src="brand-icon.png" alt=""></span>
           <span class="app-title-copy">
             <span id="windowTitle">Eagle MultiView</span>
@@ -23,7 +23,7 @@
           </span>
           <svg class="library-switch-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
         </button>
-        <div id="libraryPopover" class="library-popover hidden" role="menu" aria-label="切换资源库">
+        <div id="libraryPopover" class="library-popover hidden" role="dialog" aria-label="切换资源库">
           <div class="library-popover-title">切换资源库</div>
           <div id="libraryList" class="library-list"><span class="muted">正在读取资源库列表…</span></div>
           <div id="shellAppSection" class="library-app-section hidden">
@@ -40,7 +40,7 @@
       <section class="toolbar">
         <div class="search-box">
           <img class="search-icon" src="eagle-assets/ic_search.svg" alt="">
-          <input id="searchInput" type="search" placeholder="搜索名称、标签、备注、正向提示词…">
+          <input id="searchInput" type="search" aria-label="搜索" placeholder="搜索名称、标签、备注、正向提示词…">
           <kbd>⌘F</kbd>
         </div>
         <div class="filter-control">
@@ -166,7 +166,7 @@
               <button id="paneLayoutButton" class="icon-button pane-layout-button" title="选择分栏布局" aria-label="选择分栏布局" aria-expanded="false">
                 <span class="pane-split-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span>
               </button>
-              <div id="paneLayoutPopover" class="pane-layout-popover hidden" role="menu" aria-label="分栏布局">
+              <div id="paneLayoutPopover" class="pane-layout-popover hidden" role="dialog" aria-label="分栏布局">
                 <div class="pane-layout-options">
                   <button type="button" class="pane-layout-option" data-layout="single" title="单栏（⌘1）" aria-label="单栏"><span class="layout-icon layout-icon-single"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="vertical2" title="左右两栏（⌘2）" aria-label="左右两栏"><span class="layout-icon layout-icon-vertical2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20"/></svg></span></button>
@@ -380,7 +380,7 @@
     <div id="modalCaption" class="modal-caption"></div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <div id="previewSyncNotice" class="toast preview-sync-notice hidden" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="素材操作菜单"></div>
   <div id="trashDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="trashDialogTitle">

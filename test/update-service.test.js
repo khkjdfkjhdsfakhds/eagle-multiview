@@ -310,3 +310,24 @@ test('the swap script keeps the current app when the staged copy is missing', { 
   assert.equal(result.status, 1);
   assert.equal(execFileSync(path.join(target, 'Contents', 'MacOS', 'Eagle MultiView'), { encoding: 'utf8' }).trim(), 'old');
 });
+
+test('a second 下载并安装 during the pre-download checks starts nothing (F-10)', async t => {
+  const workDir = await tempDir(t, 'eaglemv-update-');
+  const calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const updates = controller(t, workDir, {
+    fetch: fakeFetch({ [FEED]: releaseJSON(), [SUMS_URL]: `${'0'.repeat(64)}  Eagle-MultiView-1.9.0-arm64.dmg\n`, [DMG_URL]: Buffer.from('dmg!!!') }, calls),
+    canWrite: async () => { if (hold) await gate; return true; },
+    logFault: () => {}
+  });
+  let hold = false;
+  await updates.check({ manual: true });
+  hold = true;
+  const first = updates.downloadAndPrepare();
+  const second = await updates.downloadAndPrepare();
+  assert.equal(second.phase, 'available', 'the second request returns the current state');
+  release();
+  await first;
+  assert.equal(calls.filter(url => url === SUMS_URL).length, 1, 'the checksum was fetched once');
+});

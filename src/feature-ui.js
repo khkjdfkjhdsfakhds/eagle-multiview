@@ -89,10 +89,16 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       // Filtering never silently changes the destination to root.
       select.value = selectedTarget;
     };
+    const submit = element('button', '移动', { type: 'button', 'data-feature-submit': '' });
     search.addEventListener('input', renderTargets);
     select.addEventListener('change', () => { selectedTarget = select.value; });
     renderTargets(); label.append(select); form.body.append(search, label);
-    const submit = element('button', '移动', { type: 'button', 'data-feature-submit': '' }); form.footer.append(submit);
+    form.footer.append(submit);
+    // Return submits from the search box or the list; focus starts in search (F-06).
+    for (const field of [search, select]) field.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); submit.click(); }
+    });
+    search.focus();
     submit.onclick = async () => {
       if (submit.disabled) return;
       const parentId = select.value || null;

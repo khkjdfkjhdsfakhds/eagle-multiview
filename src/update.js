@@ -51,7 +51,12 @@
     node.type = 'button';
     node.textContent = label;
     if (primary) node.className = 'primary';
-    node.addEventListener('click', () => api.act(action, value));
+    // One click per state: buttons stay disabled until the next state
+    // replaces them, so 下载并安装 cannot be sent twice (F-10).
+    node.addEventListener('click', () => {
+      for (const other of $('buttons').querySelectorAll('button')) other.disabled = true;
+      api.act(action, value);
+    });
     return node;
   }
 
@@ -135,6 +140,8 @@
       const known = typeof progress.ratio === 'number';
       $('bar').classList.toggle('indeterminate', !known);
       $('fill').style.width = known ? `${(progress.ratio * 100).toFixed(1)}%` : '';
+      if (known) $('bar').setAttribute('aria-valuenow', String(Math.round(progress.ratio * 100)));
+      else $('bar').removeAttribute('aria-valuenow');
       $('progressText').textContent = progress.text;
       $('progressText').hidden = !progress.text;
     }

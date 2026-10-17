@@ -3180,3 +3180,16 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .site-asset-list .site-asset { display: grid; grid-template-columns: 22px 1fr; gap: 5px; align-items: start; border: 1px solid #555; padding: 8px; min-width: 0; }
 .site-asset img { width: 100%; aspect-ratio: 1; object-fit: contain; grid-column: 2; }
 .site-asset span { grid-column: 1 / -1; overflow-wrap: anywhere; font-size: 12px; }
+/* Web app on iOS (black-translucent status bar, viewport-fit=cover): the
+   toolbar keeps clear of the status bar and a landscape notch (W-09). env()
+   is 0 everywhere else, so desktop and ordinary browsers are unchanged. */
+body.web-client .toolbar {
+  padding-top: max(7px, env(safe-area-inset-top));
+  padding-left: max(13px, env(safe-area-inset-left));
+  padding-right: max(13px, env(safe-area-inset-right));
+}
+/* A touch device without a hovering pointer has no keyboard to press the
+   shortcut hints with (W-12). */
+@media (hover: none) and (pointer: coarse) {
+  body.web-client kbd { display: none; }
+}

@@ -1269,6 +1269,11 @@ function showUpdateWindow() {
     if (updateWindow === window) updateWindow = null;
     const controller = getUpdater();
     if (['latest', 'error'].includes(controller.state.phase)) controller.setState({ phase: 'idle' });
+    // Closing a ready update (Esc, the close box) is 稍后: install on quit
+    // instead of throwing the download away. Closing an offer is 稍后提醒:
+    // back to idle so the next scheduled check can remind again (F-09).
+    else if (controller.state.phase === 'ready') controller.requestInstall({ relaunch: false });
+    else if (controller.state.phase === 'available') controller.setState({ phase: 'idle' });
   });
   window.loadFile(path.join(__dirname, 'src', 'update.html'));
   return window;
