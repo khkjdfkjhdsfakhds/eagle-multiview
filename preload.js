@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   cancelThumbnailOperation: data => ipcRenderer.invoke('item:thumbnail-cancel', data),
   getTags: () => ipcRenderer.invoke('hub:tags'),
   getTagGroups: () => ipcRenderer.invoke('hub:tag-groups'),
+  getStarredTags: () => ipcRenderer.invoke('hub:starred-tags'),
   createSmartFolder: data => ipcRenderer.invoke('smart-folder:create', data),
   updateSmartFolder: data => ipcRenderer.invoke('smart-folder:update', data),
   removeSmartFolder: data => ipcRenderer.invoke('smart-folder:remove', data),

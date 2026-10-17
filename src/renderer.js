@@ -248,6 +248,7 @@ const state = {
   expandedFolders: new Set(),
   availableTags: [],
   tagGroups: [],
+  starredTags: [],
   recentFolders: [],
   tagColors: {},
   viewMemory: new Map(),
@@ -768,7 +769,9 @@ function uiIcon(name, className = 'tree-icon-svg') {
     export: '<path d="M10 3v9M6.5 6.5 10 3l3.5 3.5M4 12.5V17h12v-4.5"></path>',
     import: '<path d="M10 3v9M6.5 8.5 10 12l3.5-3.5M4 13v3.2h12V13"></path>',
     refresh: '<path d="M16.2 8.2A6.5 6.5 0 1 0 16.5 12M16.2 4.7v3.8h-3.8"></path>',
-    lock: '<rect x="5" y="9" width="10" height="7.5" rx="1.6"></rect><path d="M7 9V6.8a3 3 0 0 1 6 0V9"></path>'
+    lock: '<rect x="5" y="9" width="10" height="7.5" rx="1.6"></rect><path d="M7 9V6.8a3 3 0 0 1 6 0V9"></path>',
+    star: '<path d="m10 3 2.1 4.4 4.8.6-3.5 3.3.9 4.8L10 13.8l-4.3 2.3.9-4.8-3.5-3.3 4.8-.6L10 3Z"></path>',
+    search: '<circle cx="8.8" cy="8.8" r="5"></circle><path d="m12.5 12.5 4 4"></path>'
   };
   return `<svg class="${className}" viewBox="0 0 20 20" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -2823,81 +2826,499 @@ function tagRecord(name) {
   return state.availableTags.find(tag => tagName(tag) === name) || { name };
 }
 
-function tagManagerTagMarkup(name, groupId = null) {
-  const record = tagRecord(name);
+// 标签管理, after Eagle's: a sidebar of 全部 / 未分类 / 常用标签 / 标签群组,
+// and the tags of the chosen one as chips in sections — by initial (pinyin
+// for Chinese) or by group — sorted by name or count. Sort and grouping are
+// remembered for every pane, as Eagle keeps them; the open section, search
+// and selection belong to each pane.
+const TAG_MANAGER_PREFS_KEY = 'eaglemv.tagManager.v1';
+function readTagManagerPrefs() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(TAG_MANAGER_PREFS_KEY) || '{}');
+    return {
+      sortBy: stored.sortBy === 'count' ? 'count' : 'name',
+      ascending: stored.ascending !== false,
+      groupBy: stored.groupBy === 'group' ? 'group' : 'alphabet'
+    };
+  } catch {
+    return { sortBy: 'name', ascending: true, groupBy: 'alphabet' };
+  }
+}
+let tagManagerPrefs = readTagManagerPrefs();
+function setTagManagerPrefs(patch) {
+  tagManagerPrefs = { ...tagManagerPrefs, ...patch };
+  try { localStorage.setItem(TAG_MANAGER_PREFS_KEY, JSON.stringify(tagManagerPrefs)); } catch {}
+  for (const pane of state.panes) {
+    if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
+}
+
+const tagManagerViews = new Map();
+function tagManagerView(paneId = state.activePaneId) {
+  if (!tagManagerViews.has(paneId)) tagManagerViews.set(paneId, { mode: 'all', groupId: null, keyword: '', selected: new Set(), anchor: null });
+  const view = tagManagerViews.get(paneId);
+  if (view.mode === 'group' && !(state.tagGroups || []).some(group => group.id === view.groupId)) Object.assign(view, { mode: 'all', groupId: null });
+  return view;
+}
+
+// Initials by pinyin: ICU's zh pinyin collation orders every hanzi after
+// the first character of its initial's block.
+const pinyinCollator = new Intl.Collator('zh-CN-u-co-pinyin');
+const PINYIN_INITIALS = [['A', '阿'], ['B', '八'], ['C', '嚓'], ['D', '哒'], ['E', '妸'], ['F', '发'], ['G', '旮'], ['H', '哈'], ['J', '讥'], ['K', '咔'], ['L', '垃'], ['M', '妈'], ['N', '拏'], ['O', '噢'], ['P', '妑'], ['Q', '七'], ['R', '呥'], ['S', '仨'], ['T', '他'], ['W', '屲'], ['X', '夕'], ['Y', '丫'], ['Z', '帀']];
+const OTHER_INITIAL = '＃';
+function tagInitial(name) {
+  const first = String(name || '').trim().charAt(0);
+  if (/[a-z]/i.test(first)) return first.toUpperCase();
+  if (!/[㐀-鿿豈-﫿]/.test(first)) return OTHER_INITIAL;
+  let letter = OTHER_INITIAL;
+  for (const [initial, boundary] of PINYIN_INITIALS) {
+    if (pinyinCollator.compare(first, boundary) < 0) break;
+    letter = initial;
+  }
+  return letter;
+}
+
+const tagNameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+function sortTagRecords(records) {
+  const byName = (left, right) => tagNameCollator.compare(left.name, right.name);
+  const sorted = [...records].sort(tagManagerPrefs.sortBy === 'count'
+    ? (left, right) => (right.count - left.count) || byName(left, right)
+    : byName);
+  return tagManagerPrefs.ascending ? sorted : sorted.reverse();
+}
+
+function tagGroupsOf(name) {
+  return (state.tagGroups || []).filter(group => (group.tags || []).includes(name));
+}
+
+function tagManagerRecords() {
+  const seen = new Map();
+  for (const tag of state.availableTags || []) {
+    const name = tagName(tag);
+    if (name && !seen.has(name)) seen.set(name, { name, count: Number(tag?.imageCount || 0) });
+  }
+  return seen;
+}
+
+// The sections of the open sidebar entry: [{ key, title, tags: [record] }].
+function tagManagerSections(view) {
+  const records = tagManagerRecords();
+  const record = name => records.get(name) || { name, count: 0 };
+  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
+  const keyword = view.keyword.trim().toLocaleLowerCase('zh-CN');
+  const matches = entry => !keyword || entry.name.toLocaleLowerCase('zh-CN').includes(keyword);
+  if (view.mode === 'group') {
+    const group = (state.tagGroups || []).find(candidate => candidate.id === view.groupId);
+    return [{ key: group.id, title: group.name || '未命名群组', group, tags: sortTagRecords((group.tags || []).map(record).filter(matches)), always: true }];
+  }
+  if (view.mode === 'starred') {
+    return [{ key: 'starred', title: '常用标签', tags: sortTagRecords((state.starredTags || []).map(record).filter(matches)), always: true }];
+  }
+  const pool = [...records.values()].filter(entry => (view.mode === 'unfiled' ? !grouped.has(entry.name) : true)).filter(matches);
+  if (tagManagerPrefs.groupBy === 'group') {
+    const sections = (state.tagGroups || []).map(group => ({
+      key: group.id, title: group.name || '未命名群组', group,
+      tags: sortTagRecords(pool.filter(entry => (group.tags || []).includes(entry.name)))
+    }));
+    sections.push({ key: 'ungrouped', title: '未分类', tags: sortTagRecords(pool.filter(entry => !grouped.has(entry.name))) });
+    return sections.filter(section => section.tags.length);
+  }
+  const byInitial = new Map();
+  for (const entry of pool) {
+    const initial = tagInitial(entry.name);
+    if (!byInitial.has(initial)) byInitial.set(initial, []);
+    byInitial.get(initial).push(entry);
+  }
+  return [...byInitial.entries()]
+    .sort(([left], [right]) => (left === OTHER_INITIAL) - (right === OTHER_INITIAL) || left.localeCompare(right))
+    .map(([initial, tags]) => ({ key: initial, title: initial, tags: sortTagRecords(tags) }));
+}
+
+function highlightedTagName(name, keyword) {
+  const needle = keyword.trim();
+  if (!needle) return escapeHTML(name);
+  const at = name.toLocaleLowerCase('zh-CN').indexOf(needle.toLocaleLowerCase('zh-CN'));
+  if (at < 0) return escapeHTML(name);
+  return `${escapeHTML(name.slice(0, at))}<mark>${escapeHTML(name.slice(at, at + needle.length))}</mark>${escapeHTML(name.slice(at + needle.length))}`;
+}
+
+function tagManagerChipMarkup(entry, view) {
+  const group = tagGroupsOf(entry.name)[0];
+  const color = state.tagColors[entry.name] || (group?.color ? eagleNamedFolderColors[group.color] : '');
+  return `<button type="button" class="tm-tag${view.selected.has(entry.name) ? ' selected' : ''}" data-tm-tag="${escapeHTML(entry.name)}" draggable="true" title="${escapeHTML(entry.name)}"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}>
+    <span class="tm-dot" aria-hidden="true"></span><span class="tm-name">${highlightedTagName(entry.name, view.keyword)}</span><span class="tm-count">(${entry.count.toLocaleString()})</span>
+  </button>`;
+}
+
+function tagManagerBodyMarkup(view) {
+  const sections = tagManagerSections(view);
+  const total = sections.reduce((sum, section) => sum + section.tags.length, 0);
+  if (!total && !sections.some(section => section.always)) {
+    const message = view.keyword.trim() ? '没有找到相关标签'
+      : view.mode === 'unfiled' && tagManagerRecords().size ? '所有标签都已归入群组' : '当前资料库还没有标签';
+    return `<div class="tag-manager-empty">${message}</div>`;
+  }
+  return sections.map(section => {
+    const description = section.group && view.mode === 'group'
+      ? `<textarea class="tm-description" data-tm-description="${escapeHTML(section.group.id)}" rows="1" placeholder="添加描述..." aria-label="群组描述">${escapeHTML(section.group.description || '')}</textarea>`
+      : '';
+    const chips = section.tags.map(entry => tagManagerChipMarkup(entry, view)).join('')
+      || `<span class="tm-section-empty">${view.keyword.trim() ? '没有匹配的标签' : view.mode === 'starred' ? '还没有常用标签（在 Eagle 中设置）' : '群组中还没有标签，可把标签拖到左侧群组'}</span>`;
+    return `<section class="tm-section" data-tm-section="${escapeHTML(section.key)}">
+      <h2 class="tm-section-title"><span>${escapeHTML(section.title)}</span><span class="tm-section-count">(${section.tags.length.toLocaleString()})</span></h2>
+      ${description}
+      <div class="tm-chips">${chips}</div>
+    </section>`;
+  }).join('');
+}
+
+function tagManagerNavRow({ mode, groupId = '', label, count, icon = 'tag', color = '' }, view) {
+  const active = view.mode === mode && (mode !== 'group' || view.groupId === groupId);
+  return `<button type="button" class="tm-nav${active ? ' active' : ''}" data-tm-mode="${mode}"${groupId ? ` data-tm-group="${escapeHTML(groupId)}"` : ''} title="${escapeHTML(label)}">
+    ${color ? `<span class="tm-group-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : uiIcon(icon, 'tm-nav-icon')}<span class="tm-nav-name">${escapeHTML(label)}</span><span class="tm-nav-count">${count ? count.toLocaleString() : ''}</span>
+  </button>`;
+}
+
+function tagManagerTitle(view) {
+  if (view.mode === 'group') return (state.tagGroups || []).find(group => group.id === view.groupId)?.name || '标签群组';
+  return { all: '全部标签', unfiled: '未分类', starred: '常用标签' }[view.mode];
+}
+
+function tagManagerMarkup(paneId = state.activePaneId) {
+  const view = tagManagerView(paneId);
+  const records = tagManagerRecords();
+  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
+  const unfiled = [...records.keys()].filter(name => !grouped.has(name)).length;
   const groups = state.tagGroups || [];
-  return `<div class="tag-manager-row">
-    <span class="tag-manager-name" title="${escapeHTML(name)}">${escapeHTML(name)}</span>
-    <span class="tag-manager-count">${Number(record.imageCount || 0).toLocaleString()}</span>
-    <button type="button" class="tag-manager-action" data-tag-action="filter-tag" data-tag-name="${escapeHTML(name)}">筛选</button>
-    <button type="button" class="tag-manager-action" data-tag-action="rename-tag" data-tag-name="${escapeHTML(name)}">重命名</button>
-    <button type="button" class="tag-manager-action" data-tag-action="merge-tag" data-tag-name="${escapeHTML(name)}">合并</button>
-    <select class="tag-manager-group-select" data-tag-add-group data-tag-name="${escapeHTML(name)}" aria-label="将 ${escapeHTML(name)} 加入分组">
-      <option value="">加入分组…</option>
-      ${groups.filter(group => group.id !== groupId).map(group => `<option value="${escapeHTML(group.id)}">${escapeHTML(group.name)}</option>`).join('')}
-    </select>
-    ${groupId ? `<button type="button" class="tag-manager-remove" data-tag-action="remove-from-group" data-tag-group-id="${escapeHTML(groupId)}" data-tag-name="${escapeHTML(name)}" aria-label="从分组移除">×</button>` : ''}
+  const sortLabel = `${tagManagerPrefs.sortBy === 'count' ? '数量' : '名称'}${tagManagerPrefs.ascending ? (tagManagerPrefs.sortBy === 'count' ? '↓' : '↑') : (tagManagerPrefs.sortBy === 'count' ? '↑' : '↓')}`;
+  return `<div class="tag-manager" data-tag-manager>
+    <nav class="tm-sidebar" aria-label="标签分类">
+      ${tagManagerNavRow({ mode: 'all', label: '全部', count: records.size, icon: 'tag' }, view)}
+      ${tagManagerNavRow({ mode: 'unfiled', label: '未分类', count: unfiled, icon: 'unfiled' }, view)}
+      ${tagManagerNavRow({ mode: 'starred', label: '常用标签', count: (state.starredTags || []).length, icon: 'star' }, view)}
+      <div class="tm-groups-label"><span>标签群组${groups.length ? ` (${groups.length})` : ''}</span><button type="button" class="tm-add-group" data-tag-action="create-group" title="添加群组" aria-label="添加群组">+</button></div>
+      <div class="tm-groups">${groups.map(group => tagManagerNavRow({ mode: 'group', groupId: group.id, label: group.name || '未命名群组', count: (group.tags || []).length, color: eagleNamedFolderColors[group.color] || '#7d838f' }, view)).join('')}</div>
+    </nav>
+    <section class="tm-main">
+      <header class="tm-header">
+        <h1 class="tm-title">${escapeHTML(tagManagerTitle(view))}</h1>
+        <input class="tm-search" type="search" placeholder="搜索标签…" value="${escapeHTML(view.keyword)}" aria-label="搜索标签" autocomplete="off">
+        <button type="button" class="tm-sort" data-tm-sort-menu title="排列与分组" aria-haspopup="menu">${sortLabel}</button>
+      </header>
+      <div class="tm-body">${tagManagerBodyMarkup(view)}</div>
+    </section>
   </div>`;
 }
 
-function tagManagerMarkup() {
-  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
-  const groups = (state.tagGroups || []).map(group => `<section class="tag-manager-group">
-    <header class="tag-manager-group-heading">
-      <div><h2>${escapeHTML(group.name || '未命名分组')}</h2><span>${(group.tags || []).length.toLocaleString()} 个标签</span></div>
-      <div class="tag-manager-group-actions">
-        <button type="button" class="tag-manager-action" data-tag-action="rename-group" data-tag-group-id="${escapeHTML(group.id)}">重命名</button>
-        <button type="button" class="tag-manager-action danger" data-tag-action="remove-group" data-tag-group-id="${escapeHTML(group.id)}">移除分组</button>
-      </div>
-    </header>
-    <div class="tag-manager-list">${(group.tags || []).map(name => tagManagerTagMarkup(name, group.id)).join('') || '<div class="tag-manager-row tag-manager-row-empty">分组中还没有标签</div>'}</div>
-  </section>`).join('');
-  const ungrouped = state.availableTags.filter(tag => !grouped.has(tagName(tag)));
-  const ungroupedHTML = ungrouped.length ? `<section class="tag-manager-group">
-    <header class="tag-manager-group-heading"><div><h2>未分组</h2><span>${ungrouped.length.toLocaleString()} 个标签</span></div></header>
-    <div class="tag-manager-list">${ungrouped.map(tag => tagManagerTagMarkup(tagName(tag))).join('')}</div>
-  </section>` : '';
-  return `<div class="tag-manager">
-    <header class="tag-manager-toolbar"><div><h1>标签管理</h1><p>通过 Eagle 管理标签与分组；标签颜色仍保存在 MultiView 本地状态。</p></div><button type="button" class="primary-button" data-tag-action="create-group">新建分组</button></header>
-    ${groups || ungroupedHTML ? `${groups}${ungroupedHTML}` : '<div class="tag-manager-empty">当前资料库还没有标签</div>'}
-  </div>`;
+// Typing in the search box redraws only the chips, keeping the field.
+function renderTagManagerBody(paneId) {
+  const body = paneQuery(paneId, '.tm-body');
+  if (body) body.innerHTML = tagManagerBodyMarkup(tagManagerView(paneId));
+}
+
+function selectTagManagerTag(paneId, name, { toggle = false, range = false } = {}) {
+  const view = tagManagerView(paneId);
+  if (range && view.anchor) {
+    const order = [...paneQuery(paneId, '.tm-body').querySelectorAll('[data-tm-tag]')].map(chip => chip.dataset.tmTag);
+    const [from, to] = [order.indexOf(view.anchor), order.indexOf(name)].sort((left, right) => left - right);
+    if (from >= 0) {
+      view.selected = new Set(order.slice(from, to + 1));
+      return paintTagManagerSelection(paneId);
+    }
+  }
+  if (toggle) {
+    if (view.selected.has(name)) view.selected.delete(name);
+    else view.selected.add(name);
+  } else {
+    view.selected = new Set([name]);
+  }
+  view.anchor = name;
+  paintTagManagerSelection(paneId);
+}
+
+function paintTagManagerSelection(paneId) {
+  const view = tagManagerView(paneId);
+  for (const chip of paneQuery(paneId, '.tm-body')?.querySelectorAll('[data-tm-tag]') || []) {
+    chip.classList.toggle('selected', view.selected.has(chip.dataset.tmTag));
+  }
+}
+
+function openTagManagerTagMenu(event, paneId, name) {
+  const view = tagManagerView(paneId);
+  if (!view.selected.has(name)) selectTagManagerTag(paneId, name);
+  showContextMenu(event, { kind: 'tag-manager-tag', paneId, tags: [...view.selected], groupId: view.mode === 'group' ? view.groupId : null });
+}
+
+function tagManagerTagMenuMarkup(data) {
+  const tags = data.tags || [];
+  const one = tags.length === 1;
+  const groups = state.tagGroups || [];
+  const inGroup = group => tags.every(tag => (group.tags || []).includes(tag));
+  const fromGroup = data.groupId || tagGroupsOf(tags[0])[0]?.id || null;
+  const groupRows = action => groups.map(group => contextMenuRow({
+    icon: 'tag', label: group.name || '未命名群组', action, payload: { groupId: group.id },
+    disabled: inGroup(group), checked: action === 'tm-add-group' ? inGroup(group) : null
+  })).join('') || contextMenuRow({ label: '还没有标签群组', disabled: true });
+  return [
+    contextMenuRow({ icon: 'search', label: '搜索包含标签的项目', action: 'tm-filter' }),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename', disabled: !one }),
+    ...(one ? [contextMenuRow({ icon: 'tag', label: '标签颜色…', action: 'tag-color', payload: { tag: tags[0] } })] : []),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'tag', label: '添加至群组...', submenu: groupRows('tm-add-group') }),
+    contextMenuRow({ icon: 'tag', label: '移动至群组...', submenu: groupRows('tm-move-group') }),
+    contextMenuRow({ icon: 'remove', label: '从标签群组移除', action: 'tm-remove-group', payload: { groupId: fromGroup }, disabled: !fromGroup }),
+    ...(tags.length > 1 ? [
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'tag', label: `合并 ${tags.length} 个标签`, action: 'tm-merge', disabled: tags.length > 5 })
+    ] : [])
+  ].join('');
+}
+
+function tagManagerGroupMenuMarkup(data) {
+  const group = (state.tagGroups || []).find(candidate => candidate.id === data.groupId);
+  if (!group) return contextMenuRow({ label: '群组已不存在', disabled: true });
+  return [
+    contextMenuRow({ icon: 'search', label: '搜索包含群组标签的项目', action: 'tm-filter-group', payload: { groupId: group.id }, disabled: !(group.tags || []).length }),
+    contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename-group', payload: { groupId: group.id } }),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'trashMenu', label: '删除群组', action: 'tm-remove-group-node', payload: { groupId: group.id }, danger: true })
+  ].join('');
+}
+
+function tagManagerSortMenuMarkup(data) {
+  const { sortBy, ascending, groupBy } = tagManagerPrefs;
+  const view = tagManagerView(data.paneId);
+  const sortRow = (label, by, up) => contextMenuRow({ label, action: 'tm-sort', payload: { sortBy: by, ascending: up }, checked: sortBy === by && ascending === up });
+  return [
+    sortRow('A > Z', 'name', true),
+    sortRow('Z > A', 'name', false),
+    sortRow('数量（多→少）', 'count', true),
+    sortRow('数量（少→多）', 'count', false),
+    ...(['all', 'unfiled'].includes(view.mode) ? [
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'more', label: '分组依据', submenu: [
+        contextMenuRow({ label: '字母', action: 'tm-group-by', payload: { groupBy: 'alphabet' }, checked: groupBy === 'alphabet' }),
+        contextMenuRow({ label: '标签群组', action: 'tm-group-by', payload: { groupBy: 'group' }, checked: groupBy === 'group' })
+      ].join('') })
+    ] : [])
+  ].join('');
+}
+
+// Merging several tags is a run of Eagle's one-to-one merges into the name
+// typed; a name that is none of them is first taken by renaming one.
+async function mergeTagManagerTags(libraryPath, tags, target) {
+  let sources = tags.filter(tag => tag !== target);
+  if (!tags.includes(target) && !tagManagerRecords().has(target)) {
+    await window.eagleMV.renameTag({ libraryPath, originalName: sources[0], name: target });
+    sources = sources.slice(1);
+  }
+  for (const source of sources) await window.eagleMV.mergeTag({ libraryPath, source, target });
+}
+
+async function executeTagManagerMenuAction(action, payload, data) {
+  const libraryPath = state.library?.path;
+  const paneId = data.paneId || state.activePaneId;
+  const tags = data.tags || [];
+  if (!libraryPath) return;
+  if (action === 'tm-sort') return setTagManagerPrefs({ sortBy: payload.sortBy, ascending: payload.ascending });
+  if (action === 'tm-group-by') return setTagManagerPrefs({ groupBy: payload.groupBy });
+  if (action === 'tm-filter' || action === 'tm-filter-group') {
+    const names = action === 'tm-filter' ? tags : ((state.tagGroups || []).find(group => group.id === payload.groupId)?.tags || []);
+    return withActivePane(paneId, () => searchItemsWithTags(names));
+  }
+  if (action === 'tm-rename') return executeTagManagerAction('rename-tag', { tagName: tags[0] });
+  if (action === 'tm-rename-group') return executeTagManagerAction('rename-group', { groupId: payload.groupId });
+  if (action === 'tm-remove-group-node') return executeTagManagerAction('remove-group', { groupId: payload.groupId });
+  if (action === 'tm-add-group') {
+    return runForegroundOperation('正在将标签加入群组…', { key: `tag-group-add:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.addTagsToGroup({ libraryPath, groupId: payload.groupId, tags });
+      toast(tags.length > 1 ? `${tags.length} 个标签已加入群组` : '标签已加入群组');
+    });
+  }
+  if (action === 'tm-move-group') {
+    // Moving leaves every other group the tags were in, as in Eagle.
+    return runForegroundOperation('正在移动标签…', { key: `tag-group-move:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.addTagsToGroup({ libraryPath, groupId: payload.groupId, tags });
+      for (const group of state.tagGroups || []) {
+        if (group.id === payload.groupId) continue;
+        const leaving = tags.filter(tag => (group.tags || []).includes(tag));
+        if (leaving.length) await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: group.id, tags: leaving });
+      }
+      toast(tags.length > 1 ? `${tags.length} 个标签已移动到群组` : '标签已移动到群组');
+    });
+  }
+  if (action === 'tm-remove-group') {
+    return runForegroundOperation('正在从群组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: payload.groupId, tags });
+      toast('标签已从群组移除');
+    });
+  }
+  if (action === 'tm-merge') {
+    const target = await requestNameDialog({ title: `合并 ${tags.length} 个标签`, initialValue: tags[0] || '', fieldLabel: '请输入合并后的标签名称：', submitLabel: '合并标签' });
+    if (!target?.trim()) return;
+    await runForegroundOperation('正在合并标签…', { key: `tag-merge:${libraryPath}` }, async () => {
+      await mergeTagManagerTags(libraryPath, tags, target.trim());
+      tagManagerView(paneId).selected = new Set([target.trim()]);
+      toast('合并完成');
+    });
+  }
+}
+
+function handleTagManagerClick(event, paneId) {
+  const view = tagManagerView(paneId);
+  const nav = event.target.closest('[data-tm-mode]');
+  if (nav) {
+    Object.assign(view, { mode: nav.dataset.tmMode, groupId: nav.dataset.tmGroup || null, selected: new Set(), anchor: null });
+    renderGrid({ preserveScroll: false });
+    return;
+  }
+  const sort = event.target.closest('[data-tm-sort-menu]');
+  if (sort) {
+    // The document's outside-click handler would close it on this same click.
+    event.stopPropagation();
+    const box = sort.getBoundingClientRect();
+    showContextMenuAt(box.left, box.bottom + 4, { kind: 'tag-manager-sort', paneId });
+    return;
+  }
+  const chip = event.target.closest('[data-tm-tag]');
+  if (chip) {
+    selectTagManagerTag(paneId, chip.dataset.tmTag, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+    return;
+  }
+  if (!event.target.closest('input, textarea, button') && view.selected.size) {
+    view.selected.clear();
+    paintTagManagerSelection(paneId);
+  }
+}
+
+function openTagManagerMenu(event, paneId) {
+  const chip = event.target.closest('[data-tm-tag]');
+  if (chip) return openTagManagerTagMenu(event, paneId, chip.dataset.tmTag);
+  const group = event.target.closest('[data-tm-group]');
+  if (group) return showContextMenu(event, { kind: 'tag-manager-group', paneId, groupId: group.dataset.tmGroup });
+  if (event.target.closest('.tm-main')) return showContextMenu(event, { kind: 'tag-manager-sort', paneId });
+}
+
+const TAG_DRAG_TYPE = 'application/x-eaglemv-tags';
+
+function bindTagManagerEvents(paneId, grid) {
+  grid.addEventListener('input', event => {
+    const search = event.target.closest('.tm-search');
+    if (!search) return;
+    const view = tagManagerView(paneId);
+    view.keyword = search.value;
+    view.selected.clear();
+    renderTagManagerBody(paneId);
+  });
+  grid.addEventListener('keydown', event => {
+    if (event.target.closest('.tm-search') && event.key === 'Escape' && event.target.value) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.target.value = '';
+      event.target.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const field = event.target.closest('[data-tm-description]');
+    if (field && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); field.blur(); }
+    if (field && event.key === 'Escape') {
+      event.preventDefault();
+      field.value = (state.tagGroups || []).find(group => group.id === field.dataset.tmDescription)?.description || '';
+      field.blur();
+    }
+  });
+  // 添加描述...: saved through Eagle when the field is left changed.
+  grid.addEventListener('focusout', event => {
+    const field = event.target.closest('[data-tm-description]');
+    if (!field) return;
+    const group = (state.tagGroups || []).find(candidate => candidate.id === field.dataset.tmDescription);
+    const description = field.value.trim();
+    if (!group || description === (group.description || '')) return;
+    const libraryPath = state.library?.path;
+    runForegroundOperation('正在保存群组描述…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
+      await window.eagleMV.updateTagGroup({ libraryPath, id: group.id, patch: { description } });
+      group.description = description;
+    }).catch(error => toast(`群组描述保存失败：${error.message}`, 4200));
+  });
+  // Tags drag onto a group in the sidebar to join it, as in Eagle.
+  grid.addEventListener('dragstart', event => {
+    const chip = event.target.closest?.('[data-tm-tag]');
+    if (!chip) return;
+    event.stopPropagation();
+    const view = tagManagerView(paneId);
+    if (!view.selected.has(chip.dataset.tmTag)) selectTagManagerTag(paneId, chip.dataset.tmTag);
+    event.dataTransfer.setData(TAG_DRAG_TYPE, JSON.stringify([...view.selected]));
+    event.dataTransfer.effectAllowed = 'copy';
+  }, true);
+  const dropTarget = event => (event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE) ? event.target.closest?.('[data-tm-group]') : null;
+  grid.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const row = dropTarget(event);
+    event.dataTransfer.dropEffect = row ? 'copy' : 'none';
+    for (const candidate of grid.querySelectorAll('.tm-nav.drop-target')) if (candidate !== row) candidate.classList.remove('drop-target');
+    row?.classList.add('drop-target');
+  }, true);
+  grid.addEventListener('dragleave', event => {
+    if (event.target.closest?.('[data-tm-group]') && !event.target.closest('[data-tm-group]').contains(event.relatedTarget)) event.target.closest('[data-tm-group]').classList.remove('drop-target');
+  }, true);
+  grid.addEventListener('drop', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    for (const candidate of grid.querySelectorAll('.tm-nav.drop-target')) candidate.classList.remove('drop-target');
+    const row = dropTarget(event);
+    let tags = [];
+    try { tags = JSON.parse(event.dataTransfer.getData(TAG_DRAG_TYPE) || '[]'); } catch {}
+    if (!row || !tags.length) return;
+    const groupId = row.dataset.tmGroup;
+    const group = (state.tagGroups || []).find(candidate => candidate.id === groupId);
+    const adding = tags.filter(tag => !(group?.tags || []).includes(tag));
+    if (!adding.length) return;
+    executeTagManagerMenuAction('tm-add-group', { groupId }, { paneId, tags: adding })
+      .catch(error => toast(`加入群组失败：${error.message}`, 4200));
+  }, true);
+}
+
+// 搜索包含标签的项目: every item in the library carrying any of the tags.
+function searchItemsWithTags(names) {
+  const tags = normalizeTags(names);
+  if (!tags.length) return;
+  // Passed to navigate, which otherwise starts a new view with no filters.
+  navigate({ kind: 'all' }, { query: createQuery({ tags, tagLogic: 'OR' }) });
+  renderQueryControls();
 }
 
 async function executeTagManagerAction(action, payload = {}) {
   const libraryPath = state.library?.path;
   if (!libraryPath) return;
-  if (action === 'filter-tag') {
-    state.query.tags = [payload.tagName];
-    navigate({ kind: 'all' });
-    renderQueryControls();
-    return;
-  }
+  if (action === 'filter-tag') return searchItemsWithTags([payload.tagName]);
   if (action === 'create-group') {
-    const name = await requestNameDialog({ title: '新建标签分组', submitLabel: '创建' });
+    const name = await requestNameDialog({ title: '添加群组', submitLabel: '创建' });
     if (!name?.trim()) return;
-    await runForegroundOperation('正在创建标签分组…', { key: `tag-group-create:${libraryPath}` }, async () => {
+    await runForegroundOperation('正在创建群组…', { key: `tag-group-create:${libraryPath}` }, async () => {
       await window.eagleMV.createTagGroup({ libraryPath, name: name.trim() });
-      toast('标签分组已创建');
+      toast('群组已创建');
     });
     return;
   }
   if (action === 'rename-group') {
     const group = state.tagGroups.find(candidate => candidate.id === payload.groupId);
     if (!group) return;
-    const name = await requestNameDialog({ title: '重命名标签分组', initialValue: group.name || '', submitLabel: '重命名' });
+    const name = await requestNameDialog({ title: '重命名群组', initialValue: group.name || '', submitLabel: '重命名' });
     if (!name?.trim() || name.trim() === group.name) return;
-    await runForegroundOperation('正在重命名标签分组…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
+    await runForegroundOperation('正在重命名群组…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
       await window.eagleMV.updateTagGroup({ libraryPath, id: group.id, patch: { name: name.trim() } });
-      toast('标签分组已重命名');
+      toast('群组已重命名');
     });
     return;
   }
   if (action === 'remove-group') {
     const group = state.tagGroups.find(candidate => candidate.id === payload.groupId);
-    if (!group || !confirm(`移除分组“${group.name}”？\n\n分组会被删除，标签本身和素材不会删除。`)) return;
-    await runForegroundOperation('正在移除标签分组…', { key: `tag-group-remove:${libraryPath}:${group.id}` }, async () => {
+    if (!group || !confirm(`删除群组“${group.name}”？\n\n群组会被删除，标签本身和素材不会删除。`)) return;
+    await runForegroundOperation('正在删除群组…', { key: `tag-group-remove:${libraryPath}:${group.id}` }, async () => {
       await window.eagleMV.removeTagGroup({ libraryPath, id: group.id });
-      toast('标签分组已移除');
+      toast('群组已删除');
     });
     return;
   }
@@ -2915,9 +3336,9 @@ async function executeTagManagerAction(action, payload = {}) {
     return;
   }
   if (action === 'remove-from-group') {
-    await runForegroundOperation('正在从分组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}:${payload.tagName}` }, async () => {
+    await runForegroundOperation('正在从群组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}:${payload.tagName}` }, async () => {
       await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: payload.groupId, tags: [payload.tagName] });
-      toast('标签已从分组移除');
+      toast('标签已从群组移除');
     });
   }
 }
@@ -2953,7 +3374,20 @@ function renderGrid({ preserveScroll = true } = {}) {
     const emptyState = $('#emptyState');
     emptyState.classList.add('hidden');
     emptyState.style.display = 'none';
-    $('#itemGrid').innerHTML = tagManagerMarkup();
+    // A redraw from another window's tag change must not take the field the
+    // user is typing in: put focus, caret and an unsaved description back.
+    const grid = $('#itemGrid');
+    const focused = grid.contains(document.activeElement) ? document.activeElement : null;
+    const restore = focused?.matches('.tm-search, [data-tm-description]')
+      ? { selector: focused.matches('.tm-search') ? '.tm-search' : `[data-tm-description="${CSS.escape(focused.dataset.tmDescription)}"]`, value: focused.value, start: focused.selectionStart, end: focused.selectionEnd }
+      : null;
+    grid.innerHTML = tagManagerMarkup();
+    const field = restore && grid.querySelector(restore.selector);
+    if (field) {
+      field.value = restore.value;
+      field.focus();
+      try { field.setSelectionRange(restore.start, restore.end); } catch {}
+    }
     scroller.scrollTop = preserveScroll ? scrollTop : 0;
     if (updateSharedFooter) updateScrollUI();
     return;
@@ -3158,7 +3592,7 @@ function updateScrollUI() {
 function renderResultCount() {
   const childCount = visibleChildFolders().length;
   $('#resultCount').textContent = state.currentView.kind === 'tags'
-    ? `${state.availableTags.length.toLocaleString()} 个标签 · ${(state.tagGroups || []).length.toLocaleString()} 个分组`
+    ? `${state.availableTags.length.toLocaleString()} 个标签 · ${(state.tagGroups || []).length.toLocaleString()} 个群组`
     : childCount
     ? `${childCount.toLocaleString()} 个文件夹 · ${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个文件`
     : `${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个文件`;
@@ -6923,6 +7357,9 @@ function openItemLocationMenuMarkup(id, paneId = state.activePaneId) {
 
 function contextMenuMarkup(data) {
   if (data.kind === 'new-menu') return newCreationMenuMarkup(data);
+  if (data.kind === 'tag-manager-tag') return tagManagerTagMenuMarkup(data);
+  if (data.kind === 'tag-manager-group') return tagManagerGroupMenuMarkup(data);
+  if (data.kind === 'tag-manager-sort') return tagManagerSortMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
   if (data.kind === 'shortcut-folder-picker') {
     return `<div class="context-shortcut-picker">${contextFolderPicker('add-folder')}</div>`;
@@ -7189,6 +7626,7 @@ function openSidebarContextMenu(target, point) {
 async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
+  if (action.startsWith('tm-')) return executeTagManagerMenuAction(action, payload, data);
   if (action === 'swap-panes') return swapRecentPanes(payload.paneIds);
   if (action === 'set-folder-cover') return setFolderCover(payload.folderId, data.ids?.[0], data);
   if (action === 'reset-folder-cover') return setFolderCover(payload.folderId, null, data);
@@ -8552,7 +8990,7 @@ function bindMarqueeSelection(paneId, scroller) {
     // (preventDefault here would kill native touch scrolling entirely).
     if (event.pointerType === 'touch') return;
     if (activeMarquee) cancelMarquee();
-    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a')) return;
+    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a, [data-tag-manager]')) return;
     const box = scroller.getBoundingClientRect();
     if (event.clientX - box.left >= scroller.clientWidth || event.clientY - box.top >= scroller.clientHeight) return;
     if (!confirmDiscardChanges()) return;
@@ -8912,6 +9350,10 @@ function bindPaneEvents(paneId) {
       }).catch(error => toast(`标签操作失败：${error.message}`, 4200));
       return;
     }
+    if (event.target.closest('[data-tag-manager]')) {
+      handleTagManagerClick(event, paneId);
+      return;
+    }
     const touch = isTouchEvent(event);
     if (touch) lastTouchGridTapAt = Date.now();
     // Touch has no double-click: the first tap selects (replacing any
@@ -8961,29 +9403,14 @@ function bindPaneEvents(paneId) {
       triggerTouchLongPress(card, paneId, point);
     }
   });
-  query('#itemGrid').addEventListener('change', async event => {
-    if (!activatePane(paneId)) return;
-    const select = event.target.closest('[data-tag-add-group]');
-    if (!select?.value) return;
-    const libraryPath = state.library?.path;
-    const groupId = select.value;
-    const tag = select.dataset.tagName;
-    select.disabled = true;
-    try {
-      await runForegroundOperation('正在将标签加入分组…', { key: `tag-group-add:${libraryPath}:${groupId}:${tag}` }, async () => {
-        await window.eagleMV.addTagsToGroup({ libraryPath, groupId, tags: [tag] });
-        toast('标签已加入分组');
-      });
-    } catch (error) {
-      toast(`加入分组失败：${error.message}`, 4200);
-    } finally {
-      select.value = '';
-      select.disabled = false;
-    }
-  });
+  bindTagManagerEvents(paneId, query('#itemGrid'));
   query('#itemGrid').addEventListener('dblclick', event => {
     if (Date.now() - lastTouchGridTapAt < 600) return;
     activatePane(paneId);
+    const tagChip = event.target.closest('[data-tm-tag]');
+    if (tagChip) { searchItemsWithTags([tagChip.dataset.tmTag]); return; }
+    const groupRow = event.target.closest('[data-tm-group]');
+    if (groupRow) { executeTagManagerAction('rename-group', { groupId: groupRow.dataset.tmGroup }).catch(error => toast(`标签操作失败：${error.message}`, 4200)); return; }
     const folder = event.target.closest('.folder-card');
     if (folder) { enterFolderFromGrid(folder.dataset.openFolder); return; }
     const card = event.target.closest('.item-card');
@@ -9003,6 +9430,13 @@ function bindPaneEvents(paneId) {
     }
     if (!activatePane(paneId)) {
       event.preventDefault();
+      return;
+    }
+    if (event.target.closest('[data-tag-manager]')) {
+      if (event.target.closest('input, textarea')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openTagManagerMenu(event, paneId);
       return;
     }
     const folderCard = event.target.closest('.folder-card');
@@ -11099,10 +11533,11 @@ async function loadLibraryExtras() {
     state.folderCoversReady = false;
     state.folderCoversLibrary = libraryPath;
   }
-  const [pins, tags, tagGroups, recentFolders, tagColors, orders, covers] = await Promise.all([
+  const [pins, tags, tagGroups, starredTags, recentFolders, tagColors, orders, covers] = await Promise.all([
     window.eagleMV.getPins({ libraryPath }).catch(() => null),
     window.eagleMV.getTags().catch(() => null),
     window.eagleMV.getTagGroups().catch(() => null),
+    window.eagleMV.getStarredTags?.().catch(() => null) ?? null,
     window.eagleMV.getRecentFolders().catch(() => null),
     window.eagleMV.getTagColors({ libraryPath }).catch(() => null),
     window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null,
@@ -11123,6 +11558,7 @@ async function loadLibraryExtras() {
   if (orders) state.manualOrdersReady = true;
   state.availableTags = kept(tags, state.availableTags, []);
   state.tagGroups = kept(tagGroups, state.tagGroups, []);
+  state.starredTags = Array.isArray(starredTags) ? starredTags : kept(null, state.starredTags, []);
   state.recentFolders = kept(recentFolders, state.recentFolders, []);
   state.tagColors = kept(tagColors, state.tagColors, {});
   renderTagSuggestions();

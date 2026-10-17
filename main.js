@@ -1884,6 +1884,7 @@ function setupIPC() {
   });
   handleRPC('hub:tags', () => client.listTags());
   handleRPC('hub:tag-groups', () => client.listTagGroups());
+  handleRPC('hub:starred-tags', () => client.listStarredTags());
   const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
     hub.beginSnapshotWrite();
     try {

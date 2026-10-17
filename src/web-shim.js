@@ -477,6 +477,7 @@
     },
     getTags: () => invoke('hub:tags'),
     getTagGroups: () => invoke('hub:tag-groups'),
+    getStarredTags: () => invoke('hub:starred-tags'),
     createSmartFolder: data => invoke('smart-folder:create', [data]),
     updateSmartFolder: data => invoke('smart-folder:update', [data]),
     removeSmartFolder: data => invoke('smart-folder:remove', [data]),
