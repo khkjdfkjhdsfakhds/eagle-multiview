@@ -576,3 +576,9 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 7. 功能对话框（移动/复制文件夹、缩略图、站点导入）换成应用自己的深色配色。
 
 **仍待用户决定的旧事项**：A 菜单栏（快捷键冲突）、C 第二步（每栏 chip 条）、P2 可定项（B3-04、D-10、R2-03），以及第十七节及之前的待核对项。
+
+### 跑测不再在 Dock 冒图标（2026-10-18）
+
+- `npm test` 改为 `node test-support/run-tests.cjs`（参数透传：`npm test -- test/xxx.test.js`）。macOS 上它把 `node_modules/electron` 的 Electron.app 以 APFS 克隆复制到 `node_modules/.cache/eaglemv-test-electron/<版本>/`（每个版本只做一次，约 0.5 秒，不额外占盘），在 Info.plist 写 `LSUIElement`、ad-hoc 重签，再经 electron 包自带的 `ELECTRON_OVERRIDE_DIST_PATH` 让所有探针使用它。实测全程轮询 `lsappinfo`：探针进程都是 `UIElement`，没有一次 `Foreground`。
+- 只在 JS 里 `setActivationPolicy('accessory')` 不够：Dock 图标在任何脚本运行前就已注册，只会“一开就关”地闪一下。`test-support/no-dock.cjs` 预加载仍保留，作为克隆准备失败时的兜底。
+- `AGENTS.override.md`、`.claude/CLAUDE.md` 的跑测命令改为 `npm test`，并说明不要直接 `node --test`。新增 `no-dock` 测试。全量 910/911，失败的是已知并发偶发的 pane-reveal（单跑 3/3 通过）。
