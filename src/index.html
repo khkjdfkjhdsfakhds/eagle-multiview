@@ -15,7 +15,7 @@
   <main class="workspace">
     <aside class="sidebar">
       <div class="sidebar-app-title app-title">
-        <button id="libraryButton" class="library-switch-button" title="切换资料库" aria-haspopup="true" aria-expanded="false">
+        <button id="libraryButton" class="library-switch-button" title="切换资源库" aria-haspopup="true" aria-expanded="false">
           <span class="app-mark"><img src="brand-icon.png" alt=""></span>
           <span class="app-title-copy">
             <span id="windowTitle">Eagle MultiView</span>
@@ -23,9 +23,9 @@
           </span>
           <svg class="library-switch-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
         </button>
-        <div id="libraryPopover" class="library-popover hidden" role="menu" aria-label="切换资料库">
-          <div class="library-popover-title">切换资料库</div>
-          <div id="libraryList" class="library-list"><span class="muted">正在读取资料库列表…</span></div>
+        <div id="libraryPopover" class="library-popover hidden" role="menu" aria-label="切换资源库">
+          <div class="library-popover-title">切换资源库</div>
+          <div id="libraryList" class="library-list"><span class="muted">正在读取资源库列表…</span></div>
           <div id="shellAppSection" class="library-app-section hidden">
             <div id="shellAppTitle" class="library-popover-title">Eagle MultiView App</div>
             <button type="button" class="library-row" data-shell-action="check-for-updates"><span class="library-row-name">检查更新…</span></button>
@@ -300,10 +300,10 @@
         <div class="inspector-actions">
           <button id="pinButton" class="secondary-button" title="素材置顶只在普通文件夹中生效">置顶</button>
           <button id="openDefaultButton" class="secondary-button" title="快捷键：⇧Enter">默认应用打开</button>
-          <button id="finderButton" class="secondary-button">在 Finder 中显示</button>
-          <button id="customThumbnailButton" class="secondary-button" title="通过 Eagle API 设置自定义缩略图">自定义缩略图</button>
+          <button id="finderButton" class="secondary-button">在访达中打开</button>
+          <button id="customThumbnailButton" class="secondary-button" title="选择图片作为缩略图">自定义缩略图</button>
         </div>
-        <button id="trashButton" class="danger-link">移入废纸篓</button>
+        <button id="trashButton" class="danger-link">丢到回收站</button>
       </div>
       <!-- Eagle keeps one inspector for any selection size: the multi-select
            panel mirrors the single one, editing every selected item at once. -->
@@ -335,7 +335,7 @@
           <div class="inspector-rating-row"><em>评分</em><div id="batchStars" class="inspector-stars" role="group" aria-label="评分（应用到所选素材）"></div></div>
           <div id="batchMeta" class="item-meta"></div>
         </section>
-        <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
+        <button id="batchTrashButton" class="danger-button">丢到回收站</button>
         <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
       </div>
     </aside>
@@ -357,7 +357,7 @@
     <span id="connectionDot" class="connection-dot"></span>
     <span id="connectionText">正在连接 Eagle…</span>
     <span class="status-spacer"></span>
-    <span id="scrollStatus">已载入 0 / 0</span>
+    <span id="scrollStatus">0 个项目</span>
     <span class="status-divider">·</span>
     <span id="syncText">等待同步</span>
   </footer>
@@ -420,8 +420,8 @@
   <div id="webAccessDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="webAccessTitle">
     <div class="trash-dialog-card web-access-card">
       <h2 id="webAccessTitle">Web 访问</h2>
-      <p class="web-access-intro">在手机或平板的浏览器中打开当前资料库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
-      <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（本机所有网络接口）</label>
+      <p class="web-access-intro">在手机或平板的浏览器中打开当前资源库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
+      <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（同一网络的设备可连接）</label>
       <label class="folder-dialog-field web-access-port-field"><span>端口</span>
         <input id="webAccessPort" type="number" min="1024" max="65535" placeholder="41600">
       </label>
@@ -431,7 +431,7 @@
         <button id="webAccessCopyKey" type="button" class="small-action" title="复制访问密钥">复制</button>
         <button id="webAccessResetKey" type="button" class="small-action" title="生成新密钥并踢掉所有已登录的网页端">重置</button>
       </div>
-      <label class="web-access-toggle web-access-nokey"><input id="webAccessNoKey" type="checkbox"> 免密访问（同一网络的任何设备都能读写资料库，仅建议在 Tailscale 等可信网络开启）</label>
+      <label class="web-access-toggle web-access-nokey"><input id="webAccessNoKey" type="checkbox"> 免密访问（同一网络的任何设备都能读写资源库，仅建议在 Tailscale 等可信网络开启）</label>
       <div id="webAccessAddresses" class="web-access-addresses"></div>
       <div id="webAccessStatus" class="web-access-status muted"></div>
       <div class="trash-dialog-actions">

@@ -212,9 +212,9 @@ async function run() {
     assert(firstPaneState.currentView.id === 'other-shared-folder', '重复名称路径没有按完整 Eagle 路径解析');
 
     go(firstPaneId, { kind: 'all' });
-    await until(() => paneSnapshot(panes()[0]).current === '全部素材');
+    await until(() => paneSnapshot(panes()[0]).current === '全部');
     const virtual = paneSnapshot(panes()[0]);
-    assert(JSON.stringify(virtual.labels) === JSON.stringify(['路径测试资料库', '全部素材']), '虚拟视图路径错误: ' + JSON.stringify(virtual));
+    assert(JSON.stringify(virtual.labels) === JSON.stringify(['路径测试资料库', '全部']), '虚拟视图路径错误: ' + JSON.stringify(virtual));
     assert(virtual.currentVisible && virtual.noAbsolutePath, '虚拟视图当前节点不可见或泄露绝对路径');
     go(firstPaneId, { kind: 'smart', id: 'smart-folder' });
     await until(() => paneSnapshot(panes()[0]).current === '精选智能视图');

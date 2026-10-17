@@ -47,9 +47,9 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
     const excluded = new Set(walk([source.folder]).map(entry => entry.folder.id));
     if (target !== undefined && ((!frozen?.placement && target === source.parent) || excluded.has(target))) return;
     const executeMove = async parentId => {
-      if (context().libraryPath !== ctx.libraryPath) throw new Error('资料库已切换，请重新选择。');
+      if (context().libraryPath !== ctx.libraryPath) throw new Error('资源库已切换，请重新选择。');
       const result = await api.moveFolder({ id, parentId, baseParentId: source.parent, libraryPath: ctx.libraryPath, ...frozen?.placement });
-      if (context().libraryPath !== ctx.libraryPath) throw new Error('资料库已切换；移动请求针对原库，请回到原库核对结果。');
+      if (context().libraryPath !== ctx.libraryPath) throw new Error('资源库已切换；移动请求针对原库，请回到原库核对结果。');
       if (result?.conflict) throw new Error('文件夹已在其他窗口移动，请刷新后重新选择目标。');
       if (!result?.ok) throw new Error('Eagle 尚未确认移动结果，请先刷新核对。');
       return result;
@@ -97,7 +97,7 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       if (submit.disabled) return;
       const parentId = select.value || null;
       if (context().libraryPath !== ctx.libraryPath) {
-        form.status.textContent = '资料库已切换，请关闭后重新选择。';
+        form.status.textContent = '资源库已切换，请关闭后重新选择。';
         submit.disabled = true; select.disabled = true; search.disabled = true; form.cancel.textContent = '关闭';
         return;
       }
@@ -179,7 +179,7 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       if (submit.disabled || !plan) return;
       const parentId = select ? (select.value || null) : target;
       if (context().libraryPath !== ctx.libraryPath) {
-        form.status.textContent = '资料库已切换，请关闭后重新选择。';
+        form.status.textContent = '资源库已切换，请关闭后重新选择。';
         submit.disabled = true; form.cancel.textContent = '关闭';
         return;
       }

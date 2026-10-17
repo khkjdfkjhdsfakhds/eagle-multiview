@@ -106,7 +106,7 @@
         break;
       case 'ready':
         title.textContent = `Eagle MultiView ${state.version} 已准备就绪`;
-        subtitle.textContent = '重新启动后即可完成更新。选择「稍后」会在你退出 Eagle MultiView 时自动安装。';
+        subtitle.textContent = '重新启动后即可完成更新。选择“稍后”会在你退出 Eagle MultiView 时自动安装。';
         notes = renderNotes(state.notes);
         buttons.push(button('稍后', 'later'), button('立即重启并更新', 'install', { primary: true }));
         break;

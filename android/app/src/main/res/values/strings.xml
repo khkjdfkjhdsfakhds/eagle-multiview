@@ -19,7 +19,7 @@
     <string name="change_host">更换主机</string>    <string name="retry_connection">重试</string>
     <string name="no_browser_found">未找到可打开此外部链接的浏览器</string>
     <string name="state_connecting_title">正在连接</string>
-    <string name="state_connecting_message">正在建立到 MultiView 主机的安全会话</string>
+    <string name="state_connecting_message">正在连接 MultiView 主机</string>
     <string name="state_offline_title">网络连接已中断</string>
     <string name="state_offline_message">当前设备处于离线状态。网络恢复后会安全检查会话；你也可以重试当前主机或更换主机。</string>
     <string name="state_unreachable_title">无法连接主机</string>

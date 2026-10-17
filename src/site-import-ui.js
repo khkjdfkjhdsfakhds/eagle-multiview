@@ -24,7 +24,7 @@ window.createSiteImportUI = function ({ api, context, canStart, refresh, notify 
     const retry = make('button', '重读本页失败项', { type: 'button', 'data-site-retry': '' }); retry.hidden = true;
     const selectAll = make('button', '全选已加载图片', { type: 'button' });
     const list = make('div', '', { class: 'site-asset-list' });
-    const status = make('p', '仅识别公开作品；选中后才导入。重复保护限当前任务，不代表资料库内容去重。', { role: 'status', class: 'feature-status' });
+    const status = make('p', '仅识别公开作品，勾选的作品才会导入。', { role: 'status', class: 'feature-status' });
     const submit = make('button', '导入所选图片', { type: 'button', 'data-site-import': '' });
     const close = make('button', '关闭 / 停止后续', { type: 'button', 'data-site-close': '' });
     const footer = make('div', '', { class: 'feature-footer' }); footer.append(selectAll, retry, next, submit, close);
@@ -62,7 +62,7 @@ window.createSiteImportUI = function ({ api, context, canStart, refresh, notify 
     };
     const load = async more => {
       if (busy || closed) return;
-      if (!sameLibrary()) { status.textContent = '资料库已切换，请关闭后重新识别。'; return; }
+      if (!sameLibrary()) { status.textContent = '资源库已切换，请关闭后重新识别。'; return; }
       busy = true; discover.disabled = true; next.disabled = true; submit.disabled = true;
       try {
         if (!more) {
@@ -86,7 +86,7 @@ window.createSiteImportUI = function ({ api, context, canStart, refresh, notify 
     selectAll.onclick = () => { for (const checkbox of checkboxes.values()) if (!checkbox.disabled) checkbox.checked = true; };
     submit.onclick = async () => {
       if (busy || closed || !requestId) return;
-      if (!sameLibrary()) { status.textContent = '资料库已切换，请关闭后重新选择目标。'; return; }
+      if (!sameLibrary()) { status.textContent = '资源库已切换，请关闭后重新选择目标。'; return; }
       const ids = [...checkboxes].filter(([,node]) => node.checked && !node.disabled).map(([id]) => id);
       if (!ids.length) { status.textContent = '请先勾选要导入的图片。'; return; }
       busy = true; submit.disabled = true; next.disabled = true;

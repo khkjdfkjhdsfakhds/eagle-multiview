@@ -231,7 +231,7 @@ async function setTagColor(libraryPath, tag, color) {
     state.libraries[key] ||= {};
     const colors = state.libraries[key];
     if (color && !Object.prototype.hasOwnProperty.call(colors, tag) && Object.keys(colors).length >= TAG_COLOR_LIMIT) {
-      throw new Error(`每个资料库最多保存 ${TAG_COLOR_LIMIT} 个标签颜色`);
+      throw new Error(`每个资源库最多保存 ${TAG_COLOR_LIMIT} 个标签颜色`);
     }
     if (color) colors[tag] = color;
     else delete colors[tag];
@@ -1099,17 +1099,18 @@ function setupMenu() {
     {
       label: identity.name,
       submenu: [
-        { role: 'about' },
+        { role: 'about', label: `关于 ${identity.name}` },
         {
           label: '检查更新…',
           enabled: !identity.profile,
           click: () => checkForUpdates({ manual: true })
         },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
+        { role: 'hide', label: '隐藏' },
+        { role: 'hideOthers', label: '隐藏其它' },
+        { role: 'unhide', label: '全部显示' },
         { type: 'separator' },
-        { role: 'quit' }
+        { role: 'quit', label: '退出' }
       ]
     },
     {
@@ -1129,7 +1130,7 @@ function setupMenu() {
         { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
         { type: 'separator' },
         {
-          label: '新窗口',
+          label: '新建窗口',
           accelerator: 'CmdOrCtrl+Alt+N',
           click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
         },
@@ -1376,7 +1377,7 @@ async function itemFilePath(id) {
   const item = hub.itemCache.get(id) || await client.getItem(id);
   const fileURL = await client.fileURLForItem(item, library.path);
   if (!hub.itemReadIsCurrent(read)) {
-    const error = new Error('Eagle 已切换资料库，请重新选择素材');
+    const error = new Error('Eagle 已切换资源库，请重新选择素材');
     error.code = 'LIBRARY_CHANGED';
     throw error;
   }
@@ -1794,7 +1795,7 @@ function setupIPC() {
   });
   handleRPC('library:switch', async (_event, payload = {}) => {
     const libraryPath = EagleClient.normalizeLibraryPath(payload.libraryPath);
-    if (!libraryPath) throw new Error('缺少资料库路径');
+    if (!libraryPath) throw new Error('缺少资源库路径');
     if (EagleClient.normalizeLibraryPath(hub.library?.path) === libraryPath) return { switched: false, library: hub.library };
     await client.switchLibrary(libraryPath);
     if (!await client.waitForLibrary(libraryPath)) {
@@ -2119,7 +2120,7 @@ function setupIPC() {
             error.cleanup = { status: 'completed', id: importedId, libraryPath };
           } catch (cleanupError) {
             error.cleanup = { status: 'pending', id: importedId, libraryPath, message: cleanupError.message };
-            error.message += `；原资料库可能仍有新建素材 ${importedId}，本次未清理，请回到原库核对后处理`;
+            error.message += `；原资源库可能仍有新建素材 ${importedId}，本次未清理，请回到原库核对后处理`;
           }
           broadcast('hub:query-invalidated', { reason: 'document-create-rollback', libraryPath, id: importedId });
         }
@@ -2277,12 +2278,12 @@ function setupIPC() {
   });
   handleRPC('items:export', async (event, { ids, libraryPath }) => {
     const exportLibraryPath = EagleClient.normalizeLibraryPath(libraryPath);
-    if (!exportLibraryPath) throw new Error('缺少导出素材所属的资料库');
+    if (!exportLibraryPath) throw new Error('缺少导出素材所属的资源库');
     const read = hub.captureItemRead();
     const ensureExportLibrary = async () => {
       await hub.ensureLibraryPath(exportLibraryPath);
       if (!hub.itemReadIsCurrent(read) || EagleClient.normalizeLibraryPath(hub.library?.path) !== exportLibraryPath) {
-        const error = new Error('Eagle 已切换资料库，本次导出已取消，请重新选择素材');
+        const error = new Error('Eagle 已切换资源库，本次导出已取消，请重新选择素材');
         error.code = 'LIBRARY_CHANGED';
         throw error;
       }

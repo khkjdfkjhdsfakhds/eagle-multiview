@@ -13,7 +13,7 @@ test('rejects export destinations inside the Eagle library', async () => {
     destinationRoot: '/library/Eagle.library/out',
     libraryPath: '/library/Eagle.library',
     fs: { mkdir: async () => {}, access: async () => {}, copyFile: async () => {}, existsSync: () => false }
-  }), /资料库内部/);
+  }), /资源库内部/);
 });
 
 test('exports files with collision-safe names and reports missing files', async () => {

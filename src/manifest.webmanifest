@@ -1,7 +1,7 @@
 {
   "name": "Eagle MultiView",
   "short_name": "MultiView",
-  "description": "Eagle 资料库的多窗口 Web 客户端",
+  "description": "Eagle 资源库的多窗口 Web 客户端",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#111317",

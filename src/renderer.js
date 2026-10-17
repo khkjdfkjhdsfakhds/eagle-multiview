@@ -230,7 +230,7 @@ const state = {
   randomSeed: 'seed',
   viewMode: 'justified',
   sortCapNoticeKey: '',
-  viewTitle: '资料库',
+  viewTitle: '资源库',
   currentView: { kind: 'root' },
   history: [],
   historyIndex: -1,
@@ -321,7 +321,7 @@ async function undoLastTrash() {
   const paneId = paneById(entry.paneId) ? entry.paneId : state.activePaneId;
   const pane = paneById(paneId);
   const libraryPath = state.library?.path;
-  if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资料库已切换', 3500); return; }
+  if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资源库已切换', 3500); return; }
   const operationToken = beginForegroundOperation('正在撤销删除…', { key: `trash-undo:${paneId}` });
   if (!operationToken) return;
   const selectionBefore = new Set(pane.selected);
@@ -447,15 +447,15 @@ function paneTitleForView(view) {
   if (view?.kind === 'folder') return findFolder(state.library?.folders, view.id)?.name || '文件夹';
   if (view?.kind === 'smart') return view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
   return ({
-    root: state.library?.name || '资料库',
-    all: '全部素材',
+    root: state.library?.name || '资源库',
+    all: '全部',
     unfiled: '未分类',
-    untagged: '未加标签',
+    untagged: '未标签',
     recent: '最近使用',
     random: '随机模式',
     trash: '回收站',
     tags: '标签管理'
-  })[view?.kind] || '资料库';
+  })[view?.kind] || '资源库';
 }
 
 function createPaneState(id, source = state, { inheritCurrentViewOnly = false } = {}) {
@@ -489,7 +489,7 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     sortCapNoticeKey: '',
     // The new pane gets a display label derived from the inherited path, not
     // another pane's mutable presentation state.
-    viewTitle: fresh ? paneTitleForView(currentView) : (source.viewTitle || '资料库'),
+    viewTitle: fresh ? paneTitleForView(currentView) : (source.viewTitle || '资源库'),
     currentView,
     history: fresh ? [] : [...(source.history || [])],
     historyIndex: fresh ? -1 : (Number.isInteger(source.historyIndex) ? source.historyIndex : -1),
@@ -834,7 +834,7 @@ function paneMarkup(id, index) {
           <button id="upButton" class="nav-button up" title="${keyboardPlatform.shortcutText('上一级（⌥↑ / ⌃↑）')}" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
         </div>
         <div class="location-block">
-          <h1 id="viewTitle">资料库</h1>
+          <h1 id="viewTitle">资源库</h1>
           <span id="resultCount" class="muted">正在连接…</span>
         </div>
         <div class="sort-controls">
@@ -915,8 +915,8 @@ function paneMarkup(id, index) {
       </div>
       <div id="emptyState" class="empty-state hidden">
         <div class="empty-icon"><img src="brand-icon.png" alt=""></div>
-        <h2>这里还没有素材</h2>
-        <p>可以调整筛选条件，或将文件导入当前文件夹。</p>
+        <h2>拖放文件到这里</h2>
+        <p>你可以一次拖拽多个文件到这里添加</p>
         <button id="emptyRetryButton" class="secondary-button empty-retry-button hidden">重新读取</button>
       </div>
       <div id="itemGrid" class="item-grid"></div>
@@ -1506,10 +1506,12 @@ function setConnection(connected, message) {
 
 function formatBytes(bytes) {
   if (!Number.isFinite(Number(bytes))) return '—';
-  const units = ['B', 'KB', 'MB', 'GB'];
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = Number(bytes), index = 0;
-  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+  const shown = () => value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1);
+  // Step up on the rounded figure too, so 1023.95 KB reads "1.0 MB", not "1024 KB".
+  while ((value >= 1024 || Number(shown()) >= 1024) && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${shown()} ${units[index]}`;
 }
 
 // Eagle's inspector format, yyyy/MM/dd HH:mm.
@@ -1604,7 +1606,7 @@ function attachManualDrag() {
       return ids;
     },
     submit: async (source,target,position) => {
-      if (source.libraryPath!==state.library?.path) throw new Error('资料库已切换，请重新拖动');
+      if (source.libraryPath!==state.library?.path) throw new Error('资源库已切换，请重新拖动');
       if (source.windowId===state.windowId) {
         const pane=paneById(source.paneId);
         if (!pane || descriptorKey(pane.currentView)!==source.sourceView || (source.kind==='items' && source.ids.some(id=>!pane.itemMap.has(id)))) throw new Error('来源视图已变化，请重新拖动');
@@ -1721,7 +1723,10 @@ function renderSortControls() {
   if (select) select.value = sortKey==='manual' ? 'default' : sortKey;
   const label = $('#sortSelectLabel');
   if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
-  if ($('#sortSelectButton')) $('#sortSelectButton').title = '可直接拖动调整顺序；普通文件夹内同步到 Eagle，拖到文件夹中央可移入';
+  // The drag hint only holds where dragging can reorder (B1 wording).
+  if ($('#sortSelectButton')) $('#sortSelectButton').title = supportsManual(state.currentView)
+    ? `排序方式：${sortOptionLabels[sortKey] || 'Eagle 顺序'}。也可直接拖动调整顺序`
+    : `排序方式：${sortOptionLabels[sortKey] || 'Eagle 顺序'}`;
   const popover = $('#sortPopover');
   if (popover) {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
@@ -2354,7 +2359,7 @@ function renderTagColors() {
     const name = tag.name || tag;
     const color = state.tagColors[name] || '#0072ef';
     return `<label class="tag-color-row"><span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><input type="color" value="${escapeHTML(color)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></label>`;
-  }).join('') || '<small class="muted">当前资料库还没有标签</small>';
+  }).join('') || '<small class="muted">当前资源库还没有标签</small>';
 }
 
 function currentViewSmartFolderConditions() {
@@ -2462,7 +2467,7 @@ function clearFilters() {
 }
 
 function libraryDisplayName(libraryPath) {
-  return String(libraryPath || '').split('/').filter(Boolean).pop()?.replace(/\.library$/i, '') || '资料库';
+  return String(libraryPath || '').split('/').filter(Boolean).pop()?.replace(/\.library$/i, '') || '资源库';
 }
 
 function renderLibraryList(entries) {
@@ -2473,7 +2478,7 @@ function renderLibraryList(entries) {
     known.unshift({ path: state.library.path, name: state.library.name || libraryDisplayName(state.library.path), exists: true });
   }
   if (!known.length) {
-    box.innerHTML = '<span class="muted">Eagle 没有返回资料库历史</span>';
+    box.innerHTML = '<span class="muted">Eagle 没有返回资源库历史</span>';
     return;
   }
   box.innerHTML = known.map(entry => {
@@ -2481,7 +2486,7 @@ function renderLibraryList(entries) {
     return `<button type="button" class="library-row${current ? ' current' : ''}" data-library-path="${escapeHTML(entry.path)}" data-library-name="${escapeHTML(entry.name)}" title="${escapeHTML(entry.path)}"${entry.exists ? '' : ' disabled'}>
       <span class="library-row-name">${escapeHTML(entry.name)}${entry.exists ? '' : '（找不到文件）'}</span>
       <span class="library-row-path">&lrm;${escapeHTML(entry.path)}&lrm;</span>
-      ${current ? '<span class="library-row-check" aria-label="当前资料库">✓</span>' : ''}
+      ${current ? '<span class="library-row-check" aria-label="当前资源库">✓</span>' : ''}
     </button>`;
   }).join('');
 }
@@ -2493,7 +2498,7 @@ async function openLibraryPopover() {
   popover.style.left = `${Math.round(Math.max(10, anchor.left))}px`;
   popover.classList.remove('hidden');
   $('#libraryButton').setAttribute('aria-expanded', 'true');
-  $('#libraryList').innerHTML = '<span class="muted">正在读取资料库列表…</span>';
+  $('#libraryList').innerHTML = '<span class="muted">正在读取资源库列表…</span>';
   try {
     renderLibraryList(await window.eagleMV.getLibraryHistory());
   } catch (error) {
@@ -2525,22 +2530,22 @@ function closeLibraryPopover() {
 async function switchToLibrary(libraryPath, name) {
   closeLibraryPopover();
   if (state.library?.path === libraryPath) {
-    toast('已经是当前资料库', 2200);
+    toast('已经是当前资源库', 2200);
     return;
   }
   if (!state.connected) {
-    toast('Eagle 未连接，暂时无法切换资料库', 3200);
+    toast('Eagle 未连接，暂时无法切换资源库', 3200);
     return;
   }
   if (!confirmDiscardChanges()) return;
   try {
     // Success feedback arrives through the library-changed broadcast
-    // ("Eagle 已切换资料库，所有窗口已跟随"), same as an Eagle-side switch.
-    await runForegroundOperation(`正在切换到「${name}」…`, { key: 'library-switch' }, async () => {
+    // ("Eagle 已切换资源库，所有窗口已跟随"), same as an Eagle-side switch.
+    await runForegroundOperation(`正在切换到“${name}”…`, { key: 'library-switch' }, async () => {
       await window.eagleMV.switchLibrary({ libraryPath });
     });
   } catch (error) {
-    toast(`切换资料库失败：${error.message}`, 4600);
+    toast(`切换资源库失败：${error.message}`, 4600);
   }
 }
 
@@ -2955,7 +2960,7 @@ function tagManagerBodyMarkup(view) {
   const total = sections.reduce((sum, section) => sum + section.tags.length, 0);
   if (!total && !sections.some(section => section.always)) {
     const message = view.keyword.trim() ? '没有找到相关标签'
-      : view.mode === 'unfiled' && tagManagerRecords().size ? '所有标签都已归入群组' : '当前资料库还没有标签';
+      : view.mode === 'unfiled' && tagManagerRecords().size ? '所有标签都已归入群组' : '当前资源库还没有标签';
     return `<div class="tag-manager-empty">${message}</div>`;
   }
   return sections.map(section => {
@@ -3359,6 +3364,20 @@ function bindGifHover(card) {
   });
 }
 
+// Empty-view wording follows Eagle's `empty.*` strings for each view.
+function emptyStateCopy() {
+  const kind = state.currentView.kind;
+  if (String(state.query.search || '').trim() || queryFilterCount(state.query)) return ['没有找到相关文件', '也许换个搜索规则就能找到它！'];
+  if (kind === 'trash') return ['回收站是空的', '这里会保存你删除的内容，你可以进行还原。'];
+  if (kind === 'unfiled') return ['太棒啦！', '所有文件已经都分类完成啦！'];
+  if (kind === 'untagged') return ['太棒啦！', '所有文件都已经有标签啦！'];
+  if (kind === 'recent') return ['还没有最近使用的文件夹', '打开过的文件夹会显示在这里。'];
+  if (kind === 'smart') return ['没有找到相关文件', '没有素材符合这个智能文件夹的条件。'];
+  if (kind === 'random') return ['这里还没有素材', '资源库里有素材后，随机模式会从中挑选。'];
+  if (!hasCapability('importLocal')) return ['这里还没有素材', '可以在桌面版中导入文件。'];
+  return ['拖放文件到这里', '你可以一次拖拽多个文件到这里添加'];
+}
+
 function renderGrid({ preserveScroll = true } = {}) {
   const scroller = $('#gridScroller');
   const scrollTop = scroller.scrollTop;
@@ -3400,8 +3419,9 @@ function renderGrid({ preserveScroll = true } = {}) {
   const folders = visibleChildFolders();
   const emptyState = $('#emptyState');
   emptyState.style.display = '';
-  emptyState.querySelector('h2').textContent = state.errorMessage ? '当前栏读取失败' : '这里还没有素材';
-  emptyState.querySelector('p').textContent = state.errorMessage || '可以调整筛选条件，或将文件导入当前文件夹。';
+  const [emptyTitle, emptyText] = state.errorMessage ? ['当前栏读取失败', state.errorMessage] : emptyStateCopy();
+  emptyState.querySelector('h2').textContent = emptyTitle;
+  emptyState.querySelector('p').textContent = emptyText;
   $('#emptyRetryButton').classList.toggle('hidden', !state.errorMessage);
   $('#emptyState').classList.toggle('hidden', items.length > 0 || folders.length > 0 || state.loading);
   const folderSection = folders.length
@@ -3582,10 +3602,11 @@ function hydrateGridCards(cards) {
 
 function updateScrollUI() {
   const scroller = $('#gridScroller');
+  // Eagle-style "N 个项目" (GUI-06); while the grid is still paging in, say how
+  // many are loaded so far instead of a scroll percentage.
   const loaded = state.items.length;
-  const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  const percent = maximum ? Math.max(0, Math.min(100, Math.round(scroller.scrollTop / maximum * 100))) : 0;
-  $('#scrollStatus').textContent = `已载入 ${loaded.toLocaleString()} / ${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()}${maximum ? ` · ${percent}%` : ''}`;
+  const total = `${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个项目`;
+  $('#scrollStatus').textContent = loaded < state.total ? `${total} · 已载入 ${loaded.toLocaleString()}` : total;
   $('#scrollTopButton').classList.toggle('hidden', scroller.scrollTop < Math.max(240, scroller.clientHeight * 0.6));
 }
 
@@ -3696,10 +3717,10 @@ function renderFolderTree() {
     : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${folderCountBadge(folder.imageCount)}</button>`).join('');
   tree.innerHTML = `
-    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
-    <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
+    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资源库根目录</span></button>
+    <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部</span></button>
     <button class="folder-row ${state.currentView.kind === 'unfiled' ? 'active' : ''}" data-special="unfiled"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-unfiled.svg')}</span><span class="folder-name">未分类</span></button>
-    <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未加标签</span></button>
+    <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未标签</span></button>
     <button class="folder-row ${state.currentView.kind === 'tags' ? 'active' : ''}" data-special="tags"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">标签管理</span>${folderCountBadge(state.availableTags.length)}</button>
     <button class="folder-row ${state.currentView.kind === 'recent' ? 'active' : ''}" data-special="recent"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('recent')}</span><span class="folder-name">最近使用</span></button>
     <button class="folder-row ${state.currentView.kind === 'random' ? 'active' : ''}" data-special="random"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('random')}</span><span class="folder-name">随机模式</span></button>
@@ -4216,7 +4237,7 @@ function renderInspector() {
   if (count !== 1) inspectorShown = null;
   if (count >= 2) {
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
-    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
+    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '丢到回收站…';
     renderMultiSelection(count);
     state.selectedBase = null;
     state.inspectorDirty = false;
@@ -4312,7 +4333,7 @@ function renderInspector() {
   if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
   loadComments(item, { quiet: sameItem });
-  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓…';
+  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '丢到回收站…';
   const canPin = state.currentView.kind === 'folder';
   $('#pinButton').disabled = !canPin || !state.connected;
   $('#pinButton').textContent = canPin && itemIsPinned(item) ? '取消置顶' : '置顶';
@@ -4915,7 +4936,7 @@ async function saveInspectorDraft(draft, force = false) {
     while (true) {
       const sentFieldVersions = { ...draft.fieldVersions };
       const result = await window.eagleMV.mutate({ id, patch, base, force: overwrite, libraryPath });
-      if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资料库，旧资料库的保存结果已忽略');
+      if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资源库，旧资源库的保存结果已忽略');
       if (result.conflict) {
         draft.error = 'conflict';
         persistInspectorDraft(draft);
@@ -5088,7 +5109,7 @@ function blockingSurfaceOpen() {
 
 function chooseDuplicateAction(duplicates, total) {
   const duplicateCount = duplicates.length;
-  $('#duplicateDialogMessage').textContent = `${total} 个待导入文件中有 ${duplicateCount} 个与资料库已有素材内容相同。请选择使用现有素材，或仍然保留两份。`;
+  $('#duplicateDialogMessage').textContent = `${total} 个待导入文件中有 ${duplicateCount} 个与资源库已有素材内容相同。请选择使用现有素材，或仍然保留两份。`;
   $('#duplicateDialog').classList.remove('hidden');
   $('#duplicateUseExistingButton').focus();
   return new Promise(resolve => { state.duplicateDialogResolve = resolve; });
@@ -5127,11 +5148,11 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   const known = new Map(pane.items.map(item => [item.id, item]));
   ids = ids.filter(id => !known.has(id) || Boolean(known.get(id).isDeleted) !== Boolean(deleted));
   if (!ids.length) {
-    toast(deleted ? '所选素材已在废纸篓中' : '所选素材不在废纸篓中', 2400);
+    toast(deleted ? '所选素材已在回收站中' : '所选素材不在回收站中', 2400);
     return;
   }
   const libraryPath = state.library?.path;
-  const action = deleted ? '移入废纸篓' : '恢复';
+  const action = deleted ? '丢到回收站' : '恢复';
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
   if (!operationToken) return;
   const selectionBefore = new Set(pane.selected);
@@ -5170,9 +5191,10 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
     if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
     release();
     await refresh({ reset: true, preserveScroll: true, paneId });
+    const done = deleted ? `${outcome.succeeded.length} 个素材已丢到回收站` : `已恢复 ${outcome.succeeded.length} 个素材`;
     toast(outcome.failed.length
-      ? `已${action} ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
-      : `已${action} ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4400 : 2400);
+      ? `${done} · ${outcome.failed.length} 个失败并保持选中`
+      : done, outcome.failed.length ? 4400 : 2400);
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
   } finally {
@@ -5304,7 +5326,7 @@ function addTagToSelection(payload) {
   if (!tags.length) return false;
   return mutateSelectionSet(payload.ids, 'tags', { add: tags }, '正在添加标签…', payload?.paneId || state.activePaneId, {
     keepSelection: true,
-    successMessage: tags.length === 1 ? `已添加标签「${tags[0]}」` : `已添加 ${tags.length} 个标签`
+    successMessage: tags.length === 1 ? `已添加标签“${tags[0]}”` : `已添加 ${tags.length} 个标签`
   });
 }
 
@@ -5386,7 +5408,7 @@ function handleInspectorFolderClick(event) {
     const name = findFolder(state.library?.folders, folderId)?.name || '文件夹';
     mutateSelectionSet(ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', state.activePaneId, {
       keepSelection: true,
-      successMessage: `已从「${name}」移除`
+      successMessage: `已从“${name}”移除`
     });
   } else if (open) {
     openItemLocation(ids[0], open.dataset.openFolder);
@@ -5473,7 +5495,7 @@ function removeTagFromSelection(tag) {
   // removed in a row; everything else rides the shared batch pipeline.
   return mutateSelectionSet([...state.selected], 'tags', { remove: [tag] }, '正在移除标签…', state.activePaneId, {
     keepSelection: true,
-    successMessage: `已从所选素材移除「${tag}」`
+    successMessage: `已从所选素材移除“${tag}”`
   });
 }
 
@@ -6028,7 +6050,7 @@ async function saveTextPreview(force = false, { session = state.textSession, aut
     try {
       do {
         const { id, libraryPath, content } = session;
-        if (state.library?.path !== libraryPath) throw new Error('资料库已切换；旧库草稿已保留');
+        if (state.library?.path !== libraryPath) throw new Error('资源库已切换；旧库草稿已保留');
         if (!content.length) {
           session.blocked = 'empty';
           textSessionStatus(session, EMPTY_TEXT_DRAFT_STATUS);
@@ -6330,7 +6352,7 @@ function applyView(view) {
   } else if (view.kind === 'smart') {
     state.viewTitle = view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
   } else {
-    state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类', untagged: '未加标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资料库';
+    state.viewTitle = ({ root: state.library?.name || '资源库', all: '全部', unfiled: '未分类', untagged: '未标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资源库';
   }
   // Eagle remembers the sort per folder. Restoring here — the one place the
   // current view is assigned — covers every navigation path, including the
@@ -6777,7 +6799,7 @@ function observeBreadcrumbLayout(breadcrumb) {
 
 function renderLocation() {
   if (!state.library) return;
-  let crumbs = [{ label: state.library.name || '资料库', view: { kind: 'root' } }];
+  let crumbs = [{ label: state.library.name || '资源库', view: { kind: 'root' } }];
   if (state.currentView.kind === 'folder') {
     const folderPath = findFolderPath(state.library.folders, state.currentView.id);
     crumbs = folderPath.length
@@ -7237,7 +7259,7 @@ async function openItemLocation(id, folderId = null, { paneId = state.activePane
       position = (await window.eagleMV.locateItem({ query: paneItemQuery(pane), id }))?.index ?? null;
     } catch {}
     if (!stillCurrent()) return false;
-    const where = targetView.kind === 'all' ? '全部素材' : `「${targetView.name}」`;
+    const where = targetView.kind === 'all' ? '全部' : `“${targetView.name}”`;
     if (position === -1) {
       toast(`${where}中没有找到该素材，它可能已被移动或删除`, 4200);
       saveSessionState();
@@ -8379,7 +8401,7 @@ async function showItemInFileManager(id) {
     if (!shown) toast('找不到素材原文件', 3500);
     return shown;
   } catch (error) {
-    toast(`无法在 Finder 中显示：${error.message}`, 4000);
+    toast(`无法在访达中打开：${error.message}`, 4000);
     return false;
   }
 }
@@ -11479,7 +11501,7 @@ async function applyLibraryChange(payload) {
     renderQueryControls();
     renderFolderTree();
     await refreshAllPanes({ reset: true, preserveScroll: false });
-    toast(hadUnsaved ? 'Eagle 已切换资料库；旧库草稿已保留，返回原库后可继续编辑' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
+    toast(hadUnsaved ? 'Eagle 已切换资源库；旧库草稿已保留，返回原库后可继续编辑' : 'Eagle 已切换资源库，所有窗口已跟随', 4200);
     return;
   }
 
@@ -11512,12 +11534,12 @@ async function applyLibraryChange(payload) {
       }
       reconciliation = reconcileLibraryChangePanes();
       renderReconciledLibraryPanes();
-      toast('当前文件夹已在 Eagle 中删除，已返回资料库根目录', 4000);
+      toast('当前文件夹已在 Eagle 中删除，已返回资源库根目录', 4000);
     }
   }
 
   await refreshAllPanes({ reset: true, preserveScroll: true });
-  if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资料库根目录', 4000);
+  if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资源库根目录', 4000);
 }
 
 async function loadLibraryExtras() {

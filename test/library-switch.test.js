@@ -78,10 +78,10 @@ test('the sidebar switcher guards edits, marks the current library, and closes l
   const html = read('src/index.html');
   assert.ok(html.includes('id="libraryButton"'));
   assert.ok(html.includes('id="libraryPopover"'));
-  assert.ok(renderer.includes("runForegroundOperation(`正在切换到「${name}」…`, { key: 'library-switch' }"));
+  assert.ok(renderer.includes("runForegroundOperation(`正在切换到“${name}”…`, { key: 'library-switch' }"));
   const switcher = renderer.slice(renderer.indexOf('async function switchToLibrary'), renderer.indexOf('\n}', renderer.indexOf('async function switchToLibrary')));
   assert.ok(switcher.includes('confirmDiscardChanges()'));
-  assert.ok(switcher.includes('已经是当前资料库'));
+  assert.ok(switcher.includes('已经是当前资源库'));
   assert.ok(renderer.includes("clickWithin(event, '#libraryButton, #libraryPopover')"));
   // The history list keeps the open library visible and checked.
   assert.ok(renderer.includes('library-row-check'));

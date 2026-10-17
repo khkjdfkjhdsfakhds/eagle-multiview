@@ -184,7 +184,7 @@ test('B4-05: tag colours validate the library, tag and colour, and survive a dam
   await assert.rejects(set({ tag: 'A', color: 'red;background:url(x)' }), /六位十六进制/);
   await assert.rejects(set({ tag: '__proto__', color: '#111111' }), /标签名称无效/);
   await assert.rejects(set({ tag: 'x'.repeat(256), color: '#111111' }), /标签名称无效/);
-  await assert.rejects(handler({ sender: { id: 1 } }, { libraryPath: '/Other.library', tag: 'A', color: '#111111' }), /已切换资料库/);
+  await assert.rejects(handler({ sender: { id: 1 } }, { libraryPath: '/Other.library', tag: 'A', color: '#111111' }), /已切换资源库/);
   assert.equal((await set({ tag: ' A ', color: '#111111' })).A, '#111111');
   const names = (await fs.readdir(path.dirname(file))).filter(name => name.startsWith('tag-colors.json.corrupt-'));
   assert.equal(names.length, 1, 'the damaged file is kept aside');
