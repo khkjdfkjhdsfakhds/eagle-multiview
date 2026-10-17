@@ -65,6 +65,8 @@ function controller(t, workDir, overrides = {}) {
     feedURL: FEED,
     arch: 'arm64',
     canWrite: async () => true,
+    // A test that forgets its own fetch must fail, not reach GitHub (T-16).
+    fetch: async url => { throw new Error(`unmocked network request: ${url}`); },
     ...overrides
   });
 }

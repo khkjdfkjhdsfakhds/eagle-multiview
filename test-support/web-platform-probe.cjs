@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const root = process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-web-platform-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-web-platform-');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
 app.commandLine.appendSwitch('no-proxy-server');

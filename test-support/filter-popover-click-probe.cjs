@@ -3,7 +3,7 @@
 // re-renders the clicked button away; the panel must stay open regardless.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-filter-popover-click-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-filter-popover-click-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

@@ -8,7 +8,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-narrow-pane-view-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-narrow-pane-view-'));
 (async () => {
   await app.whenReady();
   const win = new BrowserWindow({ show: false, width: 980, height: 640, useContentSize: true, webPreferences: {

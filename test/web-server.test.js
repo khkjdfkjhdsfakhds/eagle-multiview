@@ -478,7 +478,7 @@ test('transformIndexHTML adds PWA tags for the web build only', () => {
   assert.ok(transformed.includes('<link rel="icon" href="brand-icon.png">'));
 });
 
-test('export downloads one file directly and zips several (verified via ditto)', async () => {
+test('export downloads one file directly and zips several (verified via ditto)', { skip: process.platform !== 'darwin' && 'unzips with /usr/bin/ditto, which only macOS has' }, async () => {
   const { execFile } = require('node:child_process');
   const srcDir = makeFixtureDir();
   const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-export-'));

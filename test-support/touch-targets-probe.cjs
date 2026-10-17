@@ -8,7 +8,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-touch-targets-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-touch-targets-'));
 const TARGETS = '.panel-button, .nav-button, .view-mode-button, .popover-close, .color-filter-swatch, .small-action, .comment-action, .sort-select-button';
 const check = width => `(async () => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));

@@ -3,7 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-features-ui-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-features-ui-');
 app.setPath('userData', profile);
 (async () => {
   await app.whenReady();

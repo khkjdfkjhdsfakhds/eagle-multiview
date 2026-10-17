@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-webp-stealth-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-webp-stealth-');
 app.setPath('userData', profile);
 protocol.registerSchemesAsPrivileged([
   { scheme: 'eaglemv', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }

@@ -4,7 +4,7 @@
 // 标注, the duration unit, and a panel that stays open while it is used.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-filter-panel-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-filter-panel-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

@@ -1,7 +1,7 @@
 'use strict';
 const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs');const os=require('node:os');const path=require('node:path');
-app.setPath('userData',fs.mkdtempSync(path.join(os.tmpdir(),'eaglemv-site-ui-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-site-ui-'));
 (async()=>{
   await app.whenReady();const w=new BrowserWindow({show:false,width:390,height:740});
   await w.loadURL('data:text/html,<html><body></body></html>');

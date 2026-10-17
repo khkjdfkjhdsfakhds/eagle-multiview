@@ -138,7 +138,9 @@ test('native drag sessions publish their files and stay off the web event stream
   const handler = main.slice(start, main.indexOf("onRPC('item:cancel-drag'", start));
   assert.ok(/active: true,\s+token,\s+ids: uniqueIds,[\s\S]*?\n\s+files,/.test(handler), 'drag-state carries the dragged file paths');
   const broadcast = main.slice(main.indexOf('function broadcast(channel, payload)'));
-  assert.ok(broadcast.indexOf("if (channel === 'item:drag-state') return;") < broadcast.indexOf('webServer?.broadcast(channel, payload);'));
+  const skip = broadcast.indexOf("if (channel === 'item:drag-state') return;");
+  const forward = broadcast.indexOf('webServer?.broadcast(channel, payload);');
+  assert.ok(skip >= 0 && forward >= 0 && skip < forward);
 });
 
 test('shows the import overlay for files that genuinely come from outside MultiView', () => {

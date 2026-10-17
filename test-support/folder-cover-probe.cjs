@@ -6,7 +6,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { loadMain } = require('./main-data-harness.cjs');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-cover-ui-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-cover-ui-');
 app.setPath('userData', path.join(profile, 'profile'));
 app.on('window-all-closed', () => {});
 app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));

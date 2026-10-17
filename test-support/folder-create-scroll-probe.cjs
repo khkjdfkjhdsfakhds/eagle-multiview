@@ -3,7 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-create-scroll-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-create-scroll-'));
 (async () => {
   await app.whenReady();
   const win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: {

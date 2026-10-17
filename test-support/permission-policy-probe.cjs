@@ -3,7 +3,7 @@
 const { app, BrowserWindow, session } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
 const { installPermissionPolicy } = require('../lib/permission-policy');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-permissions-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-permissions-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

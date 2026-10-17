@@ -3,7 +3,7 @@
 // locate cap, and says so when the view is larger than that.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-select-all-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-select-all-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

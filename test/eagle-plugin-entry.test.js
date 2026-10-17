@@ -131,7 +131,7 @@ test('the plugin button makes Eagle follow the folder MultiView currently shows'
 
 const archive = '/Applications/Eagle.app/Contents/Resources/app.asar';
 test('installed Eagle loader wrapper: unchanged first-party entry contract connects and saves synthetic TXT', { skip: !fs.existsSync(archive) }, async t => {
-  const asar = require('../node_modules/.pnpm/@electron+asar@3.4.1/node_modules/@electron/asar');
+  const asar = require('../test-support/asar-module.cjs');
   const source = asar.extractFile(archive, 'app/js/plugin/api.js').toString('utf8');
   const wrapper = source.match(/global\.require = \(args\) => \{[\s\S]*?\n\};/);
   assert.ok(wrapper, 'Installed SDK loader contract must be reviewed if its declaration changes');

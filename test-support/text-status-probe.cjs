@@ -3,7 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-text-status-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-text-status-');
 app.setPath('userData', profile);
 app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
 (async () => {

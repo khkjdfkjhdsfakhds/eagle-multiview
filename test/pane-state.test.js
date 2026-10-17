@@ -311,7 +311,9 @@ test('inspector auto-save stays behind the live editor and queues in-flight typi
   const scheduleHandler = source.slice(scheduleStart, scheduleEnd);
   assert.ok(scheduleHandler.includes('state.inspectorSaving'));
   assert.ok(scheduleHandler.includes('state.inspectorEditing'));
-  assert.ok(scheduleHandler.indexOf('return;') < scheduleHandler.indexOf('renderInspector();'));
+  const earlyReturn = scheduleHandler.indexOf('return;');
+  const rerender = scheduleHandler.indexOf('renderInspector();');
+  assert.ok(earlyReturn >= 0 && rerender >= 0 && earlyReturn < rerender);
 });
 
 test('window close waits for an inspector save instead of abandoning an in-flight write', () => {
@@ -325,10 +327,17 @@ test('window close waits for an inspector save instead of abandoning an in-fligh
   assert.ok(pendingWrites >= 0);
   assert.ok(savingGuard > pendingWrites);
   assert.ok(savingGuard < unsavedCheck);
-  assert.ok(handler.includes('window.eagleMV.cancelClose();'));
   assert.ok(handler.includes('if (state.inspectorDirty)'));
-  assert.ok(handler.includes('await saveInspector();'));
   assert.ok(handler.includes('failedDrafts.every(draft => persistInspectorDraft(draft))'));
+  // T-05 rewritten for H-04: the close is deferred (answered) before the
+  // final save, and nothing between the busy guard and that save cancels it —
+  // cancelClose() would also cancel a pending ⌘Q, so the app would not quit.
+  const defer = handler.indexOf('window.eagleMV.deferClose?.();');
+  const busyReturn = handler.indexOf('return;', savingGuard);
+  const save = handler.indexOf('if (state.inspectorDirty) await saveInspector();');
+  assert.ok(defer >= 0 && defer < pendingWrites, 'the close request is answered first');
+  assert.ok(busyReturn > savingGuard && save > busyReturn, 'the save runs after the busy guard');
+  assert.doesNotMatch(handler.slice(busyReturn, save), /cancelClose/, 'saving does not cancel the close or a pending quit');
 });
 
 test('high-risk writes register and release a close-blocking foreground operation', () => {

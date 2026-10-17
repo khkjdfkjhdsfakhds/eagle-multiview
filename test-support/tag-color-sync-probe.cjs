@@ -9,7 +9,7 @@ const { loadMain } = require('./main-data-harness.cjs');
 const { createWebServer } = require('../lib/web-server');
 const { TextDraftStore } = require('../lib/text-draft-store');
 const source = path.resolve(__dirname, '..');
-const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-tag-sync-'));
+const directory = require('./temp-userdata.cjs').tempUserData('eaglemv-tag-sync-');
 app.setPath('userData', path.join(directory, 'profile'));
 app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP eaglemv-tag-sync.test 127.0.0.1');

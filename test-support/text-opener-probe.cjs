@@ -9,7 +9,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const { createWebServer } = require(path.join(root, 'lib/web-server'));
 const { TextDraftStore } = require(path.join(root, 'lib/text-draft-store'));
-const data = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-opener-'));
+const data = require('./temp-userdata.cjs').tempUserData('eaglemv-opener-');
 app.setPath('userData', data);
 app.on('window-all-closed', () => {});
 const store = new TextDraftStore(path.join(data, 'drafts'));

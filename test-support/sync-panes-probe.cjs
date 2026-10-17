@@ -1,7 +1,7 @@
 'use strict';
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-sync-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-sync-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 async function run() {
   await app.whenReady();

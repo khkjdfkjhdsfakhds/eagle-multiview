@@ -542,3 +542,14 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 - F-17：README“启用服务并保存”→“点应用”；“Option 拖拽移动”改为“直接拖拽移动、Option 为复制”；使用说明里“点击工具栏导入”改为右键“导入文件…”，侧栏名称、“丢到回收站”同步新文案。1.5.x 历史段落未改。
 - F-18：README 快捷键表补齐 ⌘1–4、⌘[ / ⌘]、⌘R/F2、⌘A、⌘C、⌘⌥C、⌘⇧C/V、⌘D、⌘⇧J/⇧D、⌘Return、⌘⌫/⌘⇧⌫、⌘Z、预览 ⌘0/⌘±、Esc（均已在源码核对绑定）。
 - 测试：全量 907/908，`text-backend-crosscheck` 一条 60ms 计时用例在并发下偶发失败，单跑 3/3 通过。
+
+### 第 4 批：测试工作（T 系列）
+
+- T-01～T-04 已在 P0 时改写（见审查文档）。T-05 改写：断言关窗请求先 `deferClose` 应答、保存路径上不再调用 `cancelClose`（否则 ⌘Q 不退出，H-04）。
+- T-08：`indexOf(a) < indexOf(b)` 前补“都能找到”的检查（slideshow、drag-drop、pane-state）。
+- T-12：`electron-stderr` 在 Linux 额外过滤无头环境的 D-Bus/GPU 噪音；用 `/usr/bin/ditto` 的导出用例在非 macOS 上 skip。`android-keyboard` 在 Linux 失败的原因未查明，未加 skip。
+- T-14：新增 `test-support/temp-userdata.cjs`，约 90 个探针的临时 userData/夹具目录在退出（`will-quit`/`exit`）时删除。一次全量运行的残留从约 95 个降到约 17 个（剩下的是 `test/*.js` 里 node 测试自己的临时目录）。本机 `$TMPDIR` 里已积累约 1100 个旧的 `eaglemv-*` 目录，未删除。
+- T-15：`@electron/asar` 经 `test-support/asar-module.cjs` 从 electron-builder 解析，不再写死 `.pnpm/@electron+asar@3.4.1` 路径。
+- T-16：`update-service` 测试的 controller 默认注入会报错的 fetch，漏传不会真请求 GitHub。LaunchServices 假 bundle 注册未改。
+- 未做：T-17（Android，跳过）、T-06/T-07（P6-01 已有真实渲染探针；瀑布流方向 D-10 待原版核对）、T-09～T-11、T-13、T-18。
+- 本机跑测提示：Electron 探针会在 Dock 里逐个冒图标。本会话用 scratchpad 里的 `--require no-dock.cjs`（`NODE_OPTIONS`，在 nextTick 里 `app.setActivationPolicy('accessory')`）跑测，Dock 不再闪；该脚本未进仓库。

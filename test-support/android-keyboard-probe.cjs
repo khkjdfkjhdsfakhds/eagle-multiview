@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const root = process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-android-keyboard-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-android-keyboard-');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
 app.on('window-all-closed', () => {});

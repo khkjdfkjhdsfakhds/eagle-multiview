@@ -6,7 +6,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-filter-sheet-phone-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-filter-sheet-phone-'));
 (async () => {
   await app.whenReady();
   const win = new BrowserWindow({ show: false, width: 390, height: 844, useContentSize: true, webPreferences: {

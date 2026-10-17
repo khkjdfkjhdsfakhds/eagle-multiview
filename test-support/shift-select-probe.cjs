@@ -3,7 +3,7 @@
 // real grid, and ⇧↑/⇧↓ only extend in the list layout.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-shift-select-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-shift-select-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 process.env.EAGLEMV_SELECT_ALL_COUNT = '10';
 

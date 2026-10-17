@@ -2,7 +2,7 @@
 // B1-01: a pane opened by a split shows its folder in the remembered sort.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-new-pane-sort-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-new-pane-sort-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

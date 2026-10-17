@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
-const data = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-interaction-audit-'));
+const data = require('./temp-userdata.cjs').tempUserData('eaglemv-interaction-audit-');
 app.setPath('userData', data);
 app.setPath('cache', path.join(data, 'cache'));
 // Keep the audit process alive between isolated scenario windows.

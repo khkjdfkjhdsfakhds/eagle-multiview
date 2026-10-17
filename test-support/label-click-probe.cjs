@@ -3,7 +3,7 @@
 // caption must not reach the first chip's remove button through a <label>.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-label-click-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-label-click-');
 app.setPath('userData', userData); app.setPath('cache', path.join(userData, 'cache'));
 
 async function run() {

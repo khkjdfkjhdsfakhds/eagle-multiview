@@ -5,7 +5,7 @@
 // first.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-folder-copy-confirm-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-folder-copy-confirm-');
 app.setPath('userData', profile);
 
 async function run() {
