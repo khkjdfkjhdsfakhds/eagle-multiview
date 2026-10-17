@@ -362,7 +362,7 @@ return {prompts,commentWrites:window.__audit.calls.filter(call=>call.kind==='add
   partialBatchTagsControl: `
 window.__audit.failIds=['item-2']; click(pane(0).querySelector('[data-id="item-1"]'));
 pane(0).querySelector('[data-id="item-2"]').dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}));
-document.querySelector('#batchTagInput').value='audit-tag'; click(document.querySelector('#batchTagButton'));
+const batchTagInput=document.querySelector('#batchTagInput'); batchTagInput.value='audit-tag'; batchTagInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
 await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate-set').length===2); await wait(200);
 return {selected:[...window.state.selected],item1Tags:window.__audit.snapshotItem('item-1').tags,item2Tags:window.__audit.snapshotItem('item-2').tags,activeOperations:window.state.operationTracker.size,toast:document.querySelector('#toast').textContent};`,
   historyQuery: `

@@ -31,7 +31,7 @@ test('new-window location menu exposes the three specified targets', () => {
   // Escape reaches the menu through the shared transient-surface closer (B3-06).
   assert.ok(renderer.includes("if (closeTopTransientSurface({ selection: false })) { event.preventDefault(); return; }"), 'Escape closes the location menu');
   assert.ok(renderer.includes("if (!$('#contextMenu').classList.contains('hidden')) {\n    hideContextMenu();"), 'the closer hides the context menu');
-  assert.ok(renderer.includes("clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control')"), 'outside clicks dismiss the location menu');
+  assert.ok(renderer.includes("clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control, [data-add-folder]')"), 'outside clicks dismiss the location menu');
 });
 
 test('desktop and web bridges expose current Eagle location and default-window requests', () => {

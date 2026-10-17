@@ -207,41 +207,46 @@
         <div id="previewBox" class="preview-box"></div>
         <div id="itemPalette" class="item-palette hidden" aria-label="主色调" title="主色调（点击复制色值）"></div>
         <div id="staleBanner" class="stale-banner hidden">此素材已在另一个窗口更新；保存时会检查冲突。</div>
+        <!-- Eagle's order: 名称 → 注释 → 链接, then 标签 → 文件夹 → 标注 → 基本信息. -->
         <section class="inspector-section">
           <div class="inspector-field">
             <input id="itemName" aria-label="名称" placeholder="名称" autocomplete="off">
           </div>
           <div class="inspector-field">
-            <div id="itemTagEditor" class="tag-editor">
-              <div id="itemTagChips" class="tag-chips"></div>
-              <input id="itemTagInput" aria-label="标签" placeholder="添加标签" autocomplete="off">
-            </div>
-          </div>
-          <div class="inspector-field">
-            <select id="itemRating" aria-label="评分">
-              <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
-              <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
-            </select>
-          </div>
-        </section>
-        <section class="inspector-section">
-          <div class="inspector-field">
-            <textarea id="itemAnnotation" aria-label="备注" placeholder="添加注释" rows="1"></textarea>
+            <textarea id="itemAnnotation" aria-label="注释" placeholder="添加注释" rows="1"></textarea>
           </div>
           <div class="inspector-field url-field">
-            <input id="itemURL" aria-label="来源" placeholder="http://" autocomplete="off">
+            <input id="itemURL" aria-label="链接" placeholder="http://" autocomplete="off">
             <div class="url-actions">
               <button id="openURLButton" type="button" class="small-action" title="在浏览器中打开来源网址" disabled>打开</button>
               <button id="copyURLButton" type="button" class="small-action" title="复制来源网址" disabled>复制</button>
             </div>
           </div>
         </section>
+        <section class="inspector-section" aria-labelledby="itemTagsLabel">
+          <h3 id="itemTagsLabel">标签</h3>
+          <div id="itemTagEditor" class="tag-editor">
+            <div id="itemTagChips" class="tag-chips"></div>
+            <input id="itemTagInput" aria-labelledby="itemTagsLabel" placeholder="添加标签" autocomplete="off">
+          </div>
+        </section>
+        <section class="inspector-section" aria-labelledby="itemFoldersLabel">
+          <h3 id="itemFoldersLabel">文件夹</h3>
+          <div id="itemFolderChips" class="folder-chips"></div>
+        </section>
         <section id="itemCommentsSection" class="inspector-section comments-section">
           <div class="comments-heading"><h3>评论与标注</h3><button id="addCommentButton" type="button" class="small-action" title="添加评论">添加</button></div>
           <div id="itemComments" class="item-comments"><span class="muted">正在读取…</span></div>
         </section>
         <section class="inspector-section">
-          <h3>文件信息</h3>
+          <h3>基本信息</h3>
+          <div class="inspector-rating-row"><em>评分</em><div id="itemStars" class="inspector-stars" role="group" aria-label="评分"></div></div>
+          <!-- The stars write this select so saving, drafts and conflict
+               recovery keep reading one rating control. -->
+          <select id="itemRating" aria-label="评分" hidden tabindex="-1">
+            <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
+            <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+          </select>
           <div id="itemMeta" class="item-meta"></div>
         </section>
         <section id="generationMetadataSection" class="inspector-section generation-metadata-section hidden">
@@ -260,30 +265,36 @@
         </div>
         <button id="trashButton" class="danger-link">移入废纸篓</button>
       </div>
+      <!-- Eagle keeps one inspector for any selection size: the multi-select
+           panel mirrors the single one, editing every selected item at once. -->
       <div id="multiSelection" class="multi-selection hidden">
-        <h2><span id="multiCount">0</span> 个素材</h2>
-        <p>将所选素材拖到左侧文件夹即可批量归类。</p>
-        <div id="sharedTagsSection" class="field-group shared-tags-section hidden" role="group" aria-labelledby="sharedTagsLabel"><span id="sharedTagsLabel">共同标签</span>
-          <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
-        </div>
-        <label>批量设置评分
-          <select id="batchRating">
-            <option value="">选择评分…</option>
-            <option value="0">未评分</option>
-            <option value="1">★</option>
-            <option value="2">★★</option>
-            <option value="3">★★★</option>
-            <option value="4">★★★★</option>
-            <option value="5">★★★★★</option>
-          </select>
-        </label>
-        <div class="field-group" role="group" aria-labelledby="batchTagLabel"><label id="batchTagLabel" for="batchTagInput">批量添加标签</label>
-          <div id="batchTagEditor" class="tag-editor">
-            <div id="batchTagChips" class="tag-chips"></div>
-            <input id="batchTagInput" placeholder="输入标签后按 Return" autocomplete="off">
+        <div id="multiPreview" class="multi-preview" aria-hidden="true"></div>
+        <p id="multiCountLine" class="multi-count">已选 <span id="multiCount">0</span> 个文件</p>
+        <section class="inspector-section">
+          <div class="inspector-field">
+            <textarea id="batchAnnotation" aria-label="注释（应用到所选素材）" placeholder="添加注释" rows="1"></textarea>
           </div>
-        </div>
-        <button id="batchTagButton" class="primary-button">添加标签</button>
+          <div class="inspector-field">
+            <input id="batchURL" aria-label="链接（应用到所选素材）" placeholder="http://" autocomplete="off">
+          </div>
+        </section>
+        <section id="sharedTagsSection" class="inspector-section shared-tags-section" aria-labelledby="sharedTagsLabel">
+          <h3 id="sharedTagsLabel">标签</h3>
+          <div id="batchTagEditor" class="tag-editor">
+            <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
+            <div id="batchTagChips" class="tag-chips"></div>
+            <input id="batchTagInput" aria-labelledby="sharedTagsLabel" placeholder="添加标签" autocomplete="off">
+          </div>
+        </section>
+        <section class="inspector-section" aria-labelledby="batchFoldersLabel">
+          <h3 id="batchFoldersLabel">文件夹</h3>
+          <div id="batchFolderChips" class="folder-chips"></div>
+        </section>
+        <section class="inspector-section">
+          <h3>基本信息</h3>
+          <div class="inspector-rating-row"><em>评分</em><div id="batchStars" class="inspector-stars" role="group" aria-label="评分（应用到所选素材）"></div></div>
+          <div id="batchMeta" class="item-meta"></div>
+        </section>
         <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
         <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
       </div>

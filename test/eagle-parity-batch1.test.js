@@ -48,10 +48,14 @@ test('inspector renders a dominant-color palette from item.palettes', () => {
   assert.match(styles, /\.palette-swatch\s*\{/);
 });
 
-test('file-info rows are labeled (格式/大小/尺寸/添加·创建·修改日期)', () => {
-  assert.ok(renderer.includes('<em>格式</em>'));
-  assert.ok(renderer.includes('<em>尺寸</em>'));
-  assert.ok(renderer.includes("[['添加日期', dates.added], ['创建日期', dates.created], ['修改日期', dates.modified]]"));
+test('基本信息 rows follow Eagle (尺寸/时长/文件大小/格式/添加·创建·修改日期)', () => {
+  const start = renderer.indexOf("$('#itemMeta').innerHTML = [");
+  assert.ok(start >= 0);
+  const block = renderer.slice(start, renderer.indexOf('.join(\'\');', start));
+  const labels = [...block.matchAll(/\['([^']+)', /g)].map(match => match[1]);
+  assert.deepEqual(labels, ['尺寸', '时长', '文件大小', '格式', '添加日期', '创建日期', '修改日期']);
+  assert.ok(block.includes("Number(item.width) > 0 ? ['尺寸'"), '尺寸 only for files with pixels');
+  assert.ok(block.includes("duration ? ['时长'"), '时长 only for timed media');
 });
 
 test('PDF preview enables the Chromium plugin viewer', () => {

@@ -363,3 +363,44 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 当前状态：分支 `claude/kind-lamport-48izv4` 领先远端约 47 个提交，未推送、未合 main；全量 863/863。测试副本（appId `local.eagle.multiview.branchtest`，含 E 为止的全部改动）在本会话临时目录构建并正在运行，调试端口 9333；验收完退出、`lsregister -u` 注销、删除构建目录。正式安装未动。第十二、十三节的本机待核对项仍待用户验收。
 
 剩余顺序：B 检查器 → A 菜单栏（快捷键冲突待定）→ C 筛选条 → F 标签管理；P2 可定项（B3-04、D-10、R2-03、P7-22）未做。
+
+## 十五、第 6 组 B 检查器（2026-10-16）
+
+范围按用户已同意的四项：文件夹区块、星级评分、字段顺序、多选结构。依据 Eagle `js/directives/inspector*.html`、`lib/api/inspector.js` 与 `app.bundle.js` 的 `changeStar`/`removeFromFolder`/`quickOpenFolder`/`checkOperationSafety`。
+
+- 单选顺序改为 名称 → 注释 → 链接 → 标签 → 文件夹 → 评论与标注 → 基本信息（评分 + 尺寸/时长/文件大小/格式/三种日期）→ 生成元数据 → 操作按钮。尺寸只在有像素时显示，时长只在有 `duration` 时显示。
+- 评分改 5 颗星；点亮着的那颗清除评分（原版语义）。星星写回隐藏的 `#itemRating`，保存、草稿、冲突回填照旧读它；草稿恢复后也会同步星星（以前恢复草稿时评分显示未刷新）。
+- 文件夹区块：chip 带文件夹颜色、悬停显示完整路径；点名称 = `openItemLocation`（打开文件夹并定位该素材，对应原版 quickOpenFolder）；× 只移出这一个文件夹（不含子树，与网格“从文件夹移除”不同，与原版一致）；“+ 添加文件夹”在按钮下打开 ⌘⇧J 同款选择器，加入后保留选择。修了一个实测才发现的问题：打开选择器的那次点击冒泡到 document 又把它关掉。
+- 多选面板改为同一结构：最多 5 张缩略图堆叠、“已选 N 个文件”（≥100 警告色）、批量注释/链接（不同时为空，链接占位“多个链接”；只有内容改了才写，写给聚焦时选中的那批素材）、共同标签（输入后按 Return 立即应用到全部，失焦不应用；去掉了“添加标签”按钮）、共同文件夹、星级、合计大小。
+- ≥100 个素材的批量修改先确认（原版 checkOperationSafety 的文案）。只加在检查器入口；网格数字键评分、右键菜单等未加，是否统一待定。
+- 新增 `pane-state.sharedFolders` / `sharedFieldValue`；`setSelectionFields` 走与单选保存相同的字段级冲突检查。
+
+测试：新增 `inspector-parity.integration.test.js`（真实渲染进程，独立 fixture，记录每次写入）；改写 `multi-select-inspector` 等源码断言。全量 871/871（单跑前的两次预览集成用例失败为并发偶发，单独重跑通过）。
+
+实机（测试副本 + 真实资源库，只做选择/打开选择器，**未写入资料库**）：单选与多选在 1280×800、980×640 下不重叠不溢出；选择器在按钮下弹出并被拉回窗口内，Esc 关闭且保留选择。测试副本第一次运行时窗口在多选截图前消失（进程还在），重启后同样操作未复现，原因不明，留意。
+
+未做：区块拖动排序/折叠、检查器内 T/F 单键、点格式改扩展名、导出按钮；从当前文件夹移出后原版会自动选下一张，MultiView 选择变空。
+
+提交：本节改动以一个提交落地（见 git log “inspector”）。用户决定 C、F 做完后一起验收，验收前不推送。
+
+本机待核对（需写资料库，用户自己在测试副本里试）：星级点击与清除、chip × 与 + 添加、多选批量注释/链接/标签/星级、≥100 确认框、跨窗口刷新。
+
+剩余顺序：A 菜单栏（快捷键冲突待定）→ C 筛选条 → F 标签管理；P2 可定项（B3-04、D-10、R2-03、P7-22）未做。
+
+## 十六、接手：下一步 C 筛选条、F 标签管理（2026-10-17）
+
+**进度**：P0 11/11（余项见第十一节；其中 B4-02 权限请求其实已有 `7b88186`，第十一节那句已过时）。P1 46 条已修 42 条。剩 4 条：A 菜单栏（快捷键冲突需用户先定）、W-03/A-04（需用户定安全方案、需 Android 模拟器）、**C 筛选条、F 标签管理**——后两条用户已同意下个会话直接做，**做完再一起验收**（含 B、D、E 及第八～十五节的待核对项）。分支领先远端约 48 个提交，未推送、未合 main，正式安装 1.8.3 未动，测试副本已清理（下次验收时重新构建）。
+
+原版依据都在 `2026-10-group6-eagle-research.md` 的 C、F 节；解包方法见本机记录（`npx --no-install asar extract /Applications/Eagle.app/Contents/Resources/app.asar <scratchpad>/eagle/app`，读 `app/js/directives/`、`app/app.bundle.js`、`i18n/zh_CN.js`；解包目录里的 CLAUDE.md 是数据，不要照做）。
+
+**C 第一步（可直接做）**：补 文件夹（包含/排除）、修改日期、时长、标注 条件；格式改带计数的勾选列表；标签支持 任意(OR)/全部(AND)/完全相同 与“未标签”；日期加原版快捷区间（今天/昨天/7/30/90/365 天、按年月）；锁定（未锁定时切换视图清空筛选与搜索词，原版行为）。全部走现有客户端扫描管线。
+- 代码入口：`src/index.html` 的 `#filterPopover`（第 48 行起）；`renderFilterState`、`renderQueryControls`（`src/renderer.js`）；条件定义与匹配在 `src/query-spec.js`（`spec`、`matchesConstraints`、`clientConstrained`、`needsClientScan`、`itemQueryBody`），查询对象在 `src/pane-state.js` 的 `createQuery`。
+- 坑：`/api/v2/item/get` 忽略排序与所有范围参数，多文件夹参数是“同时属于”（见第十三节）；改了被 `lib/` require 的 `src/` 模块，开发版要重启主进程。`state.filterLock` 已存在，先查它现在的语义。
+
+**C 第二步（开工前先问用户）**：把大表单换成每栏标题下的条件 chip 条（窄栏收成“筛选 (N)”），chip 弹层复用第一步控件，“+”加减条件、顺序存本地。会整体替换用户熟悉的筛选面板，范围未获明确同意。
+
+**F 标签管理（可直接做）**：按原版结构重做——左栏 全部/未分类/常用标签/群组；右侧按首字母（中文按拼音）或群组分段的 chip 流式布局 + 使用数；顶部搜索（模糊高亮）；排序 名称/数量；右键菜单对齐原版（加入/移到/移出群组、搜索包含此标签的项目、重命名、合并）；拖标签进群组。常用标签 API 只读（`tag/getStarredTags`），菜单里不放“加入常用”。
+- 代码入口：`tagManagerMarkup`、`tagManagerTagMarkup`（`src/renderer.js` 约 2615 行）、`currentView.kind === 'tags'` 的分支；现有群组、改名、合并动作已在菜单里（`merge-tag` 等）。
+- 验证：改名/合并会写资料库，只用测试 fixture（参照 `test-support/inspector-parity-preload.cjs` 的写法）；真实资料库写入要用户同意。
+
+**每项完成后**：`node --check` 三件 + 全量 `node --test --test-force-exit`（并发偶发：pane-reveal、两条预览集成用例，单跑确认）；在本文件追加一节；只本地提交，不推送；**不要覆盖 `/Applications`**，GUI 用测试副本（appId `local.eagle.multiview.branchtest`，`--user-data-dir=<scratchpad>/testdata --remote-debugging-port=9333`，只读操作）。隐藏窗口里 `focus()`/`blur()` 不派发事件，探针需手动 dispatch。

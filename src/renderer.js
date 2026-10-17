@@ -73,6 +73,8 @@ const {
   compareBySort: compareItemsBySort,
   itemDates,
   sharedTags: computeSharedTags,
+  sharedFolders: computeSharedFolders,
+  sharedFieldValue,
   appendableTailCount,
   paneLayoutSpecs,
   paneRevealTargets,
@@ -1491,7 +1493,7 @@ function setConnection(connected, message) {
     // as the host stays away.
     document.body.classList.toggle('host-offline', !connected);
   }
-  for (const selector of ['#trashButton', '#batchTrashButton', '#batchTagButton', '#addCommentButton', '#customThumbnailButton']) {
+  for (const selector of ['#trashButton', '#batchTrashButton', '#addCommentButton', '#customThumbnailButton']) {
     $(selector).disabled = !connected;
   }
   $('#pinButton').disabled = !connected || state.currentView.kind !== 'folder' || state.selected.size !== 1;
@@ -2118,6 +2120,7 @@ function chooseTagSuggestion(kind, name) {
   input.value = '';
   renderTagSuggestionPopover(kind, { open: true });
   input.focus();
+  if (kind === 'batch') applyBatchTags();
 }
 
 function renderTagSuggestions() {
@@ -3393,16 +3396,140 @@ function renderItemPalette(item) {
 }
 
 function renderSharedTags() {
-  const section = $('#sharedTagsSection');
   const chips = $('#sharedTagChips');
-  if (!section || !chips) return;
+  if (!chips) return;
   const selectedItems = state.items.filter(item => state.selected.has(item.id));
   const tags = computeSharedTags(selectedItems);
-  section.classList.toggle('hidden', !tags.length);
   chips.innerHTML = tags.map(tag => tagChipHTML(tag, {
     removeAttr: 'data-remove-shared-tag',
     removeLabel: `从所选素材移除 ${tag}`
   })).join('');
+}
+
+// Eagle's 评分 row: five stars, and clicking the lit one clears the rating.
+function inspectorStarsHTML(rating) {
+  const value = Math.max(0, Math.min(5, Number(rating) || 0));
+  return [1, 2, 3, 4, 5].map(star =>
+    `<button type="button" class="inspector-star${star <= value ? ' filled' : ''}" data-inspector-star="${star}" aria-label="${star} 星" aria-pressed="${star === value}" title="${star === value ? '再次点击清除评分' : `${star} 星`}">★</button>`
+  ).join('');
+}
+
+function nextStarRating(current, clicked) {
+  return Number(clicked) === Number(current || 0) ? 0 : Number(clicked);
+}
+
+// Eagle's 文件夹 block: a chip per folder (folder colour, full path on hover)
+// that opens the folder, × to take the item out of just that folder, and
+// 添加文件夹 for the folder picker.
+function inspectorFolderChipsHTML(folderIds) {
+  const folders = state.library?.folders;
+  const chips = (folderIds || []).map(id => {
+    const path = findFolderPath(folders, id);
+    const folder = path.at(-1);
+    if (!folder) return '';
+    const color = folderColorValue(folder);
+    const fullPath = path.map(entry => entry.name).join(' / ');
+    return `<span class="tag-chip folder-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''} title="${escapeHTML(fullPath)}"><button type="button" class="folder-chip-open" data-open-folder="${escapeHTML(folder.id)}" aria-label="打开文件夹 ${escapeHTML(fullPath)}">${escapeHTML(folder.name)}</button><button type="button" data-remove-folder="${escapeHTML(folder.id)}" aria-label="从文件夹“${escapeHTML(folder.name)}”移除">×</button></span>`;
+  }).join('');
+  const shortcut = keyboardPlatform.shortcutText('⌘⇧J');
+  return chips + (chips
+    ? `<button type="button" class="folder-chip-add" data-add-folder title="添加文件夹（${shortcut}）" aria-label="添加文件夹">+</button>`
+    : `<button type="button" class="folder-chip-add full" data-add-folder title="添加文件夹（${shortcut}）">+ 添加文件夹</button>`);
+}
+
+function formatMediaDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (total <= 0) return '';
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+// Eagle asks before an edit that touches 100 or more items at once.
+const BULK_CONFIRM_THRESHOLD = 100;
+function confirmBulkEdit(count) {
+  if (count < BULK_CONFIRM_THRESHOLD) return true;
+  return confirm(`批量操作确认\n\n这个操作会影响 ${count.toLocaleString()} 个文件，确定要继续吗？`);
+}
+
+function selectedItemsInOrder() {
+  return state.items.filter(item => state.selected.has(item.id));
+}
+
+// What the multi-select panel shows. Fields being typed into keep their text:
+// a refresh mid-edit must not wipe what the user is about to apply.
+function renderMultiSelection(count) {
+  const items = selectedItemsInOrder();
+  $('#multiCount').textContent = count.toLocaleString();
+  $('#multiCountLine').classList.toggle('warning', count >= BULK_CONFIRM_THRESHOLD);
+  $('#multiPreview').innerHTML = items.slice(0, 5).map((item, index) =>
+    `<img src="${mediaURL('thumb', item.id)}" alt="" style="--stack-index:${index}" draggable="false">`
+  ).join('');
+  $('#multiPreview').dataset.count = String(Math.min(items.length, 5));
+  const annotation = sharedFieldValue(items, 'annotation');
+  const url = sharedFieldValue(items, 'url');
+  const annotationField = $('#batchAnnotation');
+  const urlField = $('#batchURL');
+  if (document.activeElement !== annotationField) {
+    annotationField.value = annotation.value;
+    resizeTextarea(annotationField);
+  }
+  if (document.activeElement !== urlField) {
+    urlField.value = url.value;
+    urlField.placeholder = url.mixed ? '多个链接' : 'http://';
+  }
+  renderSharedTags();
+  $('#batchFolderChips').innerHTML = inspectorFolderChipsHTML(computeSharedFolders(items));
+  const star = sharedFieldValue(items, 'star');
+  $('#batchStars').innerHTML = inspectorStarsHTML(star.value);
+  $('#batchStars').dataset.rating = String(star.value);
+  const totalSize = items.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
+  $('#batchMeta').innerHTML = totalSize > 0 ? `<span><em>文件大小</em>${formatBytes(totalSize)}</span>` : '';
+}
+
+// Applies one inspector field to every selected item, through the same
+// field-level conflict check the single-item save uses.
+async function setSelectionFields(payload) {
+  const paneId = payload?.paneId || state.activePaneId;
+  const pane = paneById(paneId);
+  const ids = payload?.ids || [...(pane?.selected || [])];
+  const patch = payload?.patch || {};
+  if (!pane || !ids.length || !state.connected || !Object.keys(patch).length) return false;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在批量修改…', { key: `fields:${paneId}` });
+  if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
+  // A field committed on blur may land after a click already moved the
+  // selection; the new selection then stays as the user left it.
+  const editsSelection = sameSelection(pane, new Set(ids));
+  setSyncStatus('正在批量修改…');
+  try {
+    const outcome = await runItemBatch(ids, async id => {
+      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const result = await window.eagleMV.mutate({ id, patch, base: item, libraryPath });
+      if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      return result;
+    }, 'Eagle 批量修改请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
+    const next = outcome.failed.length
+      ? outcome.failed
+      : ids.filter(id => pane.items.some(item => item.id === id));
+    if (editsSelection && settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    toast(outcome.failed.length
+      ? `已修改 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
+      : (payload.successMessage || `已修改 ${outcome.succeeded.length} 个素材`), outcome.failed.length ? 4200 : 2400);
+    return true;
+  } catch (error) {
+    toast(`修改失败：${error.message}`, 4000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
 }
 
 function updateURLActions() {
@@ -3443,11 +3570,9 @@ function renderInspector() {
   $('#multiSelection').classList.toggle('hidden', count < 2);
   if (count !== 1) inspectorShown = null;
   if (count >= 2) {
-    $('#multiCount').textContent = count;
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
     $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
-    renderSharedTags();
-    $('#batchRating').value = '';
+    renderMultiSelection(count);
     state.selectedBase = null;
     state.inspectorDirty = false;
     state.inspectorEditing = false;
@@ -3487,7 +3612,6 @@ function renderInspector() {
   $('#itemName').value = item.name || '';
   setTagValues('item', item.tags || [], false);
   $('#itemRating').value = String(item.star || 0);
-  syncRatingPlaceholder();
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
   const draftKey = inspectorDraftKey(state.activePaneId, id);
@@ -3510,6 +3634,7 @@ function renderInspector() {
     if (draft.error === 'conflict') showInspectorDraftConflict(draft);
     else if (draft.error) $('#staleBanner').classList.remove('hidden');
   }
+  syncRatingPlaceholder();
   updateURLActions();
   resizeAnnotation();
   // A refresh that re-renders the item already shown (a rating, a tag,
@@ -3525,11 +3650,20 @@ function renderInspector() {
   if (!sameItem || shown.previewHTML !== previewHTML) $('#previewBox').innerHTML = previewHTML;
   inspectorShown.previewHTML = previewHTML;
   renderItemPalette(item);
-  $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span>${(() => {
-    const dates = itemDates(item);
-    return [['添加日期', dates.added], ['创建日期', dates.created], ['修改日期', dates.modified]]
-      .map(([label, time]) => `<span title="${formatDateTime(time)}"><em>${label}</em>${formatDateTime(time)}</span>`).join('');
-  })()}`;
+  // Eagle's 基本信息 order; 尺寸 only for files that have pixels, 时长 only
+  // for timed media.
+  const duration = formatMediaDuration(item.duration);
+  const dates = itemDates(item);
+  $('#itemMeta').innerHTML = [
+    Number(item.width) > 0 ? ['尺寸', `${item.width} × ${item.height || 0}`] : null,
+    duration ? ['时长', duration] : null,
+    ['文件大小', formatBytes(item.size)],
+    ['格式', String(item.ext || '').toUpperCase()],
+    ['添加日期', formatDateTime(dates.added)],
+    ['创建日期', formatDateTime(dates.created)],
+    ['修改日期', formatDateTime(dates.modified)]
+  ].filter(Boolean).map(([label, value]) => `<span title="${escapeHTML(value)}"><em>${label}</em>${escapeHTML(value)}</span>`).join('');
+  $('#itemFolderChips').innerHTML = inspectorFolderChipsHTML(item.folders);
   if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
   loadComments(item, { quiet: sameItem });
@@ -3825,15 +3959,24 @@ function bindMetadataViewerControls() {
   }
 }
 
-function resizeAnnotation() {
-  const annotation = $('#itemAnnotation');
-  if (!annotation) return;
-  annotation.style.height = 'auto';
-  annotation.style.height = `${Math.max(annotation.scrollHeight, 38)}px`;
+function resizeTextarea(field) {
+  if (!field) return;
+  field.style.height = 'auto';
+  field.style.height = `${Math.max(field.scrollHeight, 38)}px`;
 }
 
+function resizeAnnotation() {
+  resizeTextarea($('#itemAnnotation'));
+}
+
+// The stars mirror the hidden #itemRating select, which the save, the draft
+// and the conflict recovery all read.
 function syncRatingPlaceholder() {
-  $('#itemRating')?.classList.toggle('has-value', Number($('#itemRating').value) > 0);
+  const stars = $('#itemStars');
+  if (!stars) return;
+  const rating = Number($('#itemRating').value) || 0;
+  stars.innerHTML = inspectorStarsHTML(rating);
+  stars.dataset.rating = String(rating);
 }
 
 function renderGenerationMetadata(metadata) {
@@ -4450,7 +4593,9 @@ async function addSelectionToFolder(payload) {
   const folderId = payload?.folderId;
   if (!folderId) return false;
   const libraryPath = state.library?.path;
-  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId] }, '正在加入文件夹…', payload?.paneId || state.activePaneId);
+  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId] }, '正在加入文件夹…', payload?.paneId || state.activePaneId, {
+    keepSelection: Boolean(payload?.keepSelection)
+  });
   if (completed && state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
   return completed;
 }
@@ -4580,8 +4725,105 @@ async function setSelectionRating(payload) {
   }
 }
 
+// The 文件夹 block of either inspector: a chip opens its folder and shows the
+// item there (Eagle's quickOpenFolder), × takes the selection out of that one
+// folder only — not its subfolders, unlike the grid's 从文件夹移除 — and
+// 添加文件夹 opens the folder picker under the button.
+function handleInspectorFolderClick(event) {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  const remove = event.target.closest('[data-remove-folder]');
+  const open = event.target.closest('[data-open-folder]');
+  const add = event.target.closest('[data-add-folder]');
+  if (remove) {
+    const folderId = remove.dataset.removeFolder;
+    if (!confirmBulkEdit(ids.length)) return;
+    const name = findFolder(state.library?.folders, folderId)?.name || '文件夹';
+    mutateSelectionSet(ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', state.activePaneId, {
+      keepSelection: true,
+      successMessage: `已从「${name}」移除`
+    });
+  } else if (open) {
+    openItemLocation(ids[0], open.dataset.openFolder);
+  } else if (add) {
+    showFolderAssignmentPicker(ids, { anchor: add, keepSelection: true });
+  }
+}
+
+// A multi-select note or link applies to the items selected when editing
+// began, and only if it changed: focusing and leaving a field is not an edit.
+let batchFieldEdit = null;
+function beginBatchFieldEdit(field, control) {
+  batchFieldEdit = { field, paneId: state.activePaneId, ids: [...state.selected], original: control.value };
+}
+
+function commitBatchFieldEdit(field, control) {
+  const edit = batchFieldEdit;
+  batchFieldEdit = null;
+  if (!edit || edit.field !== field) return;
+  const value = field === 'url' ? control.value.trim() : control.value;
+  const changed = value !== (field === 'url' ? edit.original.trim() : edit.original);
+  if (changed && edit.ids.length >= 2 && confirmBulkEdit(edit.ids.length)) {
+    setSelectionFields({
+      ids: edit.ids,
+      paneId: edit.paneId,
+      patch: { [field]: value },
+      successMessage: `已修改 ${edit.ids.length} 个素材的${field === 'url' ? '链接' : '注释'}`
+    });
+  }
+  // The selection may have moved while the field held the focus.
+  if (state.selected.size >= 2) renderMultiSelection(state.selected.size);
+}
+
+// Eagle's multi-select tag field applies a tag to every selected item as soon
+// as it is entered; there is no separate 添加 step.
+async function applyBatchTags() {
+  commitTagInput('batch');
+  const tags = [...state.batchTags];
+  if (!tags.length) return;
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  const ids = [...(pane?.selected || [])];
+  if (!ids.length || !confirmBulkEdit(ids.length)) return;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
+  if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
+  setSyncStatus('正在合并标签…');
+  try {
+    const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
+      id, field: 'tags', add: tags, libraryPath
+    }), 'Eagle 批量标签请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
+    // Adding a tag keeps the selection, the way removing one already does
+    // (removeTagFromSelection passes keepSelection) — the items are all
+    // still on screen, and losing them after one tag makes the second tag a
+    // re-selection chore.
+    settleBatchSelection(pane, selectionBefore, outcome.failed.length
+      ? outcome.failed
+      : ids.filter(id => pane.items.some(item => item.id === id)));
+    $('#batchTagInput').value = '';
+    setTagValues('batch', [], false);
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    if (state.activePaneId === paneId) withActivePane(paneId, () => {
+      updateCardSelectionStyles();
+      renderInspector();
+    });
+    toast(outcome.failed.length
+      ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中`
+      : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
+  } catch (error) {
+    toast(`添加标签失败：${error.message}`, 4000);
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
 function removeTagFromSelection(tag) {
-  if (!tag) return false;
+  if (!tag || !confirmBulkEdit(state.selected.size)) return false;
   // Keeps the multi-selection on success so several shared tags can be
   // removed in a row; everything else rides the shared batch pipeline.
   return mutateSelectionSet([...state.selected], 'tags', { remove: [tag] }, '正在移除标签…', state.activePaneId, {
@@ -6061,7 +6303,8 @@ function bindTagEditor(kind) {
       chooseTagSuggestion(kind, suggestions[activeIndex].name);
     } else if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
       event.preventDefault();
-      commitTagInput(kind);
+      if (kind === 'batch' && event.key === 'Enter') applyBatchTags();
+      else commitTagInput(kind);
     } else if (event.key === 'Backspace' && !input.value && tagValues(kind).length) {
       removeTag(kind, tagValues(kind).at(-1));
     }
@@ -6069,7 +6312,9 @@ function bindTagEditor(kind) {
   input.addEventListener('focus', () => openTagSuggestions(kind));
   input.addEventListener('input', () => renderTagSuggestionPopover(kind, { open: true }));
   input.addEventListener('blur', () => {
-    commitTagInput(kind);
+    // A multi-select tag applies on Return only, as in Eagle: leaving the
+    // field must not tag a whole selection with a half-typed word.
+    if (kind !== 'batch') commitTagInput(kind);
     if (kind === 'item') queueInspectorAutoSave({ immediate: true });
     setTimeout(() => {
       if (document.activeElement !== input && !popover?.contains(document.activeElement)) closeTagSuggestions(kind);
@@ -6795,7 +7040,7 @@ async function executeContextAction(action, payload) {
   if (action === 'copy-path') return copyItemPath(firstId);
   if (action === 'copy-tags') return copyTagsFromItems(ids);
   if (action === 'paste-tags') return pasteTagsToItems(ids);
-  if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId });
+  if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId, keepSelection: Boolean(data.keepSelection) });
   if (action === 'move-folder') return moveSelectionToFolder({ ids, folderId: payload.folderId });
   if (action === 'remove-folder') return removeSelectionFromFolder({ ids, folderId: state.currentView.id });
   if (action === 'last-folder') return addSelectionToFolder({ ids, folderId: state.recentFolders[0]?.id });
@@ -7562,17 +7807,21 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
   });
 }
 
-function showFolderAssignmentPicker(ids = selectedActionIds()) {
+// `anchor` opens the picker under that element (the inspector's 添加文件夹)
+// instead of the first selected card; `keepSelection` keeps the items
+// selected afterwards, as Eagle's inspector does.
+function showFolderAssignmentPicker(ids = selectedActionIds(), { anchor = null, keepSelection = false } = {}) {
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   if (!uniqueIds.length) return false;
-  const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(uniqueIds[0])}"]`);
+  const card = anchor || paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(uniqueIds[0])}"]`);
   const rect = card?.getBoundingClientRect();
-  const x = rect ? rect.left + Math.min(rect.width, 34) : Math.round(window.innerWidth / 2 - 147);
+  const x = rect ? rect.left + (anchor ? 0 : Math.min(rect.width, 34)) : Math.round(window.innerWidth / 2 - 147);
   const y = rect ? Math.min(rect.bottom + 6, window.innerHeight - 180) : Math.round(window.innerHeight / 2 - 180);
   showContextMenuAt(x, y, {
     kind: 'shortcut-folder-picker',
     ids: uniqueIds,
-    folderId: state.currentView.kind === 'folder' ? state.currentView.id : null
+    folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
+    keepSelection
   });
   requestAnimationFrame(() => $('#contextMenu').querySelector('.context-folder-search')?.focus());
   return true;
@@ -9451,7 +9700,8 @@ function bindEvents() {
     // menu that same long-press just opened. Cards were exempted by selector;
     // the folder tree and the pane heading need the shared timestamp.
     if (Date.now() < suppressTouchClickUntil) return;
-    if (!clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control')) hideContextMenu();
+    // The inspector's 添加文件夹 opens the folder picker with this very click.
+    if (!clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control, [data-add-folder]')) hideContextMenu();
   });
   for (const selector of ['#itemName', '#itemURL']) {
     $(selector).addEventListener('input', markDirty);
@@ -9483,6 +9733,13 @@ function bindEvents() {
     const url = $('#itemURL').value.trim();
     if (!url) return;
     await copyTextWithFeedback(url, '已复制来源网址', 2000);
+  });
+  $('#itemStars').addEventListener('click', event => {
+    const star = event.target.closest('[data-inspector-star]');
+    if (!star) return;
+    const select = $('#itemRating');
+    select.value = String(nextStarRating(select.value, star.dataset.inspectorStar));
+    select.dispatchEvent(new Event('change'));
   });
   $('#itemRating').addEventListener('change', () => {
     syncRatingPlaceholder();
@@ -9523,59 +9780,36 @@ function bindEvents() {
     const restore = ids.length > 0 && ids.every(id => itemById(id)?.isDeleted);
     setTrash(ids, !restore);
   });
-  $('#batchTagButton').addEventListener('click', async () => {
-    commitTagInput('batch');
-    const tags = [...state.batchTags];
-    if (!tags.length) return;
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    const ids = [...(pane?.selected || [])];
-    const libraryPath = state.library?.path;
-    let operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
-    if (!operationToken) return;
-    const selectionBefore = new Set(pane.selected);
-    setSyncStatus('正在合并标签…');
-    try {
-      const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
-        id, field: 'tags', add: tags, libraryPath
-      }), 'Eagle 批量标签请求超时');
-      if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
-      // Adding a tag keeps the selection, the way removing one already does
-      // (removeTagFromSelection passes keepSelection) — the items are all
-      // still on screen, and losing them after one tag makes the second tag a
-      // re-selection chore.
-      settleBatchSelection(pane, selectionBefore, outcome.failed.length
-        ? outcome.failed
-        : ids.filter(id => pane.items.some(item => item.id === id)));
-      $('#batchTagInput').value = '';
-      setTagValues('batch', [], false);
-      endForegroundOperation(operationToken);
-      operationToken = null;
-      await refresh({ reset: true, preserveScroll: true, paneId });
-      if (state.activePaneId === paneId) withActivePane(paneId, () => {
-        updateCardSelectionStyles();
-        renderInspector();
-      });
-      toast(outcome.failed.length
-        ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中`
-        : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
-    } catch (error) {
-      toast(`添加标签失败：${error.message}`, 4000);
-    } finally {
-      setSyncStatus('所有窗口已同步');
-      endForegroundOperation(operationToken);
-    }
-  });
   $('#sharedTagChips').addEventListener('click', event => {
     const button = event.target.closest('[data-remove-shared-tag]');
     if (button) removeTagFromSelection(button.dataset.removeSharedTag);
   });
-  $('#batchRating').addEventListener('change', event => {
-    const value = event.target.value;
-    event.target.value = '';
-    if (value === '') return;
-    setSelectionRating({ ids: [...state.selected], rating: Number(value) });
+  $('#batchStars').addEventListener('click', event => {
+    const star = event.target.closest('[data-inspector-star]');
+    const ids = [...state.selected];
+    if (!star || ids.length < 2 || !confirmBulkEdit(ids.length)) return;
+    setSelectionRating({ ids, rating: nextStarRating(event.currentTarget.dataset.rating, star.dataset.inspectorStar) });
   });
+  $('#itemFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
+  $('#batchFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
+  for (const [field, selector] of [['annotation', '#batchAnnotation'], ['url', '#batchURL']]) {
+    const control = $(selector);
+    control.addEventListener('focus', () => beginBatchFieldEdit(field, control));
+    control.addEventListener('blur', () => commitBatchFieldEdit(field, control));
+    control.addEventListener('keydown', event => {
+      // Return applies a link; a note takes newlines like the single field.
+      if (field === 'url' && event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault();
+        control.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (batchFieldEdit?.field === field) control.value = batchFieldEdit.original;
+        batchFieldEdit = null;
+        control.blur();
+      }
+    });
+  }
+  $('#batchAnnotation').addEventListener('input', event => resizeTextarea(event.target));
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);
   $('#slideshowToggle').addEventListener('click', event => {

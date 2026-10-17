@@ -343,6 +343,32 @@
     return [...(shared || [])];
   }
 
+  // Folders every given item belongs to, in first-item order — the multi-select
+  // inspector's 文件夹 block (Eagle's calculateFolders).
+  function sharedFolders(items) {
+    let shared = null;
+    for (const item of items || []) {
+      const folders = new Set((item?.folders || []).map(String));
+      shared = shared === null ? folders : new Set([...shared].filter(id => folders.has(id)));
+      if (!shared.size) break;
+    }
+    return [...(shared || [])];
+  }
+
+  // The value a multi-selection shows for one field: the common value, or the
+  // empty value when the items differ (Eagle's calculateAnnotation/Url/Star).
+  // Eagle omits an empty annotation or a zero rating, so a missing field
+  // counts as the empty value.
+  function sharedFieldValue(items, field) {
+    const empty = field === 'star' ? 0 : '';
+    const list = items || [];
+    if (!list.length) return { value: empty, mixed: false };
+    const valueOf = item => item?.[field] ?? empty;
+    const first = valueOf(list[0]);
+    const mixed = list.some(item => valueOf(item) !== first);
+    return { value: mixed ? empty : first, mixed };
+  }
+
   // Eagle's ⇧-click: add the run from the anchor (the last plain or ⌘-click)
   // to the target and keep everything already selected. Without an anchor in
   // view the run starts at the first selected item, as Eagle's does.
@@ -520,6 +546,8 @@
     itemDates,
     randomRank,
     sharedTags,
+    sharedFolders,
+    sharedFieldValue,
     appendableTailCount,
     paneLayoutSpecs,
     paneLayoutSpec,
