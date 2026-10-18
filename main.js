@@ -9,6 +9,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
 const querySpec = require('./src/query-spec');
+const eagleOrder = require('./src/eagle-order');
 const { buildIdentity } = require('./lib/app-identity');
 const { ThumbnailOperations } = require('./lib/thumbnail-operations');
 const { fileInDirectory } = require('./lib/item-paths');
@@ -2637,48 +2638,59 @@ function setupIPC() {
   handleRPC('manual-order:move', async (_event, payload) => {
     await hub.ensureLibraryPath(payload.libraryPath);
     manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
-    let input = null, verify = null, persistIds = [];
+    let input = null, verify = null;
     const folderId = payload.scope.startsWith('folder:') ? payload.scope.slice(7) : null;
-    const nativeSupported = payload.kind === 'folders' ? payload.scope === 'root' || folderId : Boolean(folderId);
-    if (payload.syncToEagle && !payload.reset && nativeSupported) {
-      if (payload.kind === 'folders') {
-        const siblings = siblingFolders(await client.folderTree(), folderId);
-        const before = siblings.map(folder => folder.id);
-        const ids = moveRelative(before, payload.ids, payload.anchorId, payload.position);
-        input = { kind: 'folders', libraryPath: payload.libraryPath, folderId, before, ids };
-        payload = { ...payload, knownIds: ids, rebase: true };
-        verify = async () => JSON.stringify(siblingFolders(await client.folderTree(), folderId).map(folder => folder.id)) === JSON.stringify(ids);
-      } else {
-        const ids = moveRelative([...new Set(payload.knownIds)], payload.ids, payload.anchorId, payload.position);
-        if (ids.length > 3000) throw new Error('请在 3000 个素材以内的视图调整顺序');
-        const readItems = async () => {
-          const items = [];
-          for (let offset = 0; offset < ids.length; offset += 500) items.push(...await client.getItems(ids.slice(offset, offset + 500)));
-          return items;
-        };
-        const items = await readItems();
-        const stamp = Date.now();
-        const entries = ids.map((id, index) => {
-          const item = items.find(item => item.id === id);
-          if (!item || item.isDeleted || !item.folders?.includes(folderId)) throw new Error('排序素材已变化，请刷新后重试');
-          return { id, before: item.order?.[folderId] ?? null, value: String(stamp - index) };
-        });
-        input = { kind: 'items', libraryPath: payload.libraryPath, folderId, entries };
-        persistIds = ids;
-        verify = async () => {
-          const current = await readItems();
-          return entries.every(entry => current.find(item => item.id === entry.id)?.order?.[folderId] === entry.value);
-        };
-      }
+    // Folder items reorder through eagle-order:move, which writes only the
+    // moved items (E-11); this path keeps folder-tree order in Eagle and every
+    // other view's order locally.
+    if (payload.syncToEagle && !payload.reset && payload.kind === 'folders' && (payload.scope === 'root' || folderId)) {
+      const siblings = siblingFolders(await client.folderTree(), folderId);
+      const before = siblings.map(folder => folder.id);
+      const ids = moveRelative(before, payload.ids, payload.anchorId, payload.position);
+      input = { kind: 'folders', libraryPath: payload.libraryPath, folderId, before, ids };
+      payload = { ...payload, knownIds: ids, rebase: true };
+      verify = async () => JSON.stringify(siblingFolders(await client.folderTree(), folderId).map(folder => folder.id)) === JSON.stringify(ids);
     }
     const result = await manualOrderStore.move(payload, async () => {
-      if (input) await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), input, verify, persistIds });
+      if (input) await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), input, verify });
     }, { isLive: payload.kind === 'items' ? liveItemCheck(payload.libraryPath) : null });
     result.syncedToEagle = Boolean(result.ok && input);
     if (result.syncedToEagle) await hub.connect({ notify: true });
     // Other windows merge orders key by key, so only the changed one is sent.
     if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:{ [orderKey(payload.scope, payload.kind)]: result.order },scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
     return result;
+  });
+  // Eagle's own drag reorder (onDropBoxItem): only the moved items get a new
+  // manual value, between their new neighbours in the order the folder
+  // shows; the folder switches to manual order unless it already is (E-11).
+  handleRPC('eagle-order:move', async (event, { libraryPath, folderId, ids, anchorId, position, displayedIds, increase = true }) => {
+    await hub.ensureLibraryPath(libraryPath);
+    if (!folderId || !Array.isArray(ids) || !Array.isArray(displayedIds)) throw new Error('排序目标已失效，请刷新后重试');
+    const { block, aboveId, belowId } = eagleOrder.blockNeighbours([...new Set(displayedIds)], [...new Set(ids)], anchorId, position);
+    const readIds = [...block, aboveId, belowId].filter(Boolean);
+    const items = await client.getItems(readIds);
+    const byId = new Map(items.map(item => [item.id, item]));
+    for (const id of readIds) {
+      const item = byId.get(id);
+      if (!item || item.isDeleted || !item.folders?.includes(folderId)) throw new Error('排序素材已变化，请刷新后重试');
+    }
+    const values = eagleOrder.insertionValues({
+      above: aboveId ? eagleOrder.nativeValue(byId.get(aboveId), folderId) : null,
+      below: belowId ? eagleOrder.nativeValue(byId.get(belowId), folderId) : null,
+      count: block.length,
+      increase: increase !== false
+    });
+    const entries = block.map((id, index) => ({ id, before: byId.get(id).order?.[folderId] ?? null, value: values[index] }));
+    await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value),
+      input: { kind: 'items', libraryPath, folderId, entries }, persistIds: block,
+      verify: async () => {
+        const current = await client.getItems(block);
+        return entries.every(entry => current.find(item => item.id === entry.id)?.order?.[folderId] === entry.value);
+      } });
+    const moved = await client.getItems(block);
+    for (const item of moved) hub.publishItemMutation(item, { libraryPath, origin: event.sender?.id, reason: 'eagle-order' });
+    await hub.connect({ notify: true });
+    return { ok: true, items: moved };
   });
   handleRPC('pins:set', async (event, { libraryPath, folderId, ids, pinned, syncToEagle = false, eaglePins = {} }) => {
     await hub.ensureLibraryPath(libraryPath);

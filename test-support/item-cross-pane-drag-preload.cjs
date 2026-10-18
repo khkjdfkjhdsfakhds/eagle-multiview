@@ -20,6 +20,11 @@ window.eagleMV.moveManualOrder = async payload => {
   window.__uiTestCalls.push({ kind: 'manual-order', payload });
   return { ok: true, orders: {} };
 };
+// A folder's items reorder in Eagle's own manual order (E-11).
+window.eagleMV.moveEagleOrder = async payload => {
+  window.__uiTestCalls.push({ kind: 'manual-order', payload });
+  return { ok: true, items: [] };
+};
 window.eagleMV.mutateSet = async payload => {
   window.__itemDrag.mutations.push(clone(payload));
   const item = items.find(candidate => candidate.id === payload.id);

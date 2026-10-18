@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('eagleMV', {
   onFolderCoversChanged: callback => on('folder-covers:changed', callback),
   getManualOrders: data => ipcRenderer.invoke('manual-order:get', data),
   moveManualOrder: data => ipcRenderer.invoke('manual-order:move', data),
+  moveEagleOrder: data => ipcRenderer.invoke('eagle-order:move', data),
   setPins: data => ipcRenderer.invoke('pins:set', data),
   readText: data => ipcRenderer.invoke('text:read', data),
   saveText: data => ipcRenderer.invoke('text:save', data),

@@ -129,7 +129,7 @@ test('changing the sort resets direction and starts the backfill', () => {
   const handler = renderer.slice(start, renderer.indexOf('\n  });', start));
   assert.ok(handler.includes("state.sortDir = 'auto';"));
   assert.ok(handler.includes('commitSortChange();'));
-  assert.ok(handler.includes("state.sort !== 'default' && state.hasMore"));
+  assert.ok(handler.includes('viewHasClientOrder() && state.hasMore'));
 });
 
 test('随机 shuffles stably and reshuffles on demand', () => {

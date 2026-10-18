@@ -1552,6 +1552,7 @@ const previewStandInExtensions = new Set(['psd', 'tif', 'tiff', 'heic', 'heif', 
 function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase(); }
 
 function compareItemsForView(a, b) {
+  const folderCompare = state.currentView.kind === 'folder' ? eagleFolderComparator(state.currentView, state.sort) : null;
   if (state.currentView.kind === 'folder') {
     const left = pinTimestamp(a);
     const right = pinTimestamp(b);
@@ -1559,8 +1560,34 @@ function compareItemsForView(a, b) {
     if (!left && right) return 1;
     if (left !== right && state.sort !== 'manual') return right - left;
   }
+  if (folderCompare) return folderCompare(a, b);
   if (state.sort === 'manual') return window.EagleMVManualOrder.compare(manualOrder(state.currentView, 'items'), a.id, b.id);
   return compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed });
+}
+
+// A folder view follows the folder's own Eagle order (P1-02): "Eagle 顺序"
+// is the sort the folder was given in Eagle, "自定义顺序" its manual order.
+// Built once per folder state, since the item sort calls it per pair.
+let eagleFolderOrderCache = null;
+const eagleNameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+function libraryFolder(id) {
+  return id ? findFolderInTree(state.library?.folders, id) : null;
+}
+function eagleFolderComparator(view, sort) {
+  if (view?.kind !== 'folder') return null;
+  const folder = libraryFolder(view.id);
+  const cache = eagleFolderOrderCache;
+  if (cache && cache.folder === folder && cache.sort === sort && cache.orderBy === folder?.orderBy && cache.increase === folder?.sortIncrease && cache.seed === state.randomSeed) return cache.compare;
+  const order = window.EagleMVEagleOrder.folderOrder(folder, sort);
+  let compare = order ? window.EagleMVEagleOrder.comparator(order, view.id, { collator: eagleNameCollator }) : null;
+  if (order && !compare) compare = (a, b) => compareItemsBySort('random', 'auto', a, b, { seed: state.randomSeed });
+  eagleFolderOrderCache = { folder, sort, orderBy: folder?.orderBy, increase: folder?.sortIncrease, seed: state.randomSeed, compare };
+  return compare;
+}
+// Whether the pane's order comes from the client (so every page must load)
+// rather than Eagle's API order.
+function viewHasClientOrder(view = state.currentView, sort = state.sort) {
+  return sort !== 'default' || Boolean(eagleFolderComparator(view, sort));
 }
 
 function manualScope(view) { return view.id ? `${view.kind}:${view.id}` : view.kind; }
@@ -1609,9 +1636,16 @@ function attachManualDrag() {
           if (snapshot) known = window.EagleMVManualOrder.sort(parentId ? trail.at(-2).children : state.library.folders, manualOrder(view,'folders'));
         }
         const order = manualOrder(view,kind);
+        // Folder items reorder in Eagle's own manual order, which Eagle
+        // allows only without a filter or search and while the folder shows
+        // that order (E-11).
+        const eagleItems = kind === 'items' && view.kind === 'folder';
+        const enabled = eagleItems
+          ? supportsManual(view) && !queryFiltersActive(pane.query) && window.EagleMVEagleOrder.dragSortable(libraryFolder(view.id), pane.sort)
+          : supportsManual(view);
         return {id,kind,parentId,paneId,scope:manualScope(view),libraryPath:state.library?.path,
-          enabled:supportsManual(view),
-          ready:state.manualOrdersReady && (kind==='folders' || (!pane.loading && !pane.errorMessage)),
+          enabled,
+          ready:(eagleItems || state.manualOrdersReady) && (kind==='folders' || (!pane.loading && !pane.errorMessage)),
           knownIds:known.map(item=>item.id),revision:order?.revision || 0,
           sourceView:descriptorKey(pane.currentView),refreshToken:pane.refreshToken,startSort:pane.sort,
           windowId:state.windowId,pinned:kind==='items' && itemIsPinned(itemById(id) || {})};
@@ -1633,6 +1667,7 @@ function attachManualDrag() {
         const pane=paneById(source.paneId);
         if (!pane || descriptorKey(pane.currentView)!==source.sourceView || (source.kind==='items' && source.ids.some(id=>!pane.itemMap.has(id)))) throw new Error('来源视图已变化，请重新拖动');
       }
+      if (source.kind==='items' && source.scope.startsWith('folder:')) return submitEagleItemOrder(source,target,position);
       const knownIds=[...new Set([...source.knownIds,...target.knownIds])];
       const result=await window.eagleMV.moveManualOrder({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,ids:source.ids,
         syncToEagle: true,
@@ -1656,6 +1691,40 @@ function attachManualDrag() {
         sourceWindowId:source.windowId,libraryPath:source.libraryPath};
     }
   });
+}
+
+// Reorder folder items the way Eagle's own drag does: only the moved items get
+// a new manual value, between their new neighbours, and the folder switches
+// to its manual order (E-11). Pinned and unpinned items sort apart, so the
+// neighbours come from the moved items' own group.
+async function submitEagleItemOrder(source, target, position) {
+  const folderId = source.scope.slice('folder:'.length);
+  const pane = paneById(target.paneId);
+  if (!pane) throw new Error('目标栏已关闭，请重新拖动');
+  const displayedIds = withActivePane(pane.id, () => target.knownIds.filter(id => {
+    const item = itemById(id);
+    return item && itemIsPinned(item) === source.pinned;
+  }));
+  const { block, belowId } = window.EagleMVEagleOrder.blockNeighbours(displayedIds, source.ids, target.id, position);
+  if (!belowId && pane.hasMore) throw new Error('后面还有未载入的素材，请先向下滚动载入后再拖到末尾');
+  const folder = libraryFolder(folderId);
+  const order = window.EagleMVEagleOrder.folderOrder(folder, 'manual');
+  const result = await window.eagleMV.moveEagleOrder({ libraryPath: source.libraryPath, folderId, ids: block,
+    anchorId: target.id, position, displayedIds, increase: order.increase });
+  clearDragUI();
+  if (folder && folder.orderBy !== 'MANUAL') { folder.orderBy = 'MANUAL'; folder.sortIncrease = true; }
+  for (const changed of result?.items || []) {
+    for (const candidate of state.panes) {
+      const index = candidate.items.findIndex(item => item.id === changed.id);
+      if (index < 0) continue;
+      candidate.items[index] = changed;
+      candidate.itemMap?.set(changed.id, changed);
+    }
+  }
+  for (const candidate of state.panes) {
+    if (candidate.currentView.kind === 'folder' && candidate.currentView.id === folderId) schedulePaneGridRender(candidate.id);
+  }
+  toast('顺序已同步到 Eagle');
 }
 
 function sortedItems() {
@@ -1746,10 +1815,17 @@ function renderSortControls() {
   if (select) select.value = sortKey==='manual' ? 'default' : sortKey;
   const label = $('#sortSelectLabel');
   if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
-  // The drag hint only holds where dragging can reorder (B1 wording).
-  if ($('#sortSelectButton')) $('#sortSelectButton').title = supportsManual(state.currentView)
-    ? `排序方式：${sortOptionLabels[sortKey] || 'Eagle 顺序'}。也可直接拖动调整顺序`
-    : `排序方式：${sortOptionLabels[sortKey] || 'Eagle 顺序'}`;
+  // The drag hint only holds where dragging can reorder (B1 wording); a
+  // folder's "Eagle 顺序" names the sort the folder has in Eagle.
+  const folder = state.currentView.kind === 'folder' ? libraryFolder(state.currentView.id) : null;
+  const folderSort = sortKey === 'default' && folder?.orderBy ? window.EagleMVEagleOrder.LABELS[folder.orderBy] : null;
+  const sortName = `${sortOptionLabels[sortKey] || 'Eagle 顺序'}${folderSort ? `（此文件夹在 Eagle 中为“${folderSort}”）` : ''}`;
+  const draggable = state.currentView.kind === 'folder'
+    ? supportsManual(state.currentView) && window.EagleMVEagleOrder.dragSortable(folder, sortKey)
+    : supportsManual(state.currentView);
+  if ($('#sortSelectButton')) $('#sortSelectButton').title = draggable
+    ? `排序方式：${sortName}。也可直接拖动调整顺序`
+    : `排序方式：${sortName}`;
   const popover = $('#sortPopover');
   if (popover) {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
@@ -4072,7 +4148,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         if (paneIsActive) updateScrollUI();
         const scroller = $('#gridScroller');
         const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
-        const sortBackfillActive = state.sort !== 'default' && state.hasMore;
+        const sortBackfillActive = viewHasClientOrder() && state.hasMore;
         const continueBackfill = sortBackfillActive && (state.sort === 'manual' || state.items.length < SORT_FETCH_CAP);
         const restoreTarget = pane.restoreScroll;
         const continueRestore = Boolean(restoreTarget) && state.hasMore && state.items.length < restoreTarget.count;
@@ -9494,7 +9570,7 @@ function bindPaneEvents(paneId) {
       );
     }
     commitSortChange();
-    if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
+    if (viewHasClientOrder() && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#viewModeGroup').addEventListener('click', event => {
     const button = event.target.closest('[data-view-mode]');

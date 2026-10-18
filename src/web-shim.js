@@ -683,6 +683,7 @@
     onFolderCoversChanged: callback => on('folder-covers:changed', callback),
     getManualOrders: data => invoke('manual-order:get', [data]),
     moveManualOrder: data => invoke('manual-order:move', [data]),
+    moveEagleOrder: data => invoke('eagle-order:move', [data]),
     setPins: data => invoke('pins:set', [data]),
     readText: data => invoke('text:read', [data]),
     saveText: data => invoke('text:save', [data]),
