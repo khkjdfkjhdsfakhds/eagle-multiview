@@ -11327,6 +11327,10 @@ function bindHubEvents() {
   window.eagleMV.onFolderCoversChanged?.(acceptFolderCovers);
   window.eagleMV.onTagDataChanged(async payload => {
     if (payload?.libraryPath !== state.library?.path) return;
+    if (payload.reason === 'item-tags') {
+      await refreshAvailableTags();
+      return;
+    }
     await loadLibraryExtras();
     if (payload.libraryPath !== state.library?.path) return;
     // Recolor existing chips in place, keeping partially typed tag text,
@@ -11686,6 +11690,24 @@ async function loadLibraryExtras() {
   state.tagColors = kept(tagColors, state.tagColors, {});
   renderTagSuggestions();
   renderTagColors();
+}
+
+// An item edit added or removed tags (V-01): only the tag list and its counts
+// change, so pins, orders, colours and the inspector stay as they are.
+let availableTagsToken = 0;
+async function refreshAvailableTags() {
+  const libraryPath = state.library?.path;
+  const token = ++availableTagsToken;
+  const extrasToken = libraryExtrasToken;
+  const tags = await window.eagleMV.getTags().catch(() => null);
+  // A newer read, or a full reload that started meanwhile, has the last word.
+  if (!tags || token !== availableTagsToken || extrasToken !== libraryExtrasToken || state.library?.path !== libraryPath) return;
+  state.availableTags = tags;
+  renderTagSuggestions();
+  renderFolderTree();
+  for (const pane of state.panes) {
+    if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
 }
 
 async function restoreInitialWindowState() {

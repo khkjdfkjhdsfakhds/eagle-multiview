@@ -50,6 +50,7 @@ const { resolveEagleWindowState } = require('./lib/window-location');
 const { createWindowRouter } = require('./lib/window-router');
 const { UpdateController, appBundlePath } = require('./lib/update-service');
 const { installPermissionPolicy } = require('./lib/permission-policy');
+const { TagTally } = require('./lib/tag-tally');
 const {
   normalizeNewFileType,
   normalizeEagleFolderName,
@@ -78,6 +79,8 @@ const metadataSearchIndex = new MetadataSearchIndex({
   concurrency: 4
 });
 const hub = new DataHub(client, { metadataSearchIndex });
+const tagTally = new TagTally(client);
+let tagTallyTimer = null;
 const windowRouter = createWindowRouter({
   createWindow,
   resolveEagleWindowState: () => resolveEagleWindowState(client)
@@ -997,6 +1000,14 @@ hub.on('items-changed', payload => {
   // large library from ever finishing (E-20). Only a library switch aborts.
   trashScans.invalidateAll();
   broadcast('hub:items-changed', payload);
+});
+// Item tag edits reach every window's 标签管理 and suggestions: Eagle's own
+// tag list does not pick up a new name until it rebinds (V-01).
+hub.on('item-tags-touched', ({ names, libraryPath }) => {
+  if (!libraryPath) return;
+  tagTally.note(libraryPath, names);
+  clearTimeout(tagTallyTimer);
+  tagTallyTimer = setTimeout(() => broadcast('tag-data:changed', { libraryPath, reason: 'item-tags' }), 300);
 });
 hub.on('query-invalidated', payload => {
   trashScans.invalidateAll();
@@ -2071,7 +2082,10 @@ function setupIPC() {
     hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason: 'custom-thumbnail' });
     return { canceled: false, result, item };
   });
-  handleRPC('hub:tags', () => client.listTags());
+  handleRPC('hub:tags', async () => {
+    const libraryPath = hub.library?.path || null;
+    return tagTally.merge(libraryPath, await client.listTags());
+  });
   handleRPC('hub:tag-groups', () => client.listTagGroups());
   handleRPC('hub:starred-tags', () => client.listStarredTags());
   const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
