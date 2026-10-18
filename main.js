@@ -15,7 +15,7 @@ const { ThumbnailOperations } = require('./lib/thumbnail-operations');
 const { fileInDirectory } = require('./lib/item-paths');
 const { createSiteImportService } = require('./lib/site-import');
 const { SiteImportSessions } = require('./lib/site-import-session');
-const { DataHub } = require('./lib/data-hub');
+const { DataHub, folderExtendTags } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
 const { FolderCoverStore } = require('./lib/folder-cover-store');
 const { ManualOrderStore, orderKey } = require('./lib/manual-order-store');
@@ -1516,6 +1516,13 @@ async function liveDuplicateImports(duplicates, libraryPath) {
 
 // The duplicate check and decision shared by desktop imports and Web uploads
 // (H-08): without a choice, duplicates come back for the user to decide.
+// Eagle gives files imported into a folder that folder's auto tags
+// (uploadFiles, newFileFromTemplate); its path and bookmark APIs do not.
+// The hub's folder tree is the one classify edits use too.
+function folderAutoTags(folderId) {
+  return folderId ? folderExtendTags(hub.library?.folders, folderId) : [];
+}
+
 async function importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice = null, origin = 0, waitTimeoutMs = 0 }) {
   await hub.ensureLibraryPath(libraryPath);
   const prepared = await prepareImportPaths(filePaths);
@@ -1536,7 +1543,7 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
   const existing = useExisting ? [...duplicateByPath.values()] : [];
   const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
   const imported = importPathsToUse.length
-    ? await importPaths({ paths: importPathsToUse, folderId, libraryPath, ...(waitTimeoutMs ? { waitTimeoutMs } : {}) })
+    ? await importPaths({ paths: importPathsToUse, folderId, libraryPath, tags: folderAutoTags(folderId), ...(waitTimeoutMs ? { waitTimeoutMs } : {}) })
     : { count: 0, ready: 0, ids: [], rejected: [] };
   if (duplicateChoice === 'keep-both' && duplicates.length && imported.ids.length) {
     try {
@@ -1575,6 +1582,8 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
         id: duplicate.id,
         field: 'folders',
         add: [folderId],
+        // Eagle's 使用已有 adds the folder's auto tags when the item joins it.
+        autoTags: 'joined',
         libraryPath,
         origin
       });
@@ -1584,7 +1593,7 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
     // treats it as a duplicate, so import the file like a new one.
     const revived = existing.filter((_, index) => assignments[index].error?.code === 'DUPLICATE_DELETED').map(duplicate => duplicate.path);
     if (revived.length) {
-      const extra = await importPaths({ paths: revived, folderId, libraryPath });
+      const extra = await importPaths({ paths: revived, folderId, libraryPath, tags: folderAutoTags(folderId) });
       imported.count += extra.count;
       imported.ready += extra.ready;
       imported.ids = [...imported.ids, ...extra.ids];
@@ -1753,7 +1762,9 @@ async function importURLItem({ url: value, folderId, libraryPath, image = false,
   const kind = image && !/html/i.test(contentType) ? 'image' : clipboardURLKind(contentType);
   const result = kind === 'image'
     ? await client.addSiteAsset({ url, name: path.basename(new URL(url).pathname) || undefined, website: url }, folderId)
-    : await client.addBookmark({ url }, folderId);
+    // An image address goes through Eagle's own URL import, which adds the
+    // folder's auto tags itself; the bookmark API does not.
+    : await client.addBookmark({ url, tags: folderAutoTags(folderId) }, folderId);
   broadcast('hub:query-invalidated', { reason, libraryPath });
   return { count: 1, ready: 0, ids: result?.id ? [result.id] : [], rejected: [], source: 'url', url, kind };
 }
@@ -2279,6 +2290,7 @@ function setupIPC() {
           paths: [temporary.filePath],
           folderId,
           libraryPath,
+          tags: folderAutoTags(folderId),
           waitTimeoutMs: 4000
         });
         if (!imported.count || !imported.ids?.length) {

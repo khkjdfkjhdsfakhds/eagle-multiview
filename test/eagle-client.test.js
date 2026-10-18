@@ -259,6 +259,16 @@ test('batch import uses Eagle local-path API with the target folder', async () =
   });
 });
 
+test('an import into a folder with auto tags sends per-file items carrying them (P1-10)', async () => {
+  const client = new RecordingClient();
+  await client.addItems(['/tmp/a.png', '/tmp/b.txt'], 'folder-1', ['人物', '近景']);
+  assert.equal(client.calls[0].path, '/api/item/addFromPaths');
+  assert.deepEqual(client.calls[0].options.body, {
+    items: [{ path: '/tmp/a.png', tags: ['人物', '近景'] }, { path: '/tmp/b.txt', tags: ['人物', '近景'] }],
+    folderId: 'folder-1'
+  });
+});
+
 test('single unfiled import omits a folder assignment', async () => {
   const client = new RecordingClient();
   await client.addItems(['/tmp/a.png'], null);

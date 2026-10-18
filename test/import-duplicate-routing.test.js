@@ -47,3 +47,31 @@ for (const entry of ['clipboard', 'directory', 'external-change']) test(`${entry
   assert.equal(completed.duplicateCount, 1);
   assert.equal(assigned[0].add[0], 'destination');
 });
+
+test('imports into a folder carry its auto tags; using the existing duplicate asks for them too (P1-10)', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-import-autotags-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const libraryPath = path.join(root, 'library');
+  await fs.mkdir(path.join(libraryPath, 'images'), { recursive: true });
+  const file = path.join(root, 'fresh.txt');
+  await fs.writeFile(file, 'auto tag fixture');
+  const main = loadMain(root);
+  main.hub.library = { path: libraryPath, folders: [{ id: 'P', tags: ['人物'], children: [{ id: 'D', tags: ['近景'], children: [] }] }] };
+  main.client.libraryInfo = async () => main.hub.library;
+  main.client.folderTree = async () => main.hub.library.folders;
+  const imports = [];
+  main.client.addItems = async (paths, folderId, tags) => { imports.push({ paths, folderId, tags }); return ['new']; };
+  main.client.getItems = async () => [{ id: 'new' }];
+  const event = { sender: { id: 1 } };
+  await main.rpcRegistry.get('items:import')(event, { paths: [file], libraryPath, folderId: 'D' });
+  assert.deepEqual(imports.at(-1).tags, ['人物', '近景']);
+  const other = path.join(root, 'other.txt');
+  await fs.writeFile(other, 'unfiled fixture');
+  await main.rpcRegistry.get('items:import')(event, { paths: [other], libraryPath, folderId: null });
+  assert.equal(imports.length, 2);
+  assert.equal(imports.at(-1).tags.length, 0, 'an unfiled import gets no tags');
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(source, /add: \[folderId\],\n\s+\/\/ Eagle's 使用已有[^\n]*\n\s+autoTags: 'joined'/);
+  assert.match(source, /folderId,\n\s+libraryPath,\n\s+tags: folderAutoTags\(folderId\),\n\s+waitTimeoutMs: 4000/, 'new documents carry the auto tags');
+  assert.ok(source.includes('client.addBookmark({ url, tags: folderAutoTags(folderId) }, folderId)'));
+});
