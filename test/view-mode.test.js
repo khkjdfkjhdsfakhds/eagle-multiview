@@ -28,13 +28,14 @@ test('each pane owns a four-way view mode with per-slot persistence', () => {
 test('pane navigation, layout, and sort controls match the primary toolbar scale', () => {
   assert.match(cssSource, /\.heading-path-row \{[\s\S]*?border-bottom: 1px solid/);
   assert.match(cssSource, /\.heading-main-row \{[\s\S]*?display: flex;[\s\S]*?align-items: center/);
-  assert.match(cssSource, /\.content-heading \{[\s\S]*?grid-template-rows: 24px 48px;/);
+  // The rows that actually apply: the path strip, then the title row (P7-33).
+  assert.match(cssSource, /\.content-pane \.content-heading \{ grid-template-rows: 32px auto; min-height: 88px; \}/);
   assert.match(cssSource, /\.content-pane \.navigation-controls \{[\s\S]*?position: static;[\s\S]*?height: 34px;[\s\S]*?transform: none;[\s\S]*?\}/);
   assert.match(cssSource, /\.content-pane \.nav-button \{ width: 28px; height: 28px; \}/);
   assert.match(cssSource, /\.nav-button \.ui-icon, \.nav-image-icon \{ width: 16px; height: 16px;/);
   assert.match(cssSource, /\.view-mode-button \{[\s\S]*?width: 28px;[\s\S]*?height: 28px;/);
   assert.match(cssSource, /\.view-mode-svg \{ width: 16px; height: 16px;/);
-  assert.match(cssSource, /\.content-pane \.sort-select \{ max-width: 112px; height: 34px; font-size: 12px; \}/);
+  assert.doesNotMatch(cssSource, /\.content-pane \.sort-select \{/, 'the native select is hidden; the visible control is the button');
 });
 
 test('waterfall uses CSS columns and list restyles rows without overlays', () => {

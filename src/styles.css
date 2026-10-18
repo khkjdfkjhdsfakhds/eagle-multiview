@@ -1009,7 +1009,7 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   container-type: inline-size;
 }
 .content-pane.active { box-shadow: inset 0 0 0 1px rgba(0, 114, 239, .4); }
-.content-pane .content-heading { min-height: 72px; padding: 0; gap: 0; }
+.content-pane .content-heading { padding: 0; gap: 0; }
 .content-pane .content-heading h1 { max-width: 100%; font-size: 14px; }
 .content-pane .navigation-controls {
   position: static;
@@ -1019,9 +1019,6 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 }
 @container (max-width: 460px) {
   .content-heading .view-mode-group { display: none; }
-}
-@container (max-width: 380px) {
-  .content-heading { min-height: 72px; }
 }
 /* …but only where the pane can hold them. A compact window split four ways
    leaves ~224px panes, and forcing the controls back would push the row 23px
@@ -1065,10 +1062,8 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
 .sort-popover-layout-button:hover { background: rgba(255, 255, 255, .06); color: #e9eaed; }
 .sort-popover-layout-button.active { background: rgba(0, 114, 239, .22); color: #f7f8f8; }
 .content-pane .nav-button { width: 28px; height: 28px; }
-.content-pane .sort-select { max-width: 112px; height: 34px; font-size: 12px; }
 .content-pane .grid-scroller { padding: 5px 11px 12px; }
 .content-pane .breadcrumb button { max-width: 110px; }
-.content-pane .drop-overlay { inset: 0; }
 .pane-layout-button,
 .toolbar-refresh-button {
   width: 40px;
@@ -1200,10 +1195,8 @@ body.sidebar-hidden .sidebar, body.inspector-hidden .inspector { display: none; 
   display: block;
 }
 .content-heading {
-  min-height: 72px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 24px 48px;
   padding: 0;
   border-bottom: 0;
   background: transparent;
@@ -2009,7 +2002,7 @@ body.hide-card-annotation .annotation-badge { display: none; }
 .drop-overlay {
   position: absolute;
   z-index: 12;
-  inset: 79px 10px 10px;
+  inset: 0;
   display: grid;
   place-items: center;
   border: 2px dashed rgba(0, 114, 239, .68);
