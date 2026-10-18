@@ -8,7 +8,15 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 
 const execFileAsync = promisify(execFile);
 
-async function runProbe() {
+// Every test reads a different part of the same probe run, so the probe
+// runs once and its result is shared (T-13).
+let probeRun = null;
+function runProbe() {
+  probeRun ||= launchProbe();
+  return probeRun;
+}
+
+async function launchProbe() {
   const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/review-bugfixes-probe.cjs');
   const env = { ...process.env };
