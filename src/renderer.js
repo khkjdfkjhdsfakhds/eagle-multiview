@@ -1570,7 +1570,7 @@ function acceptManualOrders(payload) {
   for (const pane of state.panes) withActivePane(pane.id, () => {
     if (adopt && manualScope(pane.currentView)===payload.scope && pane.sort===payload.startSort) {
       pane.sort='manual';pane.sortDir='auto';
-      sortMemory.remember(state.library.path,descriptorKey(pane.currentView),'manual','auto',Date.now());
+      sortMemory.remember(state.library.path,descriptorKey(pane.currentView),'manual','auto',Date.now(),state.library.folders);
     }
     renderSortControls();renderGrid({preserveScroll:true});
   });
@@ -1814,7 +1814,7 @@ function viewModeMenuMarkup(paneId = state.activePaneId) {
 }
 
 function commitSortChange() {
-  sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
+  sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now(), state.library?.folders);
   renderSortControls();
   renderGrid({ preserveScroll: true });
   renderFolderTree();

@@ -110,6 +110,13 @@
       cache = null;
     }
 
+    // Writes start from what storage holds now, not this window's cached
+    // parse, so a change another window made a moment ago is kept (S-09).
+    function fresh() {
+      cache = null;
+      return read();
+    }
+
     function recall(libraryPath, viewKey) {
       if (!libraryPath || !viewKey) return null;
       const entry = normalizeEntry(read()[String(libraryPath)]?.[String(viewKey)]);
@@ -134,15 +141,22 @@
       return best ? { sort: best.sort, sortDir: best.sortDir } : null;
     }
 
-    function remember(libraryPath, viewKey, sort, sortDir, now = 0) {
+    function remember(libraryPath, viewKey, sort, sortDir, now = 0, foldersTree = null) {
       if (!libraryPath || !viewKey) return;
-      const data = read();
+      const data = fresh();
       const library = data[String(libraryPath)] || (data[String(libraryPath)] = {});
       const isDefault = (!sort || sort === 'default') && (!sortDir || sortDir === 'auto');
       // Under a subtree marker, 默认 is a real override of the inherited sort
-      // and has to be stored instead of dropped.
-      const keepDefault = String(viewKey).startsWith('folder:')
-        && Object.keys(library).some(key => key.startsWith(CASCADE_PREFIX));
+      // and has to be stored instead of dropped. With the folder tree, only a
+      // marker on the folder or an ancestor counts (S-09).
+      const keepDefault = String(viewKey).startsWith('folder:') && (() => {
+        const markers = Object.keys(library).filter(key => key.startsWith(CASCADE_PREFIX));
+        if (!markers.length) return false;
+        if (!foldersTree) return true;
+        const cleanId = String(viewKey).slice('folder:'.length);
+        const chain = findFolderPath(foldersTree, cleanId).map(node => node.id);
+        return (chain.length ? chain : [cleanId]).some(id => Object.hasOwn(library, `${CASCADE_PREFIX}folder:${id}`));
+      })();
       if (isDefault && !keepDefault) delete library[String(viewKey)];
       else library[String(viewKey)] = { sort: sort || 'default', sortDir: sortDir || 'auto', at: Number(now) || 0 };
       pruneLibrary(library);
@@ -156,7 +170,7 @@
       if (!cleanId) return [];
       const node = findFolderNode(foldersTree, cleanId);
       const ids = node ? collectFolderIds(node) : [cleanId];
-      const data = read();
+      const data = fresh();
       const library = data[String(libraryPath)] || (data[String(libraryPath)] = {});
       // Older choices inside the subtree are superseded; dropping them keeps
       // the store small and the result independent of timestamps.
@@ -174,7 +188,7 @@
 
     function cloneFolders(libraryPath, folderMap, now = 0) {
       if (!libraryPath || !folderMap || typeof folderMap !== 'object') return;
-      const data = read();
+      const data = fresh();
       const source = data[String(libraryPath)];
       if (!source) return;
       const timestamp = Number(now) || Date.now();

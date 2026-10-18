@@ -83,7 +83,7 @@ test('the view chokepoint restores memory and sort changes persist through one h
   assert.ok(applyFn.includes("state.sort = remembered?.sort || 'default';"));
   const commitStart = renderer.indexOf('function commitSortChange()');
   const commitFn = renderer.slice(commitStart, renderer.indexOf('\n}', commitStart));
-  assert.ok(commitFn.includes('sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now())'));
+  assert.ok(commitFn.includes('sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now(), state.library?.folders)'));
   // The sort select, the direction toggle, and the toggle's reshuffle branch
   // when the sort is 随机 — every path that changes the order.
   assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 3,
@@ -283,3 +283,31 @@ test('recallFolderSort handles nonexistent folders, null inputs, and missing lib
   assert.equal(memory.recallFolderSort('/A.library', 'NotFound', null), null);
 });
 
+
+// S-09: a write keeps what another window stored a moment ago.
+test('a write starts from storage, not a stale cached parse', () => {
+  const storage = fakeStorage();
+  const windowA = createSortMemory(storage);
+  const windowB = createSortMemory(storage);
+  windowB.recall('/A.library', 'folder:F1'); // B caches the empty store
+  windowA.remember('/A.library', 'folder:F1', 'name', 'asc', 1);
+  windowB.remember('/A.library', 'folder:F2', 'size', 'desc', 2); // before B saw A's storage event
+  windowA.invalidate();
+  assert.deepEqual(windowA.recall('/A.library', 'folder:F1'), { sort: 'name', sortDir: 'asc' }, 'A’s choice survives B’s later write');
+  assert.deepEqual(windowA.recall('/A.library', 'folder:F2'), { sort: 'size', sortDir: 'desc' });
+});
+
+// S-09: 默认 is only stored as an override inside a 包含子文件夹 subtree.
+test('默认 is kept as an override only for folders under a subtree marker', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const tree = [{ id: 'P', children: [{ id: 'C' }] }, { id: 'Other' }];
+  memory.rememberCascade('/A.library', 'P', tree, 'name', 'asc', 1);
+  memory.remember('/A.library', 'folder:C', 'default', 'auto', 2, tree);
+  memory.remember('/A.library', 'folder:Other', 'size', 'desc', 3, tree);
+  memory.remember('/A.library', 'folder:Other', 'default', 'auto', 4, tree);
+  const stored = JSON.parse(storage.getItem(STORAGE_KEY))['/A.library'];
+  assert.deepEqual(stored['folder:C'], { sort: 'default', sortDir: 'auto', at: 2 }, 'inside the subtree 默认 overrides the marker');
+  assert.equal(stored['folder:Other'], undefined, 'outside it 默认 just clears the entry');
+  assert.equal(memory.recallFolderSort('/A.library', 'Other', tree), null);
+});
