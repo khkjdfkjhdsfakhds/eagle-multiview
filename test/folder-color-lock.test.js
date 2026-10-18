@@ -6,46 +6,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
-const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-const styles = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
-
-test('folder colors accept hex directly and map Eagle named presets', () => {
-  const start = renderer.indexOf('function folderColorValue(folder)');
-  assert.ok(start >= 0);
-  const fn = renderer.slice(start, renderer.indexOf('\n}', start));
-  assert.ok(fn.includes('/^#[0-9a-f]{3,8}$/i.test(raw)'));
-  assert.ok(fn.includes('eagleNamedFolderColors[raw.toLowerCase()]'));
-  for (const name of ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink', 'gray']) {
-    assert.match(renderer, new RegExp(`${name}: '#[0-9a-f]{6}'`), `named color ${name} must exist`);
-  }
-});
-
-test('tree rows and quick access rows render the dot and the lock badge', () => {
-  const treeRow = renderer.indexOf("${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}");
-  assert.ok(treeRow >= 0, 'folder icon must contain the color dot');
-  assert.equal((renderer.match(/folderColorDot\(folder\)/g) || []).length >= 2, true, 'quick access must render the dot too');
-  assert.equal((renderer.match(/folderLockBadge\(folder\)/g) || []).length >= 2, true);
-  assert.match(styles, /\.folder-color-dot\s*\{/);
-  assert.match(styles, /\.folder-lock\s*\{/);
-});
-
-test('locked folders cannot be entered and show the API limitation', () => {
-  const start = renderer.indexOf('function navigate(view');
-  assert.ok(start >= 0);
-  const fn = renderer.slice(start, start + 1600);
-  const guard = fn.indexOf('target?.password');
-  const discard = fn.indexOf('confirmDiscardChanges');
-  assert.ok(guard >= 0);
-  assert.ok(discard === -1 || guard < discard, 'lock guard must run before discarding drafts');
-  assert.ok(fn.includes('该文件夹已加密，MultiView 无法解锁（Eagle API 限制）'));
-  const returnIndex = fn.indexOf('return false;', guard);
-  assert.ok(returnIndex > guard && returnIndex < fn.indexOf('recordViewNavigation'), 'must bail out before touching history');
-});
-
-test('P6-01: Eagle iconColor renders a colour dot in the real sidebar', { timeout: 30000 }, async () => {
+// T-06: these used to be assertions on the source text, which a broken
+// render (P6-01) passed; the probe now checks what the sidebar shows.
+test('P6-01: folder colours, lock badges and the locked-folder guard in the real sidebar', { timeout: 30000 }, async () => {
   const { execFile } = require('node:child_process');
   const { promisify } = require('node:util');
   const env = { ...process.env };
@@ -56,5 +20,17 @@ test('P6-01: Eagle iconColor renders a colour dot in the real sidebar', { timeou
   const result = JSON.parse(line.slice('EAGLEMV_FOLDER_COLOR '.length));
   assert.match(result.value, /^#[0-9a-f]{6}$/);
   assert.equal(result.hex, '#123456');
+  assert.equal(result.shortHex, '#abc', 'the legacy color field and short hex still work');
+  for (const name of ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink', 'gray']) assert.match(result.named[name], /^#[0-9a-f]{6}$/, `named colour ${name}`);
+  assert.equal(result.named.RED, result.named.red, 'named colours ignore case');
+  assert.equal(result.named.teal, '', 'an unknown name shows no dot');
+  assert.equal(result.named[''], '');
   assert.ok(result.dot, 'the sidebar row shows a colour dot');
+  assert.ok(result.dotRows >= 2, 'the tree row and the quick-access row both show the dot');
+  assert.equal(result.lockBadge, true, 'a password folder shows the lock badge');
+  assert.equal(result.plainHasLock, false);
+  assert.equal(result.entered, false, 'a locked folder cannot be entered');
+  assert.equal(result.stayed, true);
+  assert.equal(result.historyKept, true, 'the refused navigation leaves history alone');
+  assert.match(result.toast, /已加密.*Eagle API 限制/);
 });

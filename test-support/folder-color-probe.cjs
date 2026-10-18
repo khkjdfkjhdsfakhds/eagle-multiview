@@ -15,13 +15,32 @@ async function run() {
   const result = await window.webContents.executeJavaScript(`(async () => {
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (let i = 0; i < 150 && !(window.state?.connected && state.library?.folders?.length); i += 1) await wait(20);
-    const folder = state.library.folders[0];
+    const folders = state.library.folders;
+    const folder = folders[0];
     folder.iconColor = 'red';
     delete folder.color;
+    // T-06: the lock badge, the quick-access row and the locked-folder guard
+    // are checked in the rendered sidebar, not in the source text.
+    const locked = folders.find(entry => entry !== folder) || folders[0];
+    locked.password = 'secret';
+    state.library.quickAccess = [{ type: 'folder', id: folder.id }];
+    const quickBefore = typeof quickAccessEntries === 'function';
     renderFolderTree();
-    const row = document.querySelector('[data-folder-id="' + folder.id + '"]');
-    const dot = row?.querySelector('.folder-color-dot');
-    return { value: folderColorValue({ iconColor: 'blue' }), hex: folderColorValue({ iconColor: '#123456' }), dot: dot?.style.background || null };
+    const rows = [...document.querySelectorAll('[data-folder-id="' + folder.id + '"]')];
+    const dot = rows[0]?.querySelector('.folder-color-dot');
+    const named = Object.fromEntries(['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink', 'gray', 'RED', 'teal', ''].map(name => [name, folderColorValue({ iconColor: name })]));
+    const lockedRow = document.querySelector('[data-folder-id="' + locked.id + '"]');
+    const viewBefore = JSON.stringify(state.currentView);
+    const historyBefore = JSON.stringify([state.history, state.historyIndex]);
+    const entered = navigate({ kind: 'folder', id: locked.id });
+    await wait(0);
+    return {
+      value: folderColorValue({ iconColor: 'blue' }), hex: folderColorValue({ iconColor: '#123456' }), shortHex: folderColorValue({ color: '#abc' }),
+      dot: dot?.style.background || null, dotRows: rows.filter(row => row.querySelector('.folder-color-dot')).length, quickBefore,
+      named, lockBadge: Boolean(lockedRow?.querySelector('.folder-lock')), plainHasLock: Boolean(rows[0]?.querySelector('.folder-lock')),
+      entered, stayed: JSON.stringify(state.currentView) === viewBefore, historyKept: JSON.stringify([state.history, state.historyIndex]) === historyBefore,
+      toast: document.querySelector('#toast')?.textContent || ''
+    };
   })()`);
   console.log(`EAGLEMV_FOLDER_COLOR ${JSON.stringify(result)}`);
 }
