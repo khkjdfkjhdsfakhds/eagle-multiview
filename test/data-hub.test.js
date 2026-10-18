@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { DataHub } = require('../lib/data-hub');
+const { DataHub, folderExtendTags } = require('../lib/data-hub');
 
 class FakeClient {
   constructor(item) {
@@ -64,6 +64,32 @@ test('intent-based tag update preserves concurrently added tags', async () => {
   const hub = new DataHub(client);
   await hub.mutateSet({ id: 'A', field: 'tags', add: ['伴侣新增'], remove: ['原标签'] });
   assert.deepEqual(client.item.tags.sort(), ['伴侣新增', '外部新增']);
+});
+
+test('folder auto tags follow Eagle getExtendTags: own, then ancestors, outermost first (P1-10)', () => {
+  const tree = [{ id: 'P', tags: ['人物', '共用'], children: [
+    { id: 'C', tags: ['共用', '近景'], children: [{ id: 'G', tags: [], children: [] }] },
+    { id: 'N', children: [{ id: 'U', tags: ['子'], children: [] }] }
+  ] }];
+  assert.deepEqual(folderExtendTags(tree, 'C'), ['人物', '近景', '共用']);
+  assert.deepEqual(folderExtendTags(tree, 'G'), ['人物', '近景', '共用']);
+  assert.deepEqual(folderExtendTags(tree, 'U'), ['子'], 'an ancestor without a tags list ends the chain');
+  assert.deepEqual(folderExtendTags(tree, 'missing'), []);
+});
+
+test('filing into a folder adds its auto tags the way Eagle classifies (P1-10)', async () => {
+  const client = new FakeClient({ id: 'A', tags: ['已有'], folders: ['C'], modificationTime: 1 });
+  const hub = new DataHub(client);
+  hub.library = { path: '/library', folders: [{ id: 'P', tags: ['人物'], children: [{ id: 'C', tags: ['近景'], children: [] }] }, { id: 'X', tags: ['外景'], children: [] }] };
+  await hub.mutateSet({ id: 'A', field: 'folders', add: ['C'], autoTags: 'joined' });
+  assert.deepEqual(client.item.tags, ['已有'], 'menus add tags only for a folder the item newly joins');
+  await hub.mutateSet({ id: 'A', field: 'folders', add: ['C'], autoTags: 'always' });
+  assert.deepEqual(client.item.tags, ['已有', '人物', '近景'], 'a drop always applies them');
+  await hub.mutateSet({ id: 'A', field: 'folders', add: ['X'], remove: ['C'], autoTags: 'joined' });
+  assert.deepEqual(client.item.folders, ['X']);
+  assert.deepEqual(client.item.tags, ['已有', '人物', '近景', '外景'], 'moving keeps earlier tags, like Eagle');
+  await hub.mutateSet({ id: 'A', field: 'folders', add: ['P'] });
+  assert.deepEqual(client.item.tags, ['已有', '人物', '近景', '外景'], 'copies and imports without autoTags stay untouched');
 });
 
 test('a successful edit is broadcast immediately to every window listener', async () => {
@@ -482,4 +508,15 @@ test('a new hub instance restarts revisions and announces a different instance i
   assert.ok(restartedChanges.length >= 1);
   assert.ok(restartedChanges[0].revision < lastRevision, 'the restarted host counts from the start again');
   assert.equal(restartedChanges[0].hubInstance, restarted.instanceId);
+});
+
+test('every classify entry asks for auto tags; drops always, menus for newly joined folders (P1-10)', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const body = name => { const start = source.indexOf(`async function ${name}(`); return source.slice(start, source.indexOf('\n}\n', start)); };
+  assert.ok(body('addSelectionToFolder').includes("autoTags: 'joined'"));
+  assert.ok(body('moveSelectionToFolder').includes("autoTags: 'joined'"));
+  assert.ok(body('addItemsToFolder').includes("autoTags: 'always'"));
+  assert.ok(body('handlePaneItemDrop').includes("autoTags: 'always'"));
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  assert.ok(main.includes("handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }))"));
 });

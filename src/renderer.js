@@ -5461,7 +5461,8 @@ async function addSelectionToFolder(payload) {
   const folderId = payload?.folderId;
   if (!folderId) return false;
   const libraryPath = state.library?.path;
-  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId] }, '正在加入文件夹…', payload?.paneId || state.activePaneId, {
+  // Eagle adds the folder's auto tags to items that newly join it (P1-10).
+  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId], autoTags: 'joined' }, '正在加入文件夹…', payload?.paneId || state.activePaneId, {
     keepSelection: Boolean(payload?.keepSelection)
   });
   if (completed && state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
@@ -5493,7 +5494,7 @@ async function moveSelectionToFolder(payload) {
   setSyncStatus('正在移动到文件夹…');
   try {
     const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
-      id, field: 'folders', ...delta, libraryPath
+      id, field: 'folders', ...delta, autoTags: 'joined', libraryPath
     }), 'Eagle 移动请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成移动');
     if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
@@ -8904,10 +8905,12 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   setSyncStatus(`正在${verb} ${uniqueIds.length} 个素材…`);
   try {
     const results = await settleWithConcurrency(uniqueIds, id => withTimeout(
+      // A drop files like Eagle's classifySelected, auto tags included.
       window.eagleMV.mutateSet({
         id,
         field: 'folders',
         ...delta,
+        autoTags: 'always',
         libraryPath
       }),
       15000,
@@ -8996,6 +8999,7 @@ async function handlePaneItemDrop(context) {
         id,
         field: 'folders',
         ...folderMoveDelta(move && sourceFolderId ? (sourceFolderIds?.length ? sourceFolderIds : [sourceFolderId]) : null, targetFolderId),
+        autoTags: 'always',
         libraryPath
       }),
       15000,
