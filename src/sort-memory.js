@@ -71,13 +71,49 @@
     };
   }
 
-  function pruneLibrary(library) {
+  function parentMap(tree) {
+    const parents = new Map();
+    const walk = (nodes, parent) => {
+      for (const node of nodes || []) {
+        if (!node?.id) continue;
+        parents.set(node.id, parent);
+        walk(node.children, node.id);
+      }
+    };
+    walk(Array.isArray(tree) ? tree : [tree], null);
+    return parents;
+  }
+
+  function ancestorIds(parents, id) {
+    const chain = [];
+    for (let parent = parents.get(id); parent && !chain.includes(parent); parent = parents.get(parent)) chain.push(parent);
+    return chain;
+  }
+
+  function pruneLibrary(library, foldersTree = null) {
     // Markers and per-view entries are capped separately so a burst of view
     // entries can never evict the marker a whole subtree depends on.
     for (const markers of [false, true]) {
       const keys = Object.keys(library).filter(key => key.startsWith(CASCADE_PREFIX) === markers);
       if (keys.length <= MAX_VIEWS_PER_LIBRARY) continue;
-      keys.sort((a, b) => (Number(library[a].at) || 0) - (Number(library[b].at) || 0));
+      const at = key => Number(library[key].at) || 0;
+      // Eagle keeps every folder's own sort on the folder. Here an evicted
+      // choice inside a 包含子文件夹 subtree silently took the subtree's sort
+      // again (S-09), so those go last: first entries a marker on the same
+      // folder already repeats, then the rest oldest first.
+      let rank = () => 1;
+      if (!markers) {
+        const parents = foldersTree ? parentMap(foldersTree) : null;
+        rank = key => {
+          if (!key.startsWith('folder:')) return 1;
+          const id = key.slice('folder:'.length);
+          const own = library[`${CASCADE_PREFIX}folder:${id}`];
+          if (own && own.sort === library[key].sort && own.sortDir === library[key].sortDir) return 0;
+          const covered = own || (parents && ancestorIds(parents, id).some(parent => library[`${CASCADE_PREFIX}folder:${parent}`]));
+          return covered ? 2 : 1;
+        };
+      }
+      keys.sort((a, b) => (rank(a) - rank(b)) || (at(a) - at(b)));
       for (const key of keys.slice(0, keys.length - MAX_VIEWS_PER_LIBRARY)) delete library[key];
     }
   }
@@ -159,7 +195,7 @@
       })();
       if (isDefault && !keepDefault) delete library[String(viewKey)];
       else library[String(viewKey)] = { sort: sort || 'default', sortDir: sortDir || 'auto', at: Number(now) || 0 };
-      pruneLibrary(library);
+      pruneLibrary(library, foldersTree);
       if (!Object.keys(library).length) delete data[String(libraryPath)];
       write(data);
     }
@@ -181,9 +217,40 @@
       const entry = { sort: sort || 'default', sortDir: sortDir || 'auto', at: Number(now) || 0 };
       library[`${CASCADE_PREFIX}folder:${cleanId}`] = entry;
       library[`folder:${cleanId}`] = { ...entry };
-      pruneLibrary(library);
+      pruneLibrary(library, foldersTree);
       write(data);
       return ids;
+    }
+
+    // A folder moved out of a 包含子文件夹 subtree kept no sort of its own and
+    // fell back to its new ancestors' (S-09); in Eagle a folder's sort stays
+    // with it. The newest marker it lost moves onto it, with its timestamp,
+    // so the folder and its subfolders resolve as before the move.
+    function followMovedFolders(libraryPath, previousTree, nextTree) {
+      if (!libraryPath || !previousTree || !nextTree) return [];
+      const before = parentMap(previousTree);
+      const after = parentMap(nextTree);
+      const moved = [...after.keys()].filter(id => before.has(id) && before.get(id) !== after.get(id));
+      if (!moved.length) return [];
+      const data = fresh();
+      const library = data[String(libraryPath)];
+      if (!library || !Object.keys(library).some(key => key.startsWith(CASCADE_PREFIX))) return [];
+      const followed = [];
+      for (const id of moved) {
+        const kept = new Set(ancestorIds(after, id));
+        const lost = ancestorIds(before, id).filter(parent => !kept.has(parent))
+          .map(parent => normalizeEntry(library[`${CASCADE_PREFIX}folder:${parent}`])).filter(Boolean);
+        if (!lost.length) continue;
+        const newest = lost.reduce((left, right) => (right.at > left.at ? right : left));
+        const own = normalizeEntry(library[`${CASCADE_PREFIX}folder:${id}`]);
+        if (own && own.at >= newest.at) continue;
+        library[`${CASCADE_PREFIX}folder:${id}`] = { sort: newest.sort, sortDir: newest.sortDir, at: newest.at };
+        followed.push(id);
+      }
+      if (!followed.length) return [];
+      pruneLibrary(library, nextTree);
+      write(data);
+      return followed;
     }
 
     function cloneFolders(libraryPath, folderMap, now = 0) {
@@ -203,7 +270,7 @@
       write(data);
     }
 
-    return { recall, recallFolderSort, remember, rememberCascade, cloneFolders, invalidate };
+    return { recall, recallFolderSort, remember, rememberCascade, cloneFolders, followMovedFolders, invalidate };
   }
 
   function rememberCascade(storageOrMemory, libraryPath, parentFolderId, foldersTree, sort, sortDir, now = 0) {

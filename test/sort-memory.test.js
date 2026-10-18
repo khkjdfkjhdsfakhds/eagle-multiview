@@ -311,3 +311,71 @@ test('默认 is kept as an override only for folders under a subtree marker', ()
   assert.equal(stored['folder:Other'], undefined, 'outside it 默认 just clears the entry');
   assert.equal(memory.recallFolderSort('/A.library', 'Other', tree), null);
 });
+
+test('S-09: an override inside a 包含子文件夹 subtree outlives plain entries when the cap is reached', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const tree = [
+    { id: 'P', children: [{ id: 'child' }] },
+    ...Array.from({ length: MAX_VIEWS_PER_LIBRARY + 5 }, (_, index) => ({ id: `F${index}` }))
+  ];
+  memory.rememberCascade('/A.library', 'P', tree, 'name', 'asc', 10);
+  // The oldest per-folder choice, and it overrides the subtree's sort.
+  memory.remember('/A.library', 'folder:child', 'size', 'desc', 20, tree);
+  for (let index = 0; index < MAX_VIEWS_PER_LIBRARY + 5; index += 1) {
+    memory.remember('/A.library', `folder:F${index}`, 'rating', 'asc', 100 + index, tree);
+  }
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'child', tree), { sort: 'size', sortDir: 'desc' });
+  const library = storage.dump()['/A.library'];
+  // P's own entry went first: its marker says the same.
+  assert.equal(library['folder:P'], undefined);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'P', tree), { sort: 'name', sortDir: 'asc' });
+  assert.equal(Object.keys(library).filter(key => !key.startsWith('cascade:')).length, MAX_VIEWS_PER_LIBRARY);
+  // The newest plain entries survive; the oldest plain ones went.
+  assert.ok(library[`folder:F${MAX_VIEWS_PER_LIBRARY + 4}`]);
+  assert.equal(library['folder:F0'], undefined);
+});
+
+test('S-09: a folder moved out of a 包含子文件夹 subtree keeps the sort it showed, subfolders too', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const before = [
+    { id: 'P', children: [{ id: 'X', children: [{ id: 'Y' }] }, { id: 'Z' }] },
+    { id: 'Q', children: [] }
+  ];
+  const after = [
+    { id: 'P', children: [{ id: 'Z' }] },
+    { id: 'Q', children: [{ id: 'X', children: [{ id: 'Y' }] }] }
+  ];
+  memory.rememberCascade('/A.library', 'P', before, 'name', 'asc', 10);
+  memory.remember('/A.library', 'folder:Y', 'size', 'desc', 20, before);
+  assert.deepEqual(memory.followMovedFolders('/A.library', before, after), ['X']);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'X', after), { sort: 'name', sortDir: 'asc' });
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Y', after), { sort: 'size', sortDir: 'desc' }, 'a later override inside still wins');
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'Z', after), { sort: 'name', sortDir: 'asc' });
+  assert.equal(storage.dump()['/A.library']['cascade:folder:X'].at, 10, 'the marker keeps its timestamp');
+  // Nothing moved, or the folder already has a newer marker: nothing written.
+  assert.deepEqual(memory.followMovedFolders('/A.library', after, after), []);
+  memory.rememberCascade('/A.library', 'X', after, 'rating', 'auto', 30);
+  assert.deepEqual(memory.followMovedFolders('/A.library', before, after), []);
+  assert.deepEqual(memory.recallFolderSort('/A.library', 'X', after), { sort: 'rating', sortDir: 'auto' });
+});
+
+test('S-09: moving within the same subtree or without any marker writes nothing', () => {
+  const storage = fakeStorage();
+  const memory = createSortMemory(storage);
+  const before = [{ id: 'P', children: [{ id: 'A', children: [{ id: 'X' }] }, { id: 'B' }] }];
+  const after = [{ id: 'P', children: [{ id: 'A' }, { id: 'B', children: [{ id: 'X' }] }] }];
+  assert.deepEqual(memory.followMovedFolders('/A.library', before, after), []);
+  memory.rememberCascade('/A.library', 'P', before, 'name', 'asc', 10);
+  const stored = JSON.stringify(storage.dump());
+  assert.deepEqual(memory.followMovedFolders('/A.library', before, after), []);
+  assert.equal(JSON.stringify(storage.dump()), stored);
+});
+
+test('S-09: the renderer follows moved folders before replacing the tree', () => {
+  const start = renderer.indexOf('async function applyLibraryChange(payload)');
+  const body = renderer.slice(start, renderer.indexOf('recordAppliedLibrarySnapshot(payload);', start));
+  assert.match(body, /sortMemory\.followMovedFolders\(payload\.library\.path, state\.library\.folders, payload\.library\.folders\);\s*\}\s*state\.library = payload\.library;/);
+  assert.match(body, /if \(!pathChanged &&/);
+});

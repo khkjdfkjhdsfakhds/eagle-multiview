@@ -11682,6 +11682,11 @@ async function applyLibraryChange(payload) {
     captureInspectorDraft();
     for (const pane of state.panes) persistTextDraft(pane.textSession);
   }
+  // Before the tree is replaced: a folder that left a 包含子文件夹 subtree
+  // keeps the sort it showed (S-09).
+  if (!pathChanged && state.library?.folders && Array.isArray(payload.library.folders)) {
+    sortMemory.followMovedFolders(payload.library.path, state.library.folders, payload.library.folders);
+  }
   state.library = payload.library;
   recordAppliedLibrarySnapshot(payload);
   $('#windowTitle').textContent = 'Eagle MultiView';
