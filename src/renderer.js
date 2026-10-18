@@ -4857,16 +4857,24 @@ function queueInspectorAutoSave({ immediate = false } = {}) {
   }, INSPECTOR_AUTOSAVE_DELAY);
 }
 
-function collectPatch() {
-  const base = state.selectedBase;
-  if (!base) return {};
-  const values = {
-    name: $('#itemName').value.trim(),
+// Eagle keeps a name's or link's edge spaces until that field itself is
+// edited (B2-12): an untouched field reports its stored value, so editing only
+// the note never trims and renames the item.
+function inspectorFormValues(base) {
+  const edited = (raw, stored) => (raw === (stored ?? '') ? stored ?? '' : raw.trim());
+  return {
+    name: edited($('#itemName').value, base?.name),
     tags: [...state.draftTags],
     star: Number($('#itemRating').value),
     annotation: $('#itemAnnotation').value,
-    url: $('#itemURL').value.trim()
+    url: edited($('#itemURL').value, base?.url)
   };
+}
+
+function collectPatch() {
+  const base = state.selectedBase;
+  if (!base) return {};
+  const values = inspectorFormValues(base);
   const patch = {};
   for (const [key, value] of Object.entries(values)) {
     const equal = Array.isArray(value)
@@ -4963,7 +4971,7 @@ function captureInspectorDraft() {
     draft = { key, id, paneId: pane.id, libraryPath: state.library?.path, base: structuredClone(pane.selectedBase), revision: 0 };
     inspectorDrafts.set(key, draft);
   }
-  const values = { name: $('#itemName').value.trim(), tags: [...state.draftTags], star: Number($('#itemRating').value), annotation: $('#itemAnnotation').value, url: $('#itemURL').value.trim() };
+  const values = inspectorFormValues(draft.base);
   draft.fieldVersions ||= {};
   for (const [field, value] of Object.entries(values)) {
     if (!inspectorValuesEqual(value, (draft.values || draft.base)[field])) {

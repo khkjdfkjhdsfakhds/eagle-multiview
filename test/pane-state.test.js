@@ -677,3 +677,22 @@ test('the delete dialog opens with Cancel focused so Return never deletes', () =
   assert.ok(body.includes("$('#trashCancelButton').focus();"));
   assert.equal(body.includes("$('#trashDeleteButton').focus();"), false);
 });
+
+test('inspector keeps an untouched name or link verbatim so a note edit never renames (B2-12)', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function inspectorFormValues(');
+  const body = source.slice(start, source.indexOf('\n}\n', start) + 2);
+  const fields = { '#itemName': 'photo ', '#itemRating': '0', '#itemAnnotation': 'new note', '#itemURL': ' https://a.example ' };
+  const inspectorFormValues = new Function('$', 'state', `${body}; return inspectorFormValues;`)(
+    selector => ({ value: fields[selector] }), { draftTags: [] });
+  const base = { name: 'photo ', url: ' https://a.example ', annotation: '' };
+  assert.equal(inspectorFormValues(base).name, 'photo ');
+  assert.equal(inspectorFormValues(base).url, ' https://a.example ');
+  fields['#itemName'] = ' renamed ';
+  assert.equal(inspectorFormValues(base).name, 'renamed', 'an edited name is trimmed like Eagle');
+  assert.equal(inspectorFormValues({}).url, 'https://a.example');
+  for (const fn of ['function collectPatch()', 'function captureInspectorDraft()']) {
+    const at = source.indexOf(fn);
+    assert.ok(source.slice(at, source.indexOf('\n}\n', at)).includes('inspectorFormValues('), fn);
+  }
+});

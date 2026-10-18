@@ -847,3 +847,39 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 ### 规则（不变）
 
 每批 `node --check` 三件 + 全量 `npm test`、本地提交、在本文件追加一节；不推送、不合 main；不覆盖 `/Applications`，GUI 用测试版；写资料库的验证先问用户。一批做完或上下文变长时，先写交接节再开新聊天。回复用中文、精简。
+
+## 三十、原版核对 + 数据风险（2026-10-19，本机）
+
+方法：解包本机 Eagle 4.0.0 的 `app.asar`，读 `app/app.bundle.js`、`app/js/plugin/index.js`（API v2 处理器）、`app/js/rule-match.js`、`app/js/background.js`、`app/js/directives/duplicate-modal.js`。只读 API 统计了文件夹属性（5898 个文件夹：`orderBy` MANUAL 125、NAME 23、IMPORT 4、BTIME/MTIME 各 1；带自动标签 `tags` 的 11 个）。资料库零写入。
+
+### 结论（原版怎么做 / MultiView 差在哪 / 建议）
+
+| 项 | 原版 | MultiView | 建议 |
+|---|---|---|---|
+| **P1-10** 拖到文件夹 | `classifySelected`：在文件夹视图拖出默认**移动**（从当前文件夹/多选文件夹移除），⌥ 为添加；全部/未分类视图拖出只添加。同时给素材加目标文件夹的**自动标签**（`folder.extendTags` = 自身 + 祖先的 `tags`）；移走后自动选中下一张；提示条带“撤销”（4 秒，⌘Z 约 9 秒内有效） | 默认移动、⌥ 复制：**一致，非高风险**。缺：①自动标签（所有归类入口都没加）；②移走后选下一张；③提示条撤销 | ①补自动标签（中，涉及拖放/菜单/检查器各归类入口）；②③见 P3-05 与可选项 |
+| **P1-02** “Eagle 顺序” | 文件夹有 `orderBy` 就按它排（MANUAL = `order[folderId]`，缺省用 `modificationTime`，降序；`sortIncrease` 为假再反转），否则用全局排序 | API `item/get` 固定按 CREATEDATE（`modificationTime` 降序）返回，MultiView 不读 `folder.orderBy`、不读 `item.order` → 原版手动排过的 125 个文件夹顺序对不上 | 改（中）：文件夹视图下“Eagle 顺序”按该文件夹 `orderBy/sortIncrease` 排，MANUAL 读 `item.order`；需要全量载入后客户端排序 |
+| **E-11** 拖动排序写 order | 只给被拖的几项写新 `order`（邻居中点，BigNumber），有重复值时才整体重置；不改 `modificationTime` | 一次把视图内最多 3000 项全部重写为 `Date.now()-index`；筛选/搜索时只算可见项，会把它们整体排到隐藏项前；逐项 `item/update {}` 落盘，中断会半写 | 改（中）：按原版只写被移动项（中点算法），与 P1-02 一起做。修改日期不受影响（`item.save` 只动内部 `lastModified`） |
+| **P4-01** 拖入 Finder 目录 | 拖到内容区：递归**拍平**进当前文件夹（同 MultiView）；拖到侧栏空白：在根部**按目录结构建同名文件夹**再导入（≥2000 文件先确认）；拖到侧栏某文件夹上：目录被忽略只收文件；菜单“导入文件夹…”在当前文件夹下按结构导入 | 所有入口都拍平（限 8 层 / 2000 个） | 可选（中）：侧栏空白拖入与“导入文件夹…”按结构建文件夹；文件夹行上忽略目录 |
+| **P3-05** ⌘Z | 只有**一步**撤销：最近一次带“撤销”的提示（删除、移到文件夹、删除文件夹、重命名文件夹/素材/标签、删除注释等），提示后约 9 秒内有效；标签、评分**不能**撤销；无重做（菜单“重做”只给文本框） | 只撤销删除，但可多步、无时限 | 不必做“通用撤销栈”。可选（中）：给移到文件夹、重命名加提示条撤销按钮 |
+| **E-09** 副本 id 配对 | `addFromPaths` 先按输入顺序同步生成 id 再逐个加入，返回顺序 = 输入顺序 | 按下标配对 | **可靠，不改** |
+| **B2-12** 名称首尾空格 | 只在名称/链接被编辑时才 trim（并做文件名清洗）；改注释不碰名称 | 改注释也把带空格的名称 trim 后保存 → 静默改名 | **已修**（纯 bug） |
+| **B3-10** 外部改动后视图归属 | 自己的编辑后 `hiddenByCurrentFilter` 立即把不再符合当前视图/筛选的素材移出（如给“未标签”里的图打标签） | 跨窗口/Eagle 端改动原地替换，不重判 | 改（小～中）：收到改动后用 query-spec 重判，不符合就移出 |
+| **S-06** 智能文件夹条件 | 条件组之间 AND（含父智能文件夹）；rating `equal 'none'` = 无评分；shape 阈值 2.5；标签 `union` 精确匹配；原版没有“搜索另存为智能文件夹” | 格式一致。差异：本地筛选的形状阈值写成 2（原版 2.5）；搜索词的标签条件是精确匹配 | 形状阈值**已修**；其余保持 |
+| **E-19** 重复弹窗自动应答 | 4.0.0 中 `usingExist='false'` = 保留两者（`addToDuplicateMapping`）；`'true'` 会改写已有素材的文件夹/标签/`modificationTime` 并删掉新副本 | 语义当前正确，但没有版本或结构校验 | 建议加（小）：检查 `dialog.save` 源码含预期分支再应答，否则退回原版弹窗 |
+| **E-10** 原生同步脚本 | 4.0.0 中 `saveFolder/resetFolderCover/updateSidebarList/calculateImageBinding/rebindRefresh` 都在；`saveFolder` 把文件夹树落盘，素材靠 `item.save` 落盘 | `nativeSyncScript` 不检查函数是否存在，缺失时可能先改了内存再报错 | 建议加（小）：脚本开头 typeof 检查，缺就整体返回 false |
+| **E-13** 单图复制剪贴板 | 与 MultiView 完全相同（TIFF 放在 `public.png/jpeg` 下、bmp 记为 jpeg、写 `NSFileContentsPboardType`） | 照抄原版 | **一致，不改** |
+| **E-18** 复制文件夹封面 | `covers` 只是内存缓存，`saveFolder` 只落盘 `coverId` 等，`calculateImageBinding` 原版自己也频繁调用 | 重算不会改写无关文件夹的落盘数据；兜底给副本固定 `coverId` | **风险不成立，不改**（兜底固定封面属有意取舍） |
+
+### 本节提交
+
+- B2-12：`src/renderer.js` 新增 `inspectorFormValues(base)`，名称/链接未改动时用原值，改动时才 trim；`collectPatch` 与 `captureInspectorDraft` 共用。测试 `test/pane-state.test.js`。
+- S-06 形状阈值：`src/query-spec.js` 与 Eagle `isMatchShapeRule` 一致（2.5:1 为全景，宽高相等才是正方形）。测试 `test/query-spec.test.js`。
+- 未构建测试版（两处都是小逻辑修复，等下批一起重建）；正式安装 1.8.3 未动；未推送、未合 main。
+
+### 待用户决定
+
+1. P1-02 + E-11（一起做，中）：“Eagle 顺序”跟随文件夹在原版里的排序；拖动排序只写被移动项。
+2. P1-10①：归类时加文件夹自动标签（中）。
+3. B3-10：外部改动后重判视图归属（小～中）。
+4. E-19 / E-10 防护（小）。
+5. 可选：P4-01 按结构导入、P3-05 移动/重命名的提示条撤销、移走后选下一张。

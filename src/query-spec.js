@@ -386,11 +386,14 @@
       filter: true,
       normalize: value => String(value ?? ''),
       isActive: Boolean,
+      // Eagle's isMatchShapeRule: panoramic from a 2.5:1 side ratio, square
+      // only when both sides are equal, so a local scan agrees with the API.
       match: (item, value) => {
         const width = Number(item.width) || 0;
         const height = Number(item.height) || 0;
-        const ratio = width && height ? width / height : 1;
-        const shape = item.shape || (ratio === 1 ? 'square' : ratio >= 2 ? 'panoramic-landscape' : ratio <= .5 ? 'panoramic-portrait' : ratio > 1 ? 'landscape' : 'portrait');
+        const shape = item.shape || (width > height
+          ? (width / height >= 2.5 ? 'panoramic-landscape' : 'landscape')
+          : width < height ? (height / width >= 2.5 ? 'panoramic-portrait' : 'portrait') : 'square');
         return shape === value;
       },
       applyBody: (value, body) => { body.shape = value; }

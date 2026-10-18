@@ -66,6 +66,17 @@ test('filtersActive/filterCount track user-visible filters only', () => {
   assert.equal(filterCount({ rating: null }), 0);
 });
 
+test('shape matches Eagle isMatchShapeRule: panoramic from 2.5:1, square only when equal', () => {
+  const shapeOf = (width, height) => ['square', 'landscape', 'portrait', 'panoramic-landscape', 'panoramic-portrait']
+    .filter(shape => matchesConstraints({ id: 's', width, height }, { shape }));
+  assert.deepEqual(shapeOf(2200, 1000), ['landscape']);
+  assert.deepEqual(shapeOf(2500, 1000), ['panoramic-landscape']);
+  assert.deepEqual(shapeOf(1000, 2200), ['portrait']);
+  assert.deepEqual(shapeOf(1000, 2500), ['panoramic-portrait']);
+  assert.deepEqual(shapeOf(1001, 1000), ['landscape']);
+  assert.deepEqual(shapeOf(1000, 1000), ['square']);
+});
+
 test('matchesConstraints derives every client-side predicate from the table', () => {
   const item = {
     id: 'IT1',
