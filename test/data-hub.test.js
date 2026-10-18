@@ -452,3 +452,34 @@ test('locateItem counts not-yet-indexed imports ahead of the Eagle order', async
   assert.deepEqual(await hub.locateItem({ folderId: 'F' }, 'gone'), { index: -1 });
   assert.deepEqual(await hub.locateItem({ folderId: 'other' }, 'indexed'), { index: 0 }, 'non-matching imports do not shift the index');
 });
+
+// T-18 (H-02): a restarted host counts revisions from the start again, and
+// its snapshots carry a new instance id so windows reset their counters.
+test('a new hub instance restarts revisions and announces a different instance id', async () => {
+  const makeHub = () => {
+    const client = new FakeClient({ id: 'A' });
+    client.appInfo = async () => ({ version: '4.0' });
+    return new DataHub(client);
+  };
+  const first = makeHub();
+  const firstChanges = [];
+  first.on('library-changed', payload => firstChanges.push(payload));
+  const connected = await first.connect({ notify: true });
+  first.publishLibrarySnapshot({ ...first.library, modificationTime: 2 }, { notify: true });
+  first.publishLibrarySnapshot({ ...first.library, modificationTime: 3 }, { notify: true });
+  assert.ok(firstChanges.length >= 2);
+  const lastRevision = firstChanges.at(-1).revision;
+  assert.ok(lastRevision > firstChanges[0].revision, 'revisions grow within one host');
+  assert.ok(firstChanges.every(change => change.hubInstance === first.instanceId));
+  assert.equal(connected.hubInstance, first.instanceId);
+
+  const restarted = makeHub();
+  const restartedChanges = [];
+  restarted.on('library-changed', payload => restartedChanges.push(payload));
+  const reconnected = await restarted.connect({ notify: true });
+  assert.notEqual(restarted.instanceId, first.instanceId);
+  assert.equal(reconnected.hubInstance, restarted.instanceId);
+  assert.ok(restartedChanges.length >= 1);
+  assert.ok(restartedChanges[0].revision < lastRevision, 'the restarted host counts from the start again');
+  assert.equal(restartedChanges[0].hubInstance, restarted.instanceId);
+});
