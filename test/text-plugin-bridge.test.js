@@ -93,9 +93,14 @@ test('a leased timeout is not resubmitted while an eventual result is still unkn
   await assert.rejects(bridge.replaceFile(request), /上次 TXT 保存结果/);
   const late = await fetch(`${url}/result`, { method: 'POST', headers, body: JSON.stringify({ requestId: job.requestId, leaseId: job.leaseId, result: { status: 'saved' } }) });
   assert.equal(late.status, 409, 'a timed-out lease cannot satisfy a newer read-only reconciliation');
-  await new Promise(resolve => setTimeout(resolve, 35));
-  const reconcile = await (await fetch(`${url}/next`, { headers })).json();
-  assert.equal(reconcile.operation, 'reconcile');
+  // The read-only reconciliation is offered once its delay has passed;
+  // poll for it instead of guessing how long that takes (T-10).
+  let reconcile = null;
+  for (const deadline = Date.now() + 3000; !reconcile && Date.now() < deadline;) {
+    reconcile = await (await fetch(`${url}/next`, { headers })).json();
+    if (!reconcile) await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(reconcile?.operation, 'reconcile');
   assert.notEqual(reconcile.leaseId, job.leaseId);
   await fetch(`${url}/result`, { method: 'POST', headers, body: JSON.stringify({ requestId: reconcile.requestId, leaseId: reconcile.leaseId, result: { status: 'saved' } }) });
   assert.equal(await (await fetch(`${url}/next`, { headers })).json(), null);

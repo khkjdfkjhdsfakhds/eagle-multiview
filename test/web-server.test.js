@@ -288,7 +288,10 @@ test('web server: auth, static serving, rpc bridge, media ranges, websocket even
     const event = JSON.parse(await ws.nextMessage());
     assert.deepEqual(event, { channel: 'hub:items-changed', payload: { items: [{ id: 'a' }] } });
     ws.close();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Poll for the cleanup instead of a fixed sleep (T-10).
+    for (const deadline = Date.now() + 3000; !gone.includes(hello.payload.clientId) && Date.now() < deadline;) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     assert.ok(gone.includes(hello.payload.clientId), 'disconnect reports the client id for watcher cleanup');
 
     // --- key reset invalidates sessions ---
