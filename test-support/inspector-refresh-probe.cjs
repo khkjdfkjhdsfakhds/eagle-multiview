@@ -64,11 +64,14 @@ app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-ins
     await refresh({ reset: true });
     await until(() => counts.metadata === 2, 'changed file re-read');
 
-    // 3. A new thumbnail revision rebuilds the preview image.
+    // 3. A new thumbnail revision rebuilds the preview image, and only the
+    // changed item's thumbnail address moves (H-10).
     const before = document.querySelector('#previewBox img');
-    thumbnailRevision += 1;
+    const otherBefore = mediaURL('thumb', 'i-1');
+    thumbnailRevisions.set('i-0', Date.now());
     await refresh({ reset: true });
     await until(() => document.querySelector('#previewBox img') !== before, 'thumbnail revision ignored');
+    assert(mediaURL('thumb', 'i-1') === otherBefore, 'an unchanged item thumbnail address moved');
 
     // 4. Another item and back reloads everything for it.
     selectItem('i-1');

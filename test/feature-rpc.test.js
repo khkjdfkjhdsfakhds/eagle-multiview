@@ -30,8 +30,10 @@ test('manual ordering RPC persists locally, broadcasts across windows and never 
 test('thumbnail RPC reports regeneration accepted, not custom-thumbnail removal or completion', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-feature-rpc-'));
   t.after(() => fs.rm(root, {recursive:true, force:true}));
-  const main = loadMain(root);
+  const main = loadMain(root), messages=[];
   main.hub.ensureLibraryPath = async p => assert.equal(p, '/mock.library');
+  main.hub.library = { path: '/mock.library' };
+  main.addFakeWindow({isDestroyed:()=>false, webContents:{send:(...args)=>messages.push(args)}});
   const writes=[];
   main.client.refreshThumbnail = async id => {writes.push(id);return true;};
   const rpc = main.rpcRegistry.get('item:thumbnail-operation');
@@ -40,6 +42,10 @@ test('thumbnail RPC reports regeneration accepted, not custom-thumbnail removal 
   assert.deepEqual(writes,['a','b']);
   assert.equal(result.counts.accepted,2);
   assert.equal(result.counts.completed,0);
+  // H-10: the repaint names the items, so other thumbnails keep their address.
+  const repaint=messages.find(([event,payload])=>event==='hub:query-invalidated'&&payload.reason==='thumbnail');
+  assert.ok(repaint,'thumbnail change broadcast');
+  assert.deepEqual(repaint[1].thumbnailIds,['a','b']);
   await assert.rejects(async () => rpc({sender:{id:1}}, {operation:'clear', ids:['a'], libraryPath:'/mock.library'}));
 });
 

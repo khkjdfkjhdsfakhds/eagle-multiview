@@ -160,11 +160,19 @@ window.addEventListener('storage', event => {
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
+// Folder covers follow every thumbnail change; an item thumbnail follows only
+// its own, so one custom thumbnail no longer reloads every card (H-10). A
+// change that names no items falls back to reloading them all.
 let thumbnailRevision = 0;
+let allThumbnailsRevision = 0;
+const thumbnailRevisions = new Map();
 // The single item the inspector last rendered, so a re-render of it can
 // update in place (see renderInspector).
 let inspectorShown = null;
-const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id) + (kind === 'thumb' && thumbnailRevision ? `?v=${thumbnailRevision}` : '');
+const mediaURL = (kind, id) => {
+  const version = kind === 'thumb' ? Math.max(thumbnailRevisions.get(id) || 0, allThumbnailsRevision) : 0;
+  return window.eagleMV.mediaURL(kind, id) + (version ? `?v=${version}` : '');
+};
 // Host-bound entry points (Finder, native drag, host dialogs…) check this
 // table; the web shim serves the same keys with false so they hide cleanly.
 const caps = window.eagleMV.capabilities || {};
@@ -11371,7 +11379,11 @@ function bindHubEvents() {
   window.eagleMV.onLibraryChanged(payload => scheduleLibraryChange(payload));
   window.eagleMV.onQueryInvalidated(payload => {
     if (payload?.libraryPath && payload.libraryPath !== state.library?.path) return;
-    if (payload?.thumbnailRevision) thumbnailRevision = payload.thumbnailRevision;
+    if (payload?.thumbnailRevision) {
+      thumbnailRevision = payload.thumbnailRevision;
+      if (Array.isArray(payload.thumbnailIds)) for (const id of payload.thumbnailIds) thumbnailRevisions.set(String(id), payload.thumbnailRevision);
+      else allThumbnailsRevision = payload.thumbnailRevision;
+    }
     // TXT saves already have their own text:changed notification. Re-querying
     // every pane here rebuilds both grids behind the editor and makes an
     // unrelated pane visibly flash after each autosave.

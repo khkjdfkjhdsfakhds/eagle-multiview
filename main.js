@@ -1904,7 +1904,7 @@ function setupIPC() {
     const invalidate = () => {
       if (EagleClient.normalizeLibraryPath(hub.library?.path) !== EagleClient.normalizeLibraryPath(payload.libraryPath)) return;
       for (const outcome of result.outcomes) thumbnailCache.delete(outcome.id);
-      broadcast('hub:query-invalidated', { reason: 'thumbnail', libraryPath: payload.libraryPath, thumbnailRevision: Date.now() });
+      broadcast('hub:query-invalidated', { reason: 'thumbnail', libraryPath: payload.libraryPath, thumbnailRevision: Date.now(), thumbnailIds: result.outcomes.map(outcome => outcome.id) });
     };
     invalidate();
     if (result.counts.accepted || result.counts.unknown) {
