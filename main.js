@@ -1047,7 +1047,22 @@ function createWindow(initialState = null) {
   // Once the renderer approved the close, a beforeunload guard must not
   // silently cancel it and leave every later close stuck behind it.
   window.webContents.on('will-prevent-unload', event => {
-    if (window.__allowClose) event.preventDefault();
+    if (window.__allowClose) {
+      event.preventDefault();
+      return;
+    }
+    // A reload (⌘⇧R) blocked by unsaved edits used to do nothing at all (H-13).
+    // Closing asks through the renderer first and arrives with __allowClose.
+    if (window.isDestroyed() || window.__closePromptPending) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'warning',
+      buttons: ['重新载入', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      message: '还有未保存的修改，仍要重新载入窗口吗？',
+      detail: '检查器和 TXT 的草稿已在本机备份，重新载入后会提示恢复；正在保存的修改可能尚未写入 Eagle。'
+    });
+    if (choice === 0) event.preventDefault();
   });
   window.on('closed', () => {
     clearCloseWatchdog(window);

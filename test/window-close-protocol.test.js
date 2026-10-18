@@ -40,7 +40,10 @@ function harness({ dialogResponse = 1 } = {}) {
   }
   FakeWindow.fromWebContents = contents => created.find(window => window.webContents === contents) || null;
   const dialogs = [];
-  const dialog = { showMessageBox: async (_window, options) => { dialogs.push(options); return { response: dialogResponse }; } };
+  const dialog = {
+    showMessageBox: async (_window, options) => { dialogs.push(options); return { response: dialogResponse }; },
+    showMessageBoxSync: (_window, options) => { dialogs.push(options); return dialogResponse; }
+  };
   const main = loadMain(fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-close-')), { BrowserWindow: FakeWindow, dialog });
   main.hub.startPolling = () => {};
   let quits = 0;
@@ -129,16 +132,27 @@ test('B4-01: a renderer that never answers gets a force-close prompt', async t =
 });
 
 test('B4-03: once the close is approved a beforeunload guard cannot cancel it', () => {
-  const { main, rpc } = harness();
+  const { main, rpc, dialogs } = harness();
   const window = main.createWindow();
   let ignored = false;
   window.webContents.emit('will-prevent-unload', { preventDefault: () => { ignored = true; } });
   assert.equal(ignored, false, 'an unapproved unload stays guarded');
+  assert.match(dialogs.at(-1).message, /重新载入/, 'a blocked reload asks instead of doing nothing (H-13)');
   window.close();
+  const asked = dialogs.length;
   window.webContents.emit('will-prevent-unload', { preventDefault: () => { ignored = true; } });
   assert.equal(ignored, false);
+  assert.equal(dialogs.length, asked, 'a pending close does not ask about reloading');
   window.on('close', () => window.webContents.emit('will-prevent-unload', { preventDefault: () => { ignored = true; } }));
   rpc('window:confirm-close', window);
+  assert.equal(ignored, true);
+});
+
+test('H-13: choosing 重新载入 lets a reload past unsaved-edit guards', () => {
+  const { main } = harness({ dialogResponse: 0 });
+  const window = main.createWindow();
+  let ignored = false;
+  window.webContents.emit('will-prevent-unload', { preventDefault: () => { ignored = true; } });
   assert.equal(ignored, true);
 });
 
