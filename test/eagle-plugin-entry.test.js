@@ -52,9 +52,13 @@ test('entry startup failure stays offline, is visible without private details, a
   f.create();
   await waitFor(() => f.bridge.connected);
   await waitFor(() => f.timerCount === 1);
+  f.resetPeak();
   for (let i = 0; i < 5; i++) f.create();
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(f.timerCount, 1, 'Repeated lifecycle delivery must not start duplicate polling loops');
+  // Two more poll cycles: a duplicate loop would have had a timer of its own.
+  const cycles = f.scheduled + 2;
+  await waitFor(() => f.scheduled >= cycles);
+  assert.equal(f.peakTimers, 1, 'Repeated lifecycle delivery must not start duplicate polling loops');
+  assert.equal(f.timerCount, 1);
   f.unload();
   assert.equal(f.timerCount, 0, 'Unload cancels pending polls');
   f.create();
@@ -89,16 +93,22 @@ test('plugin entry unload during discovery never connects or starts a late save'
   let release;
   let reading = false;
   const pending = new Promise(resolve => { release = resolve; });
+  let discovered = false;
   const f = await fixture(t, { interceptRequire: name => name === 'node:fs/promises' ? {
     ...fsp,
-    readFile: async (...args) => { reading = true; await pending; return fsp.readFile(...args); }
+    readFile: async (...args) => { reading = true; await pending; try { return await fsp.readFile(...args); } finally { discovered = true; } }
   } : undefined });
   f.load();
   f.create();
   await waitFor(() => reading);
   f.unload();
+  const scheduledAtUnload = f.scheduled;
   release();
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // Wait for the discovery the unload interrupted to finish, then for longer
+  // than a poll interval: a revived loop would have scheduled a timer (T-09).
+  await waitFor(() => discovered);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(f.scheduled, scheduledAtUnload, 'Unloaded plugin must not schedule polling after awaited discovery');
   assert.equal(f.bridge.connected, false, 'Unloaded plugin must not lease work after awaited discovery');
   assert.equal(f.replacements, 0);
   assert.equal(f.timerCount, 0);
