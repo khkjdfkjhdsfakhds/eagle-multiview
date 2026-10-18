@@ -228,6 +228,14 @@
       } catch {}
     }
   });
+  // A page restored from the back/forward cache keeps this script's state,
+  // including the disposal above: start the connection again (H-12).
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted || !disposed) return;
+    disposed = false;
+    retryDelay = 1000;
+    connectEvents();
+  });
   connectEvents();
 
   // --- host-only degradations ----------------------------------------------

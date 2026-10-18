@@ -221,3 +221,23 @@ test('returning to a visible page reconnects at once instead of waiting out the 
   harness.windowListeners.get('visibilitychange')();
   assert.equal(harness.sockets.length, before + 1);
 });
+
+// H-12: a page restored from the back/forward cache reconnects.
+test('a page restored from the back/forward cache opens a new event socket', async () => {
+  const harness = createHarness();
+  harness.sockets[0].hello(41);
+  harness.windowListeners.get('pagehide')();
+  const before = harness.sockets.length;
+  harness.windowListeners.get('pageshow')({ persisted: false });
+  assert.equal(harness.sockets.length, before, 'an ordinary first show does not reconnect');
+  harness.windowListeners.get('pageshow')({ persisted: true });
+  assert.equal(harness.sockets.length, before + 1);
+  harness.sockets.at(-1).hello(42);
+  harness.windowListeners.get('pageshow')({ persisted: true });
+  assert.equal(harness.sockets.length, before + 1, 'a live page is not reconnected twice');
+  // The restored page is live again: going online after a drop reconnects.
+  harness.sockets.at(-1).close();
+  const dropped = harness.sockets.length;
+  harness.windowListeners.get('online')();
+  assert.equal(harness.sockets.length, dropped + 1);
+});
