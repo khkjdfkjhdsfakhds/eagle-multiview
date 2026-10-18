@@ -6677,12 +6677,13 @@ function closeTopTransientSurface({ selection = true } = {}) {
     closeDrawers();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'drawer' };
   }
-  // On touch clients a selection is a mode (a tap selects before it opens):
-  // back leaves it first, like Escape, on phones and wide tablets alike —
-  // otherwise back at the root closes the app with the selection still up.
-  // A preview on top is closed by the preview step instead. The desktop app
-  // keeps Eagle's behaviour of back moving through history.
-  if (selection && isWebClient && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
+  // On touch clients back with a selection goes straight back through
+  // history (navigating clears the selection anyway). Only with no history
+  // left does back clear the selection first, so a stray back at the root
+  // does not close the app with the selection still up. A preview on top is
+  // closed by the preview step instead. The desktop app keeps Eagle's
+  // behaviour of back moving through history.
+  if (selection && isWebClient && state.historyIndex <= 0 && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
     if (!confirmDiscardChanges()) return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'unsaved-edit' };
     state.selected.clear();
     state.selectedFolderCard = null;
