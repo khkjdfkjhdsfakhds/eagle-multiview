@@ -42,3 +42,24 @@ test('rejects invalid alpha payloads safely', () => {
   assert.equal(decodePayload(null), null);
   assert.equal(parseStealthMetadataBitmap({ width: 1, height: 1, data: new Uint8Array(4) }), null);
 });
+
+test('reads SD WebUI RGB-mode parameters from an RGB PAM decode', () => {
+  const { parsePam } = require('../lib/stealth-metadata-reader');
+  const width = 32, height = 32;
+  const text = 'tower\nNegative prompt: lowres\nSteps: 30, Sampler: DPM++ 2M, Seed: 9';
+  const length = Buffer.alloc(4); length.writeUInt32BE(Buffer.byteLength(text) * 8);
+  const encoded = Buffer.concat([Buffer.from('stealth_rgbinfo'), length, Buffer.from(text)]);
+  const pixels = Buffer.alloc(width * height * 3, 255);
+  encoded.forEach((value, index) => {
+    for (let bit = 0; bit < 8; bit += 1) {
+      const cursor = index * 8 + bit, pixel = Math.floor(cursor / 3);
+      pixels[((pixel % height) * width + Math.floor(pixel / height)) * 3 + cursor % 3] = 254 | ((value >> (7 - bit)) & 1);
+    }
+  });
+  const pam = Buffer.concat([Buffer.from(`P7\nWIDTH ${width}\nHEIGHT ${height}\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n`), pixels]);
+  const metadata = parseStealthMetadataBitmap(parsePam(pam));
+  assert.equal(metadata.format, 'Automatic1111 / FORGE');
+  assert.equal(metadata.positive, 'tower');
+  assert.equal(metadata.negative, 'lowres');
+  assert.equal(metadata.params.Seed, '9');
+});

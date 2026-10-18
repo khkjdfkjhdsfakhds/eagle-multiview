@@ -4685,6 +4685,7 @@ function renderGenerationMetadata(metadata) {
 
 let generationMetadataAbort = null;
 const stealthMetadataCache = new Map();
+const STEALTH_METADATA_SETTLE_MS = 150;
 async function loadGenerationMetadata(item) {
   generationMetadataAbort?.abort();
   const controller = new AbortController();
@@ -4703,12 +4704,16 @@ async function loadGenerationMetadata(item) {
       const key = JSON.stringify([state.library?.path, url, item.modificationTime, item.size]);
       if (stealthMetadataCache.has(key)) metadata = stealthMetadataCache.get(key);
       else {
-        const imageURL = url + `?metadata=${encodeURIComponent(JSON.stringify([item.modificationTime, item.size]))}`;
-        const text = await window.EagleMVStealthMetadata.readImage(imageURL, { signal: controller.signal });
+        // Arrow-key browsing settles before an original is decoded.
+        await new Promise(resolve => setTimeout(resolve, STEALTH_METADATA_SETTLE_MS));
         if (controller.signal.aborted || token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
-        metadata = window.EagleMVNovelAIMetadata.parseNovelAIExif(text);
-        if (metadata) {
-          if (stealthMetadataCache.size >= 16) stealthMetadataCache.delete(stealthMetadataCache.keys().next().value);
+        const imageURL = url + `?metadata=${encodeURIComponent(JSON.stringify([item.modificationTime, item.size]))}`;
+        const result = await window.EagleMVStealthMetadata.inspectImage(imageURL, { signal: controller.signal });
+        if (controller.signal.aborted || token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
+        metadata = result?.text ? window.EagleMVNovelAIMetadata.parseStealthText(result.text) : null;
+        // Images without a payload are remembered too, so revisiting them is free.
+        if (result) {
+          if (stealthMetadataCache.size >= 500) stealthMetadataCache.delete(stealthMetadataCache.keys().next().value);
           stealthMetadataCache.set(key, metadata);
         }
       }
