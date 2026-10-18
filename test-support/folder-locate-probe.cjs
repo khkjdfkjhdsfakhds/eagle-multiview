@@ -1,7 +1,6 @@
 'use strict';
-// Real-renderer check for R2-03: / still toggles between expanding every
-// folder (locating the current one) and collapsing, but collapsing keeps the
-// current folder's ancestors open and leaves it in view.
+// Real-renderer check for /: it toggles between expanding every folder
+// (locating the current one) and collapsing every folder, as Eagle does.
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-folder-locate-'));
@@ -43,7 +42,6 @@ app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-fol
     const second = await press();
     const third = await press();
     const fourth = await press();
-    // From the root view collapsing closes everything, as before.
     navigate({ kind: 'all' }, { refreshView: false, skipDiscard: true });
     state.expandedFolders = new Set(['A', 'B', 'C', 'other']);
     renderFolderTree();
