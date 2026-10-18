@@ -38,9 +38,12 @@ test('pane navigation, layout, and sort controls match the primary toolbar scale
   assert.doesNotMatch(cssSource, /\.content-pane \.sort-select \{/, 'the native select is hidden; the visible control is the button');
 });
 
-test('waterfall uses CSS columns and list restyles rows without overlays', () => {
-  assert.match(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*columns:/);
-  assert.match(cssSource, /\.asset-grid\.waterfall \.item-card\s*\{[^}]*break-inside: avoid/);
+test('waterfall places cards by script and list restyles rows without overlays', () => {
+  // Row by row into the shortest column (D-10, T-07): CSS columns filled
+  // column by column. Placement itself is covered by waterfall-layout tests.
+  assert.doesNotMatch(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*columns:/);
+  assert.match(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*position: relative/);
+  assert.match(cssSource, /\.asset-grid\.waterfall \.item-card\s*\{[^}]*position: absolute/);
   assert.match(cssSource, /\.asset-grid\.list \.item-card\s*\{[^}]*grid-template-columns/);
   assert.match(cssSource, /\.asset-grid\.list \.annotation-badge,\s*\n\.asset-grid\.list \.format-badge,\s*\n\.asset-grid\.list \.pin-badge \{ display: none; \}/);
   // The justified filler pseudo-element belongs to that one mode: every layout

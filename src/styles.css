@@ -1876,17 +1876,18 @@ body.hide-card-ext .card-ext,
 body.hide-card-ext-label .format-badge,
 body.hide-card-annotation .annotation-badge { display: none; }
 .card-meta { margin: 0 4px 4px; overflow: hidden; color: rgba(248, 249, 251, .6); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-/* 瀑布流：CSS 多栏，卡片保持各自纵横比自然堆叠。 */
+/* 瀑布流：同原版逐行排列，每张卡片放进最短的一列（D-10）。位置、列宽和
+   容器高度由 renderer 的 layoutWaterfall 计算（src/waterfall-layout.js）。 */
 .asset-grid.waterfall {
+  position: relative;
   display: block;
-  columns: var(--thumb) auto;
-  column-gap: 12px;
 }
 .asset-grid.waterfall .item-card {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
-  width: 100%;
-  margin-bottom: 12px;
-  break-inside: avoid;
+  width: var(--thumb);
 }
 /* 列表：小缩略图 + 名称 + 元信息按行排列。 */
 .asset-grid.list {

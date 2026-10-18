@@ -153,6 +153,17 @@ window.addEventListener('storage', event => {
 // setting shared by every pane and window (P1-06, P1-07).
 const cardDisplayAPI = window.EagleMVCardDisplay;
 let cardDisplay = cardDisplayAPI.parse(null);
+// 瀑布流 placement (layoutWaterfall). Declared up here: card display classes
+// are applied during start-up and already schedule a relayout.
+const waterfall = window.EagleMVWaterfall;
+let waterfallFrame = 0;
+// Pane and window resizes, the inspector opening, a split appearing.
+const waterfallResize = typeof ResizeObserver === 'function' ? new ResizeObserver(entries => {
+  for (const entry of entries) {
+    const grid = entry.target.querySelector(':scope > .asset-grid.waterfall');
+    if (grid && grid.clientWidth !== grid._waterfall?.width) layoutWaterfall(grid);
+  }
+}) : null;
 try { cardDisplay = cardDisplayAPI.parse(localStorage.getItem(cardDisplayAPI.STORAGE_KEY)); } catch {}
 window.addEventListener('storage', event => {
   if (event.key === cardDisplayAPI.STORAGE_KEY) adoptCardDisplay(cardDisplayAPI.parse(event.newValue));
@@ -2615,6 +2626,7 @@ function currentThumbnailSize() {
 function applyThumbnailSize(size, { persist = true } = {}) {
   const clamped = gestures.clampThumbnailSize(size);
   document.documentElement.style.setProperty('--thumb', `${clamped}px`);
+  scheduleWaterfallRelayout();
   const slider = $('#sizeSlider');
   if (slider) slider.value = String(clamped);
   if (persist) { try { localStorage.setItem('eaglemv.thumbnailSize', String(clamped)); } catch {} }
@@ -3486,6 +3498,7 @@ function renderGrid({ preserveScroll = true } = {}) {
     const renderedCount = items.length - appended;
     grid.insertAdjacentHTML('beforeend', items.slice(renderedCount).map(itemCardMarkup).join(''));
     hydrateGridCards([...grid.children].slice(renderedCount));
+    layoutWaterfall(grid, { append: true });
     state.scrollTop = scrollTop;
     if (updateSharedFooter) updateScrollUI();
     scheduleVisibleItemWatch();
@@ -3494,6 +3507,10 @@ function renderGrid({ preserveScroll = true } = {}) {
   const itemSection = items.length ? `${headingHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
   itemGrid.innerHTML = `${folderSection}${itemSection}`;
   itemGrid._gridPrefix = gridPrefixHTML;
+  // Placed before the scroll position is restored: the cards give the grid
+  // its height.
+  layoutWaterfall(itemGrid.querySelector('.asset-grid'));
+  waterfallResize?.observe(itemGrid);
   const root = paneRoot();
   hydrateGridCards(root?.querySelectorAll('#itemGrid .item-card') || []);
   for (const image of root?.querySelectorAll('.folder-cover img') || []) {
@@ -3515,7 +3532,46 @@ function applyCardDisplayClasses() {
   body.classList.toggle('hide-card-ext', !cardDisplay.ext);
   body.classList.toggle('hide-card-ext-label', !cardDisplay.extLabel);
   body.classList.toggle('hide-card-annotation', !cardDisplay.annotation);
+  // Hiding the name or meta line changes every card's height.
+  scheduleWaterfallRelayout();
 }
+
+// 瀑布流 cards are placed by script, row by row into the shortest column like
+// Eagle's GridLayout (D-10); CSS columns filled column by column instead, and
+// reshuffled every card whenever a lazy-load page arrived. An append continues
+// from the column heights the earlier cards left, so those never move.
+function layoutWaterfall(grid, { append = false } = {}) {
+  if (!grid?.classList.contains('waterfall')) return;
+  const width = grid.clientWidth;
+  // A hidden pane has no width; the resize observer lays it out once shown.
+  if (!width) { grid._waterfall = null; return; }
+  const columns = waterfall.columnsFor(width, currentThumbnailSize());
+  const cards = [...grid.children];
+  let layout = grid._waterfall;
+  const resumes = append && layout && layout.width === width && layout.columnWidth === columns.width && layout.count <= cards.length;
+  if (!resumes) layout = { width, columnWidth: columns.width, heights: new Array(columns.count).fill(0), count: 0 };
+  const fresh = cards.slice(layout.count);
+  // All widths first, then all heights, then all positions: one reflow.
+  for (const card of fresh) card.style.width = `${layout.columnWidth}px`;
+  const sizes = fresh.map(card => card.offsetHeight);
+  waterfall.place(layout.heights, sizes, layout.columnWidth).forEach(({ left, top }, index) => {
+    fresh[index].style.left = `${left}px`;
+    fresh[index].style.top = `${top}px`;
+  });
+  layout.count = cards.length;
+  grid.style.height = `${waterfall.contentHeight(layout.heights)}px`;
+  grid._waterfall = layout;
+}
+
+function scheduleWaterfallRelayout() {
+  if (waterfallFrame || typeof requestAnimationFrame !== 'function') return;
+  waterfallFrame = requestAnimationFrame(() => {
+    waterfallFrame = 0;
+    for (const grid of document.querySelectorAll('.asset-grid.waterfall')) layoutWaterfall(grid);
+  });
+}
+
+
 
 function renderCardDisplayControls() {
   for (const input of document.querySelectorAll('[data-card-display]')) input.checked = Boolean(cardDisplay[input.dataset.cardDisplay]);
@@ -9010,16 +9066,17 @@ function bindMarqueeSelection(paneId, scroller) {
   };
   // Card rectangles are read per frame instead of cached: lazy-load refreshes
   // replace the grid DOM mid-drag and stale rectangles would select blindly.
+  // Measured in the same scroller-content frame as the pointer: offsetLeft
+  // and offsetTop would be relative to the 瀑布流 grid, whose cards are
+  // placed inside it.
   const cardRects = () => {
     const cards = [];
+    const box = scroller.getBoundingClientRect();
     for (const card of scroller.querySelectorAll('#itemGrid .item-card')) {
-      cards.push({
-        id: card.dataset.id,
-        left: card.offsetLeft,
-        top: card.offsetTop,
-        right: card.offsetLeft + card.offsetWidth,
-        bottom: card.offsetTop + card.offsetHeight
-      });
+      const rect = card.getBoundingClientRect();
+      const left = rect.left - box.left + scroller.scrollLeft;
+      const top = rect.top - box.top + scroller.scrollTop;
+      cards.push({ id: card.dataset.id, left, top, right: left + rect.width, bottom: top + rect.height });
     }
     return cards;
   };
