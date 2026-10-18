@@ -6947,12 +6947,18 @@ function renderLocation() {
   $('#upButton').disabled = !parentView();
 }
 
+// The tree as / last collapsed it: only the current folder's ancestors open.
+let locateCollapsedSignature = null;
+const expandedSignature = () => [...state.expandedFolders].sort().join('\n');
+
 function locateCurrentFolder() {
   const folders = state.library?.folders || [];
   if (!folders.length) return;
   const path = state.currentView.kind === 'folder' ? findFolderPath(folders, state.currentView.id) : [];
   const reference = path.length > 1 ? path.at(-2) : folders[0];
-  const expand = !state.expandedFolders.has(reference.id);
+  // Collapsing keeps the parent open, so a tree / left collapsed counts as
+  // collapsed even though the parent is expanded.
+  const expand = !state.expandedFolders.has(reference.id) || expandedSignature() === locateCollapsedSignature;
   state.expandedFolders.clear();
   if (expand) {
     const addAll = nodes => (nodes || []).forEach(folder => {
@@ -6960,18 +6966,24 @@ function locateCurrentFolder() {
       addAll(folder.children);
     });
     addAll(folders);
+    locateCollapsedSignature = null;
+  } else {
+    // R2-03: collapsing keeps the way to the current folder open.
+    for (const folder of path.slice(0, -1)) state.expandedFolders.add(folder.id);
+    locateCollapsedSignature = expandedSignature();
   }
   renderFolderTree();
+  const active = () => $('#folderTree .folder-row.active');
   if (expand) {
     requestAnimationFrame(() => {
-      const active = $('#folderTree .folder-row.active');
-      active?.scrollIntoView({ block: 'center' });
-      active?.classList.add('located');
-      setTimeout(() => active?.classList.remove('located'), 900);
+      active()?.scrollIntoView({ block: 'center' });
+      active()?.classList.add('located');
+      setTimeout(() => active()?.classList.remove('located'), 900);
     });
     toast('已展开全部文件夹并定位当前文件夹');
   } else {
     $('#folderTree').scrollTop = 0;
+    requestAnimationFrame(() => active()?.scrollIntoView({ block: 'nearest' }));
     toast('已收起全部文件夹');
   }
 }
