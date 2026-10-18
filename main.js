@@ -1289,6 +1289,8 @@ function showUpdateWindow() {
     // back to idle so the next scheduled check can remind again (F-09).
     else if (controller.state.phase === 'ready') controller.requestInstall({ relaunch: false });
     else if (controller.state.phase === 'available') controller.setState({ phase: 'idle' });
+    // Closing the window of a manual check is its 取消.
+    else if (controller.state.phase === 'checking') controller.cancelCheck();
   });
   window.loadFile(path.join(__dirname, 'src', 'update.html'));
   return window;
@@ -1334,6 +1336,7 @@ function setupUpdateIPC() {
         return state;
       }
       case 'cancel': controller.cancelDownload(); return null;
+      case 'cancel-check': controller.cancelCheck(); closeUpdateWindow(); return null;
       case 'skip': await controller.skip(); closeUpdateWindow(); return null;
       case 'later':
         controller.requestInstall({ relaunch: false });

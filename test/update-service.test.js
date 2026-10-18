@@ -333,3 +333,24 @@ test('a second 下载并安装 during the pre-download checks starts nothing (F-
   await first;
   assert.equal(calls.filter(url => url === SUMS_URL).length, 1, 'the checksum was fetched once');
 });
+
+test('取消 during a manual check stops the request without an error (F-09)', async t => {
+  const workDir = await tempDir(t, 'eaglemv-update-');
+  const faults = [];
+  let seenSignal = null;
+  const updates = controller(t, workDir, { logFault: (...args) => faults.push(args), now: () => 9000, fetch: fakeFetch({ [FEED]: options => {
+    seenSignal = options.signal;
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+  } }) });
+  const pending = updates.check({ manual: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updates.state.phase, 'checking');
+  updates.cancelCheck();
+  assert.equal(seenSignal.aborted, true, 'the request itself is aborted');
+  assert.equal((await pending).phase, 'idle');
+  assert.equal(faults.length, 0, 'a cancel is not logged as a failure');
+  await assert.rejects(fs.readFile(path.join(workDir, 'update.json')), { code: 'ENOENT' }, 'a canceled check is not recorded as done');
+  // The next check starts afresh.
+  updates.fetch = fakeFetch({ [FEED]: releaseJSON({ version: '1.8.1' }) });
+  assert.equal((await updates.check({ manual: true })).phase, 'latest');
+});

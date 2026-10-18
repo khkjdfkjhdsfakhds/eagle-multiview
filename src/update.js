@@ -60,7 +60,9 @@
     return node;
   }
 
+  let phase = null;
   function render(state) {
+    phase = state.phase;
     const title = $('title');
     const subtitle = $('subtitle');
     const buttons = [];
@@ -74,7 +76,7 @@
       case 'checking':
         title.textContent = '正在检查更新…';
         progress = { text: '' };
-        buttons.push(button('取消', 'close'));
+        buttons.push(button('取消', 'cancel-check'));
         break;
       case 'latest':
         title.textContent = '已是最新版本';
@@ -152,7 +154,7 @@
 
   $('autoCheck').addEventListener('change', event => api.act('auto-check', event.target.checked));
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') api.act('close');
+    if (event.key === 'Escape') api.act(phase === 'checking' ? 'cancel-check' : 'close');
   });
   api.onState(render);
   api.getState().then(render);
