@@ -770,3 +770,46 @@ test('W-01/S-11: library media is never sniffed, and HTML/SVG open sandboxed', a
     assert.equal(sandboxed, name === 'a.svg' || name === 'a.html', name);
   }
 });
+
+// W-10: a single-file download resumes with Range, a zip announces its length,
+// and a started download keeps its token past the two-minute start window.
+test('W-10: exports resume single files, size zips exactly and keep a started token alive', async t => {
+  const srcDir = makeFixtureDir();
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-export-resume-'));
+  t.after(() => { fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(mediaDir, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(mediaDir, 'a.bin'), '0123456789');
+  fs.writeFileSync(path.join(mediaDir, '图.bin'), 'abc');
+  const byId = { a: path.join(mediaDir, 'a.bin'), b: path.join(mediaDir, '图.bin') };
+  const server = createWebServer({ srcDir, invoke: async () => null, resolveMediaPath: async (_kind, id) => byId[id] || null, accessKey: ACCESS_KEY, requireKey: false, loginFailureDelayMs: 0 });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(() => server.stop());
+  const prepare = async ids => JSON.parse((await request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids }))).body.toString()).url;
+
+  const url = await prepare(['a']);
+  const full = await request(port, { path: url });
+  assert.equal(full.headers['accept-ranges'], 'bytes');
+  assert.ok(full.headers.etag);
+  const part = await request(port, { path: url, headers: { Range: 'bytes=4-', 'If-Range': full.headers.etag } });
+  assert.equal(part.status, 206);
+  assert.equal(part.body.toString(), '456789');
+  assert.equal(part.headers['content-range'], 'bytes 4-9/10');
+  const stale = await request(port, { path: url, headers: { Range: 'bytes=4-', 'If-Range': '"other"' } });
+  assert.equal(stale.status, 200, 'a resume against another version starts over');
+  assert.equal(stale.body.toString(), '0123456789');
+  assert.equal((await request(port, { path: url, headers: { Range: 'bytes=20-' } })).status, 416);
+
+  const zipURL = await prepare(['a', 'b']);
+  const zip = await request(port, { path: zipURL });
+  assert.equal(zip.status, 200);
+  assert.equal(Number(zip.headers['content-length']), zip.body.length, 'Content-Length matches the streamed zip');
+
+  // Two minutes to start; once started the token outlives that window.
+  const realNow = Date.now;
+  t.after(() => { Date.now = realNow; });
+  const started = await prepare(['a']);
+  await request(port, { path: started });
+  const unused = await prepare(['a']);
+  Date.now = () => realNow() + 5 * 60 * 1000;
+  assert.equal((await request(port, { path: started, headers: { Range: 'bytes=0-1' } })).status, 206);
+  assert.equal((await request(port, { path: unused })).status, 410, 'an unstarted export still expires');
+});
