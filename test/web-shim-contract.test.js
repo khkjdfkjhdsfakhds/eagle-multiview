@@ -122,7 +122,8 @@ test('capability tables agree between preload and the shim', () => {
 
 test('renderer mints media addresses only through mediaURL()', () => {
   assert.ok(!/["'`]eaglemv:\/\/|src="eaglemv:/.test(renderer), 'renderer 不应再出现 eaglemv:// 字符串字面量');
-  assert.ok(renderer.includes("const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id)"));
+  assert.ok(renderer.includes('const mediaURL = (kind, id) => {'));
+  assert.ok(renderer.includes("return window.eagleMV.mediaURL(kind, id) + (version ? `?v=${version}` : '');"));
   assert.ok(preload.includes('eaglemv://${kind}/'), 'preload 铸造协议地址');
   assert.ok(shim.includes('/media/'), 'shim 铸造同源媒体地址');
 });
