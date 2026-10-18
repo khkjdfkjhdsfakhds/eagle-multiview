@@ -36,7 +36,40 @@ async function run() {
     const commentAsked = await answer('好图');
     const rectAsked = await answer('');
     await comment;
-    return { colourAsked, commentAsked, rectAsked, calls: window.__askText, hidden: dialog.classList.contains('hidden') };
+    const hidden = dialog.classList.contains('hidden');
+    const calls = [...window.__askText];
+    // B1-07: the colour manager searches every tag, shows uncoloured tags as
+    // hollow swatches and can clear a colour; an empty answer clears it too.
+    state.availableTags = ['alpha', ...Array.from({ length: 250 }, (_, index) => 't' + index)].map(name => ({ name }));
+    state.tagColors = { alpha: '#ff0000' };
+    document.querySelector('#filterPopover').classList.remove('hidden');
+    const manager = document.querySelector('#tagColorManager');
+    manager.classList.remove('hidden');
+    renderTagColors();
+    const managerState = () => ({
+      rows: manager.querySelectorAll('.tag-color-row').length,
+      unset: manager.querySelectorAll('.tag-color-swatch.unset').length,
+      clears: [...manager.querySelectorAll('[data-tag-color-clear]')].map(node => node.dataset.tagColorClear),
+      more: manager.querySelector('.tag-color-more')?.textContent || '',
+      unsetInput: manager.querySelector('[data-tag-color="t0"]')?.value
+    });
+    const initial = managerState();
+    const search = manager.querySelector('[data-tag-color-search]');
+    search.focus(); search.value = 't24';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    const searched = { ...managerState(), focused: document.activeElement === manager.querySelector('[data-tag-color-search]') };
+    window.__askText.length = 0;
+    const research = manager.querySelector('[data-tag-color-search]');
+    research.value = 'alpha'; research.dispatchEvent(new Event('input', { bubbles: true }));
+    manager.querySelector('[data-tag-color-clear="alpha"]').click();
+    await wait(30);
+    const afterClear = managerState();
+    document.querySelector('#filterPopover').classList.add('hidden');
+    window.state.contextMenu = { ids: ['item-1'] };
+    const contextClear = executeContextAction('tag-color', { tag: 't1' });
+    const clearAsked = await answer('');
+    await contextClear;
+    return { colourAsked, commentAsked, rectAsked, calls, hidden, manager: { initial, searched, afterClear, clearAsked, clearCalls: window.__askText } };
   })()`);
   console.log(`EAGLEMV_ASK_TEXT ${JSON.stringify(result)}`);
 }

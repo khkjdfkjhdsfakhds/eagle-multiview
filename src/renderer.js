@@ -2360,14 +2360,34 @@ function renderTagSuggestions() {
   }
 }
 
+const TAG_COLOR_MANAGER_LIMIT = 200;
+// An uncolored tag shows a hollow swatch; its picker starts on neutral gray
+// so that the app's blue accent stays a colour that can be chosen (B1-07).
+const UNSET_TAG_COLOR_INPUT = '#808080';
 function renderTagColors() {
   const manager = $('#tagColorManager');
   if (!manager) return;
-  manager.innerHTML = state.availableTags.slice(0, 200).map(tag => {
-    const name = tag.name || tag;
-    const color = state.tagColors[name] || '#0072ef';
-    return `<label class="tag-color-row"><span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><input type="color" value="${escapeHTML(color)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></label>`;
-  }).join('') || '<small class="muted">当前资源库还没有标签</small>';
+  const previous = manager.querySelector('[data-tag-color-search]');
+  const search = previous?.value || '';
+  const searchFocused = previous && document.activeElement === previous;
+  const needle = search.trim().toLocaleLowerCase();
+  const names = state.availableTags.map(tag => tag.name || tag);
+  const matches = needle ? names.filter(name => name.toLocaleLowerCase().includes(needle)) : names;
+  const rows = matches.slice(0, TAG_COLOR_MANAGER_LIMIT).map(name => {
+    const color = state.tagColors[name] || '';
+    const swatch = color ? `<span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span>` : '<span class="tag-color-swatch unset" title="未设置颜色"></span>';
+    const clear = color ? `<button type="button" class="tag-color-clear" data-tag-color-clear="${escapeHTML(name)}" title="清除颜色" aria-label="清除${escapeHTML(name)}的颜色">×</button>` : '';
+    return `<div class="tag-color-row">${swatch}<span title="${escapeHTML(name)}">${escapeHTML(name)}</span>${clear}<input type="color" value="${escapeHTML(color || UNSET_TAG_COLOR_INPUT)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></div>`;
+  }).join('');
+  const more = matches.length > TAG_COLOR_MANAGER_LIMIT ? `<small class="muted tag-color-more">还有 ${matches.length - TAG_COLOR_MANAGER_LIMIT} 个标签，请输入名称搜索</small>` : '';
+  const empty = !names.length ? '<small class="muted">当前资源库还没有标签</small>' : !matches.length ? '<small class="muted">没有找到相关标签</small>' : '';
+  const searchHTML = names.length ? `<input type="search" class="tag-color-search" data-tag-color-search placeholder="搜索标签" aria-label="搜索标签" autocomplete="off" value="${escapeHTML(search)}">` : '';
+  manager.innerHTML = `${searchHTML}<div class="tag-color-list">${rows}${more}${empty}</div>`;
+  if (searchFocused) {
+    const input = manager.querySelector('[data-tag-color-search]');
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
 }
 
 function currentViewSmartFolderConditions() {
@@ -2447,16 +2467,17 @@ async function removeSmartFolder(id) {
   });
 }
 
+// An empty colour clears the tag's colour.
 async function updateTagColor(tag, color) {
   if (!tag) return;
-  if (!/^#[0-9a-f]{6}$/i.test(color || '')) {
+  if (color && !/^#[0-9a-f]{6}$/i.test(color)) {
     toast('颜色需为六位十六进制，例如 #0072ef', 3200);
     return;
   }
   const libraryPath = state.library?.path;
   try {
     await runForegroundOperation('正在保存标签颜色…', { key: `tag-color:${libraryPath}:${tag}` }, async () => {
-      state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color });
+      state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color: color || null });
       renderTagColors();
       renderTagEditor('item');
       renderTagEditor('batch');
@@ -7848,9 +7869,10 @@ function requestNameDialog({ title, initialValue = '', submitLabel = '确认', f
 function askTagColor(tag) {
   return askText({
     title: `设置标签“${tag}”颜色`,
-    fieldLabel: '六位十六进制颜色',
-    initialValue: state.tagColors[tag] || '#0072ef',
+    fieldLabel: '六位十六进制颜色（留空清除颜色）',
+    initialValue: state.tagColors[tag] || '',
     placeholder: '#0072ef',
+    allowEmpty: true,
     maxLength: 7
   });
 }
@@ -10185,6 +10207,13 @@ function bindEvents() {
   $('#tagColorManager').addEventListener('change', event => {
     const input = event.target.closest('[data-tag-color]');
     if (input) updateTagColor(input.dataset.tagColor, input.value);
+  });
+  $('#tagColorManager').addEventListener('input', event => {
+    if (event.target.closest('[data-tag-color-search]')) renderTagColors();
+  });
+  $('#tagColorManager').addEventListener('click', event => {
+    const clear = event.target.closest('[data-tag-color-clear]');
+    if (clear) updateTagColor(clear.dataset.tagColorClear, '');
   });
   // The sort popover is placed in window coordinates when it opens; a window
   // or splitter resize would leave it floating away from its button.
