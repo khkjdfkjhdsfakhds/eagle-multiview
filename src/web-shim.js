@@ -379,8 +379,14 @@
     });
   }
 
+  const stagedUploadBatches = new Map();
+  let stagedUploadSequence = 0;
+
   async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
     const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [], unknown: [], notSubmitted: [] };
+    const batch = ++stagedUploadSequence;
+    const staged = [];
+    const duplicates = [];
     const fileName = file => file?.name || '未命名文件';
     // Files after a stop are listed, never silently dropped.
     const stopAt = index => { outcome.notSubmitted.push(...files.slice(index).map(fileName)); };
@@ -401,7 +407,12 @@
           stopAt(index + 1);
           break;
         }
-        if (body?.ok) {
+        if (body?.ok && body.result?.needsDuplicateDecision) {
+          // Matches an existing item: the host keeps the file until the
+          // duplicate choice for the whole batch is made (H-08).
+          staged.push({ uploadToken: body.result.uploadToken, batch });
+          duplicates.push(...(body.result.duplicates || []));
+        } else if (body?.ok) {
           outcome.count += body.result.count || 0;
           outcome.ready += body.result.ready || 0;
           outcome.ids.push(...(body.result.ids || []));
@@ -422,7 +433,42 @@
       }
     }
     emit('upload:progress', null);
-    return outcome;
+    if (!staged.length) return outcome;
+    stagedUploadBatches.set(batch, outcome);
+    return { ...outcome, needsDuplicateDecision: true, stagedUploads: true, total: files.length, duplicates, paths: staged };
+  }
+
+  // Sends the duplicate choice for staged uploads and folds in what the
+  // batch already imported, so the result covers every file. Rejections from
+  // the first pass were already returned with the decision request.
+  async function resolveStagedUploads(staged, duplicateChoice) {
+    const batch = staged[0]?.batch;
+    const prior = stagedUploadBatches.get(batch) || { count: 0, ready: 0, ids: [], unknown: [], notSubmitted: [] };
+    stagedUploadBatches.delete(batch);
+    let resolved;
+    try {
+      const response = await fetch('/upload/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-eaglemv-client': String(clientId) },
+        body: JSON.stringify({ tokens: staged.map(entry => entry.uploadToken), choice: duplicateChoice })
+      });
+      if (response.status === 401) location.replace('/login');
+      const body = await response.json().catch(() => null);
+      resolved = body?.ok ? body.result : { count: 0, ready: 0, ids: [], rejected: staged.map(() => ({ path: '', message: body?.message || '重复处理失败' })) };
+    } catch {
+      resolved = { count: 0, ready: 0, ids: [], rejected: [], unknown: staged.map(() => '重复文件'), error: { message: '连接中断，重复文件的处理结果可能不确定' } };
+    }
+    const count = (prior.count || 0) + (resolved.count || 0);
+    return {
+      ...resolved,
+      canceled: !count && duplicateChoice === 'cancel',
+      count,
+      ready: (prior.ready || 0) + (resolved.ready || 0),
+      ids: [...(prior.ids || []), ...(resolved.ids || [])],
+      unknown: [...(prior.unknown || []), ...(resolved.unknown || [])],
+      notSubmitted: prior.notSubmitted || [],
+      error: prior.error || resolved.error
+    };
   }
 
   // The Android shell tags its WebView user agent. It has one window and no
@@ -533,6 +579,7 @@
       // Dropped/pasted browser File objects arrive via `paths`; without them
       // a picker opens, then everything streams through POST /upload into the
       // host's shared import pipeline.
+      if (data.duplicateChoice && Array.isArray(data.paths) && data.paths[0]?.uploadToken) return resolveStagedUploads(data.paths, data.duplicateChoice);
       let files = Array.isArray(data.paths) && data.paths.length && typeof data.paths[0] !== 'string'
         ? data.paths
         : null;

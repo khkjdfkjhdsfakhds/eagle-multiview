@@ -906,7 +906,7 @@ async function applyWebAccess() {
     resolveMediaPath: resolveMediaPathForWeb,
     accessKey: state.key,
     requireKey: state.requireKey !== false,
-    uploadImport: importPaths,
+    uploadImport: importWithDuplicateDecision,
     ensureLibraryPath: libraryPath => hub.ensureLibraryPath(libraryPath),
     uploadDir: path.join(app.getPath('userData'), 'temp', 'web-uploads'),
     onClientGone: id => hub.removeWatcher(id),
@@ -1454,6 +1454,100 @@ async function liveDuplicateImports(duplicates, libraryPath) {
     return Boolean(check.value?.id) && !check.value.isDeleted;
   }));
   return duplicates.filter(duplicate => live.has(duplicate.id));
+}
+
+// The duplicate check and decision shared by desktop imports and Web uploads
+// (H-08): without a choice, duplicates come back for the user to decide.
+async function importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice = null, origin = 0, waitTimeoutMs = 0 }) {
+  await hub.ensureLibraryPath(libraryPath);
+  const prepared = await prepareImportPaths(filePaths);
+  filePaths = prepared.paths;
+  // The index is invalidated by Eagle-originated hub changes.  Keeping a
+  // warm snapshot here avoids rescanning every metadata.json file before
+  // each import while preserving exact duplicate checks after external
+  // Eagle activity.
+  const duplicates = await liveDuplicateImports(
+    await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex, includeDeleted: true }),
+    libraryPath
+  );
+  if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected };
+  if (duplicateChoice === 'cancel') return { canceled: true };
+  const duplicateByPath = new Map();
+  for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
+  const useExisting = duplicateChoice === 'use-existing';
+  const existing = useExisting ? [...duplicateByPath.values()] : [];
+  const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
+  const imported = importPathsToUse.length
+    ? await importPaths({ paths: importPathsToUse, folderId, libraryPath, ...(waitTimeoutMs ? { waitTimeoutMs } : {}) })
+    : { count: 0, ready: 0, ids: [], rejected: [] };
+  if (duplicateChoice === 'keep-both' && duplicates.length && imported.ids.length) {
+    try {
+      await hub.ensureLibraryPath(libraryPath);
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: keepImportedCopiesScript({ libraryPath, ids: imported.ids })
+      } });
+      const ready = await waitForImportedItems(client, imported.ids, 12000, 200, () => hub.ensureLibraryPath(libraryPath));
+      imported.ready = ready.length;
+      if (ready.length < imported.ids.length) imported.nativeDecisionPending = true;
+    } catch (error) {
+      imported.nativeDecisionPending = true;
+      imported.rejected.push({ code: 'DUPLICATE_DECISION_PENDING', message: error.message });
+    }
+  }
+  if (imported.count) {
+    // Imported metadata can appear on disk slightly after the API accepts
+    // the request. Refresh in the background so the next import sees the
+    // new records without adding this work to the current foreground path.
+    duplicateIndex.invalidate(libraryPath);
+    scheduleDuplicateIndexWarm(libraryPath);
+  }
+  let existingIds = [];
+  let duplicateFailed = 0;
+  if (useExisting && existing.length) {
+    const assignments = await settleWithConcurrency(existing, async duplicate => {
+      await hub.ensureLibraryPath(libraryPath);
+      const item = await client.getItem(duplicate.id).catch(error => {
+        if (isMissingItemError(error)) return null;
+        throw error;
+      });
+      if (!item?.id || item.isDeleted) throw Object.assign(new Error('重复素材已被删除'), { code: 'DUPLICATE_DELETED' });
+      await hub.ensureLibraryPath(libraryPath);
+      if (!folderId) return item;
+      return hub.mutateSet({
+        id: duplicate.id,
+        field: 'folders',
+        add: [folderId],
+        libraryPath,
+        origin
+      });
+    }, 4);
+    existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
+    // Trashed between the duplicate prompt and this step: Eagle no longer
+    // treats it as a duplicate, so import the file like a new one.
+    const revived = existing.filter((_, index) => assignments[index].error?.code === 'DUPLICATE_DELETED').map(duplicate => duplicate.path);
+    if (revived.length) {
+      const extra = await importPaths({ paths: revived, folderId, libraryPath });
+      imported.count += extra.count;
+      imported.ready += extra.ready;
+      imported.ids = [...imported.ids, ...extra.ids];
+      imported.rejected = [...imported.rejected, ...extra.rejected];
+      if (extra.count) {
+        duplicateIndex.invalidate(libraryPath);
+        scheduleDuplicateIndexWarm(libraryPath);
+      }
+    }
+    duplicateFailed = assignments.length - existingIds.length - revived.length;
+  }
+  const result = {
+    ...imported,
+    rejected: [...prepared.rejected, ...imported.rejected],
+    count: imported.count + existingIds.length,
+    ready: imported.ready + existingIds.length,
+    ids: [...imported.ids, ...existingIds],
+    duplicateCount: existingIds.length,
+    duplicateFailed
+  };
+  return { canceled: false, ...result };
 }
 
 async function resolveItemFiles(ids) {
@@ -2195,96 +2289,9 @@ function setupIPC() {
     const wasFrontmost = Boolean(parent?.isFocused?.());
     let finished = false;
     try {
-      await hub.ensureLibraryPath(libraryPath);
-      const prepared = await prepareImportPaths(filePaths);
-      filePaths = prepared.paths;
-      // The index is invalidated by Eagle-originated hub changes.  Keeping a
-      // warm snapshot here avoids rescanning every metadata.json file before
-      // each import while preserving exact duplicate checks after external
-      // Eagle activity.
-      const duplicates = await liveDuplicateImports(
-        await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex, includeDeleted: true }),
-        libraryPath
-      );
-      if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected };
-      if (duplicateChoice === 'cancel') return { canceled: true };
-      const duplicateByPath = new Map();
-      for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
-      const useExisting = duplicateChoice === 'use-existing';
-      const existing = useExisting ? [...duplicateByPath.values()] : [];
-      const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
-      const imported = importPathsToUse.length
-        ? await importPaths({ paths: importPathsToUse, folderId, libraryPath })
-        : { count: 0, ready: 0, ids: [], rejected: [] };
-      if (duplicateChoice === 'keep-both' && duplicates.length && imported.ids.length) {
-        try {
-          await hub.ensureLibraryPath(libraryPath);
-          await client.request('/api/script/inject', { method: 'POST', body: {
-            script: keepImportedCopiesScript({ libraryPath, ids: imported.ids })
-          } });
-          const ready = await waitForImportedItems(client, imported.ids, 12000, 200, () => hub.ensureLibraryPath(libraryPath));
-          imported.ready = ready.length;
-          if (ready.length < imported.ids.length) imported.nativeDecisionPending = true;
-        } catch (error) {
-          imported.nativeDecisionPending = true;
-          imported.rejected.push({ code: 'DUPLICATE_DECISION_PENDING', message: error.message });
-        }
-      }
-      if (imported.count) {
-        // Imported metadata can appear on disk slightly after the API accepts
-        // the request. Refresh in the background so the next import sees the
-        // new records without adding this work to the current foreground path.
-        duplicateIndex.invalidate(libraryPath);
-        scheduleDuplicateIndexWarm(libraryPath);
-      }
-      let existingIds = [];
-      let duplicateFailed = 0;
-      if (useExisting && existing.length) {
-        const assignments = await settleWithConcurrency(existing, async duplicate => {
-          await hub.ensureLibraryPath(libraryPath);
-          const item = await client.getItem(duplicate.id).catch(error => {
-            if (isMissingItemError(error)) return null;
-            throw error;
-          });
-          if (!item?.id || item.isDeleted) throw Object.assign(new Error('重复素材已被删除'), { code: 'DUPLICATE_DELETED' });
-          await hub.ensureLibraryPath(libraryPath);
-          if (!folderId) return item;
-          return hub.mutateSet({
-            id: duplicate.id,
-            field: 'folders',
-            add: [folderId],
-            libraryPath,
-            origin: event.sender.id
-          });
-        }, 4);
-        existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
-        // Trashed between the duplicate prompt and this step: Eagle no longer
-        // treats it as a duplicate, so import the file like a new one.
-        const revived = existing.filter((_, index) => assignments[index].error?.code === 'DUPLICATE_DELETED').map(duplicate => duplicate.path);
-        if (revived.length) {
-          const extra = await importPaths({ paths: revived, folderId, libraryPath });
-          imported.count += extra.count;
-          imported.ready += extra.ready;
-          imported.ids = [...imported.ids, ...extra.ids];
-          imported.rejected = [...imported.rejected, ...extra.rejected];
-          if (extra.count) {
-            duplicateIndex.invalidate(libraryPath);
-            scheduleDuplicateIndexWarm(libraryPath);
-          }
-        }
-        duplicateFailed = assignments.length - existingIds.length - revived.length;
-      }
-      const result = {
-        ...imported,
-        rejected: [...prepared.rejected, ...imported.rejected],
-        count: imported.count + existingIds.length,
-        ready: imported.ready + existingIds.length,
-        ids: [...imported.ids, ...existingIds],
-        duplicateCount: existingIds.length,
-        duplicateFailed
-      };
-      finished = true;
-      return { canceled: false, ...result };
+      const result = await importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice, origin: event.sender.id });
+      finished = !result.canceled && !result.needsDuplicateDecision;
+      return result;
     } finally {
       // Restoring twice used to hide Eagle's unresolved dialog immediately.
       // Keep-both returns focus only after the renderer confirms completion.

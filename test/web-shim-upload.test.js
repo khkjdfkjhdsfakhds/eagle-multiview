@@ -303,3 +303,50 @@ test('upload progress keeps a long upload alive and is reported', async () => {
   assert.deepEqual(progress.filter(Boolean).map(entry => [entry.index, entry.total, entry.loaded, entry.size]), [[0, 1, 0, 10], [0, 1, 5, 10]]);
   assert.equal(progress.at(-1), null, 'the progress feed ends when the batch ends');
 });
+
+// H-08: duplicates found by the host come back for a decision on this device.
+test('duplicate uploads ask for a choice and the reply covers the whole batch', async () => {
+  const resolves = [];
+  const harness = createHarness({
+    fetchImpl: (url, options) => {
+      if (url === '/upload/resolve') {
+        const body = JSON.parse(options.body);
+        resolves.push({ body, headers: options.headers });
+        return Promise.resolve({ status: 200, json: async () => ({ ok: true, result: body.choice === 'cancel'
+          ? { canceled: true, count: 0, ready: 0, ids: [], rejected: [] }
+          : { canceled: false, count: 1, ready: 1, ids: ['KEPT'], rejected: [] } }) });
+      }
+      if (url.includes('name=dup.png')) {
+        return uploadResponse({ needsDuplicateDecision: true, uploadToken: 'a'.repeat(32), duplicates: [{ name: 'dup.png', id: 'OLD' }] });
+      }
+      return uploadResponse({ ids: ['FRESH'] });
+    }
+  });
+  const files = [{ name: 'fresh.png' }, { name: 'dup.png' }];
+  const first = await harness.window.eagleMV.importItems({ paths: files, folderId: 'F1' });
+  assert.equal(first.needsDuplicateDecision, true);
+  assert.equal(first.stagedUploads, true);
+  assert.equal(first.total, 2);
+  assert.equal(first.count, 1, 'the fresh file is already in');
+  assert.deepEqual(first.duplicates, [{ name: 'dup.png', id: 'OLD' }]);
+
+  const final = await harness.window.eagleMV.importItems({ paths: first.paths, folderId: 'F1', duplicateChoice: 'keep-both' });
+  assert.deepEqual(resolves[0].body, { tokens: ['a'.repeat(32)], choice: 'keep-both' });
+  assert.equal(resolves[0].headers['Content-Type'], 'application/json');
+  assert.ok(resolves[0].headers['x-eaglemv-client']);
+  assert.equal(final.canceled, false);
+  assert.equal(final.count, 2);
+  assert.deepEqual(final.ids, ['FRESH', 'KEPT']);
+
+  // Cancel still releases the staged file and keeps what was imported.
+  const again = await harness.window.eagleMV.importItems({ paths: files, folderId: 'F1' });
+  const canceled = await harness.window.eagleMV.importItems({ paths: again.paths, duplicateChoice: 'cancel' });
+  assert.equal(resolves[1].body.choice, 'cancel');
+  assert.equal(canceled.canceled, false);
+  assert.equal(canceled.count, 1);
+
+  // A batch of nothing but duplicates that is canceled ends as canceled.
+  const only = await harness.window.eagleMV.importItems({ paths: [{ name: 'dup.png' }] });
+  const none = await harness.window.eagleMV.importItems({ paths: only.paths, duplicateChoice: 'cancel' });
+  assert.equal(none.canceled, true);
+});

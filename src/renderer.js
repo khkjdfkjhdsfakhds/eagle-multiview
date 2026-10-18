@@ -6910,8 +6910,10 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     if (result.canceled) return;
     if (result.needsDuplicateDecision) {
       const rejected = result.rejected || [];
-      const choice = await chooseDuplicateAction(result.duplicates || [], result.paths?.length || paths?.length || 0);
-      if (!choice || choice === 'cancel') return;
+      const choice = await chooseDuplicateAction(result.duplicates || [], result.total || result.paths?.length || paths?.length || 0) || 'cancel';
+      // Web uploads already imported the rest of the batch and the host holds
+      // the duplicates, so a cancel is still sent to release them.
+      if (choice === 'cancel' && !result.stagedUploads) return;
       result = await window.eagleMV.importItems({ ...payload, paths: result.paths, duplicateChoice: choice });
       result.rejected = [...rejected, ...(result.rejected || [])];
       if (result.canceled) return;

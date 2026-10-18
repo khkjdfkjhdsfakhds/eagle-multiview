@@ -416,6 +416,97 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   fs.rmSync(uploadDir, { recursive: true, force: true });
 });
 
+// H-08: a duplicate upload waits on the host for the uploading device's choice.
+test('duplicate uploads are staged until the device picks keep-both, use-existing or cancel', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-dup-'));
+  const calls = [];
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths, folderId, duplicateChoice }) => {
+      calls.push({ paths: [...paths], folderId, duplicateChoice, exists: paths.map(file => fs.existsSync(file)) });
+      if (!duplicateChoice) return { canceled: false, needsDuplicateDecision: true, paths, duplicates: [{ path: paths[0], id: 'OLD1', name: 'old', ext: 'png' }], rejected: [] };
+      if (duplicateChoice === 'use-existing') return { canceled: false, count: 1, ready: 1, ids: ['OLD1'], rejected: [], duplicateCount: 1 };
+      return { canceled: false, count: 1, ready: 1, ids: ['NEW1'], rejected: [] };
+    },
+    uploadDir,
+    loginFailureDelayMs: 0
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const headers = { Cookie: cookie, 'x-eaglemv-client': '3' };
+  const upload = async name => JSON.parse((await request(port, { path: `/upload?name=${name}&folderId=F9`, method: 'POST', headers }, 'SAME')).body.toString());
+  const resolve = (tokens, choice, extra = {}) => request(port, { path: '/upload/resolve', method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json', ...extra } }, JSON.stringify({ tokens, choice }));
+
+  const first = await upload('dup.png');
+  assert.equal(first.result.needsDuplicateDecision, true);
+  assert.match(first.result.uploadToken, /^[0-9a-f]{32}$/);
+  assert.deepEqual(first.result.duplicates, [{ name: 'dup.png', id: 'OLD1', existingName: 'old', ext: 'png' }]);
+  assert.ok(!JSON.stringify(first).includes(uploadDir), 'host staging paths never reach the device');
+
+  assert.equal((await resolve([first.result.uploadToken], 'keep-both', { 'x-eaglemv-client': '' })).status, 403, 'client header required');
+  assert.equal((await request(port, { path: '/upload/resolve', method: 'POST', headers: { ...headers, 'Content-Type': 'text/plain' } }, '{}')).status, 415, 'JSON required');
+  assert.equal((await resolve([first.result.uploadToken], 'delete-all')).status, 400, 'unknown choices rejected');
+
+  const kept = JSON.parse((await resolve([first.result.uploadToken], 'keep-both')).body.toString());
+  assert.deepEqual(kept.result.ids, ['NEW1']);
+  assert.equal(calls[1].duplicateChoice, 'keep-both');
+  assert.equal(calls[1].folderId, 'F9', 'the staged upload keeps its target folder');
+  assert.deepEqual(calls[1].paths, calls[0].paths, 'the staged file is imported, not re-uploaded');
+  assert.deepEqual(calls[1].exists, [true]);
+  const replay = JSON.parse((await resolve([first.result.uploadToken], 'keep-both')).body.toString());
+  assert.equal(replay.result.count, 0, 'tokens are single-use');
+  assert.equal(replay.result.rejected.length, 1);
+
+  const second = await upload('dup2.png');
+  const existing = JSON.parse((await resolve([second.result.uploadToken], 'use-existing')).body.toString());
+  assert.deepEqual(existing.result.ids, ['OLD1']);
+  assert.equal(existing.result.duplicateCount, 1);
+
+  const third = await upload('dup3.png');
+  const stagedDir = path.dirname(calls.at(-1).paths[0]);
+  const canceled = JSON.parse((await resolve([third.result.uploadToken], 'cancel')).body.toString());
+  assert.equal(canceled.result.canceled, true);
+  assert.equal(calls.at(-1).duplicateChoice, undefined, 'cancel imports nothing');
+  for (let n = 0; n < 50 && fs.existsSync(stagedDir); n++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(stagedDir), false, 'a canceled upload is removed from staging');
+
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
+test('staged duplicate uploads expire', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-exp-'));
+  let stagedPath = null;
+  const server = createWebServer({
+    srcDir, invoke: async () => null, resolveMediaPath: async () => null, accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths }) => { stagedPath = paths[0]; return { needsDuplicateDecision: true, paths, duplicates: [{ path: paths[0], id: 'X' }] }; },
+    uploadDir, loginFailureDelayMs: 0, pendingUploadTtlMs: 50
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const body = JSON.parse((await request(port, { path: '/upload?name=a.png', method: 'POST', headers: { Cookie: cookie, 'x-eaglemv-client': '1' } }, 'A')).body.toString());
+  assert.ok(fs.existsSync(stagedPath));
+  for (let n = 0; n < 50 && fs.existsSync(stagedPath); n++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(stagedPath), false, 'an unanswered duplicate is cleaned up');
+  const late = JSON.parse((await request(port, { path: '/upload/resolve', method: 'POST', headers: { Cookie: cookie, 'x-eaglemv-client': '1', 'Content-Type': 'application/json' } },
+    JSON.stringify({ tokens: [body.result.uploadToken], choice: 'keep-both' }))).body.toString());
+  assert.equal(late.result.count, 0);
+  assert.match(late.result.rejected[0].message, /过期/);
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
 // W-02: uploads end when they stall, not after a fixed total time.
 test('uploads time out when idle, not while bytes keep arriving', async () => {
   const srcDir = makeFixtureDir();
