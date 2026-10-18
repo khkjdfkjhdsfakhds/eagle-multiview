@@ -9,7 +9,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 const execFileAsync = promisify(execFile);
 
 test('actual Electron renderer drives layout icons, refresh-all, window shortcuts and responsive wrapping', { timeout: 20000 }, async () => {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/renderer-ui-runner.cjs');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

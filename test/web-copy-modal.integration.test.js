@@ -8,7 +8,7 @@ let resultPromise;
 async function probe(){
   if(!resultPromise)resultPromise=(async()=>{
   const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
-  const {stdout}=await promisify(execFile)(require('electron'),['--disable-logging',require.resolve('../test-support/web-copy-modal-probe.cjs')],{env,timeout:25000});
+  const {stdout}=await promisify(execFile)(require('../test-support/electron-binary.cjs'),['--disable-logging',require.resolve('../test-support/web-copy-modal-probe.cjs')],{env,timeout:25000});
   const line=stdout.split('\n').find(row=>row.startsWith('WEB_COPY_MODAL '));assert.ok(line,stdout);
   return JSON.parse(line.slice('WEB_COPY_MODAL '.length));
   })();

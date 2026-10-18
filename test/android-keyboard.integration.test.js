@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('Android uses Ctrl for ⌘-only shortcuts and wide touch tablets keep multi-pane; macOS keeps ⌘', { timeout: 45000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/android-keyboard-probe.cjs')], { env, timeout: 40000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/android-keyboard-probe.cjs')], { env, timeout: 40000 });
   const line = stdout.split('\n').find(row => row.startsWith('EAGLEMV_ANDROID_KEYBOARD '));
   assert.ok(line, stdout);
   const { android, phone, apple } = JSON.parse(line.slice('EAGLEMV_ANDROID_KEYBOARD '.length));

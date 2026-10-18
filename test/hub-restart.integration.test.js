@@ -20,7 +20,7 @@ test('H-02: every hub process stamps its snapshots with its own instance id', as
 test('H-02: a page that outlived a host restart applies the restarted host snapshots', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/hub-restart-probe.cjs')], { env, timeout: 25000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/hub-restart-probe.cjs')], { env, timeout: 25000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_HUB_RESTART '));
   assert.ok(line, `missing hub restart result: ${stdout}`);
   assert.deepEqual(JSON.parse(line.slice('EAGLEMV_HUB_RESTART '.length)), { first: true, staleIgnored: true, restarted: true });

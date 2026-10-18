@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 test('folder copy is offered from the context menu and every copy asks first (F-03)', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/folder-copy-confirm-probe.cjs')], { env, timeout: 25000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/folder-copy-confirm-probe.cjs')], { env, timeout: 25000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_FOLDER_COPY_CONFIRM '));
   assert.ok(line, `missing folder copy result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_FOLDER_COPY_CONFIRM '.length));

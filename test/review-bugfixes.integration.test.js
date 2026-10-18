@@ -9,7 +9,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 const execFileAsync = promisify(execFile);
 
 async function runProbe() {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/review-bugfixes-probe.cjs');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

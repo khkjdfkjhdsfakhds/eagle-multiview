@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 test('新建智能文件夹 with nothing filtered opens the filter panel instead of saving the view', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/new-smart-folder-probe.cjs')], { env, timeout: 25000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/new-smart-folder-probe.cjs')], { env, timeout: 25000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_NEW_SMART_FOLDER '));
   assert.ok(line, `missing new smart folder result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_NEW_SMART_FOLDER '.length));

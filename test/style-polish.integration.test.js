@@ -25,6 +25,6 @@ test('styles define the colours they use and drop the dead toolbar rules (P7-32,
 test('real renderer: 10px floor, 4.5:1 secondary text, keyboard ring, 24px hit box, reduced motion', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/style-polish-probe.cjs')], { env, timeout: 25000, maxBuffer: 4 * 1024 * 1024 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/style-polish-probe.cjs')], { env, timeout: 25000, maxBuffer: 4 * 1024 * 1024 });
   assert.match(stdout, /STYLE_POLISH_OK/);
 });

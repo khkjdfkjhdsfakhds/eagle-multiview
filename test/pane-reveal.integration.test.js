@@ -8,7 +8,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 test('real renderer reveals paths, folders and paginated selections without writes or stale navigation', { timeout: 40000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout, stderr } = await promisify(execFile)(require('electron'), [
+  const { stdout, stderr } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), [
     '--disable-logging', require.resolve('../test-support/pane-reveal-runner.cjs')
   ], { env, timeout: 35000 });
   assertCleanElectronStderr(assert, stderr, 'pane reveal');

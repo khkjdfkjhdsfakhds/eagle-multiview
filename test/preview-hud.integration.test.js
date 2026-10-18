@@ -11,7 +11,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 const execFileAsync = promisify(execFile);
 
 test('preview HUD: the desktop app hides ×, the web client shows it, and the HUD fades out after inactivity', { timeout: 20000 }, async () => {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/preview-hud-probe.cjs');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

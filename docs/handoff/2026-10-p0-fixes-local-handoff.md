@@ -622,3 +622,10 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 **规则不变**：跑测一律 `npm test`（全量）或 `npm test -- test/xxx.test.js`；每批 `node --check` 三件 + 全量、本地提交、在本文件追加一节；不推送、不合 main；**不要覆盖 `/Applications`**，GUI 用测试副本（appId `local.eagle.multiview.branchtest`，`open -g -n -a … --args --user-data-dir=<scratchpad>/testdata --remote-debugging-port=9333`，只读）。要写资料库的验证先问用户。
 
 **当前状态**：分支 `claude/kind-lamport-48izv4` 领先远端 63 个提交（含本节），未推送、未合 main；全量 910/911（pane-reveal 并发偶发，单跑通过）；正式安装 1.8.3 未动。上一会话的测试副本可能仍在后台运行（scratchpad 会随会话清理），如在运行：退出后 `lsregister -u` 注销。
+
+## 二十一、Dock 闪烁：直接 `node --test` 也不闪（2026-10-18）
+
+- 实测（每 0.2 秒 `lsappinfo list`）：`npm test` 全量 911/911，探针全是 `UIElement`、零 `Foreground`；但直接 `node --test` 跑两个探针文件就出现 7 次 `Foreground`（Dock 闪）。原因：克隆 Electron 只在 `run-tests.cjs` 里经环境变量生效，绕过 runner 时测试文件 `require('electron')` 拿到的是原版。
+- 修复：克隆准备逻辑移到 `test-support/electron-binary.cjs`（返回可执行文件路径，并设 `ELECTRON_OVERRIDE_DIST_PATH`）；93 个测试文件把 `require('electron')` 换成它；并行测试进程在各自临时目录里准备、改名到位，冷缓存下并发启动也安全。`run-tests.cjs` 复用它，`no-dock.cjs` 预加载兜底照旧。`no-dock` 测试新增一条：测试文件里不得再出现 `require('electron')`。
+- 验证：清空缓存后直接 `node --test` 6 个文件 10/10，轮询全为 `UIElement`；`npm test` 全量 911/912，轮询 832 次全为 `UIElement`，失败的是已知并发偶发 pane-reveal（单跑 3/3 通过）。只改测试设施，未构建、未动 `/Applications`。
+- 未覆盖：测试副本（`open -g` 启动）本身是正常 App，会进 Dock，属预期。

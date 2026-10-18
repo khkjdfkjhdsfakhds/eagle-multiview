@@ -28,6 +28,6 @@ test('own TXT saves and a reconnecting web client are recognised as this window 
 test('real renderer: Cmd+0 actual size, recent search, slideshow select, F2 on a folder card', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/renderer-polish-probe.cjs')], { env, timeout: 25000, maxBuffer: 4 * 1024 * 1024 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/renderer-polish-probe.cjs')], { env, timeout: 25000, maxBuffer: 4 * 1024 * 1024 });
   assert.match(stdout, /RENDERER_POLISH_OK/);
 });

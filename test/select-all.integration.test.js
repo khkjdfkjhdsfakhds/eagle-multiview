@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 async function probe(count) {
   const env = { ...process.env, EAGLEMV_SELECT_ALL_COUNT: String(count) };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/select-all-probe.cjs')], { env, timeout: 25000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/select-all-probe.cjs')], { env, timeout: 25000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_SELECT_ALL '));
   assert.ok(line, `missing select all result: ${stdout}`);
   return JSON.parse(line.slice('EAGLEMV_SELECT_ALL '.length));

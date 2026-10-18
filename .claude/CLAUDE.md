@@ -34,7 +34,7 @@ node --check src/renderer.js
 npm test                      # 单个文件：npm test -- test/xxx.test.js
 ```
 
-- 跑测用 `npm test`（`test-support/run-tests.cjs`：`node --test --test-force-exit`，macOS 上让探针改用 `node_modules/.cache` 里标了 `LSUIElement` 的 Electron.app 克隆），Electron 探针不会在 Dock 里冒图标；不要绕过它直接 `node --test`。
+- 跑测用 `npm test`（`test-support/run-tests.cjs`：`node --test --test-force-exit`）。测试经 `test-support/electron-binary.cjs` 启动 Electron，macOS 上用 `node_modules/.cache` 里标了 `LSUIElement` 的 Electron.app 克隆，探针不会在 Dock 里冒图标；新测试要 `require('../test-support/electron-binary.cjs')`，不要 `require('electron')`。
 
 - 部分测试依赖 Electron 窗口或本机环境（例如 `interaction-regression`、`interaction-final-review` 等打开 `http://0.0.0.0` 的用例），在云端或无显示环境下可能失败。区分“环境失败”与“本次改动导致的失败”：在改动前先跑一次记录基线，不要为了通过而修改无关测试。
 - 少数用例（如 pane-reveal）有并发偶发失败，单独重跑确认。

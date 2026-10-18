@@ -9,7 +9,7 @@ const { promisify } = require('node:util');
 test('inspector parity in a real renderer', { timeout: 60000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/inspector-parity-probe.cjs')], { env, timeout: 55000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/inspector-parity-probe.cjs')], { env, timeout: 55000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_INSPECTOR_PARITY '));
   assert.ok(line, `missing inspector parity result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_INSPECTOR_PARITY '.length));

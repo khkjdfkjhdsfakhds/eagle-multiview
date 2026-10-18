@@ -26,7 +26,7 @@ test('P7-10: submenus open leftward when the right side is short and stay above 
 test('P7-09/P7-10: at 980×640 every menu row and submenu stays inside the window', { timeout: 30000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/context-menu-fit-probe.cjs')], { env, timeout: 25000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/context-menu-fit-probe.cjs')], { env, timeout: 25000 });
   const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_MENU_FIT '));
   assert.ok(line, `missing menu fit result: ${stdout}`);
   const result = JSON.parse(line.slice('EAGLEMV_MENU_FIT '.length));

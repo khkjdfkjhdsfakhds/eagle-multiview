@@ -9,7 +9,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 test('Metadata Viewer controls are focused-only and resizable', { timeout: 25000 }, async () => {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout, stderr } = await promisify(execFile)(require('electron'), [
+  const { stdout, stderr } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), [
     '--disable-logging', require.resolve('../test-support/metadata-viewer-controls-probe.cjs')
   ], { env, timeout: 22000 });
   assertCleanElectronStderr(assert, stderr, 'metadata viewer controls runner');
