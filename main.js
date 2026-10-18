@@ -94,7 +94,7 @@ function scheduleDuplicateIndexWarm(libraryPath, delayMs = 1200) {
   if (duplicateIndexWarmTimer) clearTimeout(duplicateIndexWarmTimer);
   duplicateIndexWarmTimer = setTimeout(() => {
     duplicateIndexWarmTimer = null;
-    duplicateIndex.warm(libraryPath).catch(() => {});
+    duplicateIndex.refresh(libraryPath).catch(() => {});
   }, delayMs);
   duplicateIndexWarmTimer.unref?.();
 }
@@ -966,8 +966,15 @@ async function alignCreatedLocalOrder(libraryPath, parent, id, siblings, kind = 
 
 hub.on('status', payload => broadcast('hub:status', payload));
 hub.on('library-changed', payload => {
-  duplicateIndex.invalidate();
-  duplicateIndex.warm(payload.library?.path).catch(() => {});
+  // Only a library switch rereads every item; other changes refresh the
+  // duplicate index incrementally (E-04).
+  if (payload.libraryChanged) {
+    duplicateIndex.invalidate();
+    duplicateIndex.warm(payload.library?.path).catch(() => {});
+  } else {
+    duplicateIndex.markStale(payload.library?.path);
+    scheduleDuplicateIndexWarm(payload.library?.path, 250);
+  }
   trashScans.invalidateAll({ abort: payload.libraryChanged });
   if (payload.libraryChanged) {
     thumbnailCache.clear();
@@ -982,7 +989,7 @@ hub.on('items-changed', payload => {
   // operation.  Rebuilding the index synchronously before every import made
   // the whole images directory an avoidable foreground cost.
   if (payload.source === 'eagle' && payload.libraryPath) {
-    duplicateIndex.invalidate(payload.libraryPath);
+    duplicateIndex.markStale(payload.libraryPath);
     scheduleDuplicateIndexWarm(payload.libraryPath, 250);
   }
   // Item changes let a running scan finish for the readers already waiting
@@ -1537,7 +1544,7 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
     // Imported metadata can appear on disk slightly after the API accepts
     // the request. Refresh in the background so the next import sees the
     // new records without adding this work to the current foreground path.
-    duplicateIndex.invalidate(libraryPath);
+    duplicateIndex.markStale(libraryPath);
     scheduleDuplicateIndexWarm(libraryPath);
   }
   let existingIds = [];
@@ -1571,7 +1578,7 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
       imported.ids = [...imported.ids, ...extra.ids];
       imported.rejected = [...imported.rejected, ...extra.rejected];
       if (extra.count) {
-        duplicateIndex.invalidate(libraryPath);
+        duplicateIndex.markStale(libraryPath);
         scheduleDuplicateIndexWarm(libraryPath);
       }
     }
@@ -2262,7 +2269,7 @@ function setupIPC() {
         if (!imported.count || !imported.ids?.length) {
           throw new Error(imported.rejected?.[0]?.message || 'Eagle 没有返回新文件的素材 ID');
         }
-        duplicateIndex.invalidate(libraryPath);
+        duplicateIndex.markStale(libraryPath);
         const id = imported.ids[0];
         importedId = id;
         const ready = await waitForImportedFile(id, libraryPath);

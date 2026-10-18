@@ -69,3 +69,46 @@ test('bounds concurrent metadata work', async () => {
   assert.equal(maximum, 2);
   assert.deepEqual(result.sort((left, right) => left - right), [1, 2, 3, 4, 5]);
 });
+
+// E-04: after the first read, changes only read new item folders.
+test('the duplicate index refreshes incrementally after the first full read', async t => {
+  const fsSync = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const fsp = require('node:fs/promises');
+  const { DuplicateIndex } = require('../lib/duplicate-service');
+  const library = fsSync.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-dup-incremental-'));
+  t.after(() => fsSync.rmSync(library, { recursive: true, force: true }));
+  const addItem = id => {
+    const folder = path.join(library, 'images', `${id}.info`);
+    fsSync.mkdirSync(folder, { recursive: true });
+    fsSync.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({ id, name: id, ext: 'png', size: 1 }));
+  };
+  addItem('A'); addItem('B');
+  const index = new DuplicateIndex();
+  assert.deepEqual((await index.warm(library)).map(record => record.metadata.id).sort(), ['A', 'B']);
+
+  const realReadFile = fsp.readFile;
+  const reads = [];
+  t.after(() => { fsp.readFile = realReadFile; });
+  fsp.readFile = async (file, ...rest) => { reads.push(path.basename(path.dirname(file))); return realReadFile(file, ...rest); };
+  addItem('C');
+  fsSync.rmSync(path.join(library, 'images', 'A.info'), { recursive: true });
+  index.markStale(library);
+  assert.equal(index.peek(library), null, 'a stale snapshot is not offered');
+  const refreshed = await index.recordsFor(library);
+  assert.deepEqual(refreshed.map(record => record.metadata.id).sort(), ['B', 'C']);
+  assert.deepEqual(reads, ['C.info'], 'only the new item folder is read');
+  assert.ok(index.peek(library), 'the refreshed snapshot is current');
+  // Unchanged: no reads at all.
+  reads.length = 0;
+  await index.recordsFor(library);
+  assert.deepEqual(reads, []);
+  // A folder whose metadata was not written yet is read again next time.
+  fsSync.mkdirSync(path.join(library, 'images', 'D.info'));
+  index.markStale(library);
+  await index.recordsFor(library);
+  fsSync.writeFileSync(path.join(library, 'images', 'D.info', 'metadata.json'), JSON.stringify({ id: 'D', name: 'D', ext: 'png', size: 1 }));
+  index.markStale(library);
+  assert.ok((await index.recordsFor(library)).some(record => record.metadata.id === 'D'));
+});
