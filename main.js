@@ -985,11 +985,14 @@ hub.on('items-changed', payload => {
     duplicateIndex.invalidate(payload.libraryPath);
     scheduleDuplicateIndexWarm(payload.libraryPath, 250);
   }
-  trashScans.invalidateAll({ abort: true });
+  // Item changes let a running scan finish for the readers already waiting
+  // on it (later readers start afresh); aborting on every change kept a busy
+  // large library from ever finishing (E-20). Only a library switch aborts.
+  trashScans.invalidateAll();
   broadcast('hub:items-changed', payload);
 });
 hub.on('query-invalidated', payload => {
-  trashScans.invalidateAll({ abort: true });
+  trashScans.invalidateAll();
   broadcast('hub:query-invalidated', payload);
 });
 hub.on('supplemental-indexed', payload => {

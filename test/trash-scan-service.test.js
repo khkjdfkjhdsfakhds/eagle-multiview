@@ -81,3 +81,42 @@ test('aborts an in-flight scan after invalidation and starts a fresh scan', asyn
   assert.equal(readdirCalls, 2);
   assert.equal(readFileCalls, 2);
 });
+
+// E-20: the timeout catches a stalled scan, not a slow one that keeps moving.
+test('a large scan that keeps making progress outlives the timeout', async () => {
+  const names = Array.from({ length: 12 * 8 }, (_, index) => ({ name: `I${index}.info`, isDirectory: () => true }));
+  const fs = {
+    async readdir() { return names; },
+    async readFile(file) {
+      await new Promise(resolve => setTimeout(resolve, 8));
+      const id = file.match(/I(\d+)\.info/)[1];
+      return JSON.stringify({ id, isDeleted: id === '5', modificationTime: 1 });
+    }
+  };
+  // 8 rounds of 8 ms reads take well over the 30 ms stall limit in total.
+  const service = createTrashScanService({ fs, timeoutMs: 30 });
+  const started = Date.now();
+  const items = await service.read('/Mock.library');
+  assert.ok(Date.now() - started > 30, 'the scan ran past the stall limit');
+  assert.deepEqual(items.map(item => item.id), ['5']);
+});
+
+test('a soft invalidation lets the running scan answer its readers', async () => {
+  let release;
+  let reads = 0;
+  const fs = {
+    async readdir() { return [{ name: 'A.info', isDirectory: () => true }]; },
+    async readFile() {
+      reads += 1;
+      if (reads === 1) await new Promise(resolve => { release = resolve; });
+      return JSON.stringify({ id: 'A', isDeleted: true, modificationTime: reads });
+    }
+  };
+  const service = createTrashScanService({ fs, timeoutMs: 1000 });
+  const first = service.read('/Mock.library');
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  service.invalidateAll();
+  release();
+  assert.deepEqual((await first).map(item => item.modificationTime), [1], 'the waiting reader gets its answer');
+  assert.deepEqual((await service.read('/Mock.library')).map(item => item.modificationTime), [2], 'a later reader rescans');
+});

@@ -100,3 +100,28 @@ test('a leased timeout is not resubmitted while an eventual result is still unkn
   await fetch(`${url}/result`, { method: 'POST', headers, body: JSON.stringify({ requestId: reconcile.requestId, leaseId: reconcile.leaseId, result: { status: 'saved' } }) });
   assert.equal(await (await fetch(`${url}/next`, { headers })).json(), null);
 });
+
+// E-20: a save stuck as unknown is eventually given up so the TXT can be saved again.
+test('an unknown save that is never confirmed expires and stops blocking the next save', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-bridge-expire-'));
+  const bridge = createTextPluginBridge({ directory: root, stagingRoot: path.join(root, 'staging'), timeoutMs: 500, pendingExpiryMs: 80 });
+  t.after(async () => { await bridge.stop(); await fs.rm(root, { recursive: true, force: true }); });
+  await bridge.start();
+  const config = JSON.parse(await fs.readFile(path.join(root, 'connection.json'), 'utf8'));
+  const url = `http://127.0.0.1:${config.port}`;
+  const headers = { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' };
+  await fetch(`${url}/next`, { headers });
+  const request = { id: 'I', libraryPath: '/fixture.library', stagedPath: path.join(root, 'staging', 'one.txt'), base: { hash: 'old' }, outputHash: 'new' };
+  const first = bridge.replaceFile(request).catch(error => error);
+  const job = await (await fetch(`${url}/next`, { headers })).json();
+  await fetch(`${url}/result`, { method: 'POST', headers, body: JSON.stringify({ requestId: job.requestId, leaseId: job.leaseId, result: { status: 'unknown' } }) });
+  assert.equal((await first).code, 'TEXT_SAVE_UNCONFIRMED');
+  await assert.rejects(bridge.replaceFile(request), /仍待确认/, 'a fresh unknown blocks a second save');
+  await new Promise(resolve => setTimeout(resolve, 120));
+  await fetch(`${url}/next`, { headers });
+  const second = bridge.replaceFile(request);
+  const next = await (await fetch(`${url}/next`, { headers })).json();
+  assert.equal(next.operation, 'replace', 'the expired check is dropped, the new save goes out');
+  await fetch(`${url}/result`, { method: 'POST', headers, body: JSON.stringify({ requestId: next.requestId, leaseId: next.leaseId, result: { status: 'saved' } }) });
+  assert.equal((await second).status, 'saved');
+});
