@@ -422,6 +422,7 @@
     <div class="trash-dialog-card web-access-card">
       <h2 id="webAccessTitle">Web 访问</h2>
       <p class="web-access-intro">在手机或平板的浏览器中打开当前资源库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
+      <p class="web-access-risk" role="note">连接使用明文 HTTP，未加密：同一网络中的其他设备可能看到传输的素材和访问密钥。建议只在自家 Wi‑Fi 等可信网络下使用，并保持访问密钥开启。</p>
       <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（同一网络的设备可连接）</label>
       <label class="folder-dialog-field web-access-port-field"><span>端口</span>
         <input id="webAccessPort" type="number" min="1024" max="65535" placeholder="41600">

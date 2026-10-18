@@ -2849,6 +2849,11 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 /* Web access settings dialog */
 .web-access-card { width: min(460px, calc(100vw - 36px)); display: grid; gap: 12px; }
 .web-access-card .web-access-intro { margin: 6px 0 0; }
+/* W-03: the page and the access key travel as plain HTTP. */
+.web-access-card .web-access-risk {
+  margin: 0; padding: 7px 10px; border: 1px solid rgba(255, 197, 61, .28); border-radius: 7px;
+  background: rgba(255, 197, 61, .07); color: #e3cf9c; font-size: 12px; line-height: 1.5;
+}
 .web-access-toggle { display: flex; align-items: center; gap: 8px; color: #dfe1e6; font-size: 13px; cursor: pointer; }
 .web-access-toggle input { accent-color: #0072ef; }
 .web-access-port-field input { width: 110px; }
