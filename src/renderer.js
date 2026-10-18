@@ -2382,7 +2382,21 @@ function renderTagSuggestions() {
 const TAG_COLOR_MANAGER_LIMIT = 200;
 // An uncolored tag shows a hollow swatch; its picker starts on neutral gray
 // so that the app's blue accent stays a colour that can be chosen (B1-07).
-const UNSET_TAG_COLOR_INPUT = '#808080';
+// Tag colours are picked from Eagle's tag group palette (BUG-02): 无 plus
+// the eight named colours. A colour set earlier as free hex stays offered.
+const tagPaletteColors = Object.freeze(['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink']);
+let tagColorManagerOpen = null;
+
+function tagColorPaletteMarkup(tag, current) {
+  const value = String(current || '').toLowerCase();
+  const swatch = (color, label) => {
+    const checked = value === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}" role="radio" aria-checked="${checked}" title="${escapeHTML(label)}" aria-label="颜色：${escapeHTML(label)}"${color ? ` style="--swatch:${escapeHTML(color)}"` : ''} data-tag-palette-color="${escapeHTML(color)}" data-tag="${escapeHTML(tag)}"></button>`;
+  };
+  const named = tagPaletteColors.map(name => [eagleNamedFolderColors[name], eagleColorLabels[name]]);
+  const custom = value && !named.some(([hex]) => hex === value) ? [[value, `当前颜色 ${value}`]] : [];
+  return `<div class="tag-color-palette" role="radiogroup" aria-label="标签“${escapeHTML(tag)}”的颜色">${[['', '无'], ...named, ...custom].map(([color, label]) => swatch(color, label)).join('')}</div>`;
+}
 function renderTagColors() {
   const manager = $('#tagColorManager');
   if (!manager) return;
@@ -2394,9 +2408,12 @@ function renderTagColors() {
   const matches = needle ? names.filter(name => name.toLocaleLowerCase().includes(needle)) : names;
   const rows = matches.slice(0, TAG_COLOR_MANAGER_LIMIT).map(name => {
     const color = state.tagColors[name] || '';
+    const open = tagColorManagerOpen === name;
     const swatch = color ? `<span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span>` : '<span class="tag-color-swatch unset" title="未设置颜色"></span>';
     const clear = color ? `<button type="button" class="tag-color-clear" data-tag-color-clear="${escapeHTML(name)}" title="清除颜色" aria-label="清除${escapeHTML(name)}的颜色">×</button>` : '';
-    return `<div class="tag-color-row">${swatch}<span title="${escapeHTML(name)}">${escapeHTML(name)}</span>${clear}<input type="color" value="${escapeHTML(color || UNSET_TAG_COLOR_INPUT)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></div>`;
+    // The whole row opens the palette under it; × stays a one-click clear.
+    const row = `<div class="tag-color-row${open ? ' open' : ''}"><button type="button" class="tag-color-open" data-tag-color-open="${escapeHTML(name)}" aria-expanded="${open}" title="设置颜色" aria-label="设置${escapeHTML(name)}的颜色">${swatch}<span title="${escapeHTML(name)}">${escapeHTML(name)}</span></button>${clear}</div>`;
+    return open ? `${row}${tagColorPaletteMarkup(name, color)}` : row;
   }).join('');
   const more = matches.length > TAG_COLOR_MANAGER_LIMIT ? `<small class="muted tag-color-more">还有 ${matches.length - TAG_COLOR_MANAGER_LIMIT} 个标签，请输入名称搜索</small>` : '';
   const empty = !names.length ? '<small class="muted">当前资源库还没有标签</small>' : !matches.length ? '<small class="muted">没有找到相关标签</small>' : '';
@@ -7853,6 +7870,8 @@ async function executeContextAction(action, payload) {
 
 function closeFolderDialog(name = null) {
   $('#folderDialog').classList.add('hidden');
+  $('#folderDialog').classList.remove('palette-mode');
+  $('#folderDialogPalette').replaceChildren();
   const resolve = state.folderDialogResolve;
   state.folderDialogResolve = null;
   if (resolve) resolve(name);
@@ -7930,15 +7949,23 @@ function requestNameDialog({ title, initialValue = '', submitLabel = '确认', f
 // Electron has no window.prompt(): it returns null without showing anything.
 // Text questions reuse the in-app name dialog instead. Resolves to null when
 // cancelled and to the trimmed text (possibly empty when allowed) otherwise.
+// The in-app dialog showing the palette instead of the text field. Resolves
+// to the picked colour ('' for 无, which clears) or null when cancelled.
 function askTagColor(tag) {
-  return askText({
-    title: `设置标签“${tag}”颜色`,
-    fieldLabel: '六位十六进制颜色（留空清除颜色）',
-    initialValue: state.tagColors[tag] || '',
-    placeholder: '#0072ef',
-    allowEmpty: true,
-    maxLength: 7
+  if (state.folderDialogResolve) {
+    toast('请先完成当前的输入', 2800);
+    return Promise.resolve(null);
+  }
+  const dialog = $('#folderDialog');
+  dialog.classList.add('palette-mode');
+  $('#folderDialogTitle').textContent = `设置标签“${tag}”颜色`;
+  $('#folderDialogPalette').innerHTML = tagColorPaletteMarkup(tag, state.tagColors[tag]);
+  dialog.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    const palette = $('#folderDialogPalette');
+    (palette.querySelector('[aria-checked="true"]') || palette.querySelector('button'))?.focus();
   });
+  return new Promise(resolve => { state.folderDialogResolve = resolve; });
 }
 
 async function askText({ title, fieldLabel, initialValue = '', placeholder = '', submitLabel = '确定', allowEmpty = false, maxLength = 4000 }) {
@@ -10269,16 +10296,23 @@ function bindEvents() {
     $('#tagColorManager').classList.toggle('hidden');
     renderTagColors();
   });
-  $('#tagColorManager').addEventListener('change', event => {
-    const input = event.target.closest('[data-tag-color]');
-    if (input) updateTagColor(input.dataset.tagColor, input.value);
-  });
   $('#tagColorManager').addEventListener('input', event => {
     if (event.target.closest('[data-tag-color-search]')) renderTagColors();
   });
   $('#tagColorManager').addEventListener('click', event => {
     const clear = event.target.closest('[data-tag-color-clear]');
-    if (clear) updateTagColor(clear.dataset.tagColorClear, '');
+    if (clear) { tagColorManagerOpen = null; updateTagColor(clear.dataset.tagColorClear, ''); return; }
+    const open = event.target.closest('[data-tag-color-open]');
+    if (open) {
+      tagColorManagerOpen = tagColorManagerOpen === open.dataset.tagColorOpen ? null : open.dataset.tagColorOpen;
+      renderTagColors();
+      return;
+    }
+    const swatch = event.target.closest('[data-tag-palette-color]');
+    if (swatch) {
+      tagColorManagerOpen = null;
+      updateTagColor(swatch.dataset.tag, swatch.dataset.tagPaletteColor);
+    }
   });
   // The sort popover is placed in window coordinates when it opens; a window
   // or splitter resize would leave it floating away from its button.
@@ -10363,6 +10397,10 @@ function bindEvents() {
     closeFolderDialog(name);
   });
   $('#folderDialogCancelButton').addEventListener('click', () => closeFolderDialog());
+  $('#folderDialogPalette').addEventListener('click', event => {
+    const swatch = event.target.closest('[data-tag-palette-color]');
+    if (swatch) closeFolderDialog(swatch.dataset.tagPaletteColor);
+  });
   $('#folderDialog').addEventListener('click', event => {
     if (event.target === event.currentTarget) closeFolderDialog();
   });

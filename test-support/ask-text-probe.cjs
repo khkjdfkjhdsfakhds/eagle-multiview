@@ -1,6 +1,7 @@
 'use strict';
 // BUG-02: comment and tag-colour entries must ask through the in-app dialog,
-// because Electron's window.prompt() never shows anything.
+// because Electron's window.prompt() never shows anything. Tag colours are
+// picked from Eagle's palette there and in the colour manager.
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
 const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-ask-text-');
@@ -28,10 +29,34 @@ async function run() {
       await wait(30);
       return asked;
     };
+    // Picks a palette swatch in the dialog: '' is 无.
+    const pick = async color => {
+      await until(() => !dialog.classList.contains('hidden'), 'palette shown');
+      const palette = document.querySelector('#folderDialogPalette');
+      const swatches = [...palette.querySelectorAll('[data-tag-palette-color]')];
+      const asked = {
+        title: document.querySelector('#folderDialogTitle').textContent,
+        field: getComputedStyle(document.querySelector('.folder-dialog-field')).display,
+        submit: getComputedStyle(document.querySelector('#folderDialogCreateButton')).display,
+        colors: swatches.map(node => node.dataset.tagPaletteColor),
+        checked: swatches.filter(node => node.getAttribute('aria-checked') === 'true').map(node => node.dataset.tagPaletteColor)
+      };
+      swatches.find(node => node.dataset.tagPaletteColor === color).click();
+      await wait(30);
+      asked.paletteLeft = palette.children.length;
+      asked.modeLeft = dialog.classList.contains('palette-mode');
+      return asked;
+    };
     window.state.contextMenu = { ids: ['item-1'] };
     const colour = executeContextAction('tag-color', { tag: 'alpha' });
-    const colourAsked = await answer('#ff0000');
+    const colourAsked = await pick('#e5484d');
     await colour;
+    // Cancel leaves the colour alone.
+    window.state.contextMenu = { ids: ['item-1'] };
+    const cancelled = executeContextAction('tag-color', { tag: 'alpha' });
+    await until(() => !dialog.classList.contains('hidden'), 'palette shown again');
+    document.querySelector('#folderDialogCancelButton').click();
+    await cancelled;
     const comment = addCommentToSelected();
     const commentAsked = await answer('好图');
     const rectAsked = await answer('');
@@ -51,9 +76,19 @@ async function run() {
       unset: manager.querySelectorAll('.tag-color-swatch.unset').length,
       clears: [...manager.querySelectorAll('[data-tag-color-clear]')].map(node => node.dataset.tagColorClear),
       more: manager.querySelector('.tag-color-more')?.textContent || '',
-      unsetInput: manager.querySelector('[data-tag-color="t0"]')?.value
+      pickers: manager.querySelectorAll('input[type="color"]').length,
+      palettes: manager.querySelectorAll('.tag-color-palette').length
     });
     const initial = managerState();
+    // A row opens the palette under it; a swatch applies and closes it.
+    manager.querySelector('[data-tag-color-open="t0"]').click();
+    const opened = { ...managerState(), colors: [...manager.querySelectorAll('.tag-color-palette [data-tag-palette-color]')].map(node => node.dataset.tagPaletteColor), popover: !document.querySelector('#filterPopover').classList.contains('hidden') };
+    manager.querySelector('.tag-color-palette [data-tag-palette-color="#46a758"]').click();
+    await wait(30);
+    const picked = { ...managerState(), color: state.tagColors.t0 };
+    // The preload's setTagColor answers with the one tag only.
+    state.tagColors = { alpha: '#ff0000', t0: '#46a758' };
+    renderTagColors();
     const search = manager.querySelector('[data-tag-color-search]');
     search.focus(); search.value = 't24';
     search.dispatchEvent(new Event('input', { bubbles: true }));
@@ -65,11 +100,12 @@ async function run() {
     await wait(30);
     const afterClear = managerState();
     document.querySelector('#filterPopover').classList.add('hidden');
+    state.tagColors.t1 = '#123456';
     window.state.contextMenu = { ids: ['item-1'] };
     const contextClear = executeContextAction('tag-color', { tag: 't1' });
-    const clearAsked = await answer('');
+    const clearAsked = await pick('');
     await contextClear;
-    return { colourAsked, commentAsked, rectAsked, calls, hidden, manager: { initial, searched, afterClear, clearAsked, clearCalls: window.__askText } };
+    return { colourAsked, commentAsked, rectAsked, calls, hidden, manager: { initial, opened, picked, searched, afterClear, clearAsked, clearCalls: window.__askText } };
   })()`);
   console.log(`EAGLEMV_ASK_TEXT ${JSON.stringify(result)}`);
 }
