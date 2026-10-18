@@ -17,7 +17,7 @@ const { SiteImportSessions } = require('./lib/site-import-session');
 const { DataHub } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
 const { FolderCoverStore } = require('./lib/folder-cover-store');
-const { ManualOrderStore } = require('./lib/manual-order-store');
+const { ManualOrderStore, orderKey } = require('./lib/manual-order-store');
 const { SupplementalItemStore } = require('./lib/supplemental-item-store');
 const { readText, saveText } = require('./lib/text-file-service');
 const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
@@ -957,7 +957,7 @@ async function alignCreatedLocalOrder(libraryPath, parent, id, siblings, kind = 
       ids: [id], knownIds: [...new Set([...order.ids, ...siblings.map(folder => folder.id), id])],
       anchorId, position: 'before' });
     if (result.ok) {
-      broadcast('manual-order:changed', { libraryPath, scope, kind, orders: result.orders });
+      broadcast('manual-order:changed', { libraryPath, scope, kind, orders: { [key]: result.order } });
       return;
     }
   }
@@ -1417,6 +1417,24 @@ async function itemFilePath(id) {
     throw error;
   }
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
+}
+
+// Whether an item id still exists in the library, from the duplicate index
+// when its snapshot is current. Returns null otherwise, and local order and
+// pin records are then left as they are rather than trimmed from stale data.
+const liveItemIdSets = new WeakMap();
+function liveItemCheck(libraryPath) {
+  const records = duplicateIndex.peek(libraryPath);
+  if (!records) {
+    scheduleDuplicateIndexWarm(libraryPath);
+    return null;
+  }
+  let ids = liveItemIdSets.get(records);
+  if (!ids) {
+    ids = new Set(records.map(record => record.metadata?.id).filter(Boolean));
+    liveItemIdSets.set(records, ids);
+  }
+  return id => ids.has(id);
 }
 
 async function settleWithConcurrency(values, worker, concurrency = 8) {
@@ -2087,7 +2105,7 @@ function setupIPC() {
       if (!order?.ids.length) continue;
       const reset = await manualOrderStore.move({ libraryPath, scope, kind: 'folders', reset: true, revision: order.revision });
       if (!reset.ok) throw new Error(message);
-      broadcast('manual-order:changed', { libraryPath, scope, kind: 'folders', orders: reset.orders });
+      broadcast('manual-order:changed', { libraryPath, scope, kind: 'folders', orders: { [orderKey(scope, 'folders')]: reset.order } });
     }
   };
   handleRPC('folder:move', async (event, mutation) => {
@@ -2613,10 +2631,11 @@ function setupIPC() {
     }
     const result = await manualOrderStore.move(payload, async () => {
       if (input) await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), input, verify, persistIds });
-    });
+    }, { isLive: payload.kind === 'items' ? liveItemCheck(payload.libraryPath) : null });
     result.syncedToEagle = Boolean(result.ok && input);
     if (result.syncedToEagle) await hub.connect({ notify: true });
-    if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:result.orders,scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
+    // Other windows merge orders key by key, so only the changed one is sent.
+    if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:{ [orderKey(payload.scope, payload.kind)]: result.order },scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
     return result;
   });
   handleRPC('pins:set', async (event, { libraryPath, folderId, ids, pinned, syncToEagle = false, eaglePins = {} }) => {
@@ -2641,7 +2660,7 @@ function setupIPC() {
         } });
       for (const item of await client.getItems(uniqueIds)) hub.publishItemMutation(item, { libraryPath, origin: event.sender?.id, reason: 'pins-sync' });
     }
-    const pins = await getPinStore().set(libraryPath, folderId, ids, pinned, { synced: syncToEagle });
+    const pins = await getPinStore().set(libraryPath, folderId, ids, pinned, { synced: syncToEagle, isLive: liveItemCheck(libraryPath) });
     broadcast('pins:changed', { libraryPath, pins });
     return pins;
   });

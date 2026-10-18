@@ -43,3 +43,19 @@ test('S-01: pin ids that are not Eagle ids are rejected and never reach Object.p
   assert.equal(({}).ITEM2, undefined);
   assert.equal(Object.prototype.hasOwnProperty.call(cloned, '__proto__'), false);
 });
+
+// S-15: records of items that left the library, above all -1 markers, are dropped.
+test('S-15: a pin change drops records of items the library no longer has', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-pins-prune-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new PinStore(path.join(root, 'pins.json'));
+  const libraryPath = path.join(root, 'Fixture.library');
+  await store.set(libraryPath, 'F1', ['GONE_PIN'], true);
+  await store.set(libraryPath, 'F1', ['GONE_UNPIN', 'KEPT_UNPIN'], false);
+  let pins = await store.set(libraryPath, 'F1', ['LIVE'], true);
+  assert.deepEqual(Object.keys(pins.F1).sort(), ['GONE_PIN', 'GONE_UNPIN', 'KEPT_UNPIN', 'LIVE'], 'no live check, nothing trimmed');
+  const live = new Set(['LIVE', 'KEPT_UNPIN', 'NEW']);
+  pins = await store.set(libraryPath, 'F1', ['NEW'], true, { isLive: id => live.has(id) });
+  assert.deepEqual(Object.keys(pins.F1).sort(), ['KEPT_UNPIN', 'LIVE', 'NEW']);
+  assert.equal(pins.F1.KEPT_UNPIN, -1);
+});

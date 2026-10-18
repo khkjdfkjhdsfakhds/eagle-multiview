@@ -21,6 +21,11 @@ test('manual ordering RPC persists locally, broadcasts across windows and never 
   assert.equal(broadcast.scope,'root');assert.equal(broadcast.startSort,'default');
   assert.deepEqual(await main.rpcRegistry.get('manual-order:get')({}, {libraryPath:payload.libraryPath}),result.orders);
   assert.equal((await move({sender:{id:2}},payload)).conflict,true);
+  // S-04: a move broadcasts only the order it changed, not every order of the library.
+  messages.length=0;
+  await move({sender:{id:1}},{...payload,scope:'all'});
+  const only=messages.find(([event])=>event==='manual-order:changed')[1];
+  assert.deepEqual(Object.keys(only.orders),[JSON.stringify(['all','items'])]);
 });
 test('thumbnail RPC reports regeneration accepted, not custom-thumbnail removal or completion', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-feature-rpc-'));

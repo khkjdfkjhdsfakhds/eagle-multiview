@@ -41,3 +41,23 @@ test('dragging from an automatic sort rebases visible order without restoring an
   const next=await store.move({...base,ids:['c'],anchorId:'b',revision:1,rebase:true});
   assert.deepEqual(next.order.ids,['a','c','b','d']);
 });
+
+// S-04: ids that left the library no longer pile up in the stored order.
+test('a reorder drops ids the library no longer has but keeps hidden live ids', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-order-prune-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = new ManualOrderStore(path.join(dir, 'order.json'));
+  const base = { libraryPath: '/Library.library', scope: 'all', kind: 'items' };
+  let result = await store.move({ ...base, revision: 0, ids: ['c'], knownIds: ['a', 'b', 'c', 'gone1', 'gone2'], anchorId: 'a', position: 'before' });
+  assert.deepEqual(result.order.ids, ['c', 'a', 'b', 'gone1', 'gone2']);
+  const live = new Set(['a', 'b', 'c', 'hidden']);
+  // Only a, b are visible now (a filter); gone1/gone2 were deleted from the library.
+  result = await store.move({ ...base, revision: 1, ids: ['b'], knownIds: ['a', 'b'], anchorId: 'a', position: 'before' }, undefined, { isLive: id => live.has(id) });
+  assert.deepEqual(result.order.ids, ['c', 'b', 'a'], 'deleted ids are dropped, the hidden live c keeps its place');
+  // Without a live check (stale snapshot) nothing is trimmed.
+  result = await store.move({ ...base, revision: 2, ids: ['a'], knownIds: ['a', 'b', 'stale'], anchorId: 'b', position: 'before' });
+  assert.deepEqual(result.order.ids, ['c', 'a', 'b', 'stale']);
+  // A visible id is never dropped, even if the snapshot does not know it yet.
+  result = await store.move({ ...base, revision: 3, ids: ['b'], knownIds: ['a', 'b', 'new'], anchorId: 'a', position: 'before' }, undefined, { isLive: id => live.has(id) });
+  assert.deepEqual(result.order.ids, ['c', 'b', 'a', 'new']);
+});
