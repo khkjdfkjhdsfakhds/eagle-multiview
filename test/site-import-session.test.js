@@ -178,3 +178,20 @@ test('checks library identity again after asynchronous folder validation before 
   assert.deepEqual(result.notSubmitted, [A.id]);
   assert.equal(result.error.code, 'LIBRARY_CHANGED');
 });
+
+test('after a timed-out page the session continues that page without re-reading loaded projects', async () => {
+  const calls = [];
+  const sessions = new SiteImportSessions({ discover: async ({ startPage, skipProjectIds }) => {
+    calls.push({ startPage, skipProjectIds });
+    return calls.length === 1
+      ? { assets: [A], loadedProjectIds: ['a'], timedOut: true, nextPage: 1, failures: [{ code: 'SITE_TIMEOUT' }] }
+      : { assets: [B], loadedProjectIds: ['b'], timedOut: false, nextPage: 2, failures: [] };
+  }, ensureLibraryPath: async () => {}, addAsset: async () => 'EAGLE' });
+  const first = await sessions.start(target);
+  assert.equal(first.timedOut, true);
+  const next = await sessions.next(target);
+  assert.deepEqual(calls, [{ startPage: 1, skipProjectIds: [] }, { startPage: 1, skipProjectIds: ['a'] }]);
+  assert.deepEqual(next.assets.map(asset => asset.id), [B.id]);
+  await sessions.next(target);
+  assert.deepEqual(calls[2], { startPage: 2, skipProjectIds: [] }, 'a new page reads every project');
+});

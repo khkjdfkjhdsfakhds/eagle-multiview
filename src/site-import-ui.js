@@ -54,10 +54,12 @@ window.createSiteImportUI = function ({ api, context, canStart, refresh, notify 
         checkboxes.set(asset.id, checkbox); list.append(label);
       }
       next.hidden = !result.nextPage;
-      retry.hidden = !api.retrySiteImport || !result.failures?.some(x => x.code !== 'SITE_ASSET_UNSUPPORTED');
+      next.textContent = result.timedOut ? '继续加载本页' : '加载下一页';
+      retry.hidden = !api.retrySiteImport || !result.failures?.some(x => x.code !== 'SITE_ASSET_UNSUPPORTED' && x.code !== 'SITE_TIMEOUT');
       status.textContent = '已识别 ' + assets.size + ' 张图片，尚未导入。' +
         (result.failures?.length ? result.failures.length + ' 项读取失败；已识别部分仍可选择。' : '') +
         (result.truncated ? '达到读取上限，本次未遍历全部作品。' : '') +
+        (result.timedOut ? '本页加载超时，已保留已载入部分，可继续加载本页。' : '') +
         (!result.nextPage && result.complete ? '已读取至末页。' : '');
     };
     const load = async more => {

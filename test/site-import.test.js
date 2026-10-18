@@ -183,3 +183,42 @@ test('preserves the preceding page when a later list request fails, with a retry
   assert.equal(result.nextPage, 2);
   assert.equal(result.failures[0].code, 'SITE_REQUEST_FAILED');
 });
+
+// E-17: a page that runs out of time keeps the projects it already read.
+test('a page-wide timeout keeps loaded projects and continues the same page past them', async () => {
+  const project = id => json({ assets: [{ id: 1, image_url: imageURL.replace('fixture.jpg', `${id}.jpg`) }] });
+  const requested = [];
+  let hang = true;
+  const service = createSiteImportService({ limits: { timeoutMs: 200 }, fetch: async url => {
+    requested.push(url.replace(/^.*artstation\.com/, ''));
+    if (url.includes('projects.json?page=1')) return json({ total_count: 9, data: ['p1', 'p2', 'p3'].map(hash_id => ({ hash_id, title: hash_id })) });
+    if (url.endsWith('/projects/p3.json') && hang) return new Promise(() => {});
+    return project(url.match(/projects\/(\w+)\.json/)[1]);
+  } });
+  const first = await service.discover({ url: profile });
+  assert.equal(first.timedOut, true);
+  assert.equal(first.complete, false);
+  assert.equal(first.nextPage, 1, 'the same page continues');
+  assert.deepEqual(first.loadedProjectIds, ['p1', 'p2']);
+  assert.deepEqual(first.assets.map(asset => asset.projectId), ['p1', 'p2']);
+  assert.equal(first.failures.at(-1).code, 'SITE_TIMEOUT');
+
+  hang = false;
+  requested.length = 0;
+  const resumed = await service.discover({ url: profile, startPage: 1, skipProjectIds: first.loadedProjectIds });
+  assert.deepEqual(requested, ['/users/fixture_artist/projects.json?page=1', '/projects/p3.json'], 'loaded projects are not fetched again');
+  assert.deepEqual(resumed.assets.map(asset => asset.projectId), ['p3']);
+  assert.equal(resumed.timedOut, false);
+  assert.equal(resumed.nextPage, 2);
+
+  // A timeout before any project loaded still fails the page, and a cancel always does.
+  const stalled = createSiteImportService({ limits: { timeoutMs: 20 }, fetch: async () => new Promise(() => {}) });
+  await assert.rejects(stalled.discover({ url: profile }), { code: 'SITE_TIMEOUT' });
+  const controller = new AbortController();
+  const canceling = createSiteImportService({ fetch: async url => {
+    if (url.includes('projects.json')) return json({ data: [{ hash_id: 'p1' }, { hash_id: 'p2' }] });
+    if (url.endsWith('/projects/p2.json')) { controller.abort(); return new Promise(() => {}); }
+    return project('p1');
+  } });
+  await assert.rejects(canceling.discover({ url: profile, signal: controller.signal }), { code: 'ABORT_ERR' });
+});
