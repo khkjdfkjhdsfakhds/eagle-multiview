@@ -11,12 +11,26 @@ const {
   restoreImportedCopiesScript
 } = require('../lib/eagle-duplicate-choice');
 
+// Same branches as Eagle 4.0's duplicate-modal save(): applyAll → saveAll,
+// usingExist → rewrite the existing item, otherwise keep both.
+function eagleShapedSave(scope, onKeepBoth) {
+  return function save() {
+    if (this.applyAll == 'true') throw new Error('applies to every duplicate');
+    if (this.usingExist == 'true') throw new Error('rewrites the existing item');
+    else {
+      scope.addToDuplicateMapping(this.right);
+      scope.raw.push(this.right);
+    }
+    onKeepBoth.call(this);
+  };
+}
+
 // The resident keeper is what resolves duplicates Eagle only reveals after the
 // whole upload queue drains. It must answer the copy's own duplicates, leave
 // unrelated dialogs alone, survive repeated ticks and stop when asked.
-function keeperFixture(queue) {
+function keeperFixture(queue, save = null) {
   const saved = [];
-  const scope = { libraryPath: '/fixture.library' };
+  const scope = { libraryPath: '/fixture.library', raw: [], addToDuplicateMapping() {} };
   const intervals = new Map();
   let nextId = 0;
   const context = () => ({
@@ -25,7 +39,7 @@ function keeperFixture(queue) {
     angular: { element: () => ({ isolateScope: () => ({
       usingExist: 'true', applyAll: 'true',
       get right() { return queue[0] || null; },
-      save() { assert.equal(this.usingExist, 'false'); assert.equal(this.applyAll, 'false'); saved.push(this.right.id); queue.shift(); }
+      save: save || eagleShapedSave(scope, function () { saved.push(this.right.id); queue.shift(); })
     }) }) },
     setInterval: (fn) => { intervals.set(++nextId, fn); return nextId; },
     clearInterval: (id) => { intervals.delete(id); }
@@ -92,11 +106,42 @@ test('concurrent copy runs keep their own folders until each one stops', () => {
   assert.equal(fixture.intervals.size, 0, 'the last run stops the timer');
 });
 
+test('an unexpected Eagle save() shape leaves the duplicate dialog to the user', () => {
+  // A save() that no longer has the keep-both branch could rewrite the
+  // existing item instead; neither the keeper nor the one-shot answer may call it.
+  let called = 0;
+  const changed = function save() { called += 1; this.usingExist = 'true'; };
+  const fixture = keeperFixture([{ id: 'ours', folders: ['copy-folder'] }], changed);
+  vm.runInNewContext(startKeepingCopiesScript({ libraryPath: '/fixture.library', folderIds: ['copy-folder'] }), fixture.context());
+  fixture.tick(); fixture.tick();
+  assert.equal(called, 0);
+  assert.equal(fixture.scope.__eaglemvCopyKeeper.handled, 0);
+  const dialog = { right: { id: 'ours' }, usingExist: 'true', applyAll: 'false', save: changed };
+  const timers = [];
+  vm.runInNewContext(keepImportedCopiesScript({ libraryPath: '/fixture.library', ids: ['ours'] }), {
+    $bodyScope: { libraryPath: '/fixture.library' }, document: { querySelector: () => ({}) },
+    angular: { element: () => ({ isolateScope: () => dialog }) }, setTimeout: fn => timers.push(fn)
+  });
+  assert.equal(called, 0);
+  assert.equal(timers.length, 0, 'it stops instead of polling a dialog it will not answer');
+  assert.equal(dialog.usingExist, 'true');
+});
+
+test('copy import mode leaves an unexpected isDuplicateImage alone', () => {
+  const scope = { libraryPath: '/fixture.library', isDuplicateImage: image => Boolean(image?.seen) };
+  const original = scope.isDuplicateImage;
+  const result = vm.runInNewContext(startCopyImportModeScript({ libraryPath: '/fixture.library', folderIds: ['copy-folder'] }), { $bodyScope: scope });
+  assert.equal(result, false);
+  assert.equal(scope.isDuplicateImage, original);
+  assert.equal(scope.__eaglemvCopyImportMode, undefined);
+});
+
 test('copy import mode stays patched until the last concurrent run stops', () => {
   const existing = { id: 'existing', name: 'same.txt', folders: ['other-folder'] };
   const scope = {
     libraryPath: '/fixture.library',
-    isDuplicateImage(image) { return image?.name === existing.name ? existing : false; }
+    duplicateMappings: { 'same.txt': existing },
+    isDuplicateImage(image) { return this.duplicateMappings[image?.name] || false; }
   };
   const original = scope.isDuplicateImage;
   const lib = '/fixture.library';
@@ -114,10 +159,11 @@ test('copy import mode stays patched until the last concurrent run stops', () =>
 
 test('native keep-both chooses only this import and never applies to all duplicates', () => {
   const copies = [{id:'ours'}, {id:'other'}], saved = [];
+  const scope = {libraryPath:'/fixture.library', raw:[], addToDuplicateMapping() {}};
   const dialog = { duplicates:copies, right:copies[0], usingExist:'true', applyAll:'true',
-    save() { assert.equal(this.usingExist,'false'); assert.equal(this.applyAll,'false'); saved.push(this.right.id); this.duplicates.shift(); this.right=this.duplicates[0]; } };
+    save: eagleShapedSave(scope, function () { saved.push(this.right.id); this.duplicates.shift(); this.right=this.duplicates[0]; }) };
   const timers=[];
-  const context = {$bodyScope:{libraryPath:'/fixture.library'},document:{querySelector:()=>({})},angular:{element:()=>({isolateScope:()=>dialog})},setTimeout:fn=>timers.push(fn)};
+  const context = {$bodyScope:scope,document:{querySelector:()=>({})},angular:{element:()=>({isolateScope:()=>dialog})},setTimeout:fn=>timers.push(fn)};
   vm.runInNewContext(keepImportedCopiesScript({libraryPath:'/fixture.library',ids:['ours']}),context);
   assert.deepEqual(saved,['ours']); assert.equal(dialog.right.id,'other');
   assert.equal(dialog.applyAll,'true'); assert.equal(dialog.usingExist,'true');
@@ -138,7 +184,8 @@ test('copy import mode keeps the copy out of the duplicate queue and reverts cle
   const existing = { id: 'existing', name: 'same.txt', folders: ['other-folder'] };
   const scope = {
     libraryPath: '/fixture.library',
-    isDuplicateImage(image) { return image?.name === existing.name ? existing : false; }
+    duplicateMappings: { 'same.txt': existing },
+    isDuplicateImage(image) { return this.duplicateMappings[image?.name] || false; }
   };
   const context = () => ({ $bodyScope: scope });
   const original = scope.isDuplicateImage;
@@ -152,7 +199,7 @@ test('copy import mode keeps the copy out of the duplicate queue and reverts cle
 });
 
 test('copy import mode expires on its own and ignores other libraries', () => {
-  const scope = { libraryPath: '/fixture.library', isDuplicateImage: () => 'duplicate' };
+  const scope = { libraryPath: '/fixture.library', duplicateMappings: { any: 'duplicate' }, isDuplicateImage() { return this.duplicateMappings.any; } };
   const original = scope.isDuplicateImage;
   vm.runInNewContext(startCopyImportModeScript({ libraryPath: '/fixture.library', folderIds: ['copy-folder'], ttlMs: -1 }), { $bodyScope: scope });
   assert.equal(scope.isDuplicateImage({ folders: ['copy-folder'] }), 'duplicate', 'an expired patch must not change the answer');
