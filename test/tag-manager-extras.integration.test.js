@@ -43,6 +43,7 @@ test('tag manager layout, group colours, batch rename and group order', { timeou
   assert.equal(result.escapeClosed, true);
   assert.equal(result.escapeWrote, false);
 
+  assert.equal(result.commandRTitle, '批量重命名 (2)', '⌘R with several tags in a group');
   assert.equal(result.groupDraggable, true);
   assert.deepEqual(result.orderBefore, ['g-animals', 'g-fruit']);
   assert.equal(result.dropBefore, true);

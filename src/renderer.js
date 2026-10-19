@@ -9406,7 +9406,20 @@ async function setFolderColor(folderId, color) {
   return writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' });
 }
 
+// Eagle's ⌘R in a tag group (renameCurrentFolder): several selected tags
+// open the batch rename, one is renamed, none renames the group itself.
+function renameInTagManager() {
+  const paneId = state.activePaneId;
+  const view = tagManagerView(paneId);
+  if (view.mode !== 'group') return false;
+  const tags = [...view.selected];
+  if (tags.length > 1) return openTagBatchRename(paneId, tags);
+  if (tags.length === 1) return executeTagManagerAction('rename-tag', { tagName: tags[0] });
+  return executeTagManagerAction('rename-group', { groupId: view.groupId });
+}
+
 async function renameSelection() {
+  if (state.currentView.kind === 'tags') return renameInTagManager();
   if (state.selected.size === 1) return renameItem(itemById([...state.selected][0]));
   if (state.selected.size > 1) return false;
   if (state.selectedFolderCard) return renameFolderById(state.selectedFolderCard);

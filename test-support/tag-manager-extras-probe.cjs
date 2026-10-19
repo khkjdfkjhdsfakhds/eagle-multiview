@@ -113,6 +113,18 @@ async function run() {
     out.escapeClosed = !dialog();
     out.escapeWrote = calls().length !== before;
 
+    // ⌘R in a group: several tags open the batch rename (Eagle's renameCurrentFolder).
+    mouse(inPane('[data-tm-group="g-animals"]'), 'click');
+    await until(() => inPane('.tm-title').textContent === '动物', 'animals');
+    mouse(chip('猫'), 'click');
+    mouse(chip('狗'), 'click', { metaKey: true });
+    requestRenameSelection();
+    await until(() => dialog()?.open, 'command-r dialog');
+    out.commandRTitle = dialog().querySelector('h2').textContent;
+    dialog().querySelector('[data-rename-field="pattern"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    mouse(inPane('[data-tm-mode="all"]'), 'click');
+    await until(() => inPane('.tm-title').textContent === '全部标签', 'all again');
+
     // Dragging a group reorders the groups (MultiView's own order).
     const groupOrder = () => [...pane().querySelectorAll('.tm-groups [data-tm-group]')].map(row => row.dataset.tmGroup);
     out.orderBefore = groupOrder();
