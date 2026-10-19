@@ -45,8 +45,15 @@ app.setPath('userData', profile);
       assert(button,'folder menu lacks move node action'); button.click();
       await until(() => document.querySelector('.feature-dialog[open]'));
     };
+    const pick = (dialog, value) => { const select = dialog.querySelector('select'); select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); };
     await open();
     let dialog = document.querySelector('.feature-dialog');
+    // F-06: the current parent is not a move.
+    assert(dialog.querySelector('[data-feature-submit]').disabled, 'move enabled for the current parent');
+    pick(dialog, 'eagle-folder');
+    assert(!dialog.querySelector('[data-feature-submit]').disabled, 'move stays disabled for another parent');
+    pick(dialog, '');
+    assert(dialog.querySelector('[data-feature-submit]').disabled, 'move re-enabled for the current parent');
     assert(!dialog.querySelector('option[value="mv-folder"]'), 'self is selectable');
     assert(!dialog.querySelector('option[value="child-folder"]'), 'descendant is selectable');
     const search = dialog.querySelector('input[aria-label="搜索目标文件夹"]');
@@ -60,7 +67,7 @@ app.setPath('userData', profile);
     dialog.querySelector('[data-feature-cancel]').click();
     assert(!window.__uiTestCalls.some(x=>x.kind==='move-folder'), 'cancel moved folder');
     await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__uiTestCalls.some(x=>x.kind==='move-folder'));
     const payload = window.__uiTestCalls.find(x=>x.kind==='move-folder').payload;
@@ -69,11 +76,16 @@ app.setPath('userData', profile);
     await until(() => !document.querySelector('.feature-dialog[open]'));
 
     const callCount = () => window.__uiTestCalls.filter(x=>x.kind==='move-folder').length;
-    await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='';
+    const nestedMoves=[];
+    const nestedUI=window.createSelectedFeatureUI({api:{moveFolder:async payload=>{nestedMoves.push(payload);return {ok:true};}},
+      context:()=>({libraryPath:'/fixture.library',folders:[{id:'p',name:'P',children:[{id:'c',name:'C',children:[]}]}]}),
+      canStart:()=>true,refresh:async()=>{},notify:()=>{}});
+    await nestedUI.moveFolder('c');
+    dialog = document.querySelector('.feature-dialog[open]');
+    pick(dialog,'');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => !document.querySelector('.feature-dialog[open]'));
-    assert(window.__uiTestCalls.filter(x=>x.kind==='move-folder').at(-1).payload.parentId===null,'root is not explicit null');
+    assert(nestedMoves.at(-1)?.parentId===null,'root is not explicit null');
 
     await open(); dialog = document.querySelector('.feature-dialog');
     const countBeforeEscape=callCount();
@@ -82,7 +94,7 @@ app.setPath('userData', profile);
 
     window.__featureState.mode='pending';
     await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     const countBeforeRepeat=callCount();
     dialog.querySelector('[data-feature-submit]').click(); dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__featureRelease);
@@ -95,7 +107,7 @@ app.setPath('userData', profile);
     for (const mode of ['failure','conflict']) {
       window.__featureState.mode=mode;
       await open(); dialog = document.querySelector('.feature-dialog');
-      dialog.querySelector('select').value='eagle-folder';
+      pick(dialog,'eagle-folder');
       const previous=callCount(); dialog.querySelector('[data-feature-submit]').click();
       await until(() => dialog.querySelector('[data-feature-cancel]').textContent==='关闭');
       assert(dialog.querySelector('[data-feature-submit]').disabled,'failed/conflict move can replay stale input');
@@ -222,7 +234,7 @@ app.setPath('userData', profile);
 
     window.__featureState.mode='pending';
     await open(); dialog=document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__featureRelease);
     window.__featureEmit('/tmp/Other-UI-Test.library');
@@ -233,9 +245,10 @@ app.setPath('userData', profile);
     dialog.querySelector('[data-feature-cancel]').click();
     const notices=[];
     const refreshFailureUI=window.createSelectedFeatureUI({api:{moveFolder:async()=>({ok:true})},
-      context:()=>({libraryPath:'/fixture.library',folders:[{id:'x',name:'X',children:[]}]}),
+      context:()=>({libraryPath:'/fixture.library',folders:[{id:'x',name:'X',children:[]},{id:'y',name:'Y',children:[]}]}),
       canStart:()=>true,refresh:async()=>{throw Error('offline');},notify:message=>notices.push(message)});
     await refreshFailureUI.moveFolder('x');
+    pick(document.querySelector('.feature-dialog[open]'),'y');
     document.querySelector('[data-feature-submit]').click();await wait(30);
     assert(notices.some(message=>/已移动/.test(message)&&/刷新/.test(message)), 'confirmed move plus failed refresh has no visible feedback');
     notices.length=0;

@@ -90,9 +90,11 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       select.value = selectedTarget;
     };
     const submit = element('button', '移动', { type: 'button', 'data-feature-submit': '' });
-    search.addEventListener('input', renderTargets);
-    select.addEventListener('change', () => { selectedTarget = select.value; });
-    renderTargets(); label.append(select); form.body.append(search, label);
+    // The current parent is not a move; 移动 waits for another target (F-06).
+    const syncSubmit = () => { submit.disabled = !frozen?.placement && select.value === (source.parent || ''); };
+    search.addEventListener('input', () => { renderTargets(); syncSubmit(); });
+    select.addEventListener('change', () => { selectedTarget = select.value; syncSubmit(); });
+    renderTargets(); syncSubmit(); label.append(select); form.body.append(search, label);
     form.footer.append(submit);
     // Return submits from the search box or the list; focus starts in search (F-06).
     for (const field of [search, select]) field.addEventListener('keydown', event => {
