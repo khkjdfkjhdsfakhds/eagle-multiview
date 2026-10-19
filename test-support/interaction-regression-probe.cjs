@@ -16,7 +16,22 @@ const draftStore = new TextDraftStore(path.join(data, 'drafts'));
 ipcMain.handle('audit:text-draft', (_event, operation, payload) => draftStore[operation](payload));
 const helpers = `
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-const until = async predicate => { for (let n=0;n<250;n++) { if (predicate()) return; await wait(20); } throw new Error('audit condition timed out'); };
+const until = async predicate => { for (let n=0;n<250;n++) { if (await predicate()) return; await wait(20); } throw new Error('audit condition timed out'); };
+// T-11: scenarios wait for conditions, not fixed sleeps. frames() lets a
+// render land; settled() waits until nothing is in flight — no save, no
+// autosave armed, no pane loading, no foreground operation; echoed() also
+// waits for the refresh a real save event triggers.
+const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const quiet = () => !window.state.inspectorSaving && !window.state.inspectorAutoSaveTimer && !window.state.operationTracker.size
+  && window.state.panes.every(p => !p.loading && !p.textSession?.saving);
+const settled = async () => { await until(quiet); await frames(); await until(quiet); };
+const queries = () => window.__audit.calls.filter(call => call.kind === 'query').length;
+const echoed = async before => { await until(() => queries() > before); await settled(); };
+const textSaves = () => window.__audit.calls.filter(call => call.kind === 'save-text').length;
+// Only where the passing of time is itself what is checked — a pause must
+// not save, a slideshow must advance, a late event must not navigate — does
+// a timed wait stay, under this name.
+const elapse = ms => wait(ms);
 const pane = index => document.querySelectorAll('.content-pane')[index];
 const click = element => { if (!element) throw new Error('missing click target'); element.dispatchEvent(new MouseEvent('click', {bubbles:true})); };
 const dblclick = element => { click(element); element.dispatchEvent(new MouseEvent('dblclick', {bubbles:true})); };
@@ -45,7 +60,7 @@ return {layouts,editingLayout,guardedLayout,final:document.querySelector('#paneL
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation');input.focus();
 input.value='thinking pause';input.dispatchEvent(new Event('input',{bubbles:true}));
-await wait(1600);
+await elapse(1600);
 const during={mutations:window.__audit.calls.filter(call=>call.kind==='mutate').length,dirty:window.state.inspectorDirty,focused:document.activeElement===input};
 await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);
 return {during,mutations:window.__audit.calls.filter(call=>call.kind==='mutate').length,stored:window.__audit.snapshotItem('item-1').annotation};`,
@@ -58,7 +73,7 @@ await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));
 input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
 input.value='before zhong ';input.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));input.setSelectionRange(8,8);
 window.__audit.mutationDelay=false;window.__audit.resolveMutation();
-await until(()=>!window.state.inspectorSaving);await wait(500);
+await until(()=>!window.state.inspectorSaving);await settled();
 const pending={value:input.value,caret:input.selectionStart,count:window.__audit.calls.filter(call=>call.kind==='mutate').length};
 input.value='before 中文';input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));input.dispatchEvent(new InputEvent('input',{bubbles:true}));
 await until(()=>!window.state.inspectorDirty&&!window.state.inspectorSaving);
@@ -75,10 +90,11 @@ const checks=[];
 for(const selector of ['#itemAnnotation','#itemName','#itemURL']) {
   const input=document.querySelector(selector);input.focus();
   for(let n=0;n<2;n++) {
+    const before=queries();
     input.value=selector==='#itemURL'?'https://example.com/'+n:'连续输入 '+selector+' '+n;
     input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(2,2);
     await until(()=>!window.state.inspectorDirty&&!window.state.inspectorSaving);
-    await wait(500);
+    await echoed(before);
     checks.push({selector,focused:document.activeElement===input,caret:input.selectionStart,value:input.value});
   }
 }
@@ -88,8 +104,9 @@ click(pane(0).querySelector('[data-id="item-1"]'));
 window.__audit.externalItemChange('item-1',{annotation:'outside note'});
 const input=document.querySelector('#itemAnnotation');input.focus();input.value='local draft';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(3,3);
 await until(()=>document.querySelector('[data-draft-action="overwrite"]'));
+const before=queries();
 window.confirm=()=>true;document.querySelector('[data-draft-action="overwrite"]').click();
-await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2&&!window.state.inspectorSaving);await wait(450);
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2&&!window.state.inspectorSaving);await echoed(before);
 return {dirty:window.state.inspectorDirty,stored:window.__audit.snapshotItem('item-1').annotation,value:input.value,focused:document.activeElement===input,caret:input.selectionStart,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),conflictButtons:!!document.querySelector('[data-draft-action="overwrite"]')};`,
   inspectorResolvedThenLateConflict: `
 click(pane(0).querySelector('[data-id="item-1"]'));
@@ -100,25 +117,26 @@ window.__audit.mutationDelay=true;window.confirm=()=>true;document.querySelector
 await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2);
 const name=document.querySelector('#itemName');name.focus();name.value='late local name';name.dispatchEvent(new Event('input',{bubbles:true}));name.setSelectionRange(2,2);
 window.__audit.externalItemChange('item-1',{name:'outside name'});window.__audit.mutationDelay=false;window.__audit.resolveMutation();
-await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===3&&!window.state.inspectorSaving);await wait(50);
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===3&&!window.state.inspectorSaving);await settled();
 return {dirty:window.state.inspectorDirty,storedName:window.__audit.snapshotItem('item-1').name,storedAnnotation:window.__audit.snapshotItem('item-1').annotation,name:name.value,focused:document.activeElement===name,caret:name.selectionStart,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),conflictButtons:!!document.querySelector('[data-draft-action="overwrite"]'),forces:window.__audit.calls.filter(call=>call.kind==='mutate').map(call=>Boolean(call.force))};`,
   inspectorOwnSaveEcho: `
 click(pane(0).querySelector('[data-id="item-1"]'));window.__audit.ackReadbackTime={ack:1788595267432,readback:1788595609033};
+const before=queries();
 const input=document.querySelector('#itemAnnotation');input.focus();input.value='own annotation';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(4,4);
-await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await wait(450);
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await echoed(before);
 return {value:input.value,stored:window.__audit.snapshotItem('item-1').annotation,dirty:window.state.inspectorDirty,stale:!document.querySelector('#staleBanner').classList.contains('hidden'),focused:document.activeElement===input,caret:input.selectionStart};`,
   inspectorPollEchoAndExternalConflict: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation');input.focus();
 const stale=()=>!document.querySelector('#staleBanner').classList.contains('hidden');
-window.__audit.externalItemChange('item-1',{lastModified:1788595609033});await window.__audit.pollSelectedItem();await wait(50);
+window.__audit.externalItemChange('item-1',{lastModified:1788595609033});await window.__audit.pollSelectedItem();await settled();
 const timeOnlyStale=stale();
-window.__audit.externalItemChange('item-1',{tags:['outside tag']});await window.__audit.pollSelectedItem();await wait(50);
+window.__audit.externalItemChange('item-1',{tags:['outside tag']});await window.__audit.pollSelectedItem();await until(stale);
 const externalTagsStale=stale();
 input.value='own note';input.dispatchEvent(new Event('input',{bubbles:true}));
-await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await wait(50);
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate'));await until(()=>!window.state.inspectorSaving);await settled();
 const accepted={stale:stale(),tags:[...window.state.draftTags],dirty:window.state.inspectorDirty};
-window.__audit.externalItemChange('item-1',{annotation:'outside note'});await window.__audit.pollSelectedItem();await wait(50);
+window.__audit.externalItemChange('item-1',{annotation:'outside note'});await window.__audit.pollSelectedItem();await until(stale);
 const externalNoteStale=stale();
 input.value='local draft';input.dispatchEvent(new Event('input',{bubbles:true}));input.setSelectionRange(3,3);
 await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate').length===2);await until(()=>!window.state.inspectorSaving);
@@ -159,17 +177,18 @@ const previousId=window.state.textSession.draftId;
 await window.eagleMV.getTextDraft(window.state.textSession);
 document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
-editor=pane(0).querySelector('#textEditor');window.__audit.textSaveMode='fail';editor.value='new lifecycle draft';editor.dispatchEvent(new Event('input',{bubbles:true}));
-await wait(650);
+editor=pane(0).querySelector('#textEditor');window.__audit.textSaveMode='fail';const savesBefore=textSaves();editor.value='new lifecycle draft';editor.dispatchEvent(new Event('input',{bubbles:true}));
 const session=window.state.textSession;
-const record=await window.eagleMV.getTextDraft({libraryPath:session.libraryPath,id:session.id,draftId:session.draftId});
+const draftRecord=()=>window.eagleMV.getTextDraft({libraryPath:session.libraryPath,id:session.id,draftId:session.draftId});
+await until(async()=>textSaves()>savesBefore&&!session.saving&&(await draftRecord())?.content==='new lifecycle draft');
+const record=await draftRecord();
 const puts=window.__audit.calls.filter(call=>call.kind==='draft-put');const removes=window.__audit.calls.filter(call=>call.kind==='draft-remove');
 return {previousId,draftId:session.draftId,record,putKeys:Object.keys(puts.at(-1)).filter(key=>key!=='kind').sort(),removeKeys:Object.keys(removes.at(-1)).filter(key=>key!=='kind').sort()};`,
   inspectorRemoteRebase: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 window.__audit.externalItemChange('item-1',{annotation:'remote annotation',tags:['remote tag'],star:4,url:'https://example.com/remote'});
 const name=document.querySelector('#itemName'); name.focus(); name.value='user name  '; name.dispatchEvent(new Event('input',{bubbles:true}));name.setSelectionRange(3,3);
-await until(()=>window.__audit.calls.some(call=>call.kind==='mutate')); await until(()=>!window.state.inspectorSaving); await wait(600);
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate')); await until(()=>!window.state.inspectorSaving); await settled();
 return {item:window.__audit.snapshotItem('item-1'),patches:window.__audit.calls.filter(call=>call.kind==='mutate').map(call=>call.patch),annotation:document.querySelector('#itemAnnotation').value,tags:window.state.draftTags,star:document.querySelector('#itemRating').value,url:document.querySelector('#itemURL').value,name:name.value,caret:name.selectionStart};`,
   inspectorRemoteLateIntent: `
 click(pane(0).querySelector('[data-id="item-1"]')); window.__audit.mutationDelay=true;
@@ -185,13 +204,14 @@ return {secure:window.isSecureContext,uuid:typeof crypto.randomUUID,randomValues
   inspectorRestartRecovery: `
 click(pane(0).querySelector('[data-id="item-1"]')); window.__audit.failIds=['item-1'];
 const editor=document.querySelector('#itemAnnotation'); editor.value='metadata retained after exit'; editor.dispatchEvent(new Event('input',{bubbles:true}));
-await wait(550); window.confirm=message=>{ window.__audit.confirmations.push(message); return true; };
+await until(()=>Object.keys(localStorage).some(key=>key.startsWith('eaglemv.inspectorDraft.v1.')&&localStorage.getItem(key).includes('metadata retained after exit'))); window.confirm=message=>{ window.__audit.confirmations.push(message); return true; };
 await window.__audit.emit('onRequestClose');
 return {confirmed:window.__audit.calls.some(c=>c.kind==='confirm-close')};`,
   textRestartRecovery: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 window.__audit.textSaveMode='fail'; const editor=pane(0).querySelector('#textEditor');
-editor.value='draft surviving new window'; editor.dispatchEvent(new Event('input',{bubbles:true})); await wait(650);
+editor.value='draft surviving new window'; editor.dispatchEvent(new Event('input',{bubbles:true}));
+await until(()=>textSaves()>0&&!window.state.textSession.saving&&localStorage.getItem(TEXT_DRAFT_PREFIX+window.state.textSession.draftId)?.includes('draft surviving new window'));
 return {draftId:window.state.textSession.draftId,text:editor.value};`,
   textAutoSaveTyping: `
 await split(); dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
@@ -208,42 +228,42 @@ await split(); dblclick(pane(0).querySelector('[data-id="text-1"]')); await unti
 const otherGrid=pane(1).querySelector('#itemGrid'); let mutations=0;
 const observer=new MutationObserver(() => { mutations += 1; }); observer.observe(otherGrid,{childList:true,subtree:true});
 const editor=pane(0).querySelector('#textEditor'); editor.value='quiet autosave'; editor.dispatchEvent(new Event('input',{bubbles:true}));
-await until(()=>!window.state.panes[0].textSession.dirty&&!window.state.panes[0].textSession.saving); await wait(400);
+await until(()=>!window.state.panes[0].textSession.dirty&&!window.state.panes[0].textSession.saving); await settled();
 const before=mutations;
-await window.__audit.emit('onQueryInvalidated',{reason:'text-saved',id:'text-1',libraryPath:window.state.library.path}); await wait(450);
+await window.__audit.emit('onQueryInvalidated',{reason:'text-saved',id:'text-1',libraryPath:window.state.library.path}); await elapse(450);
 observer.disconnect(); return {before,after:mutations,otherItems:window.state.panes[1].items.length};`,
   textConflictAndEmpty: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); window.__audit.textSaveMode='conflict';
-editor.value='my conflicting draft'; editor.dispatchEvent(new Event('input',{bubbles:true})); await wait(650);
+editor.value='my conflicting draft'; editor.dispatchEvent(new Event('input',{bubbles:true})); await until(()=>textSaves()===1&&!window.state.textSession.saving); await frames();
 const conflict={text:editor.value,dirty:window.state.textSession.dirty,confirmations:window.__audit.confirmations.length,status:pane(0).querySelector('#textStatus').textContent};
-window.__audit.textSaveMode='normal'; editor.value=''; editor.dispatchEvent(new Event('input',{bubbles:true})); editor.dispatchEvent(new KeyboardEvent('keydown',{key:'s',metaKey:true,bubbles:true})); await wait(100);
+window.__audit.textSaveMode='normal'; editor.value=''; editor.dispatchEvent(new Event('input',{bubbles:true})); editor.dispatchEvent(new KeyboardEvent('keydown',{key:'s',metaKey:true,bubbles:true})); await settled();
 return {conflict,empty:{text:editor.value,dirty:window.state.textSession.dirty,status:pane(0).querySelector('#textStatus').textContent,detail:pane(0).querySelector('#textStatus').title},stored:window.__audit.snapshotText(),calls:window.__audit.calls.filter(c=>c.kind==='save-text')};`,
   textImeAndPending: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
 const editor=pane(0).querySelector('#textEditor'); editor.focus(); window.__audit.textSaveMode='pending';
 editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); editor.value='中文输入'; editor.dispatchEvent(new Event('input',{bubbles:true}));
-await wait(600); const during=window.__audit.calls.filter(c=>c.kind==='save-text').length;
+await frames(); const during=textSaves()+(window.state.textSession.autoSaveTimer?1:0);
 editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); await until(()=>!window.state.textSession.dirty);
 return {during,stored:window.__audit.snapshotText(),status:pane(0).querySelector('#textStatus').textContent,detail:pane(0).querySelector('#textStatus').title,focused:document.activeElement===editor};`,
   inspectorFailureRestore: `
 click(pane(0).querySelector('[data-id="item-1"]')); window.__audit.failIds=['item-1'];
 const input=document.querySelector('#itemAnnotation'); input.value='recover failed draft'; input.dispatchEvent(new Event('input',{bubbles:true}));
-click(pane(0).querySelector('[data-id="item-2"]')); await wait(100);
+click(pane(0).querySelector('[data-id="item-2"]')); await until(()=>window.state.selected.has('item-2')&&!window.state.inspectorSaving);
 click(pane(0).querySelector('[data-id="item-1"]')); const restored=input.value;
-window.__audit.failIds=[]; input.dispatchEvent(new Event('input',{bubbles:true})); await wait(3200);
+window.__audit.failIds=[]; input.dispatchEvent(new Event('input',{bubbles:true})); await until(()=>window.__audit.snapshotItem('item-1').annotation==='recover failed draft'&&!window.state.inspectorSaving);
 return {restored,stored:window.__audit.snapshotItem('item-1').annotation};`,
   modalFocus: `
 const origin=document.querySelector('#newButton'); origin.focus();
 window.__audit.emit('onCreateFolderRequest'); await until(()=>!document.querySelector('#folderDialog').classList.contains('hidden'));
-await wait(60); return {origin:origin.id};`,
+await frames(); return {origin:origin.id};`,
   asyncTextPane: `
 await split();
 window.__audit.readDelay = true;
 dblclick(pane(0).querySelector('[data-id="text-1"]'));
 await until(() => pane(0).querySelector('#modalMedia').textContent.includes('正在读取 TXT'));
 click(pane(1).querySelector('[data-id="item-2"]'));
-window.__audit.resolveRead(); await wait(120);
+window.__audit.resolveRead(); await until(()=>!pane(0).querySelector('#modalMedia').textContent.includes('正在读取')); await frames();
 return {panes:snapshot(), firstMedia:pane(0).querySelector('#modalMedia').textContent};`,
   dirtyTextLayout: `
 await split();
@@ -253,7 +273,7 @@ const editor = pane(1).querySelector('#textEditor'); editor.value='UNSAVED AUDIT
 click(pane(0).querySelector('[data-id="item-2"]'));
 const before=snapshot();
 click(document.querySelector('#paneLayoutButton')); click(document.querySelector('#paneLayoutPopover [data-layout="single"]'));
-await wait(120); return {before,after:snapshot(),confirmations:window.__audit.confirmations};`,
+await frames(); await settled(); return {before,after:snapshot(),confirmations:window.__audit.confirmations};`,
   dirtyTextWindowClose: `
 await split(); dblclick(pane(1).querySelector('[data-id="text-1"]')); await until(() => pane(1).querySelector('#textEditor'));
 const editor=pane(1).querySelector('#textEditor'); editor.value='UNSAVED AUDIT DRAFT'; editor.dispatchEvent(new Event('input',{bubbles:true}));
@@ -275,21 +295,21 @@ const scroller=pane(0).querySelector('#gridScroller'); scroller.scrollTop=scroll
 await until(() => window.state.panes[0].items.some(item=>item.id==='item-200') && !window.state.panes[0].loading);
 click(pane(0).querySelector('[data-id="item-200"]')); const before=snapshot();
 document.dispatchEvent(new KeyboardEvent('keydown',{key:'3',code:'Digit3',bubbles:true}));
-await until(()=>window.__audit.calls.some(call=>call.kind==='mutate')); await wait(350);
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate')); await settled();
 return {before,after:snapshot(),savedStar:window.__audit.snapshotItem('item-200').star};`,
   slideshowPane: `
 await split(); dblclick(pane(0).querySelector('[data-id="item-1"]'));
 const interval=pane(0).querySelector('#slideshowInterval'); interval.value='2000'; interval.dispatchEvent(new Event('change',{bubbles:true}));
 click(pane(0).querySelector('#slideshowToggle'));
 dblclick(pane(1).querySelector('[data-id="item-5"]')); const before=snapshot();
-await wait(2250); const after=snapshot();
+await until(()=>window.state.panes[0].previewId==='item-2'); await frames(); const after=snapshot();
 return {before,after};`,
   pinsDiscardDraft: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation'); input.value='UNSAVED BEFORE PIN EVENT'; input.dispatchEvent(new Event('input',{bubbles:true}));
 const before={dirty:window.state.inspectorDirty,value:input.value};
 window.__audit.emit('onPinsChanged',{libraryPath:window.state.library.path,pins:{}});
-await wait(3200); return {before,after:{dirty:window.state.inspectorDirty,value:input.value},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
+await until(()=>window.__audit.calls.some(call=>call.kind==='mutate')); await settled(); return {before,after:{dirty:window.state.inspectorDirty,value:input.value},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   inFlightDraftNavigation: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 window.__audit.mutationDelay=true;
@@ -297,7 +317,7 @@ const input=document.querySelector('#itemAnnotation'); input.value='first'; inpu
 await until(()=>window.state.inspectorSaving);
 input.value='second unsaved'; input.dispatchEvent(new Event('input',{bubbles:true}));
 click(pane(0).querySelector('[data-id="item-2"]'));
-window.__audit.resolveMutation(); await wait(600);
+window.__audit.resolveMutation(); await settled();
 return {stored:window.__audit.snapshotItem('item-1').annotation,panes:snapshot(),mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   focusedInFlightDraftNavigation: `
 click(pane(0).querySelector('[data-id="item-1"]'));
@@ -309,7 +329,7 @@ const target=pane(0).querySelector('[data-id="item-2"]');
 target.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse',button:0}));
 target.focus(); input.blur();
 target.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'mouse',button:0})); click(target);
-window.__audit.mutationDelay=false; window.__audit.resolveMutation(); await wait(700);
+window.__audit.mutationDelay=false; window.__audit.resolveMutation(); await until(()=>window.__audit.snapshotItem('item-1').annotation==='second after focus'); await settled();
 return {stored:window.__audit.snapshotItem('item-1').annotation,selected:[...window.state.selected],dirty:window.state.inspectorDirty,mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   inFlightTypingStaysControl: `
 click(pane(0).querySelector('[data-id="item-1"]'));
@@ -317,25 +337,25 @@ window.__audit.mutationDelay=true;
 const input=document.querySelector('#itemAnnotation'); input.focus(); input.value='first'; input.dispatchEvent(new Event('input',{bubbles:true}));
 await until(()=>window.state.inspectorSaving);
 input.value='second retained'; input.dispatchEvent(new Event('input',{bubbles:true}));
-window.__audit.mutationDelay=false; window.__audit.resolveMutation(); await wait(750);
+window.__audit.mutationDelay=false; window.__audit.resolveMutation(); await until(()=>window.__audit.snapshotItem('item-1').annotation==='second retained'); await settled();
 return {stored:window.__audit.snapshotItem('item-1').annotation,value:input.value,focused:document.activeElement===input,dirty:window.state.inspectorDirty,mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   focusedSaveThenNavigateControl: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation'); input.focus(); input.value='normal saved draft'; input.dispatchEvent(new Event('input',{bubbles:true}));
 const target=pane(0).querySelector('[data-id="item-2"]'); target.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse',button:0})); target.focus(); input.blur(); click(target);
-await wait(600);
+await settled();
 return {stored:window.__audit.snapshotItem('item-1').annotation,selected:[...window.state.selected],mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   focusedPinsDiscardDraft: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation'); input.focus(); input.value='focused draft before unrelated pin'; input.dispatchEvent(new Event('input',{bubbles:true}));
 const before={dirty:window.state.inspectorDirty,value:input.value,focused:document.activeElement===input};
 window.__audit.emit('onPinsChanged',{libraryPath:window.state.library.path,pins:{'folder-b':{'item-201':Date.now()}}});
-await wait(550); return {before,after:{dirty:window.state.inspectorDirty,value:input.value,focused:document.activeElement===input},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
+await frames(); return {before,after:{dirty:window.state.inspectorDirty,value:input.value,focused:document.activeElement===input},mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   pinsForeignLibraryControl: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 const input=document.querySelector('#itemAnnotation'); input.focus(); input.value='foreign pins keep this'; input.dispatchEvent(new Event('input',{bubbles:true}));
 window.__audit.emit('onPinsChanged',{libraryPath:'/mock/different-library.library',pins:{}});
-const immediate={dirty:window.state.inspectorDirty,value:input.value}; await wait(550);
+const immediate={dirty:window.state.inspectorDirty,value:input.value}; await settled();
 return {immediate,stored:window.__audit.snapshotItem('item-1').annotation,mutations:window.__audit.calls.filter(call=>call.kind==='mutate')};`,
   activeTextCancelControls: `
 dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textEditor'));
@@ -352,29 +372,29 @@ await window.__audit.emit('onRequestClose');
 return {panes:snapshot(),confirmations:window.__audit.confirmations,calls:window.__audit.calls};`,
   nativeCommentPrompt: `
 const errors=[]; window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason?.message||event.reason)));
-click(pane(0).querySelector('[data-id="item-1"]')); click(document.querySelector('#addCommentButton')); await wait(100);
+click(pane(0).querySelector('[data-id="item-1"]')); click(document.querySelector('#addCommentButton')); await settled();
 return {errors,commentWrites:window.__audit.calls.filter(call=>call.kind==='add-comment')};`,
   commentSecondPromptCancel: `
 const replies=['Audit comment draft',null]; const prompts=[];
 window.prompt=message=>{prompts.push(message);return replies.shift()??null;};
-click(pane(0).querySelector('[data-id="item-1"]')); click(document.querySelector('#addCommentButton')); await wait(100);
+click(pane(0).querySelector('[data-id="item-1"]')); click(document.querySelector('#addCommentButton')); await settled();
 return {prompts,commentWrites:window.__audit.calls.filter(call=>call.kind==='add-comment')};`,
   partialBatchTagsControl: `
 window.__audit.failIds=['item-2']; click(pane(0).querySelector('[data-id="item-1"]'));
 pane(0).querySelector('[data-id="item-2"]').dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}));
 const batchTagInput=document.querySelector('#batchTagInput'); batchTagInput.value='audit-tag'; batchTagInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate-set').length===2); await wait(200);
+await until(()=>window.__audit.calls.filter(call=>call.kind==='mutate-set').length===2); await settled();
 return {selected:[...window.state.selected],item1Tags:window.__audit.snapshotItem('item-1').tags,item2Tags:window.__audit.snapshotItem('item-2').tags,activeOperations:window.state.operationTracker.size,toast:document.querySelector('#toast').textContent};`,
   historyQuery: `
 click(document.querySelector('#folderTree [data-folder-id="folder-a"]')); await until(()=>!window.state.loading && window.state.currentView.id==='folder-a');
-const input=document.querySelector('#searchInput'); input.value='Item 00'; input.dispatchEvent(new Event('input',{bubbles:true})); await wait(320);
+const input=document.querySelector('#searchInput'); input.value='Item 00'; input.dispatchEvent(new Event('input',{bubbles:true})); await until(()=>window.state.query.search==='Item 00'); await settled();
 click(document.querySelector('#folderTree [data-folder-id="folder-b"]')); await until(()=>!window.state.loading && window.state.currentView.id==='folder-b');
-click(pane(0).querySelector('#backButton')); await wait(320);
+click(pane(0).querySelector('#backButton')); await until(()=>window.state.currentView.id==='folder-a'&&window.state.query.search==='Item 00'); await settled();
 return {view:window.state.currentView.id,restoredSearch:window.state.query.search,input:input.value};`,
   multiSelectFilteredOut: `
 click(pane(0).querySelector('[data-id="item-1"]'));
 pane(0).querySelector('[data-id="item-2"]').dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}));
-const input=document.querySelector('#searchInput'); input.value='no such audit material'; input.dispatchEvent(new Event('input',{bubbles:true})); await wait(350);
+const input=document.querySelector('#searchInput'); input.value='no such audit material'; input.dispatchEvent(new Event('input',{bubbles:true})); await until(()=>window.state.query.search==='no such audit material'&&!window.state.items.length); await settled();
 return {selected:[...window.state.selected],visible:window.state.items.length,multiCount:document.querySelector('#multiCount').textContent,multiPanelVisible:!document.querySelector('#multiSelection').classList.contains('hidden')};`,
   duplicateNavigates: `
 click(document.querySelector('#folderTree [data-folder-id="folder-a"]')); await until(()=>!window.state.loading && window.state.currentView.id==='folder-a');
@@ -383,7 +403,7 @@ document.dispatchEvent(new KeyboardEvent('keydown',{key:'d',code:'KeyD',metaKey:
 await until(()=>window.state.items.some(item=>item.id==='copy-1'));
 click(document.querySelector('#folderTree [data-folder-id="folder-b"]')); await until(()=>!window.state.loading && window.state.currentView.id==='folder-b');
 const before={view:window.state.currentView.id,copiedVisible:window.state.items.some(item=>item.id==='copy-1')};
-await wait(1850); return {before,after:{view:window.state.currentView.id,copiedVisible:window.state.items.some(item=>item.id==='copy-1'),copiedFolders:window.state.items.find(item=>item.id==='copy-1')?.folders}};`
+await elapse(1850); return {before,after:{view:window.state.currentView.id,copiedVisible:window.state.items.some(item=>item.id==='copy-1'),copiedFolders:window.state.items.find(item=>item.id==='copy-1')?.folders}};`
 };
 async function run() {
   await app.whenReady();
@@ -422,7 +442,7 @@ async function run() {
         await win.loadFile(path.join(sourceRoot,'src/index.html'));
         result = await win.webContents.executeJavaScript(`(async()=>{${helpers}
           click(pane(0).querySelector('[data-id="item-1"]')); await until(()=>document.querySelector('[data-draft-action="recover"]'));
-          click(document.querySelector('[data-draft-action="recover"]')); await wait(550);
+          click(document.querySelector('[data-draft-action="recover"]')); await until(()=>document.querySelector('#itemAnnotation').value==='metadata retained after exit'); await frames();
           return {text:document.querySelector('#itemAnnotation').value,dirty:window.state.inspectorDirty,saves:window.__audit.calls.filter(c=>c.kind==='mutate').length};
         })()`); result.before=before;
       }
@@ -434,22 +454,24 @@ async function run() {
         result = await win.webContents.executeJavaScript(`(async()=>{${helpers}
           dblclick(pane(0).querySelector('[data-id="text-1"]')); await until(()=>pane(0).querySelector('#textDraftSelect'));
           const select=pane(0).querySelector('#textDraftSelect'); select.value='0'; select.dispatchEvent(new Event('change',{bubbles:true}));
-          click(pane(0).querySelector('#restoreTextDraft')); await wait(550);
+          click(pane(0).querySelector('#restoreTextDraft')); await until(()=>pane(0).querySelector('#textEditor')?.value==='draft surviving new window'); await frames();
           return {draftId:window.state.textSession.draftId,text:pane(0).querySelector('#textEditor').value,dirty:window.state.textSession.dirty,saves:window.__audit.calls.filter(c=>c.kind==='save-text').length,candidates:window.state.textSession.recoveryDrafts.length};
         })()`);
         result.before = before;
       }
       if (name === 'modalFocus') {
+        // A round trip to two animation frames: the key has been handled.
+        const handled = () => win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         result.tabInside = [];
         for (const shift of [false,false,false,false,true,true,true,true]) {
           win.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab',modifiers:shift?['shift']:[]});
           win.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab',modifiers:shift?['shift']:[]});
-          await new Promise(resolve=>setTimeout(resolve,20));
+          await handled();
           result.tabInside.push(await win.webContents.executeJavaScript('document.querySelector("#folderDialog").contains(document.activeElement)'));
         }
         win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
         win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
-        await new Promise(resolve=>setTimeout(resolve,40));
+        await handled();
         result.closed = await win.webContents.executeJavaScript('document.querySelector("#folderDialog").classList.contains("hidden")');
         result.restored = await win.webContents.executeJavaScript('document.activeElement.id');
       }
@@ -467,7 +489,8 @@ async function run() {
     } catch (error) { process.stdout.write(`INTERACTION_AUDIT ${JSON.stringify({name,error:error.message})}\n`); }
     finally { win.destroy(); }
   }
-  if (httpServer) await new Promise(resolve => httpServer.close(resolve));
+  // Keep-alive sockets from the closed window would hold close() open.
+  if (httpServer) { httpServer.closeAllConnections?.(); await new Promise(resolve => httpServer.close(resolve)); }
   app.quit();
 }
 run().catch(error=>{console.error(error);app.exit(1);});
