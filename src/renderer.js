@@ -1700,7 +1700,8 @@ function attachManualDrag() {
         // allows only without a filter or search and while the folder shows
         // that order (E-11).
         const eagleItems = kind === 'items' && view.kind === 'folder';
-        const enabled = eagleItems
+        // Several selected folders have no one order to write into.
+        const enabled = kind === 'items' && viewFolderSelection(view) ? false : eagleItems
           ? supportsManual(view) && !queryFiltersActive(pane.query) && window.EagleMVEagleOrder.dragSortable(libraryFolder(view.id), pane.sort)
           : supportsManual(view);
         return {id,kind,parentId,paneId,scope:manualScope(view),libraryPath:state.library?.path,
@@ -2012,6 +2013,8 @@ function visibleChildFolders() {
   let folders;
   // 最近使用 filters by the search box like every other folder list (B1-08).
   if (state.currentView.kind === 'recent') folders = state.recentFolders || [];
+  // Eagle shows no subfolder cards over several selected folders.
+  else if (viewFolderSelection()) folders = [];
   else {
     folders = state.currentView.kind === 'root'
       ? (state.library.folders || [])
@@ -4321,7 +4324,7 @@ function renderFolderTree() {
     const expanded = state.expandedFolders.has(folder.id);
     const count = folderTreeCount(folder, children.length > 0 && expanded);
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${folderInSelection(folder.id) ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
         ${folderCountBadge(count)}
@@ -4430,6 +4433,18 @@ function paneItemQuery(pane, currentView = pane.currentView) {
     isUntagged: currentView.kind === 'untagged',
     random: currentView.kind === 'random'
   };
+  const selection = viewFolderSelection(currentView)?.filter(id => findFolder(state.library?.folders, id));
+  if (selection?.length) {
+    // Several folders: items in any of them, each widened to its subtree by
+    // a search or 显示子文件夹内容, as for one folder.
+    const widen = String(query.search || '').trim() || cardDisplay.subfolderContent;
+    const ids = new Set();
+    const collect = folder => { ids.add(folder.id); if (widen) (folder.children || []).forEach(collect); };
+    selection.forEach(id => collect(findFolder(state.library.folders, id)));
+    query.folderId = selection[0];
+    query.folderIds = [...ids];
+    return query;
+  }
   // A search, or 显示子文件夹内容, covers the folder's whole subtree.
   if (query.folderId && (String(query.search || '').trim() || cardDisplay.subfolderContent)) {
     const folderIds = [];
@@ -7209,6 +7224,43 @@ function toggleSlideshow() {
   toast(`幻灯片播放中 · 每 ${Math.round(state.slideshow.intervalMs / 1000)} 秒一张`);
 }
 
+// ⌘-click (Eagle's multipleOpenFolder): the open folder and the clicked one
+// make a selection; ⌘-click on a selected one takes it out, unless it is
+// the last. Outside a folder the selection starts with the clicked one.
+function toggleFolderInSelection(folderId) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder) return false;
+  if (folder.password) { toast('该文件夹已加密，MultiView 无法解锁（Eagle API 限制）', 3600); return false; }
+  const current = viewFolderSelection() || (state.currentView.kind === 'folder' ? [state.currentView.id] : []);
+  let next;
+  if (current.includes(folderId)) {
+    if (current.length <= 1 || !viewFolderSelection()) return false;
+    next = current.filter(id => id !== folderId);
+  } else {
+    next = [...current, folderId];
+    state.folderSelectionAnchor = folderId;
+  }
+  return navigate({ kind: 'folder', id: next[0], selectedFolderIds: next });
+}
+
+// ⇧-click (Eagle's clickNode): every folder row shown between the last
+// clicked folder and this one joins the selection.
+function extendFolderSelection(folderId) {
+  const anchor = state.folderSelectionAnchor || (state.currentView.kind === 'folder' ? state.currentView.id : null);
+  if (!anchor) return false;
+  const rows = [...document.querySelectorAll('#folderTree .folder-node > .folder-row[data-folder-id]')].map(row => row.dataset.folderId);
+  let from = rows.indexOf(anchor);
+  let to = rows.indexOf(folderId);
+  if (from === -1 || to === -1) return false;
+  if (from > to) [from, to] = [to, from];
+  const next = [...(viewFolderSelection() || [])];
+  for (const id of rows.slice(from, to + 1)) {
+    if (!next.includes(id) && !findFolder(state.library?.folders, id)?.password) next.push(id);
+  }
+  if (!next.length) return false;
+  return navigate({ kind: 'folder', id: next[0], selectedFolderIds: next });
+}
+
 function descriptorFromTarget(target) {
   if (target.dataset.folderId) return { kind: 'folder', id: target.dataset.folderId };
   if (target.dataset.smartFolderId) return { kind: 'smart', id: target.dataset.smartFolderId, name: target.dataset.folderName };
@@ -7216,7 +7268,20 @@ function descriptorFromTarget(target) {
 }
 
 function descriptorKey(view) {
-  return `${view.kind}:${view.id || ''}`;
+  const selection = viewFolderSelection(view);
+  return `${view.kind}:${view.id || ''}${selection ? `:${[...selection].sort().join(',')}` : ''}`;
+}
+
+// Eagle's sidebar multi-select ($rootScope.selectedFolders, ⌘/⇧-click): one
+// view over several folders, its items those of any of them. The view keeps
+// `id` as its first folder for everything that needs one folder.
+function viewFolderSelection(view = state.currentView) {
+  return view?.kind === 'folder' && Array.isArray(view.selectedFolderIds) ? view.selectedFolderIds : null;
+}
+
+function folderInSelection(folderId, view = state.currentView) {
+  const selection = viewFolderSelection(view);
+  return selection ? selection.includes(folderId) : view?.kind === 'folder' && view.id === folderId;
 }
 
 function normalizeView(view) {
@@ -7227,7 +7292,10 @@ function applyView(view) {
   view = normalizeView(view);
   if (descriptorKey(view)!==descriptorKey(state.currentView)) activePane().manualRenderLimit=SORT_FETCH_CAP;
   state.currentView = view;
-  if (view.kind === 'folder') {
+  if (viewFolderSelection(view)) {
+    // Eagle's breadcrumb: 已选定 N 个文件夹.
+    state.viewTitle = `已选定 ${viewFolderSelection(view).length} 个文件夹`;
+  } else if (view.kind === 'folder') {
     const folder = findFolder(state.library?.folders, view.id);
     state.viewTitle = folder?.name || '文件夹';
   } else if (view.kind === 'smart') {
@@ -7707,7 +7775,9 @@ function observeBreadcrumbLayout(breadcrumb) {
 function renderLocation() {
   if (!state.library) return;
   let crumbs = [{ label: state.library.name || '资源库', view: { kind: 'root' } }];
-  if (state.currentView.kind === 'folder') {
+  if (viewFolderSelection()) {
+    crumbs.push({ label: state.viewTitle, view: state.currentView });
+  } else if (state.currentView.kind === 'folder') {
     const folderPath = findFolderPath(state.library.folders, state.currentView.id);
     crumbs = folderPath.length
       ? crumbs.concat(folderPath.map(folder => ({ label: folder.name, view: { kind: 'folder', id: folder.id } })))
@@ -8017,6 +8087,29 @@ function folderColorMenuRows(folderId) {
     return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="文件夹颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="set-folder-color" data-context-payload="${escapeHTML(JSON.stringify({ folderId, color }))}"></button>`;
   }).join('');
   return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`];
+}
+
+// Eagle's menu for several selected folders (openFolderContextMenu,
+// isMultiple): 移动文件夹, 重命名 N 个项目..., the colours, 删除文件夹.
+function multipleFoldersMenuMarkup(folderIds = []) {
+  const folders = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (!folders.length) return '';
+  const disabled = !state.connected;
+  const colors = new Set(folders.map(folder => String(folder.iconColor || '').toLowerCase()));
+  const current = colors.size === 1 ? [...colors][0] : null;
+  const swatches = window.eagleMV.updateFolderProperties ? folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="文件夹颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="set-folders-color" data-context-payload="${escapeHTML(JSON.stringify({ folderIds, color }))}"></button>`;
+  }).join('') : '';
+  return [
+    ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹', action: 'move-folder-nodes', payload: { folderIds }, disabled })] : []),
+    contextMenuRow({ icon: 'rename', label: `重命名 ${folders.length} 个项目...`, action: 'batch-rename-folders', payload: { folderIds }, disabled }),
+    ...(swatches ? ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`] : []),
+    ...(window.eagleMV.removeFolder ? ['<div class="context-menu-separator"></div>', contextMenuRow({
+      icon: 'trashMenu', label: '删除文件夹', shortcut: '⌘ ⌫', action: 'remove-folder-nodes', payload: { folderIds }, disabled, danger: true
+    })] : [])
+  ].join('');
 }
 
 // Eagle's folder menus (sidebar and subfolder card) end with 删除文件夹 ⌘⌫.
@@ -8388,6 +8481,7 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'trashMenu', label: '移除智能文件夹…', action: 'remove-smart-folder', payload: { id: data.smartFolderId }, danger: true })
     ].join('');
   }
+  if (data.kind === 'sidebar-folders') return multipleFoldersMenuMarkup(data.folderIds);
   if (data.kind === 'sidebar') {
     return [
       revealInPaneMenuMarkup(data),
@@ -8555,6 +8649,7 @@ function contextMenuAriaLabel(kind) {
   if (kind === 'new-window-menu') return '新窗口位置';
   if (kind === 'list-columns') return '列表显示的列';
   if (kind === 'new-menu') return '新建项目';
+  if (kind === 'sidebar-folders') return '文件夹操作菜单';
   return '素材操作菜单';
 }
 
@@ -8636,6 +8731,12 @@ function openSidebarContextMenu(target, point) {
     return;
   }
   const targetFolderId = target.closest?.('[data-folder-id]')?.dataset.folderId || null;
+  // A row of several selected folders opens Eagle's menu for all of them.
+  const selection = viewFolderSelection();
+  if (targetFolderId && selection?.length > 1 && selection.includes(targetFolderId)) {
+    showContextMenuAt(point.x, point.y, { kind: 'sidebar-folders', ids: [], folderIds: [...selection], paneId: state.activePaneId });
+    return;
+  }
   showContextMenuAt(point.x, point.y, {
     kind: 'sidebar',
     ids: [],
@@ -8657,6 +8758,10 @@ async function executeContextAction(action, payload) {
   if (action === 'site-import') return siteFeatureUI().open();
   if (action === 'pinterest-help') return window.eagleMV.openExternal('https://docs-cn.eagle.cool/article/828-import-from-pinterest');
   if (action === 'move-folder-node') return selectedFeatureUI().moveFolder(payload.folderId);
+  if (action === 'move-folder-nodes') return selectedFeatureUI().moveFolders(payload.folderIds);
+  if (action === 'batch-rename-folders') return openFolderBatchRename(payload.folderIds);
+  if (action === 'set-folders-color') return setFoldersColor(payload.folderIds, payload.color);
+  if (action === 'remove-folder-nodes') return removeFoldersById(payload.folderIds, { paneId: data.paneId });
   if (action === 'copy-folder-node') return selectedFeatureUI().copyFolder(payload.folderId);
   if (action === 'save-smart-folder') return saveCurrentViewAsSmartFolder();
   if (action === 'rename-smart-folder') return renameSmartFolder(payload.id);
@@ -9419,7 +9524,10 @@ function subtreeFolderIds(folder, ids = new Set()) {
 // "把文件夹内项目丢到回收站" ticked each time, focus on 确认删除.
 function chooseFolderRemoval(folder) {
   $('#trashDialogTitle').textContent = '删除文件夹';
-  $('#trashDialogMessage').textContent = `这个操作无法进行复原，确认要删除“${folder.name || '未命名文件夹'}”文件夹吗？`;
+  // Several selected folders: Eagle's dialog.removeFolder.descMultiple.
+  $('#trashDialogMessage').textContent = folder.count
+    ? `这个操作无法进行复原，确认要删除 ${folder.count} 个文件夹吗？`
+    : `这个操作无法进行复原，确认要删除“${folder.name || '未命名文件夹'}”文件夹吗？`;
   $('#trashRemoveButton').classList.add('hidden');
   $('#trashDeleteButton').textContent = '确认删除';
   $('#trashDialogCheckbox').checked = true;
@@ -9516,6 +9624,11 @@ function requestFolderRemovalShortcut() {
     return true;
   }
   const row = document.activeElement?.closest?.('#folderTree [data-folder-id]');
+  const selection = viewFolderSelection();
+  if (row?.dataset.folderId && selection?.length > 1 && selection.includes(row.dataset.folderId)) {
+    removeFoldersById(selection);
+    return true;
+  }
   if (row?.dataset.folderId) {
     removeFolderById(row.dataset.folderId, { selectNext: true });
     return true;
@@ -9651,8 +9764,9 @@ function categoryTarget() {
   const card = Boolean(state.selectedFolderCard);
   const view = card ? { kind: 'folder', id: state.selectedFolderCard } : state.currentView;
   if (!pane || !state.library || !view || ['tags', 'recent'].includes(view.kind)) return null;
-  const folder = view.kind === 'folder' ? findFolder(state.library.folders, view.id) : null;
-  if (view.kind === 'folder' && !folder) return null;
+  // Several selected folders describe the selection, not its first folder.
+  const folder = view.kind === 'folder' && !viewFolderSelection(view) ? findFolder(state.library.folders, view.id) : null;
+  if (view.kind === 'folder' && !folder && !viewFolderSelection(view)) return null;
   return {
     key: `${state.library.path}|${descriptorKey(view)}`,
     view, folder, card,
@@ -9784,6 +9898,101 @@ async function setFolderColor(folderId, color) {
   if (!folder || !state.connected || !folderMenuColors.includes(color)) return false;
   if (String(folder.iconColor || '').toLowerCase() === color) return false;
   return writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' });
+}
+
+// Eagle's changeSelectedFoldersColor: every selected folder takes the colour.
+async function setFoldersColor(folderIds = [], color) {
+  if (!state.connected || !folderMenuColors.includes(color)) return false;
+  let changed = 0;
+  for (const id of folderIds) {
+    const folder = findFolder(state.library?.folders, id);
+    if (!folder || String(folder.iconColor || '').toLowerCase() === color) continue;
+    if (await writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' }).catch(error => { toast(`设置颜色失败：${error.message}`, 4000); return false; })) changed += 1;
+  }
+  return changed > 0;
+}
+
+// Eagle's removeSelectedFolders: one question for all of them (with the
+// 把文件夹内项目丢到回收站 box), then 批量操作确认, then each folder goes
+// as a single delete does — without the 撤销 notice, as in Eagle.
+async function removeFoldersById(folderIds = [], { paneId = state.activePaneId } = {}) {
+  if (!state.connected || !window.eagleMV.removeFolder) return false;
+  const all = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (!all.length) return false;
+  if (all.length === 1) return removeFolderById(all[0].id, { selectNext: true, paneId });
+  // A folder inside another selected one goes with it.
+  const inside = folder => findFolderPath(state.library.folders, folder.id).slice(0, -1).some(ancestor => folderIds.includes(ancestor.id));
+  const folders = all.filter(folder => !folder.password && !inside(folder));
+  const removed = new Set(folders.flatMap(folder => [...subtreeFolderIds(folder)]));
+  const moving = state.panes.filter(pane => pane.currentView.kind === 'folder' && (removed.has(pane.currentView.id) || (viewFolderSelection(pane.currentView) || []).some(id => removed.has(id))));
+  if (moving.length && !confirmDiscardChanges()) return false;
+  const choice = await chooseFolderRemoval({ name: '', count: all.length });
+  if (!choice) return false;
+  if (!confirm(`批量操作确认\n\n这个操作会影响 ${all.length.toLocaleString()} 个文件，确定要继续吗？`)) return false;
+  const libraryPath = state.library?.path;
+  const operationToken = beginForegroundOperation('正在删除文件夹…', { key: `remove-folders:${libraryPath}` });
+  if (!operationToken) return false;
+  setSyncStatus('正在删除…');
+  for (const id of removed) state.folderRemovalRedirects.set(id, { kind: 'all' });
+  setTimeout(() => { for (const id of removed) if (state.folderRemovalRedirects.get(id)?.kind === 'all') state.folderRemovalRedirects.delete(id); }, 15000);
+  let done = 0;
+  let firstError = null;
+  try {
+    for (const folder of folders) {
+      try {
+        const result = await window.eagleMV.removeFolder({ id: folder.id, baseName: folder.name, isDeleteImages: choice.isDeleteImages, libraryPath });
+        if (result?.ok) done += 1;
+        else firstError ||= new Error(result?.conflict ? `“${folder.name}”已在别处改名` : `“${folder.name}”已不存在`);
+      } catch (error) {
+        firstError ||= error;
+        if (error.uncertain) break;
+      }
+    }
+    for (const pane of moving) withActivePane(pane.id, () => navigate({ kind: 'all' }, { skipDiscard: true }));
+    if (!state.selected.size) renderInspector();
+    const skipped = all.length - folders.length - all.filter(inside).length;
+    toast(`已删除 ${done} 个文件夹${skipped ? ` · ${skipped} 个加密文件夹未删除` : ''}${firstError ? ` · 未完成：${firstError.message}` : ''}`, firstError || skipped ? 6000 : 3000);
+    return done > 0;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// Eagle's batchRenameFolders: the batch rename dialog over the selected
+// folders, then each renamed with the conflict check; its notice keeps
+// 撤销 for 10 s, which gives every folder its name back.
+function openFolderBatchRename(folderIds = []) {
+  const folders = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (folders.length < 2 || !window.EagleMVBatchRename) return false;
+  const libraryPath = state.library?.path;
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items: folders.map(folder => ({ id: folder.id, name: folder.name, tags: folder.tags || [] })),
+    kind: 'folder',
+    historyKey: 'eaglemv.batchRename.findHistory.FOLDER',
+    onRename: async (changes, total) => {
+      if (!changes.length || state.library?.path !== libraryPath) return;
+      if (total >= 10 && !confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      const renamed = [];
+      let failed = 0;
+      await runForegroundOperation('正在重命名文件夹…', { key: `batch-rename-folders:${libraryPath}` }, async () => {
+        for (const change of changes) {
+          const result = await window.eagleMV.mutateFolder({ id: change.item.id, name: change.after, baseName: change.before, libraryPath }).catch(() => null);
+          if (result?.ok) renamed.push(change); else failed += 1;
+        }
+      });
+      renderFolderTree();
+      renderLocation();
+      const restore = async () => {
+        if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+        await runForegroundOperation('正在撤销…', { key: `batch-rename-folders:${libraryPath}` }, async () => {
+          for (const change of renamed) await window.eagleMV.mutateFolder({ id: change.item.id, name: change.before, baseName: change.after, libraryPath }).catch(() => null);
+        });
+      };
+      toast(`${renamed.length} 个项目已重命名。${failed ? ` · ${failed} 个未重命名（已在别处修改）` : ''}`, 10000, renamed.length ? { undo: restore } : {});
+    }
+  });
+  return true;
 }
 
 // Eagle's ⌘R in a tag group (renameCurrentFolder): several selected tags
@@ -11989,7 +12198,11 @@ function bindEvents() {
     const toggle = event.target.closest('[data-toggle-folder]');
     if (toggle) { event.stopPropagation(); toggleFolder(toggle.dataset.toggleFolder); return; }
     const row = event.target.closest('.folder-row');
-    if (row) navigate(descriptorFromTarget(row));
+    if (!row) return;
+    if (row.dataset.folderId && (event.metaKey || event.ctrlKey)) { toggleFolderInSelection(row.dataset.folderId); return; }
+    if (row.dataset.folderId && event.shiftKey) { extendFolderSelection(row.dataset.folderId); return; }
+    if (row.dataset.folderId) state.folderSelectionAnchor = row.dataset.folderId;
+    navigate(descriptorFromTarget(row));
   });
   // Folders from Finder dropped on the sidebar outside a folder row are
   // imported with their structure at the library root (P4-01, Eagle's
@@ -13150,6 +13363,18 @@ function reconcileLibraryChangePanes() {
   const missingFolderIds = new Set();
   let missingSmartFolder = false;
   for (const pane of state.panes) {
+    const selection = viewFolderSelection(pane.currentView);
+    if (selection) {
+      // A selected folder gone elsewhere leaves the selection; the view goes
+      // only when none is left.
+      const kept = selection.filter(id => findFolder(state.library?.folders, id));
+      if (!kept.length) missingFolderIds.add(pane.currentView.id);
+      else {
+        if (kept.length !== selection.length) pane.currentView = { ...pane.currentView, id: kept[0], selectedFolderIds: kept };
+        pane.viewTitle = `已选定 ${kept.length} 个文件夹`;
+      }
+      continue;
+    }
     if (pane.currentView.kind === 'folder') {
       const folder = findFolder(state.library?.folders, pane.currentView.id);
       if (folder) pane.viewTitle = folder.name || '文件夹';

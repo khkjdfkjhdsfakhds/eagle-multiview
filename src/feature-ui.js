@@ -123,6 +123,78 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       } finally { moving = false; }
     };
   }
+  // Eagle's moveFolders: several selected folders to one new parent, each
+  // with the same conflict check as one; one inside another moves with it.
+  async function moveFolders(ids = []) {
+    if (!api.moveFolder || !canStart() || moving || activeDialog) return;
+    const ctx = { ...context() };
+    const entries = walk(ctx.folders);
+    const picked = new Set(ids);
+    const insidePicked = entry => {
+      for (let parent = entry.parent; parent; parent = entries.find(candidate => candidate.folder.id === parent)?.parent) {
+        if (picked.has(parent)) return true;
+      }
+      return false;
+    };
+    const sources = entries.filter(entry => picked.has(entry.folder.id) && !insidePicked(entry));
+    if (!sources.length) return;
+    if (sources.length === 1) return moveFolder(sources[0].folder.id);
+    const excluded = new Set(sources.flatMap(source => walk([source.folder]).map(entry => entry.folder.id)));
+    const form = dialog('移动文件夹'); if (!form) return;
+    form.body.append(element('p', '保留文件夹及子文件夹、素材归属，仅更改所属层级。'), element('p', `已选定 ${ids.length} 个文件夹`));
+    const search = element('input', '', { type: 'search', 'aria-label': '搜索目标文件夹', placeholder: '搜索文件夹名称或完整路径' });
+    const label = element('label', '目标文件夹');
+    const select = element('select', '', { 'aria-label': '目标文件夹' });
+    const parents = new Set(sources.map(source => source.parent || ''));
+    let selectedTarget = parents.size === 1 ? [...parents][0] : '';
+    const renderTargets = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      select.replaceChildren(element('option', '资源库根目录', { value: '' }));
+      for (const entry of entries) {
+        if (excluded.has(entry.folder.id)) continue;
+        const matches = entry.path.toLocaleLowerCase().includes(query);
+        if (matches || entry.folder.id === selectedTarget) {
+          select.append(element('option', matches ? entry.path : `当前选择：${entry.path}`, { value: entry.folder.id }));
+        }
+      }
+      select.value = selectedTarget;
+    };
+    const submit = element('button', '移动', { type: 'button', 'data-feature-submit': '' });
+    // Nothing to move when every folder already sits there (F-06).
+    const syncSubmit = () => { submit.disabled = sources.every(source => (source.parent || '') === select.value); };
+    search.addEventListener('input', () => { renderTargets(); syncSubmit(); });
+    select.addEventListener('change', () => { selectedTarget = select.value; syncSubmit(); });
+    renderTargets(); syncSubmit(); label.append(select); form.body.append(search, label);
+    form.footer.append(submit);
+    for (const field of [search, select]) field.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); submit.click(); }
+    });
+    search.focus();
+    submit.onclick = async () => {
+      if (submit.disabled) return;
+      const parentId = select.value || null;
+      submit.disabled = true; select.disabled = true; search.disabled = true; form.lock(true);
+      form.status.textContent = '正在移动并核对 Eagle 层级…';
+      moving = true;
+      let moved = 0;
+      try {
+        for (const source of sources) {
+          if ((source.parent || null) === parentId) continue;
+          if (context().libraryPath !== ctx.libraryPath) throw new Error('资源库已切换，请重新选择。');
+          const result = await api.moveFolder({ id: source.folder.id, parentId, baseParentId: source.parent, libraryPath: ctx.libraryPath });
+          if (result?.conflict) throw new Error(`“${source.folder.name}”已在其他窗口移动，请刷新后重新选择目标。`);
+          if (!result?.ok) throw new Error('Eagle 尚未确认移动结果，请先刷新核对。');
+          moved += 1;
+        }
+        form.close();
+        try { await refresh(); } catch (error) { notify(`文件夹已移动，但视图刷新失败：${error.message}。请刷新核对，不必重复移动。`, 6000); return; }
+        notify(`已移动 ${moved} 个文件夹`);
+      } catch (error) {
+        form.status.textContent = moved ? `已移动 ${moved} 个；${error.message}` : error.message;
+        form.lock(false); form.cancel.textContent = '关闭';
+      } finally { moving = false; }
+    };
+  }
   // Eagle itself has no folder copy. MultiView's copies the whole subtree and
   // the API cannot delete folders afterwards, so every copy asks first and
   // says how much it will create (F-03). Without a target (the context menu)
@@ -328,5 +400,5 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
       event.stopImmediatePropagation();
     }, true);
   }
-  return { moveFolder, copyFolder, attachFolderDrag };
+  return { moveFolder, moveFolders, copyFolder, attachFolderDrag };
 };

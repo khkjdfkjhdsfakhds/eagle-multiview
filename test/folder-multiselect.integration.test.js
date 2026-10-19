@@ -1,0 +1,33 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+
+test('sidebar multi-select: ⌘/⇧-click, one view over the folders, and the menu for all of them', { timeout: 40000 }, async () => {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/folder-multiselect-probe.cjs')], { env, timeout: 35000, maxBuffer: 4 * 1024 * 1024 });
+  const line = stdout.split('\n').find(entry => entry.startsWith('EAGLEMV_FOLDER_MULTISELECT '));
+  assert.ok(line, `missing probe result: ${stdout}`);
+  const out = JSON.parse(line.slice('EAGLEMV_FOLDER_MULTISELECT '.length));
+  assert.equal(out.single.view.selectedFolderIds, undefined);
+  assert.deepEqual(out.added.view.selectedFolderIds, ['mv-folder', 'eagle-folder'], '⌘-click adds to the open folder');
+  assert.equal(out.added.title, '已选定 2 个文件夹');
+  assert.equal(out.breadcrumb, '测试资料库›已选定 2 个文件夹');
+  assert.deepEqual(out.added.active, ['mv-folder', 'eagle-folder'], 'every selected row is highlighted');
+  assert.deepEqual(out.added.folderIds, ['mv-folder', 'eagle-folder'], 'the view shows items of any of them');
+  assert.deepEqual(out.lockedRefused, ['mv-folder', 'eagle-folder'], 'a locked folder does not join');
+  assert.deepEqual(out.removed, ['eagle-folder'], '⌘-click on a selected folder takes it out');
+  assert.deepEqual(out.lastKept, ['eagle-folder'], 'the last one stays');
+  assert.deepEqual(out.range.view.selectedFolderIds, ['mv-folder', 'eagle-folder'], '⇧-click selects the rows in between');
+  assert.deepEqual(out.menu, ['移动文件夹', '重命名 2 个项目...', '删除文件夹⌘ ⌫']);
+  assert.equal(out.swatches, 9);
+  assert.deepEqual(out.colors, ['mv-folder', 'eagle-folder']);
+  assert.deepEqual(out.moveTargets, ['', 'locked-folder'], 'the selected folders are no target');
+  assert.equal(out.moveDisabledAtParent, true);
+  assert.deepEqual(out.moves, [['mv-folder', 'locked-folder'], ['eagle-folder', 'locked-folder']]);
+  assert.equal(out.removeMessage, '这个操作无法进行复原，确认要删除 2 个文件夹吗？');
+  assert.equal(out.removeCheckbox, true);
+  assert.deepEqual(out.removals, [{ id: 'mv-folder', isDeleteImages: true }, { id: 'eagle-folder', isDeleteImages: true }]);
+});
