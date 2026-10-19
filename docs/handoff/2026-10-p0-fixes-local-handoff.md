@@ -990,3 +990,29 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 3. E-10：在「MV验收」文件夹里拖动排序一张图、置顶一张图、设一次文件夹封面 → 都照常生效，Eagle 里看结果一致。
 
 **下一步**：按第二十九节做菜单栏 → 安卓 → 合并发 1.8.4。
+
+## 三十五、接手：菜单栏（2026-10-19）
+
+### 当前状态
+
+- 分支 `claude/kind-lamport-48izv4`，HEAD 为本节提交，**未推送、未合 main**；全量 `npm test` 972/972；正式安装 `/Applications` 1.8.3 未动。
+- 第三十四节（B3-10 核对、E-19、E-10）**用户尚未验收**，验收 3 步写在该节末尾，用户稍后自己做。第三十节原版核对 + 数据风险全部处理完。
+- 测试版 `dist/branchtest/mac-arm64/Eagle MultiView Test.app`（`1.8.3-review.20261019.4`，Review 身份、Web 端口 41601）在后台运行；重建前先 `osascript -e 'tell application id "local.eagle.multiview.branchtest" to quit'`，构建命令见第二十三节（换版本号，如 `1.8.3-review.20261020.1`）。
+- Eagle 4.0.0 解包：`npx --no-install asar extract /Applications/Eagle.app/Contents/Resources/app.asar <scratchpad>/eagle/app`；渲染端 `app/app.bundle.js`，菜单相关先搜 i18n 菜单键与 `Menu.buildFromTemplate`。
+
+### 待做：菜单栏（第 6 组 A；GUI-01/P3-01/P3-02）
+
+范围以第二十九节第 2 条为准，调研见 `2026-10-group6-eagle-research.md` A 节：
+- 按原版 10 个顶层菜单结构补齐（“插件”不做，只放能执行的项）。
+- **快捷键保留 MultiView 现状**（用户决定，第二十五节）；原版有而 MultiView 未占用的键可补。P5-04 ⌥N 保留。
+- 修菜单“复制”“全选”走原生 role 的 bug（应走 MultiView 自己的复制素材/全选素材，输入框内仍走原生）。
+- 接上已就绪的 9 个命令：丢到回收站、置顶、添加/移动/移除文件夹、添加标签、评分、标签颜色、新窗口。
+- “窗口”菜单中文化；加“帮助”（检查更新、错误日志）。
+- 按选择状态启用/禁用；对话框打开时菜单命令不执行。
+- 先读原版菜单模板确认每项文案、层级、启用条件，再动手；不确定的列为“待本机核对”。
+
+之后：安卓（第二十九节第 3 条）→ 合并发 1.8.4（需用户明确同意）。
+
+### 规则（不变）
+
+每批 `node --check` 三件 + 全量 `npm test`、本地提交、在本文件追加一节；不推送、不合 main；不覆盖 `/Applications`，GUI 用测试版；写资料库的验证先问用户；改行为前先读原版代码确认（用户要的是看齐原版，不是改善）。回复用中文、精简。
