@@ -170,7 +170,7 @@ test('renderer exposes one WebView-safe entry and routes Option+Left and Control
   const indexHTML = fs.readFileSync(path.join(root, 'src/index.html'), 'utf8');
   assert.ok(indexHTML.includes('<script src="window-router.js"></script>'));
   assert.ok(renderer.includes('window.EagleMVBack.request()'));
-  assert.ok(renderer.includes('installBackRouter(backActionRouter)'));
+  assert.ok(renderer.includes('installBackRouter(window.eagleMV.shellApp ? shellBackEntry : backActionRouter)'));
   assert.ok(renderer.includes("(event.altKey || event.ctrlKey) && event.key === 'ArrowLeft'"));
   assert.ok(renderer.includes('requestBackAction()'));
 });

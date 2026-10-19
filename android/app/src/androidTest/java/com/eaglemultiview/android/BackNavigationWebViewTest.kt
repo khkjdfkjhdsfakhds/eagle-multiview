@@ -24,8 +24,10 @@ import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.hamcrest.CoreMatchers.allOf
 import org.hamcrest.CoreMatchers.containsString
 import org.junit.After
@@ -191,7 +193,7 @@ class BackNavigationWebViewTest {
     }
 
     @Test
-    fun loadingPageBackDoesNotBypassWebContract() {
+    fun connectingScreenBackClosesTheApp() {
         MockWebServer().use { server ->
             server.enqueue(
                 htmlResponse("<p id='result'>late</p>")
@@ -200,8 +202,48 @@ class BackNavigationWebViewTest {
             server.start()
             connect(server.url("/").toString())
 
+            // A-03: the native connecting screen has no page under it to go back in.
             dispatchBack()
 
+            waitForActivityDestroyed()
+        }
+    }
+
+    @Test
+    fun hostFileBackReturnsToTheAppPageWithoutItsContract() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                    "/" -> htmlResponse(
+                        backContractScript("['handled']") +
+                            "<p id='result'>app</p><p id='calls'>0</p>",
+                    )
+                    else -> htmlResponse(
+                        """
+                        <script>
+                        window.EagleMVBack = { request() {
+                          return {status:'exit',handled:false,blocked:false,exit:true,action:'host'};
+                        }};
+                        </script>
+                        <p id='result'>imported html</p>
+                        """.trimIndent(),
+                    )
+                }
+            }
+            server.start()
+            connect(server.url("/").toString())
+            assertWebText("result", "app")
+
+            scenario.onActivity { activity ->
+                activity.findViewById<WebView>(R.id.webView).loadUrl(server.url("/media/original/item").toString())
+            }
+            assertWebText("result", "imported html")
+
+            // W-01: a host file never answers Back for the shell; Back returns to the app page.
+            dispatchBack()
+
+            assertWebText("result", "app")
+            assertWebText("calls", "0")
             assertActivityOpen()
         }
     }
@@ -228,17 +270,17 @@ class BackNavigationWebViewTest {
     }
 
     @Test
-    fun nativeErrorPageBackStaysOpenForRetry() {
+    fun nativeErrorPageBackClosesTheApp() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(503))
             server.start()
             connect(server.url("/").toString())
             onView(withId(R.id.stateTitle)).check(matches(allOf(isDisplayed(), withText(R.string.state_http_error_title))))
 
+            // A-03: Back on the native failure screen leaves the app instead of only showing a toast.
             dispatchBack()
 
-            assertActivityOpen()
-            onView(withId(R.id.retryButton)).check(matches(isDisplayed()))
+            waitForActivityDestroyed()
         }
     }
 

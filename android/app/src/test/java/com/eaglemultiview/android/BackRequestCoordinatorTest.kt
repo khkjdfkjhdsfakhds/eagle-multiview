@@ -106,6 +106,24 @@ class BackRequestCoordinatorTest {
     }
 
     @Test
+    fun `connecting and failure screens close the app instead of only showing a toast`() {
+        val coordinator = BackRequestCoordinator()
+        assertEquals(BackCommand.FinishActivity, coordinator.begin(BackPageAvailability.CONNECTION_SCREEN))
+        assertEquals(
+            BackCommand.Stay(BackStayReason.ALREADY_FINISHING),
+            coordinator.begin(BackPageAvailability.CONNECTION_SCREEN),
+        )
+    }
+
+    @Test
+    fun `a host file leaves natively and never evaluates the page contract`() {
+        val coordinator = BackRequestCoordinator()
+        assertEquals(BackCommand.LeaveHostResource, coordinator.begin(BackPageAvailability.HOST_RESOURCE))
+        // Nothing stays pending, so the app page answers the next Back normally.
+        assertTrue(coordinator.begin(BackPageAvailability.TRUSTED_PAGE) is BackCommand.EvaluateJavascript)
+    }
+
+    @Test
     fun `page invalidation makes the old callback stale`() {
         val coordinator = BackRequestCoordinator()
         val oldRequest = coordinator.begin(BackPageAvailability.TRUSTED_PAGE).requestId()
@@ -123,7 +141,9 @@ class BackRequestCoordinatorTest {
         for (action in listOf("transient", "preview", "history")) {
             assertEquals(WebBackStatus.HANDLED, WebBackResultParser.parse(webResult("handled", action)))
         }
-        for (action in listOf("preview", "history", "request")) {
+        // T-17: a busy dialog or an unsaved edit blocks with action "transient" (renderer.js
+        // closeTopTransientSurface); that is a valid answer, not a failed request.
+        for (action in listOf("transient", "preview", "history", "request")) {
             assertEquals(WebBackStatus.BLOCKED, WebBackResultParser.parse(webResult("blocked", action)))
         }
         assertEquals(WebBackStatus.EXIT, WebBackResultParser.parse(webResult("exit", "host")))
@@ -139,7 +159,6 @@ class BackRequestCoordinatorTest {
         )
         assertNull(WebBackResultParser.parse(webResult("exit", "request")))
         assertNull(WebBackResultParser.parse(webResult("handled", "host")))
-        assertNull(WebBackResultParser.parse(webResult("blocked", "transient")))
         assertNull(WebBackResultParser.parse(webResult("blocked", "unknown")))
         assertNull(
             WebBackResultParser.parse(

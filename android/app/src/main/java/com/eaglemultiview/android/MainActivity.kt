@@ -55,6 +55,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
     private lateinit var hostPanel: LinearLayout
+    /** The connection screen: [hostPanel] inside a scroll view. */
+    private lateinit var hostScreen: View
     private lateinit var browserContainer: LinearLayout
     private lateinit var hostInput: AutoCompleteTextView
     private lateinit var rememberHostsCheck: CheckBox
@@ -104,6 +106,19 @@ class MainActivity : AppCompatActivity() {
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private val fileChooserCoordinator = FileChooserCoordinator<Uri>()
+    /** Set once the system reclaimed this page's renderer and it was reloaded; a loaded page clears it. */
+    private var rendererReclaimReloaded = false
+
+    /**
+     * Stands in while no host page is loaded (about:blank during a trust clear). The default
+     * client answers a lost renderer with false, which takes the whole app down with it (A-06).
+     */
+    private val idleWebViewClient = object : WebViewClient() {
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            if (view === webView && !isFinishing && !isDestroyed) replaceWebViewAfterRendererGone(view)
+            return true
+        }
+    }
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
         ::handleFileChooserResult,
@@ -114,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         hostPanel = findViewById(R.id.hostPanel)
+        hostScreen = findViewById(R.id.hostScreen)
         browserContainer = findViewById(R.id.browserContainer)
         hostInput = findViewById(R.id.hostInput)
         rememberHostsCheck = findViewById(R.id.rememberHostsCheck)
@@ -178,7 +194,7 @@ class MainActivity : AppCompatActivity() {
                             recreatedHttpStatus,
                         )
                         browserContainer.visibility = View.VISIBLE
-                        hostPanel.visibility = View.GONE
+                        hostScreen.visibility = View.GONE
                         renderState(connectionCoordinator.state)
                     }
                 }
@@ -224,7 +240,7 @@ class MainActivity : AppCompatActivity() {
         val session = activeHostSession
         outState.putString(
             KEY_RECREATED_MODE,
-            if (session == null || hostPanel.visibility == View.VISIBLE) MODE_HOST_ENTRY else MODE_ACTIVE_HOST,
+            if (session == null || hostScreen.visibility == View.VISIBLE) MODE_HOST_ENTRY else MODE_ACTIVE_HOST,
         )
         outState.putString(KEY_HOST_INPUT, hostInput.text.toString())
         session?.endpoint?.startUrl?.let { outState.putString(KEY_ACTIVE_HOST, it) }
@@ -585,7 +601,7 @@ class MainActivity : AppCompatActivity() {
     private fun startEndpoint(session: HostSession, clearSiteData: Boolean) {
         invalidateTrustedPage()
         browserContainer.visibility = View.VISIBLE
-        hostPanel.visibility = View.GONE
+        hostScreen.visibility = View.GONE
         renderState(HostConnectionState.Connecting(session.endpoint))
         if (clearSiteData) {
             clearWebViewTrust {
@@ -623,7 +639,7 @@ class MainActivity : AppCompatActivity() {
         activeHostSession = null
         activeHostNavigationAttempt = null
         val hadTrustedHost = connectionCoordinator.showHostEntry()
-        hostPanel.visibility = View.VISIBLE
+        hostScreen.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
         // From the login banner the dark page colours are still on the bars and root.
         applySystemBarColors(pageShowing = false)
@@ -644,7 +660,7 @@ class MainActivity : AppCompatActivity() {
         mainFrameFailed = false
         webView.stopLoading()
         activeHostWebViewClient = null
-        webView.webViewClient = WebViewClient()
+        webView.webViewClient = idleWebViewClient
         webView.loadUrl("about:blank")
         webView.clearHistory()
         webView.clearCache(true)
@@ -743,9 +759,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSavedHostsDropDown() {
-        if (!savedHostStore.enabled || hostPanel.visibility != View.VISIBLE) return
+        if (!savedHostStore.enabled || hostScreen.visibility != View.VISIBLE) return
         hostInput.post {
-            if (isDestroyed || !hostInput.hasFocus() || hostPanel.visibility != View.VISIBLE) return@post
+            if (isDestroyed || !hostInput.hasFocus() || hostScreen.visibility != View.VISIBLE) return@post
             savedHostAdapter.filter.filter(hostInput.text) { count ->
                 if (count > 0 && hostInput.hasFocus()) hostInput.showDropDown()
             }
@@ -903,7 +919,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showHostEntry() {
         invalidateTrustedPage()
-        hostPanel.visibility = View.VISIBLE
+        hostScreen.visibility = View.VISIBLE
         browserContainer.visibility = View.GONE
         applySystemBarColors(pageShowing = false)
         clearHostInputError()
@@ -1109,18 +1125,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun currentBackAvailability(): BackPageAvailability = when {
-        hostPanel.visibility == View.VISIBLE || connectionCoordinator.state is HostConnectionState.HostEntry -> {
-            BackPageAvailability.HOST_ENTRY
+    private fun currentBackAvailability(): BackPageAvailability {
+        val state = connectionCoordinator.state
+        return when {
+            hostScreen.visibility == View.VISIBLE || state is HostConnectionState.HostEntry -> {
+                BackPageAvailability.HOST_ENTRY
+            }
+            state is HostConnectionState.Connecting || state is HostConnectionState.Failed -> {
+                BackPageAvailability.CONNECTION_SCREEN
+            }
+            webViewAvailable && trustedPageReady -> BackPageAvailability.TRUSTED_PAGE
+            webViewAvailable && showingHostResource() -> BackPageAvailability.HOST_RESOURCE
+            else -> BackPageAvailability.UNAVAILABLE
         }
-        !webViewAvailable || !trustedPageReady -> BackPageAvailability.UNAVAILABLE
-        else -> BackPageAvailability.TRUSTED_PAGE
+    }
+
+    private fun showingHostResource(): Boolean {
+        val endpoint = connectionCoordinator.activeEndpoint ?: return false
+        return TrustedNavigationPolicy.classify(endpoint, webView.url) == NavigationTarget.SameOriginResource
+    }
+
+    private fun leaveHostResource() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+            return
+        }
+        val session = activeHostSession ?: return
+        loadEndpoint(session, session.endpoint.startUrl)
     }
 
     private fun dispatchBackCommand(command: BackCommand) {
         when (command) {
             is BackCommand.EvaluateJavascript -> evaluateWebBack(command.requestId)
             BackCommand.FinishActivity -> finishActivityOnce()
+            BackCommand.LeaveHostResource -> leaveHostResource()
             is BackCommand.Stay -> handleBackStay(command.reason)
         }
     }
@@ -1233,12 +1271,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Pairs with onStop: the page's timers and its event socket reconnects run again. */
+    override fun onStart() {
+        super.onStart()
+        if (!webViewAvailable) return
+        webView.onResume()
+        // Process-wide: resumes every WebView's timers, not only this one's.
+        webView.resumeTimers()
+    }
+
     /**
      * WebView writes cookies to disk lazily, so a login made seconds before the app is swiped away
      * or killed in the background was lost. Leaving the foreground persists it.
+     *
+     * Out of sight the page is paused too (A-09): otherwise its timers and the event socket's
+     * reconnect loop kept running in the background. Network transfers already under way, such as
+     * an upload, are not timers and carry on. Split screen keeps a visible window started, so it
+     * stays live there.
      */
     override fun onStop() {
         CookieManager.getInstance().flush()
+        if (webViewAvailable) {
+            webView.onPause()
+            webView.pauseTimers()
+        }
         super.onStop()
     }
 
@@ -1295,6 +1351,7 @@ class MainActivity : AppCompatActivity() {
             return when (TrustedNavigationPolicy.classify(endpoint, request.url.toString())) {
                 NavigationTarget.TrustedPage,
                 NavigationTarget.TrustedLogin,
+                NavigationTarget.SameOriginResource,
                 -> false
                 NavigationTarget.ExternalWeb -> {
                     launchExternalBrowser(request.url.toString())
@@ -1318,6 +1375,7 @@ class MainActivity : AppCompatActivity() {
             trustedPageReady = committedTrustedPage
             if (committedTrustedPage) {
                 recoveryCoordinator.pageCommitted(navigationAttempt)
+                rendererReclaimReloaded = false
                 failoverTried.clear()
                 rememberConnectedHost(endpoint)
                 renderState(connectionCoordinator.state)
@@ -1393,6 +1451,18 @@ class MainActivity : AppCompatActivity() {
             invalidateTrustedPage()
             mainFrameFailed = true
             replaceWebViewAfterRendererGone(view)
+            // A-06: the system reclaiming a background page's renderer for memory is not a crash.
+            // Reload it once (through the usual session probe) instead of showing the crash screen;
+            // a second loss before the page loads again is reported normally.
+            val session = activeHostSession
+            if (!detail.didCrash() && !rendererReclaimReloaded && webViewAvailable && session != null) {
+                val retry = recoveryCoordinator.manualRetry(session.generation)
+                if (retry != null) {
+                    rendererReclaimReloaded = true
+                    handleRecoveryAction(retry)
+                    return true
+                }
+            }
             handleRecoveryAction(
                 recoveryCoordinator.pageLoadFailed(
                     navigationAttempt,

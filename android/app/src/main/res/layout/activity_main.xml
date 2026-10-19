@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/surface_background">
@@ -131,12 +132,27 @@
         </FrameLayout>
     </LinearLayout>
 
+    <!-- Scrolls when landscape, a large font, or the keyboard leaves less height than the card needs (A-07). -->
+    <ScrollView
+        android:id="@+id/hostScreen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:fillViewport="true">
+
+    <!-- Lets the card keep its own height and stay centred while fillViewport stretches this. -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        tools:ignore="UselessParent">
+
     <LinearLayout
         android:id="@+id/hostPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:layout_marginHorizontal="@dimen/screen_padding"
+        android:layout_marginVertical="16dp"
         android:background="@drawable/host_panel_background"
         android:elevation="8dp"
         android:orientation="vertical"
@@ -246,5 +262,7 @@
                 android:textColor="@color/brand_blue" />
         </LinearLayout>
     </LinearLayout>
+    </FrameLayout>
+    </ScrollView>
 
 </FrameLayout>

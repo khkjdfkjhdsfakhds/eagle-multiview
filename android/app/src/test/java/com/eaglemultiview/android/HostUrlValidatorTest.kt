@@ -93,13 +93,35 @@ class TrustedNavigationPolicyTest {
     fun `keeps same origin pages and login inside the webview`() {
         assertEquals(
             NavigationTarget.TrustedPage,
-            TrustedNavigationPolicy.classify(endpoint, "https://example.test/library/folder"),
+            TrustedNavigationPolicy.classify(endpoint, "https://example.test/"),
+        )
+        assertEquals(
+            NavigationTarget.TrustedPage,
+            TrustedNavigationPolicy.classify(endpoint, "https://example.test/index.html"),
         )
         assertEquals(
             NavigationTarget.TrustedLogin,
             TrustedNavigationPolicy.classify(endpoint, "https://example.test/login"),
         )
         assertTrue(endpoint.contains("https://example.test/?view=all"))
+    }
+
+    @Test
+    fun `other host files load but are not the trusted app page`() {
+        // W-01: an imported HTML or SVG original served from /media must not get the Back
+        // contract or the shell bridge.
+        for (path in listOf("/media/original/abc", "/media/thumb/abc", "/export?id=1", "/renderer.js", "/library/folder")) {
+            assertEquals(
+                path,
+                NavigationTarget.SameOriginResource,
+                TrustedNavigationPolicy.classify(endpoint, "https://example.test$path"),
+            )
+        }
+        assertFalse(endpoint.contains("https://example.test/media/original/abc"))
+        assertTrue(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/media/original/abc"))
+        assertTrue(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/export?id=1"))
+        assertFalse(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/login"))
+        assertFalse(TrustedNavigationPolicy.isHostFile(endpoint, "https://other.example.test/export"))
     }
 
     @Test

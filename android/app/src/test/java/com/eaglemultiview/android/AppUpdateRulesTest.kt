@@ -62,4 +62,19 @@ class AppUpdateRulesTest {
         assertTrue(AppUpdateRules.isDue(0, AppUpdateRules.CHECK_INTERVAL_MS))
         assertFalse(AppUpdateRules.isDue(1_000, AppUpdateRules.CHECK_INTERVAL_MS))
     }
+
+    @Test
+    fun pendingInstallSurvivesARestartOnlyWhileFreshNewerAndInTheUpdateCache() {
+        val dir = "/data/user/0/com.eaglemultiview.android/cache/updates"
+        val sha = "a".repeat(64)
+        val pending = PendingInstall("$dir/eagle-multiview-1.8.4-android.apk", sha, "1.8.4", savedAt = 1_000)
+        val ttl = 60_000L
+        assertTrue(AppUpdateRules.pendingInstallUsable(pending, "1.8.3", 30_000, ttl, dir))
+        assertFalse("expired", AppUpdateRules.pendingInstallUsable(pending, "1.8.3", 62_000, ttl, dir))
+        assertFalse("clock went back", AppUpdateRules.pendingInstallUsable(pending, "1.8.3", 500, ttl, dir))
+        assertFalse("already updated", AppUpdateRules.pendingInstallUsable(pending, "1.8.4", 30_000, ttl, dir))
+        assertFalse("outside the cache", AppUpdateRules.pendingInstallUsable(pending.copy(path = "/sdcard/x.apk"), "1.8.3", 30_000, ttl, dir))
+        assertFalse("sibling folder", AppUpdateRules.pendingInstallUsable(pending.copy(path = "${dir}2/x.apk"), "1.8.3", 30_000, ttl, dir))
+        assertFalse("no hash", AppUpdateRules.pendingInstallUsable(pending.copy(sha256 = ""), "1.8.3", 30_000, ttl, dir))
+    }
 }

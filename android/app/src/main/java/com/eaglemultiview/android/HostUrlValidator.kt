@@ -112,17 +112,43 @@ object HostUrlValidator {
 enum class NavigationTarget(val isTrusted: Boolean) {
     TrustedPage(true),
     TrustedLogin(true),
+    /**
+     * Another file on the host (`/media/…`, `/export`, scripts): it may load (downloads and media
+     * need that) but never gets the page's Back contract or shell bridge, since an imported HTML
+     * or SVG original could otherwise drive both.
+     */
+    SameOriginResource(false),
     ExternalWeb(false),
     Blocked(false),
 }
 
 /** Keeps only same-origin MultiView pages in the privileged WebView. */
 object TrustedNavigationPolicy {
+    /** The MultiView app page; the host serves it at both paths. */
+    private val appPagePaths = setOf("/", "/index.html")
+
     fun classify(endpoint: HostEndpoint, rawUrl: String?): NavigationTarget {
         val uri = parseWebUri(rawUrl) ?: return NavigationTarget.Blocked
         val origin = originOf(uri) ?: return NavigationTarget.Blocked
         if (origin != endpoint.origin) return NavigationTarget.ExternalWeb
-        return if (uri.path == "/login") NavigationTarget.TrustedLogin else NavigationTarget.TrustedPage
+        val path = uri.path.takeUnless { it.isNullOrEmpty() } ?: "/"
+        return when {
+            path == "/login" -> NavigationTarget.TrustedLogin
+            path in appPagePaths || path == startPath(endpoint) -> NavigationTarget.TrustedPage
+            else -> NavigationTarget.SameOriginResource
+        }
+    }
+
+    /** A same-origin file other than the login page: what the host may serve to the download manager. */
+    fun isHostFile(endpoint: HostEndpoint, rawUrl: String?): Boolean =
+        classify(endpoint, rawUrl).let {
+            it == NavigationTarget.TrustedPage || it == NavigationTarget.SameOriginResource
+        }
+
+    private fun startPath(endpoint: HostEndpoint): String? = try {
+        URI(endpoint.startUrl).path
+    } catch (_: URISyntaxException) {
+        null
     }
 
     private fun parseWebUri(rawUrl: String?): URI? {

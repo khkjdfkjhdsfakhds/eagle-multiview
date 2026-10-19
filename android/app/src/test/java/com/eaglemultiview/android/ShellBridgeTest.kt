@@ -24,6 +24,8 @@ class ShellBridgeTest {
         assertFalse(ShellCommandPolicy.allowed(host, pageReady = false, pageUrl = "http://192.168.1.5:41600/"))
         assertFalse(ShellCommandPolicy.allowed(null, pageReady = true, pageUrl = "http://192.168.1.5:41600/"))
         assertFalse(ShellCommandPolicy.allowed(host, pageReady = true, pageUrl = "http://192.168.1.5:41600/login"))
+        // W-01: an imported HTML original shown from /media cannot drive the shell.
+        assertFalse(ShellCommandPolicy.allowed(host, pageReady = true, pageUrl = "http://192.168.1.5:41600/media/original/abc"))
         for (url in listOf(null, "about:blank", "http://192.168.1.5:41601/", "https://example.com/")) {
             assertFalse(url, ShellCommandPolicy.allowed(host, pageReady = true, pageUrl = url))
         }

@@ -1975,6 +1975,26 @@ function markFolderUsed(folderId, libraryPath = state.library?.path) {
   window.eagleMV.markFolderUsed?.({ folderId, libraryPath });
 }
 
+// The Android shell asks for Back through evaluateJavascript and gives up after
+// 1.5 s, so a confirm() inside its request outlived the request and the shell
+// reported that the page did not answer (A-02). While the shell's request runs,
+// the question waits: the request returns "blocked", the question is asked
+// right after, and an accepted answer runs the same Back step again.
+let shellBackDeferral = null;
+let preAnsweredQuestion = null;
+
+function confirmStep(message) {
+  if (preAnsweredQuestion === message) {
+    preAnsweredQuestion = null;
+    return true;
+  }
+  if (shellBackDeferral) {
+    shellBackDeferral.question ||= message;
+    return false;
+  }
+  return confirm(message);
+}
+
 function confirmDiscardChanges({ includeText = true } = {}) {
   if (includeText && state.textSaving) {
     toast('正在保存 TXT，请稍候', 2400);
@@ -1985,7 +2005,7 @@ function confirmDiscardChanges({ includeText = true } = {}) {
   // captures the selected pane and patch before its first await, so a
   // navigation can safely continue while that write finishes in background.
   if (state.inspectorDirty && !state.connected) {
-    if (!confirm('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
+    if (!confirmStep('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
     state.inspectorDirty = false;
     clearInspectorAutoSave();
   } else if (state.inspectorDirty) saveInspector();
@@ -1994,7 +2014,7 @@ function confirmDiscardChanges({ includeText = true } = {}) {
     toast('正在保存素材信息，请稍候再离开 TXT 编辑', 2400);
     return false;
   }
-  const discard = confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
+  const discard = confirmStep('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
   if (discard && state.textSession) discardTextSession(state.textSession);
   return discard;
 }
@@ -6791,6 +6811,31 @@ const backActionRouter = createBackRouter({
   },
   canNavigateBack: () => state.historyIndex > 0,
   navigateBack: () => navigateHistory(-1)
+});
+
+const shellBackEntry = Object.freeze({
+  request() {
+    const deferral = { question: null };
+    shellBackDeferral = deferral;
+    let result;
+    try {
+      result = backActionRouter.request();
+    } finally {
+      shellBackDeferral = null;
+    }
+    if (deferral.question) {
+      setTimeout(() => {
+        if (!confirm(deferral.question)) return;
+        preAnsweredQuestion = deferral.question;
+        try {
+          backActionRouter.request();
+        } finally {
+          preAnsweredQuestion = null;
+        }
+      }, 0);
+    }
+    return result;
+  }
 });
 
 function requestBackAction() {
@@ -12136,7 +12181,7 @@ function localizeStaticShortcutHints() {
 }
 
 async function start() {
-  installBackRouter(backActionRouter);
+  installBackRouter(window.eagleMV.shellApp ? shellBackEntry : backActionRouter);
   localizeStaticShortcutHints();
   bindEvents();
   bindHubEvents();
