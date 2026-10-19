@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('eagleMV', {
   query: query => ipcRenderer.invoke('hub:query', query),
   viewStats: query => ipcRenderer.invoke('hub:view-stats', query),
   viewFacets: query => ipcRenderer.invoke('hub:view-facets', query),
+  viewIds: query => ipcRenderer.invoke('hub:view-ids', query),
+  selectionSummary: data => ipcRenderer.invoke('hub:selection-summary', data),
   locateItem: data => ipcRenderer.invoke('hub:locate-item', data),
   getRecentFolders: () => ipcRenderer.invoke('hub:recent-folders'),
   getTrashItems: data => ipcRenderer.invoke('hub:trash-items', data),

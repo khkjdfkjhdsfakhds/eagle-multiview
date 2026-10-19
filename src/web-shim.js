@@ -517,6 +517,8 @@
     query: query => invoke('hub:query', [query]),
     viewStats: query => invoke('hub:view-stats', [query]),
     viewFacets: query => invoke('hub:view-facets', [query]),
+    viewIds: query => invoke('hub:view-ids', [query]),
+    selectionSummary: data => invoke('hub:selection-summary', [data]),
     locateItem: data => invoke('hub:locate-item', [data]),
     getRecentFolders: () => invoke('hub:recent-folders'),
     getTrashItems: data => invoke('hub:trash-items', [data]),

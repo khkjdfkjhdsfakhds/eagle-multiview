@@ -77,6 +77,7 @@ const {
   sharedTags: computeSharedTags,
   sharedFolders: computeSharedFolders,
   sharedFieldValue,
+  selectionSummary: computeSelectionSummary,
   appendableTailCount,
   paneLayoutSpecs,
   paneRevealTargets,
@@ -355,7 +356,7 @@ async function undoLastTrash() {
   setSyncStatus('正在撤销删除…');
   try {
     const outcome = await runItemBatch(entry.ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: item, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化，请刷新后重试');
       return result;
@@ -1461,8 +1462,34 @@ function scheduleVisibleItemWatch() {
   });
 }
 
+// Batches big enough to take a while count up in the status bar (P6-02).
+const batchProgress = new Map();
+let batchProgressFrame = 0;
 function renderSyncStatus() {
-  $('#syncText').textContent = state.operationTracker.currentText();
+  let text = state.operationTracker.currentText();
+  if (batchProgress.size) {
+    let done = 0;
+    let total = 0;
+    for (const entry of batchProgress.values()) { done += entry.done; total += entry.total; }
+    text += `（${done.toLocaleString()}/${total.toLocaleString()}）`;
+  }
+  $('#syncText').textContent = text;
+}
+
+function trackBatchProgress(total) {
+  if (total < 200) return () => {};
+  const entry = { done: 0, total };
+  batchProgress.set(entry, entry);
+  renderSyncStatus();
+  return finished => {
+    if (finished) {
+      batchProgress.delete(entry);
+      renderSyncStatus();
+      return;
+    }
+    entry.done += 1;
+    if (!batchProgressFrame) batchProgressFrame = requestAnimationFrame(() => { batchProgressFrame = 0; renderSyncStatus(); });
+  };
 }
 
 function setSyncStatus(text) {
@@ -2806,10 +2833,49 @@ function selectAllItems() {
   return true;
 }
 
+// The query hub:view-ids lists the whole of a pane's view with.
+function paneViewIdsQuery(pane) {
+  const query = paneItemQuery(pane);
+  return pane.currentView.kind === 'trash' ? { ...query, trash: true, libraryPath: state.library?.path } : query;
+}
+
+// Selected ids the grid has not loaded (⌘A over a big view, P6-02).
+function unloadedSelection(pane = activePane()) {
+  const ids = [];
+  for (const id of pane?.selected || []) if (!pane.itemMap?.has(id)) ids.push(id);
+  return ids;
+}
+
+// Drops unloaded selected ids that left the view (moved, deleted, filtered
+// out), once the view's full id list is back. Calls for the same pane
+// coalesce; a selection changed meanwhile is left alone.
+const selectionReconciles = new Map();
+function reconcileSelectionWithView(pane) {
+  if (selectionReconciles.has(pane.id)) return selectionReconciles.get(pane.id);
+  const viewKey = descriptorKey(pane.currentView);
+  const job = (async () => {
+    await Promise.resolve();
+    const before = new Set(pane.selected);
+    const ids = await window.eagleMV.viewIds?.(paneViewIdsQuery(pane)).catch(() => null);
+    if (!ids || paneById(pane.id) !== pane || descriptorKey(pane.currentView) !== viewKey || !sameSelection(pane, before)) return;
+    const inView = new Set(ids);
+    const next = new Set([...pane.selected].filter(id => inView.has(id) || pane.itemMap?.has(id)));
+    if (next.size === pane.selected.size) return;
+    pane.selected = next;
+    if (state.activePaneId === pane.id) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+  })().finally(() => selectionReconciles.delete(pane.id));
+  selectionReconciles.set(pane.id, job);
+  return job;
+}
+
 // Eagle's ⌘A takes the whole view, but only 160 items are loaded at first,
 // so a batch after ⌘A quietly touched a fraction of a big folder (P6-02).
-// The grid is not virtualised, so load as far as the locate feature does
-// (SORT_FETCH_CAP) and say plainly when the view holds more than that.
+// The grid is not virtualised: it loads as far as the locate feature does
+// (SORT_FETCH_CAP), and the rest of the view joins the selection by id, so
+// batch operations reach every item while the grid stays light.
 async function selectRestOfView(pane) {
   const paneId = pane.id;
   const viewKey = descriptorKey(pane.currentView);
@@ -2827,7 +2893,19 @@ async function selectRestOfView(pane) {
     }
   }
   if (pane.hasMore) {
-    toast(`已全选前 ${pane.selected.size.toLocaleString()} 个素材（当前视图共 ${Number(pane.total || 0).toLocaleString()} 个），超出部分请分批操作`, 5200);
+    const loaded = new Set(pane.selected);
+    const ids = window.eagleMV.viewIds ? await window.eagleMV.viewIds(paneViewIdsQuery(pane)) : null;
+    if (paneById(paneId) !== pane || descriptorKey(pane.currentView) !== viewKey || !sameSelection(pane, loaded)) return;
+    if (!ids) {
+      toast(`已全选前 ${pane.selected.size.toLocaleString()} 个素材（当前视图共 ${Number(pane.total || 0).toLocaleString()} 个），超出部分请分批操作`, 5200);
+      return;
+    }
+    pane.selected = new Set([...loaded, ...ids]);
+    if (state.activePaneId === paneId) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+    toast(`已全选 ${pane.selected.size.toLocaleString()} 个素材`, 2000);
   } else if (pane.selected.size > chosen.size) {
     toast(`已全选 ${pane.selected.size.toLocaleString()} 个素材`, 2000);
   }
@@ -4082,6 +4160,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       state.nextOffset = page.nextOffset ?? (offset + (page.data || []).length);
       state.hasMore = Boolean(page.hasMore ?? (state.nextOffset < state.total));
       if (reset) {
+        pane.dataRevision = (pane.dataRevision || 0) + 1;
         state.items = page.data || [];
         state.itemMap = new Map((state.items || []).filter(item => item?.id).map(item => [item.id, item]));
       } else {
@@ -4101,7 +4180,19 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       // Append pages must keep the scroll position (`preserveScroll && reset`
       // used to reset it, teleporting scroll-driven paging back to the top)
       // — with it preserved, renderGrid can take the append fast path.
-      if (reset) state.selected = new Set([...state.selected].filter(id => state.itemMap.has(id)));
+      if (reset) {
+        // A multi-selection past the reloaded range (⌘A over a big view,
+        // P6-02) keeps its unloaded ids until the view's id list says
+        // which are still in it; a single selection settles below.
+        const kept = new Set();
+        let beyond = 0;
+        for (const id of state.selected) {
+          if (state.itemMap.has(id)) kept.add(id);
+          else if (state.hasMore && state.selected.size > 1) { kept.add(id); beyond += 1; }
+        }
+        state.selected = kept;
+        if (beyond) reconcileSelectionWithView(pane);
+      }
       if (!quiet) renderGrid({ preserveScroll });
       if (reset && !selectedId && paneIsActive) queueChangedInspectorRender(false);
       if (reset && selectedId) {
@@ -4269,11 +4360,37 @@ function renderItemPalette(item) {
   box.classList.toggle('hidden', !box.innerHTML);
 }
 
+// A selection reaching past the loaded items is summarised by the main
+// process (P6-02); null while that is on its way, and the inspector redraws
+// when it lands. Keyed by the ids and the pane's data revision, so a batch
+// edit or a sync refresh asks again.
+const remoteSelectionSummaries = new Map();
+function selectionSignature(ids) {
+  let hash = 2166136261;
+  for (const id of ids) for (let index = 0; index < id.length; index += 1) hash = Math.imul(hash ^ id.charCodeAt(index), 16777619);
+  return `${ids.length}:${hash >>> 0}`;
+}
+
+function currentSelectionSummary(pane = activePane()) {
+  if (!pane) return computeSelectionSummary([]);
+  if (!unloadedSelection(pane).length) return computeSelectionSummary(pane.items.filter(item => pane.selected.has(item.id)));
+  const ids = [...pane.selected];
+  const key = `${state.library?.path}|${pane.id}|${pane.dataRevision || 0}|${selectionSignature(ids)}`;
+  const cached = remoteSelectionSummaries.get(key);
+  if (cached) return cached === 'pending' ? null : cached;
+  remoteSelectionSummaries.set(key, 'pending');
+  if (remoteSelectionSummaries.size > 8) remoteSelectionSummaries.delete(remoteSelectionSummaries.keys().next().value);
+  Promise.resolve(window.eagleMV.selectionSummary?.({ ids, libraryPath: state.library?.path, trash: pane.currentView.kind === 'trash' }))
+    .then(summary => remoteSelectionSummaries.set(key, summary || computeSelectionSummary([])),
+      () => remoteSelectionSummaries.delete(key))
+    .finally(() => { if (state.activePaneId === pane.id && pane.selected.size > 1) renderInspector(); });
+  return null;
+}
+
 function renderSharedTags() {
   const chips = $('#sharedTagChips');
   if (!chips) return;
-  const selectedItems = state.items.filter(item => state.selected.has(item.id));
-  const tags = computeSharedTags(selectedItems);
+  const tags = currentSelectionSummary()?.tags || [];
   chips.innerHTML = tags.map(tag => tagChipHTML(tag, {
     removeAttr: 'data-remove-shared-tag',
     removeLabel: `从所选素材移除 ${tag}`
@@ -4341,8 +4458,10 @@ function renderMultiSelection(count) {
     `<img src="${mediaURL('thumb', item.id)}" alt="" style="--stack-index:${index}" draggable="false">`
   ).join('');
   $('#multiPreview').dataset.count = String(Math.min(items.length, 5));
-  const annotation = sharedFieldValue(items, 'annotation');
-  const url = sharedFieldValue(items, 'url');
+  const summary = currentSelectionSummary();
+  const pending = !summary;
+  const annotation = summary?.annotation || { value: '', mixed: false };
+  const url = summary?.url || { value: '', mixed: false };
   const annotationField = $('#batchAnnotation');
   const urlField = $('#batchURL');
   if (document.activeElement !== annotationField) {
@@ -4354,12 +4473,14 @@ function renderMultiSelection(count) {
     urlField.placeholder = url.mixed ? '多个链接' : 'http://';
   }
   renderSharedTags();
-  $('#batchFolderChips').innerHTML = inspectorFolderChipsHTML(computeSharedFolders(items));
-  const star = sharedFieldValue(items, 'star');
+  $('#batchFolderChips').innerHTML = inspectorFolderChipsHTML(summary?.folders || []);
+  const star = summary?.star || { value: 0, mixed: false };
   $('#batchStars').innerHTML = inspectorStarsHTML(star.value);
   $('#batchStars').dataset.rating = String(star.value);
-  const totalSize = items.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
-  $('#batchMeta').innerHTML = totalSize > 0 ? `<span><em>文件大小</em>${formatBytes(totalSize)}</span>` : '';
+  const totalSize = summary?.size || 0;
+  $('#batchMeta').innerHTML = pending
+    ? '<span><em>文件大小</em>计算中…</span>'
+    : totalSize > 0 ? `<span><em>文件大小</em>${formatBytes(totalSize)}</span>` : '';
 }
 
 // Applies one inspector field to every selected item, through the same
@@ -4380,7 +4501,7 @@ async function setSelectionFields(payload) {
   setSyncStatus('正在批量修改…');
   try {
     const outcome = await runItemBatch(ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({ id, patch, base: item, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
       return result;
@@ -4388,13 +4509,13 @@ async function setSelectionFields(payload) {
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
     const next = outcome.failed.length
       ? outcome.failed
-      : ids.filter(id => pane.items.some(item => item.id === id));
+      : idsStillSelectable(pane, ids);
     if (editsSelection && settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
     endForegroundOperation(operationToken);
     operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length
-      ? `已修改 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已修改 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : (payload.successMessage || `已修改 ${outcome.succeeded.length} 个素材`), outcome.failed.length ? 4200 : 2400);
     return true;
   } catch (error) {
@@ -5342,13 +5463,16 @@ async function canRemoveFromCurrentFolder(ids, paneId = state.activePaneId) {
   const pane = paneById(paneId);
   const currentFolder = pane?.currentView.kind === 'folder' ? pane.currentView.id : null;
   if (!currentFolder) return false;
-  const results = await settleWithConcurrency([...new Set(ids)], id => withTimeout(
-    Promise.resolve(pane.items.find(item => item.id === id) || window.eagleMV.getItem(id)),
+  const scope = paneFolderScope(pane, currentFolder);
+  // The loaded items answer this for a folder view without reading the
+  // tens of thousands a ⌘A past the loaded range may hold (P6-02).
+  if (ids.some(id => folderScopeRemovable(pane.itemMap?.get(id)?.folders, scope))) return true;
+  const results = await settleWithConcurrency([...new Set(ids)].filter(id => !pane.itemMap?.has(id)).slice(0, 200), id => withTimeout(
+    window.eagleMV.getItem(id),
     15000,
     'Eagle 素材信息读取超时'
   ));
   const items = results.filter(result => result.ok).map(result => result.value);
-  const scope = paneFolderScope(pane, currentFolder);
   return items.some(item => folderScopeRemovable(item?.folders, scope));
 }
 
@@ -5391,7 +5515,7 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   setSyncStatus(`正在${action}…`);
   try {
     const outcome = await runItemBatch(ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({
         id,
         patch: { isDeleted: deleted },
@@ -5416,7 +5540,7 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
     await refresh({ reset: true, preserveScroll: true, paneId });
     const done = deleted ? `${outcome.succeeded.length} 个素材已丢到回收站` : `已恢复 ${outcome.succeeded.length} 个素材`;
     toast(outcome.failed.length
-      ? `${done} · ${outcome.failed.length} 个失败并保持选中`
+      ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : done, outcome.failed.length ? 4400 : 2400);
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
@@ -5458,16 +5582,18 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
     operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     const visibleIds = new Set(pane.items.map(item => item.id));
+    // Ids past the loaded range stay while the view has more (P6-02).
+    const kept = id => visibleIds.has(id) || (pane.hasMore && pane.selected.has(id));
     if (ownsSelection && keepSelection && !outcome.failed.length
-      && sameSelection(pane, new Set([...settledSelection].filter(id => visibleIds.has(id))))) {
-      pane.selected = new Set(ids.filter(id => visibleIds.has(id)));
+      && sameSelection(pane, new Set([...settledSelection].filter(kept)))) {
+      pane.selected = new Set(ids.filter(kept));
       if (state.activePaneId === paneId) withActivePane(paneId, () => {
         updateCardSelectionStyles();
         renderInspector();
       });
     }
     toast(outcome.failed.length
-      ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
     return true;
   } catch (error) {
@@ -5524,7 +5650,7 @@ async function moveSelectionToFolder(payload) {
     operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     toast(outcome.failed.length
-      ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : '已移动到目标文件夹', outcome.failed.length ? 4200 : 2400);
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
@@ -5579,7 +5705,7 @@ async function setSelectionRating(payload) {
     await previousTurn;
     if (state.library?.path !== libraryPath || !paneById(paneId)) return;
     const outcome = await runItemBatch(ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({ id, patch: { star: rating }, base: item, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
       // A queued rating of the same item must compare against this write,
@@ -5597,7 +5723,7 @@ async function setSelectionRating(payload) {
     // run of items needlessly awkward. Failures stay selected on their own.
     const next = outcome.failed.length
       ? outcome.failed
-      : ids.filter(id => pane.items.some(item => item.id === id));
+      : idsStillSelectable(pane, ids);
     if (settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
     finishTurn();
     endForegroundOperation(operationToken);
@@ -5605,7 +5731,7 @@ async function setSelectionRating(payload) {
     await refresh({ reset: true, preserveScroll: true, paneId });
     if (state.previewId) updatePreviewChrome(itemById(state.previewId) || { id: state.previewId, name: '', ext: '' });
     toast(outcome.failed.length
-      ? `已为 ${outcome.succeeded.length} 个素材设置评分 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已为 ${outcome.succeeded.length} 个素材设置评分 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : `已设置为 ${rating ? `${rating} 星` : '未评分'}`, outcome.failed.length ? 4200 : 2400);
   } catch (error) {
     toast(`评分失败：${error.message}`, 4000);
@@ -5692,7 +5818,7 @@ async function applyBatchTags() {
     // re-selection chore.
     settleBatchSelection(pane, selectionBefore, outcome.failed.length
       ? outcome.failed
-      : ids.filter(id => pane.items.some(item => item.id === id)));
+      : idsStillSelectable(pane, ids));
     $('#batchTagInput').value = '';
     setTagValues('batch', [], false);
     endForegroundOperation(operationToken);
@@ -5703,7 +5829,7 @@ async function applyBatchTags() {
       renderInspector();
     });
     toast(outcome.failed.length
-      ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
   } catch (error) {
     toast(`添加标签失败：${error.message}`, 4000);
@@ -9123,6 +9249,7 @@ function withTimeout(promise, milliseconds, message = '操作超时，请重试'
 async function settleWithConcurrency(values, worker, concurrency = 4) {
   const results = [];
   let cursor = 0;
+  const progress = trackBatchProgress(values.length);
   const run = async () => {
     while (cursor < values.length) {
       const index = cursor++;
@@ -9131,10 +9258,29 @@ async function settleWithConcurrency(values, worker, concurrency = 4) {
       } catch (error) {
         results[index] = { ok: false, error };
       }
+      progress(false);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, run));
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, run));
+  } finally {
+    progress(true);
+  }
   return results;
+}
+
+// The first failure's reason, so a batch over thousands says why some
+// stayed behind instead of only how many.
+function batchFailureReason(outcome) {
+  const message = String(outcome?.firstError?.message || '').trim();
+  return message ? `（${message.length > 40 ? `${message.slice(0, 40)}…` : message}）` : '';
+}
+
+// What a batch leaves selected when nothing failed: the ids still shown,
+// plus those past the loaded range, which the next refresh reconciles.
+function idsStillSelectable(pane, ids) {
+  const shown = new Set(pane.items.map(item => item.id));
+  return ids.filter(id => shown.has(id) || !pane.itemMap?.has(id));
 }
 
 // A batch leaves its result selection behind only if the user has not picked
@@ -11037,7 +11183,10 @@ function bindEvents() {
   $('#trashButton').addEventListener('click', () => { const item = itemById([...state.selected][0]); if (item) setTrash([item.id], !item.isDeleted); });
   $('#batchTrashButton').addEventListener('click', () => {
     const ids = [...state.selected];
-    const restore = ids.length > 0 && ids.every(id => itemById(id)?.isDeleted);
+    // Judged on the loaded items: a ⌘A past the loaded range holds ids
+    // whose items the grid never read (P6-02).
+    const loaded = ids.map(itemById).filter(Boolean);
+    const restore = loaded.length > 0 && loaded.every(item => item.isDeleted);
     setTrash(ids, !restore);
   });
   $('#sharedTagChips').addEventListener('click', event => {

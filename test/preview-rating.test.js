@@ -38,7 +38,7 @@ test('operations that leave items on screen keep the selection', () => {
   // undoing a delete likewise keeps only the items that failed to come back.
   // (B2-01: each only applies while the selection is still the one the
   // operation started from — see batch-selection.integration.test.js.)
-  const keep = renderer.match(/(?:const next = |settleBatchSelection\(pane, selectionBefore, )outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: ids\.filter\(id => pane\.items\.some\(item => item\.id === id\)\)\)?;/g) || [];
+  const keep = renderer.match(/(?:const next = |settleBatchSelection\(pane, selectionBefore, )outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: idsStillSelectable\(pane, ids\)\)?;/g) || [];
   assert.strictEqual(keep.length, 3, '评分、批量加标签与批量改注释/链接各一处');
   const clears = renderer.match(/settleBatchSelection\(pane, selectionBefore, outcome\.failed\)/g) || [];
   assert.strictEqual(clears.length, 3, '只剩废纸篓、移动与撤销删除三处仍然清空');

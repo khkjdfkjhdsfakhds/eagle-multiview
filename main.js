@@ -9,6 +9,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
 const querySpec = require('./src/query-spec');
+const paneState = require('./src/pane-state');
 const eagleOrder = require('./src/eagle-order');
 const { buildIdentity } = require('./lib/app-identity');
 const { ThumbnailOperations } = require('./lib/thumbnail-operations');
@@ -2265,6 +2266,20 @@ function setupIPC() {
   handleRPC('hub:query', (_event, query) => hub.query(query));
   handleRPC('hub:view-stats', (_event, query) => hub.viewStats(query));
   handleRPC('hub:view-facets', (_event, query) => hub.viewFacets(query));
+  handleRPC('hub:view-ids', async (_event, { libraryPath, trash = false, ...query } = {}) => {
+    if (trash) return filterTrashItems(await readTrashItems(libraryPath), query).map(item => item.id);
+    return hub.viewIds(query);
+  });
+  handleRPC('hub:selection-summary', async (_event, { ids, libraryPath, trash = false } = {}) => {
+    const list = Array.isArray(ids) ? ids : [];
+    // item/get leaves trashed items out, so the trash reads its own scan.
+    if (trash) {
+      const wanted = new Set(list);
+      return paneState.selectionSummary((await readTrashItems(libraryPath)).filter(item => wanted.has(item.id)));
+    }
+    await hub.ensureLibraryPath(libraryPath);
+    return client.selectionSummary(list);
+  });
   handleRPC('hub:locate-item', (_event, { query, id } = {}) => hub.locateItem(query || {}, id));
   handleRPC('hub:recent-folders', () => client.listRecentFolders());
   handleRPC('hub:trash-items', async (_event, { libraryPath, ...query }) => {

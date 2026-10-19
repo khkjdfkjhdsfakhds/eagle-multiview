@@ -520,3 +520,19 @@ test('every classify entry asks for auto tags; drops always, menus for newly joi
   const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
   assert.ok(main.includes("handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }))"));
 });
+
+test('viewIds lists not-yet-indexed imports first, then the API ids, once each (P6-02)', async () => {
+  class IdsClient {
+    static matchesSearchConstraints(item, query) {
+      return !query.folderId || (item.folders || []).includes(query.folderId);
+    }
+    async viewItemIds() { return ['indexed', 'fresh']; }
+  }
+  const hub = new DataHub(new IdsClient());
+  hub.library = { path: '/library' };
+  hub.setSupplementalItems('/library', [
+    { id: 'fresh', name: 'Fresh', folders: ['F'] },
+    { id: 'other', name: 'Other', folders: ['G'] }
+  ]);
+  assert.deepEqual(await hub.viewIds({ folderId: 'F' }), ['fresh', 'indexed']);
+});

@@ -21,7 +21,17 @@ async function run() {
     new MutationObserver(() => toasts.push($('#toast').textContent)).observe($('#toast'), { childList: true, characterData: true, subtree: true });
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', metaKey: true, ctrlKey: !navigator.platform.startsWith('Mac'), bubbles: true, cancelable: true }));
     for (let i = 0; i < 200 && !toasts.some(text => /已全选/.test(text)); i += 1) await wait(20);
-    return { firstPage, loaded: state.items.length, selected: state.selected.size, toast: toasts.at(-1) || '' };
+    for (let i = 0; i < 100 && /计算中/.test($('#batchMeta').textContent); i += 1) await wait(20);
+    return { firstPage, loaded: state.items.length, selected: state.selected.size, toast: toasts.at(-1) || '',
+      count: $('#multiCount').textContent, meta: $('#batchMeta').textContent, summaryRequests: window.__summaryRequests || 0,
+      ...(await (async () => {
+        if (!${JSON.stringify(Boolean(process.env.EAGLEMV_SELECT_ALL_RATE))}) return {};
+        window.confirm = () => true;
+        $('#batchStars [data-inspector-star="3"]').click();
+        for (let i = 0; i < 400 && !toasts.some(text => /已设置为 3 星/.test(text)); i += 1) await wait(20);
+        await wait(100);
+        return { mutated: new Set(window.__mutated).size, afterRate: state.selected.size, rateToast: toasts.at(-1) || '' };
+      })()) };
   })()`);
   console.log(`EAGLEMV_SELECT_ALL ${JSON.stringify(result)}`);
 }

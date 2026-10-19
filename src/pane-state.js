@@ -372,6 +372,22 @@
     return { value: mixed ? empty : first, mixed };
   }
 
+  // Everything the multi-select inspector derives from the selected items,
+  // in one shape whether the renderer has them all loaded or the main
+  // process read them for a selection past the loaded range (P6-02).
+  function selectionSummary(items) {
+    const list = items || [];
+    return {
+      count: list.length,
+      size: list.reduce((sum, item) => sum + (Number(item?.size) || 0), 0),
+      tags: sharedTags(list),
+      folders: sharedFolders(list),
+      annotation: sharedFieldValue(list, 'annotation'),
+      url: sharedFieldValue(list, 'url'),
+      star: sharedFieldValue(list, 'star')
+    };
+  }
+
   // Eagle's ⇧-click: add the run from the anchor (the last plain or ⌘-click)
   // to the target and keep everything already selected. Without an anchor in
   // view the run starts at the first selected item, as Eagle's does.
@@ -556,6 +572,7 @@
     sharedTags,
     sharedFolders,
     sharedFieldValue,
+    selectionSummary,
     appendableTailCount,
     paneLayoutSpecs,
     paneLayoutSpec,

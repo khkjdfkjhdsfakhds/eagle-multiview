@@ -77,7 +77,8 @@ test('multi-select inspector renders through renderMultiSelection', () => {
   assert.ok(branch.includes('renderMultiSelection(count);'));
   const fn = renderer.slice(renderer.indexOf('function renderMultiSelection(count)'), renderer.indexOf('\n}', renderer.indexOf('function renderMultiSelection(count)')));
   assert.ok(fn.includes('renderSharedTags();'));
-  assert.ok(fn.includes('computeSharedFolders(items)'));
+  assert.ok(fn.includes('const summary = currentSelectionSummary();'), 'one summary, local or from the main process (P6-02)');
+  assert.ok(fn.includes('inspectorFolderChipsHTML(summary?.folders || [])'));
   assert.ok(fn.includes("count >= BULK_CONFIRM_THRESHOLD"), '100+ shows the warning colour');
   assert.ok(fn.includes('document.activeElement !== annotationField'), 'a refresh keeps text being typed');
   assert.ok(fn.includes("url.mixed ? '多个链接'"));
@@ -87,8 +88,9 @@ test('shared tag chips carry colors and a per-tag remove action', () => {
   const start = renderer.indexOf('function renderSharedTags()');
   assert.ok(start >= 0);
   const fn = renderer.slice(start, renderer.indexOf('\n}', start));
-  assert.ok(fn.includes('computeSharedTags(selectedItems)'));
-  assert.ok(fn.includes('state.items.filter(item => state.selected.has(item.id))'), 'one pass, no per-id linear lookups');
+  assert.ok(fn.includes('currentSelectionSummary()?.tags'));
+  const summary = renderer.slice(renderer.indexOf('function currentSelectionSummary('), renderer.indexOf('\n}', renderer.indexOf('function currentSelectionSummary(')));
+  assert.ok(summary.includes('pane.items.filter(item => pane.selected.has(item.id))'), 'one pass, no per-id linear lookups');
   assert.ok(fn.includes('data-remove-shared-tag'));
   assert.ok(fn.includes('tagChipHTML(tag'), 'chip markup is shared with the tag editors');
 });

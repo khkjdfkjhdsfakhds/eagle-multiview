@@ -425,3 +425,60 @@ test('viewFacets counts formats, folders (with 未分类) and months over the vi
   assert.deepEqual(client.calls[0].options.body.fields, ['id', 'ext', 'folders', 'modificationTime', 'mtime']);
   assert.equal(await client.viewFacets({ search: 'cat' }), null);
 });
+
+test('viewItemIds lists a plain view by id, 1000 per request (P6-02)', async () => {
+  const client = new RecordingClient();
+  const rows = Array.from({ length: 2500 }, (_, index) => ({ id: `i${index}` }));
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  const ids = await client.viewItemIds({ folderId: 'f1' });
+  assert.equal(ids.length, 2500);
+  assert.equal(ids[2499], 'i2499');
+  assert.equal(client.calls.length, 3);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id']);
+  assert.deepEqual(client.calls[0].options.body.folders, ['f1']);
+  assert.equal(await client.viewItemIds({ random: true }), null);
+});
+
+test('viewItemIds matches subfolders and client-side filters locally', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', folders: ['parent'], palettes: [] },
+    { id: 'b', folders: ['child'] },
+    { id: 'c', folders: ['elsewhere'] }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  assert.deepEqual(await client.viewItemIds({ folderId: 'parent', folderIds: ['parent', 'child'] }), ['a', 'b']);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'folders']);
+  client.calls = [];
+  const searchRows = [{ id: 'x', name: 'cat', ext: 'png' }, { id: 'y', name: 'cat', ext: 'jpg' }];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: searchRows.slice(options.body.offset, options.body.offset + options.body.limit), total: searchRows.length };
+  };
+  assert.deepEqual(await client.viewItemIds({ search: 'cat', ext: ['png'] }), ['x']);
+  assert.equal(client.calls[0].path, '/api/v2/item/query');
+});
+
+test('selectionSummary reads the inspector fields in chunks of 1000', async () => {
+  const client = new RecordingClient();
+  const ids = Array.from({ length: 1500 }, (_, index) => `i${index}`);
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: options.body.ids.map(id => ({ id, size: 2, tags: ['t', id], folders: ['f'], star: 3 })) };
+  };
+  const summary = await client.selectionSummary(ids);
+  assert.equal(client.calls.length, 2);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'size', 'star', 'tags', 'folders', 'annotation', 'url']);
+  assert.equal(summary.count, 1500);
+  assert.equal(summary.size, 3000);
+  assert.deepEqual(summary.tags, ['t']);
+  assert.deepEqual(summary.folders, ['f']);
+  assert.deepEqual(summary.star, { value: 3, mixed: false });
+  assert.deepEqual(summary.annotation, { value: '', mixed: false });
+});
