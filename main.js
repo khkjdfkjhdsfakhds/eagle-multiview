@@ -1154,28 +1154,140 @@ function armCloseWatchdog(window) {
   }, CLOSE_REPLY_TIMEOUT_MS);
 }
 
+// Read in the focused page before a menu command runs. A MultiView window
+// answers with eagleMVMenuFocus(); any other page (the update window) gets
+// Eagle's own field test and keeps plain text copy and select-all.
+const MENU_FOCUS_PROBE = `(() => {
+  if (typeof eagleMVMenuFocus === 'function') return eagleMVMenuFocus();
+  const element = document.activeElement;
+  const editable = Boolean(element && (element.matches('input, textarea, select, iframe, webview') || element.isContentEditable));
+  return { editable, nativeCopy: true, nativeSelectAll: true };
+})()`;
+
+async function menuFocus(window) {
+  if (!window || window.isDestroyed()) return null;
+  try {
+    return await window.webContents.executeJavaScript(MENU_FOCUS_PROBE, true);
+  } catch {
+    return null;
+  }
+}
+
+// Eagle wraps every menu shortcut so that one typed into a text field does
+// nothing (app.bundle.js shouldIgnoreShortcut); a click on the item still
+// runs it, and a failed check runs it too. Items marked editAware decide for
+// themselves: copy, select-all and undo act on the field when it has focus.
+function ignoreShortcutsWhileTyping(template) {
+  const wrap = item => {
+    const editAware = item.editAware;
+    delete item.editAware;
+    if (item.accelerator && typeof item.click === 'function' && !editAware) {
+      const click = item.click;
+      item.click = async (menuItem, window, event) => {
+        if (event?.triggeredByAccelerator && window) {
+          const focus = await menuFocus(window);
+          if (focus?.editable) return;
+        }
+        return click(menuItem, window, event);
+      };
+    }
+    if (Array.isArray(item.submenu)) item.submenu.forEach(wrap);
+  };
+  template.forEach(wrap);
+  return template;
+}
+
+// Copy and select-all follow the focus the way ⌘C and ⌘A do in the page:
+// in a field (or over selected text) they edit text, otherwise they copy the
+// selected files and select every item in the view (P3-02).
+async function runEditCommand(window, kind) {
+  if (!window || window.isDestroyed()) return;
+  const focus = await menuFocus(window);
+  const native = !focus || (kind === 'copy' ? focus.nativeCopy : focus.nativeSelectAll);
+  if (native) {
+    if (kind === 'copy') window.webContents.copy();
+    else window.webContents.selectAll();
+    return;
+  }
+  window.webContents.send('command:menu', { command: kind === 'copy' ? 'copy-items' : 'select-all' });
+}
+
+// The menu bar is shared by every window; the layout ticks show the focused
+// window's active pane, as reported by its renderer.
+const MENU_VIEW_MODES = [['waterfall', '瀑布流'], ['justified', '自适应'], ['grid', '网格'], ['list', '列表']];
+const MENU_PANE_LAYOUTS = [
+  ['single', '单栏', 'CmdOrCtrl+1'], ['vertical2', '左右两栏', 'CmdOrCtrl+2'], ['horizontal2', '上下两栏'],
+  ['grid4', '四格'], ['leftStack', '左大右上下'], ['rightStack', '左上下右大'], ['topStack', '上大下左右'],
+  ['bottomStack', '上左右下大'], ['horizontal3', '三行'], ['vertical3', '三栏', 'CmdOrCtrl+3'],
+  ['vertical4', '四栏', 'CmdOrCtrl+4'], ['horizontal4', '四行']
+];
+const menuStates = new WeakMap();
+const RELEASES_PAGE = 'https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases';
+
+function applyMenuState(window) {
+  const menu = Menu.getApplicationMenu();
+  if (!menu || !window || window.isDestroyed()) return;
+  const current = menuStates.get(window.webContents);
+  if (!current) return;
+  const check = id => {
+    const item = menu.getMenuItemById(id);
+    if (item) item.checked = true;
+  };
+  check(`view-mode-${current.viewMode}`);
+  check(`pane-layout-${current.paneLayout}`);
+}
+
+function setupMenuState() {
+  onRPC('menu:state', (event, report) => {
+    const viewMode = MENU_VIEW_MODES.some(([mode]) => mode === report?.viewMode) ? report.viewMode : null;
+    const paneLayout = MENU_PANE_LAYOUTS.some(([layout]) => layout === report?.paneLayout) ? report.paneLayout : null;
+    menuStates.set(event.sender, { viewMode, paneLayout });
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window?.isFocused()) applyMenuState(window);
+  });
+  app.on('browser-window-focus', (_event, window) => applyMenuState(window));
+}
+
 function setupMenu() {
+  const send = (command, payload = {}) => (_item, window) => window?.webContents.send('command:menu', { command, ...payload });
+  const openView = kind => (_item, window) => window?.webContents.send('command:open-view', { kind });
   const template = [
     {
       label: identity.name,
       submenu: [
         { role: 'about', label: `关于 ${identity.name}` },
         {
-          label: '检查更新…',
+          label: '检查更新',
           enabled: !identity.profile,
           click: () => checkForUpdates({ manual: true })
         },
         { type: 'separator' },
-        { role: 'hide', label: '隐藏' },
+        {
+          label: 'Web 访问…',
+          click: (_item, window) => window?.webContents.send('command:web-access')
+        },
+        { type: 'separator' },
+        { role: 'services', label: '服务' },
+        { type: 'separator' },
+        { role: 'hide', label: `隐藏 ${identity.name}` },
         { role: 'hideOthers', label: '隐藏其它' },
-        { role: 'unhide', label: '全部显示' },
         { type: 'separator' },
         { role: 'quit', label: '退出' }
       ]
     },
     {
+      label: '资源库',
+      submenu: [
+        { label: '切换资源库', accelerator: 'CmdOrCtrl+L', click: send('switch-library') },
+        { type: 'separator' },
+        { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' }
+      ]
+    },
+    {
       label: '文件',
       submenu: [
+        { label: '新建…', accelerator: 'CmdOrCtrl+N', click: send('new-menu') },
+        { type: 'separator' },
         { label: '新建文件夹', accelerator: 'Alt+N', click: (_item, window) => window?.webContents.send('command:create-folder') },
         { label: '新建 TXT', accelerator: 'Alt+Shift+N', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'txt' }) },
         {
@@ -1187,44 +1299,164 @@ function setupMenu() {
             { label: 'SVG', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'svg' }) }
           ]
         },
-        { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
+        { label: '新建智能文件夹…', accelerator: 'CmdOrCtrl+Shift+Alt+N', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
         { type: 'separator' },
         {
           label: '新建窗口',
           accelerator: 'CmdOrCtrl+Alt+N',
           click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
         },
-        { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
-        { label: 'ArtStation 站点导入…', click: (_item, window) => window?.webContents.send('command:site-import') },
         { type: 'separator' },
-        { role: 'close', label: '关闭窗口' }
+        { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
+        {
+          label: '导入其它',
+          submenu: [
+            { label: 'ArtStation', accelerator: 'CmdOrCtrl+Shift+Alt+S', click: (_item, window) => window?.webContents.send('command:site-import') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '导出到计算机', accelerator: 'CmdOrCtrl+E', click: send('export') }
       ]
     },
     {
       label: '编辑',
       submenu: [
-        { label: '撤销', accelerator: 'CmdOrCtrl+Z', click: (_item, window) => window?.webContents.send('command:undo-delete') },
-        { role: 'redo', label: '重做' },
-        { type: 'separator' },
         { label: '重命名', accelerator: 'CmdOrCtrl+R', click: (_item, window) => window?.webContents.send('command:rename') },
         { type: 'separator' },
+        { role: 'redo', label: '重做' },
+        { label: '撤销', accelerator: 'CmdOrCtrl+Z', editAware: true, click: (_item, window) => window?.webContents.send('command:undo-delete') },
         { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
+        { label: '复制', accelerator: 'CmdOrCtrl+C', editAware: true, click: (_item, window) => runEditCommand(window, 'copy') },
         { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' }
+        { label: '复制文件路径', accelerator: 'CmdOrCtrl+Alt+C', click: send('copy-path') },
+        { label: '复制名称', click: send('copy-name') },
+        { type: 'separator' },
+        { label: '创建副本', accelerator: 'CmdOrCtrl+D', click: send('duplicate') },
+        { type: 'separator' },
+        { label: '刷新缩略图', accelerator: 'CmdOrCtrl+Alt+R', click: send('thumbnail', { operation: 'refresh' }) },
+        { label: '自定义缩略图（选择文件）', accelerator: 'CmdOrCtrl+Alt+T', click: send('thumbnail', { operation: 'file' }) },
+        { label: '自定义缩略图（从剪贴板）', accelerator: 'CmdOrCtrl+Shift+Alt+T', click: send('thumbnail', { operation: 'clipboard' }) },
+        { label: '全选', accelerator: 'CmdOrCtrl+A', editAware: true, click: (_item, window) => runEditCommand(window, 'selectAll') },
+        { type: 'separator' },
+        {
+          label: '编辑文件夹',
+          submenu: [
+            { label: '移动文件夹', click: send('move-current-folder') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '从文件夹中移除', accelerator: 'CmdOrCtrl+Shift+Backspace', click: send('remove-from-folder') },
+        { label: '丢到回收站', accelerator: 'CmdOrCtrl+Backspace', click: send('trash') }
+      ]
+    },
+    {
+      label: '查找',
+      submenu: [
+        { label: '搜索…', accelerator: 'CmdOrCtrl+F', click: send('search') },
+        { label: '在“全部”搜索…', accelerator: 'CmdOrCtrl+Alt+F', click: send('search-all') },
+        { type: 'separator' },
+        {
+          label: '筛选器',
+          submenu: [
+            { label: '打开筛选器', accelerator: 'CmdOrCtrl+Shift+F', click: send('toggle-filter') },
+            { label: '重置筛选器', accelerator: 'CmdOrCtrl+Shift+Alt+F', click: send('reset-filter') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '添加至文件夹…', accelerator: 'CmdOrCtrl+Shift+J', click: send('folder-picker', { action: 'add-folder' }) }
+      ]
+    },
+    {
+      label: '整理',
+      submenu: [
+        { label: '添加标签', accelerator: 'CmdOrCtrl+T', click: send('add-tag') },
+        { type: 'separator' },
+        { label: '添加文件夹', click: send('folder-picker', { action: 'add-folder' }) },
+        { label: '添加至上次使用的文件夹…', click: send('last-folder') },
+        { label: '移动到文件夹…', click: send('folder-picker', { action: 'move-folder' }) },
+        { type: 'separator' },
+        { label: '移除评分 (0)', click: send('rating', { rating: 0 }) },
+        ...[1, 2, 3, 4, 5].map(rating => ({ label: `${'★'.repeat(rating)} (${rating})`, click: send('rating', { rating }) })),
+        { type: 'separator' },
+        { label: '复制标签', accelerator: 'CmdOrCtrl+Shift+C', click: send('copy-tags') },
+        { label: '粘贴标签', accelerator: 'CmdOrCtrl+Shift+V', click: send('paste-tags') },
+        { type: 'separator' },
+        { label: '置顶 / 取消置顶', click: send('toggle-pin') }
       ]
     },
     {
       label: '显示',
       submenu: [
-        { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' },
-        { role: 'togglefullscreen', label: '全屏' },
+        { label: '全部', click: openView('all') },
+        { label: '未分类', click: openView('unfiled') },
+        { label: '未标签', click: openView('untagged') },
+        { label: '最近使用', click: openView('recent') },
+        { label: '随机模式', click: openView('random') },
+        { label: '标签管理', click: openView('tags') },
+        { label: '回收站', click: openView('trash') },
         { type: 'separator' },
+        ...MENU_VIEW_MODES.map(([mode, label]) => ({
+          id: `view-mode-${mode}`,
+          label,
+          type: 'radio',
+          click: (_item, window) => {
+            window?.webContents.send('command:menu', { command: 'view-mode', mode });
+            applyMenuState(window);
+          }
+        })),
         {
-          label: 'Web 访问…',
-          click: (_item, window) => window?.webContents.send('command:web-access')
+          label: '分栏布局',
+          submenu: MENU_PANE_LAYOUTS.map(([layout, label, accelerator]) => ({
+            id: `pane-layout-${layout}`,
+            label,
+            type: 'radio',
+            ...(accelerator ? { accelerator } : {}),
+            click: (_item, window) => {
+              window?.webContents.send('command:menu', { command: 'pane-layout', layout });
+              applyMenuState(window);
+            }
+          }))
         },
         { type: 'separator' },
+        { label: '滚动到开头', click: send('scroll', { key: 'Home' }) },
+        { label: '滚动到结尾', click: send('scroll', { key: 'End' }) },
+        { label: '向上滚动一屏', click: send('scroll', { key: 'PageUp' }) },
+        { label: '向下滚动一屏', click: send('scroll', { key: 'PageDown' }) },
+        { type: 'separator' },
+        { label: '放大', accelerator: 'CmdOrCtrl+=', click: send('zoom', { step: 1 }) },
+        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: send('zoom', { step: -1 }) },
+        { label: '原始大小', accelerator: 'CmdOrCtrl+0', click: send('zoom', { step: 0 }) },
+        { label: '黑白预览', accelerator: 'CmdOrCtrl+Alt+G', click: send('grayscale') },
+        { type: 'separator' },
+        { label: '在新窗口打开', accelerator: 'CmdOrCtrl+O', click: send('open-window') },
+        { label: '在默认应用打开', click: send('open-default') },
+        { label: '使用其他应用程序打开', click: send('open-other') },
+        { label: '在访达中打开', accelerator: 'CmdOrCtrl+Enter', click: send('finder') },
+        { label: '在浏览器打开链接', click: send('open-url') },
+        { type: 'separator' },
+        { label: '左栏', accelerator: 'CmdOrCtrl+Shift+L', click: send('toggle-panel', { panel: 'sidebar' }) },
+        { label: '右栏', accelerator: 'CmdOrCtrl+Shift+I', click: send('toggle-panel', { panel: 'inspector' }) },
+        { label: '左栏 / 右栏', click: send('toggle-panel', { panel: 'both' }) },
+        { label: '显示/隐藏名称', accelerator: 'CmdOrCtrl+Alt+4', click: send('card-display', { key: 'name' }) },
+        { label: '显示/隐藏尺寸', accelerator: 'CmdOrCtrl+Alt+5', click: send('card-display', { key: 'meta' }) },
+        { label: '显示/隐藏标注', accelerator: 'CmdOrCtrl+Alt+6', click: send('card-display', { key: 'annotation' }) },
+        { label: '显示子文件夹内容', accelerator: 'CmdOrCtrl+Alt+7', click: send('card-display', { key: 'subfolderContent' }) }
+      ]
+    },
+    {
+      label: '窗口',
+      role: 'window',
+      submenu: [
+        { role: 'togglefullscreen', label: '切换全屏' },
+        { role: 'minimize', label: '最小化' },
+        { role: 'close', label: '关闭窗口' }
+      ]
+    },
+    {
+      label: '帮助',
+      role: 'help',
+      submenu: [
+        { label: '查看更新日志', click: () => shell.openExternal(RELEASES_PAGE) },
         {
           label: '打开错误日志文件夹',
           click: async () => {
@@ -1233,10 +1465,10 @@ function setupMenu() {
           }
         }
       ]
-    },
-    { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }
+    }
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(ignoreShortcutsWhileTyping(template)));
+  for (const window of BrowserWindow.getAllWindows()) if (window.isFocused()) applyMenuState(window);
 }
 
 let updater = null;
@@ -1833,7 +2065,7 @@ const HOST_ONLY_CHANNELS = new Set([
   'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
   'window:focus', 'window:is-fullscreen', 'window:confirm-close', 'window:cancel-close',
   'window:defer-close',
-  'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key'
+  'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key', 'menu:state'
 ]);
 const rpcRegistry = new Map();
 
@@ -2813,6 +3045,7 @@ if (!gotLock) {
     // Custom-thumbnail images left behind by a quit inside the 60 s cleanup
     // window (B4-11); nothing can be using them this early.
     fsp.rm(path.join(app.getPath('userData'), 'temp', 'thumbnails'), { recursive: true, force: true }).catch(() => {});
+    setupMenuState();
     setupMenu();
     setupIPC();
     setupUpdateIPC();

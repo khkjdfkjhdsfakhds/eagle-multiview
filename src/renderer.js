@@ -1319,6 +1319,7 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
   state.panes = plan.panes;
   state.activePaneId = plan.activePaneId || state.panes[0]?.id;
   layoutRoot.dataset.layout = layout;
+  reportMenuState();
   const splitters = getLayoutSplitters(layout);
   const splittersHTML = splitters.map(s => splitterMarkup(s)).join('');
   layoutRoot.innerHTML = state.panes.map((pane, index) => paneMarkup(pane.id, index)).join('') + splittersHTML;
@@ -1740,6 +1741,7 @@ function firstSelectedInViewOrder() {
 }
 
 function renderViewModeControls() {
+  reportMenuState();
   for (const button of $('#sortPopover')?.querySelectorAll('[data-view-mode]') || []) {
     button.classList.toggle('active', button.dataset.viewMode === (state.viewMode || 'justified'));
   }
@@ -7594,7 +7596,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'tag-manager-sort') return tagManagerSortMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
   if (data.kind === 'shortcut-folder-picker') {
-    return `<div class="context-shortcut-picker">${contextFolderPicker('add-folder')}</div>`;
+    return `<div class="context-shortcut-picker">${contextFolderPicker(data.pickerAction || 'add-folder')}</div>`;
   }
   if (data.kind === 'smart-folder') {
     return [
@@ -7907,23 +7909,11 @@ async function executeContextAction(action, payload) {
   const firstId = ids[0];
   if (action === 'open-window') return openSelectionInNewWindow(ids);
   if (action === 'open-default') return openWithDefault(firstId);
-  if (action === 'open-other') {
-    return window.eagleMV.openOther({ ids: [firstId] }).then(result => {
-      if (result?.message) toast(result.message, 4000);
-      else if (result?.missing) toast(`已打开 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
-    });
-  }
+  if (action === 'open-other') return openWithOtherApp(firstId);
   if (action === 'finder') return showItemInFileManager(firstId);
   if (action === 'open-item-location') return openItemLocation(payload.id || firstId, payload.folderId ?? null, { paneId: data.paneId });
   if (action === 'copy-files') return copySelectedFiles(ids);
-  if (action === 'export') {
-    return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
-      if (result?.canceled) return;
-      toast(result?.downloaded
-        ? `已开始下载 ${result?.count || 0} 个文件${(result?.count || 0) > 1 ? '（打包为 zip）' : ''}`
-        : `已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
-    });
-  }
+  if (action === 'export') return exportItems(ids);
   if (action === 'share') {
     return window.eagleMV.shareFiles({ ids }).then(result => {
       if (!result?.ok) toast(result?.message || '无法打开分享菜单', 4000);
@@ -7952,6 +7942,207 @@ async function executeContextAction(action, payload) {
     return renameItem(itemById(firstId));
   }
   if (action === 'trash') return setTrash(ids, !data.allDeleted);
+}
+
+function openWithOtherApp(id) {
+  return window.eagleMV.openOther({ ids: [id] }).then(result => {
+    if (result?.message) toast(result.message, 4000);
+    else if (result?.missing) toast(`已打开 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
+  });
+}
+
+function exportItems(ids) {
+  return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
+    if (result?.canceled) return;
+    toast(result?.downloaded
+      ? `已开始下载 ${result?.count || 0} 个文件${(result?.count || 0) > 1 ? '（打包为 zip）' : ''}`
+      : `已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
+  });
+}
+
+// Menu-bar commands (command:menu). Each one checks what the matching
+// keyboard shortcut checks, so a click on the menu item and the key do the
+// same thing — and a key the page left alone (no selection, preview open)
+// stays a no-op after main hands it to the menu.
+function runMenuCommand(payload = {}) {
+  const command = payload.command;
+  const previewOpen = !$('#previewModal').classList.contains('hidden');
+  const selectedIds = selectedActionIds();
+  const activeItemId = previewOpen && state.previewId ? state.previewId : selectedIds[0];
+  const singleItemId = state.previewId || (state.selected.size === 1 ? [...state.selected][0] : null);
+  const report = error => toast(`操作失败：${error.message}`, 4000);
+  switch (command) {
+    case 'switch-library': return openLibraryPopover();
+    case 'new-menu': $('#newButton')?.click(); return;
+    case 'export':
+      if (hasCapability('export') && selectedIds.length) exportItems(selectedIds).catch(report);
+      return;
+    case 'copy-items': {
+      const ids = selectedActionIds({ includePreview: previewOpen });
+      if (hasCapability('clipboardFiles') && ids.length) copySelectedFiles(ids).catch(error => toast(`复制失败：${error.message}`, 4000));
+      return;
+    }
+    case 'select-all': selectAllItems(); return;
+    case 'copy-path':
+      if (hasCapability('copyPath') && activeItemId) copyItemPath(activeItemId).catch(error => toast(`复制路径失败：${error.message}`, 4000));
+      return;
+    case 'copy-name': {
+      const names = selectedActionIds({ includePreview: previewOpen }).map(id => itemById(id)?.name || '').filter(Boolean);
+      if (names.length) copyTextWithFeedback(names.join('\n'));
+      return;
+    }
+    case 'duplicate':
+      if (!previewOpen && selectedIds.length) duplicateSelection(selectedIds).catch(error => toast(`创建副本失败：${error.message}`, 4000));
+      return;
+    case 'thumbnail':
+      if (window.eagleMV.thumbnailOperation && ['refresh', 'file', 'clipboard'].includes(payload.operation) && selectedIds.length) {
+        thumbnailFeatureUI().run(payload.operation, selectedIds);
+      }
+      return;
+    case 'move-current-folder': {
+      const folderId = state.selectedFolderCard || (state.currentView.kind === 'folder' ? state.currentView.id : null);
+      if (folderId && window.eagleMV.moveFolder) selectedFeatureUI().moveFolder(folderId);
+      return;
+    }
+    case 'remove-from-folder':
+      if (previewOpen || !selectedIds.length) return;
+      if (state.currentView.kind !== 'folder') toast('请在具体文件夹中使用“从文件夹中移除”', 3500);
+      else removeSelectionFromFolder({ ids: selectedIds, folderId: state.currentView.id });
+      return;
+    case 'trash':
+      if (!previewOpen && selectedIds.length) setTrash(selectedIds, true);
+      return;
+    case 'search': $('#searchInput').focus(); return;
+    case 'search-all':
+      if (navigate({ kind: 'all' }) !== false) requestAnimationFrame(() => $('#searchInput').focus());
+      return;
+    case 'toggle-filter': $('#filterButton').click(); return;
+    case 'reset-filter': clearFilters(); return;
+    case 'folder-picker':
+      if (previewOpen || !selectedIds.length) return;
+      if (payload.action === 'move-folder' && state.currentView.kind !== 'folder') {
+        toast('请在具体文件夹中使用“移动到文件夹”', 3500);
+        return;
+      }
+      showFolderAssignmentPicker(selectedIds, { action: payload.action === 'move-folder' ? 'move-folder' : 'add-folder' });
+      return;
+    case 'last-folder': {
+      if (previewOpen || !selectedIds.length) return;
+      const folderId = state.recentFolders[0]?.id;
+      if (folderId) addSelectionToFolder({ ids: selectedIds, folderId });
+      else toast('还没有上次使用的文件夹', 3000);
+      return;
+    }
+    case 'add-tag': focusSelectionTagInput(previewOpen); return;
+    case 'rating': {
+      const rating = Math.max(0, Math.min(5, Number(payload.rating) || 0));
+      if (previewOpen) ratePreviewItem(rating);
+      else if (state.selected.size) setSelectionRating({ ids: [...state.selected], rating });
+      return;
+    }
+    case 'copy-tags':
+      if (!previewOpen && selectedIds.length) copyTagsFromItems(selectedIds);
+      return;
+    case 'paste-tags':
+      if (!previewOpen && selectedIds.length) pasteTagsToItems(selectedIds);
+      return;
+    case 'toggle-pin': {
+      if (previewOpen || !selectedIds.length) return;
+      if (state.currentView.kind !== 'folder') { toast('请在具体文件夹中使用“置顶”', 3500); return; }
+      const items = selectedIds.map(itemById).filter(Boolean);
+      setPinned(selectedIds, !(items.length && items.every(itemIsPinned)));
+      return;
+    }
+    case 'view-mode': setPaneViewMode(payload.mode, state.activePaneId); return;
+    case 'pane-layout': renderPaneLayout(payload.layout, { refresh: true }); return;
+    case 'scroll':
+      if (!previewOpen) scrollGridByKey(payload.key);
+      return;
+    case 'zoom': {
+      const step = Number(payload.step) || 0;
+      if (previewOpen && previewImage()) {
+        if (step) changePreviewZoom(step * .25);
+        else setPreviewZoom(state.previewZoom.mode === 'actual' ? 'fit' : 'actual');
+      } else if (step) changeThumbnailSize(step);
+      else resetThumbnailSize();
+      return;
+    }
+    case 'grayscale':
+      if (previewOpen) togglePreviewGrayscale();
+      return;
+    case 'open-window':
+      if (singleItemId) openSelectionInNewWindow([singleItemId]);
+      return;
+    case 'open-default':
+      if (hasCapability('openDefault') && singleItemId) openWithDefault(singleItemId);
+      return;
+    case 'open-other':
+      if (hasCapability('openOther') && activeItemId) openWithOtherApp(activeItemId).catch(report);
+      return;
+    case 'finder':
+      if (hasCapability('finder') && activeItemId) showItemInFileManager(activeItemId);
+      return;
+    case 'open-url': {
+      const url = String(itemById(activeItemId)?.url || '').trim();
+      if (/^https?:\/\//i.test(url)) window.eagleMV.openExternal(url).catch(error => toast(`打开来源失败：${error.message}`, 4000));
+      return;
+    }
+    case 'toggle-panel':
+      if (payload.panel === 'both') {
+        if (isCompactLayout()) return;
+        const show = !(state.sidebarVisible || state.inspectorVisible);
+        state.sidebarVisible = show;
+        state.inspectorVisible = show;
+        renderPanels();
+      } else if (payload.panel === 'sidebar' || payload.panel === 'inspector') {
+        togglePanel(payload.panel);
+      }
+      return;
+    case 'card-display':
+      if (['name', 'meta', 'annotation', 'subfolderContent'].includes(payload.key)) setCardDisplay({ [payload.key]: !cardDisplay[payload.key] });
+      return;
+  }
+}
+
+// Eagle's ⌘T opens the tag field of the right panel for the selection.
+function focusSelectionTagInput(previewOpen) {
+  if (previewOpen || !state.selected.size) return;
+  if (isCompactLayout()) {
+    if (state.openDrawer !== 'inspector') { state.openDrawer = 'inspector'; renderPanels(); }
+  } else if (!state.inspectorVisible) {
+    state.inspectorVisible = true;
+    renderPanels();
+  }
+  requestAnimationFrame(() => {
+    const input = ['#itemTagInput', '#batchTagInput'].map(selector => $(selector))
+      .find(element => element && !element.disabled && element.getClientRects().length);
+    input?.focus();
+  });
+}
+
+// Main asks this before running a menu command (MENU_FOCUS_PROBE): a shortcut
+// typed into a field is ignored, and copy / select-all stay with the text.
+window.eagleMVMenuFocus = () => {
+  const target = document.activeElement;
+  const editable = isEditableElement(target) || Boolean(target?.closest?.('iframe, webview')) || Boolean(state.inspectorEditing) ||
+    Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]'));
+  const selection = window.getSelection?.();
+  const textSelected = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+  return {
+    editable,
+    nativeCopy: editable || textSelected,
+    nativeSelectAll: editable || textSelected || Boolean(target?.closest?.('#generationMetadataSection, .generation-metadata'))
+  };
+};
+
+// The menu bar ticks the focused window's view mode and pane layout; main
+// keeps the last report per window.
+function reportMenuState() {
+  const report = { viewMode: state.viewMode || 'justified', paneLayout: $('#paneLayout')?.dataset.layout || 'single' };
+  const key = `${report.viewMode}|${report.paneLayout}`;
+  if (reportMenuState.last === key) return;
+  reportMenuState.last = key;
+  window.eagleMV.reportMenuState?.(report);
 }
 
 function closeFolderDialog(name = null) {
@@ -8715,7 +8906,15 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
 // `anchor` opens the picker under that element (the inspector's 添加文件夹)
 // instead of the first selected card; `keepSelection` keeps the items
 // selected afterwards, as Eagle's inspector does.
-function showFolderAssignmentPicker(ids = selectedActionIds(), { anchor = null, keepSelection = false } = {}) {
+function scrollGridByKey(key) {
+  if (!['PageDown', 'PageUp', 'Home', 'End'].includes(key)) return;
+  const grid = $('#gridScroller');
+  if (!grid) return;
+  const top = key === 'Home' ? 0 : key === 'End' ? grid.scrollHeight : grid.scrollTop + (key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
+  grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
+}
+
+function showFolderAssignmentPicker(ids = selectedActionIds(), { anchor = null, keepSelection = false, action = 'add-folder' } = {}) {
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   if (!uniqueIds.length) return false;
   const card = anchor || paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(uniqueIds[0])}"]`);
@@ -8726,6 +8925,7 @@ function showFolderAssignmentPicker(ids = selectedActionIds(), { anchor = null, 
     kind: 'shortcut-folder-picker',
     ids: uniqueIds,
     folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
+    pickerAction: action === 'move-folder' ? 'move-folder' : 'add-folder',
     keepSelection
   });
   requestAnimationFrame(() => $('#contextMenu').querySelector('.context-folder-search')?.focus());
@@ -11214,13 +11414,7 @@ function bindEvents() {
     if (!editable && keyboardPlatform.primaryKey(event) && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
-      const scrollGrid = key => {
-        const grid = $('#gridScroller');
-        if (!grid) return;
-        const top = key === 'Home' ? 0 : key === 'End' ? grid.scrollHeight : grid.scrollTop + (key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
-        grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
-      };
-      scrollGrid(event.key);
+      scrollGridByKey(event.key);
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !state.textSession && state.inspectorDirty) {
       event.preventDefault();
@@ -11487,6 +11681,7 @@ function bindHubEvents() {
     createSmartFolderFromNewMenu().catch(error => toast(`智能文件夹创建失败：${error.message}`, 4200));
   }));
   window.eagleMV.onNewWindowRequest(requestDefaultNewWindow);
+  window.eagleMV.onMenuCommand?.(whenWorkspaceFree(payload => runMenuCommand(payload)));
   window.eagleMV.onOpenView?.(whenWorkspaceFree(view => {
     if (!view || !state.library) return;
     if (!navigate(view, { restoreScroll: true })) toast('无法打开 MultiView 当前路径', 3200);

@@ -33,7 +33,7 @@ test('sidebar, trash and Finder wording match Eagle', () => {
 
 test('the app menu has Chinese labels and one name for a new window', () => {
   const main = read('main.js');
-  for (const role of ['about', 'hide', 'hideOthers', 'unhide', 'quit']) {
+  for (const role of ['about', 'hide', 'hideOthers', 'services', 'quit']) {
     assert.match(main, new RegExp(`role: '${role}', label: `), role + ' has no label');
   }
   assert.doesNotMatch(main, /label: '新窗口'/);

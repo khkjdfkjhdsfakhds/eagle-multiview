@@ -151,6 +151,8 @@ contextBridge.exposeInMainWorld('eagleMV', {
   onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
   onNewWindowRequest: callback => on('command:new-window', callback),
   onOpenView: callback => on('command:open-view', callback),
+  onMenuCommand: callback => on('command:menu', callback),
+  reportMenuState: report => ipcRenderer.send('menu:state', report),
   onPinsChanged: callback => on('pins:changed', callback),
   onManualOrdersChanged: callback => on('manual-order:changed', callback),
   onTagDataChanged: callback => on('tag-data:changed', callback),

@@ -742,6 +742,8 @@
     onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
     onNewWindowRequest: callback => on('command:new-window', callback),
     onOpenView: () => () => {},
+    onMenuCommand: () => () => {},
+    reportMenuState: () => {},
     onPinsChanged: callback => on('pins:changed', callback),
     onManualOrdersChanged: callback => on('manual-order:changed', callback),
     onTagDataChanged: callback => on('tag-data:changed', callback),
