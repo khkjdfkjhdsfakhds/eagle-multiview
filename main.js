@@ -37,7 +37,7 @@ const {
 const { executeNativeSync, cloneNativeStateScript, refreshFolderCoversScript, folderCoverItemId, itemNativeStateMatches, folderNativeStateMatches, moveRelative } = require('./lib/eagle-native-sync');
 const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 const { normalizeClipboardURL, clipboardURLKind } = require('./lib/clipboard-url');
-const { readMetadata } = require('./lib/metadata-reader');
+const { createMetadataWorkerReader } = require('./lib/metadata-worker');
 const { readStealthMetadata } = require('./lib/stealth-metadata-reader');
 const { MetadataSearchIndex } = require('./lib/metadata-search-index');
 const { mimeForPath } = require('./lib/media-mime');
@@ -73,6 +73,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const client = new EagleClient();
+// Parsing runs in worker threads, off the main process (E-02).
+const readMetadata = createMetadataWorkerReader();
 const metadataSearchIndex = new MetadataSearchIndex({
   directory: path.join(app.getPath('userData'), 'state', 'metadata-search'),
   readMetadata,
@@ -3093,6 +3095,7 @@ if (!gotLock) {
       logFault('update', '无法启动更新安装', error);
     }
     clearTimeout(supplementalHydrationRetry);
+    readMetadata.close();
     webServer?.stop().catch(() => {});
   });
   app.on('second-instance', () => {
