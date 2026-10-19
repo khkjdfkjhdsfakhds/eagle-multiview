@@ -959,3 +959,34 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 ### 规则（不变）
 
 每批 `node --check` 三件 + 全量 `npm test`、本地提交、在本文件追加一节；不推送、不合 main；不覆盖 `/Applications`，GUI 用测试版；写资料库的验证先问用户；改行为前先读原版代码确认（用户要的是看齐原版）。回复用中文、精简。
+
+## 三十四、B3-10 核对 + E-19/E-10 防护（2026-10-19，本机）
+
+### B3-10：不改代码（已与原版一致）
+
+- 原版（Eagle 4.0.0）：自己界面里的编辑（打标签、移出文件夹、删除等）之后调 `hiddenByCurrentFilter`，把不再符合当前视图/筛选的素材立即移出。但 API `/api/v2/item/update`（处理器 `item.save`，`js/plugin/index.js` 1650 行）只做 `updateItemListView`（原地改缩略图字段，`app.bundle.js` 34350 行）+ 文件夹变化时 `calculateImageBinding`（只重算文件夹/标签计数和侧栏，不碰当前列表 `allData`）。即：**外部改动在原版里原地更新、不移出**，直到切换视图。
+- MultiView：本窗口和其他 MultiView 窗口的编辑都经 `hub.publishItemMutation`，除 `items-changed` 外还发 `query-invalidated` → 每个窗口 `scheduleRefresh()` 整栏重查（`reset`、保留滚动），不再符合的素材随即移出、计数更新、选中同步剔除——对应原版 `hiddenByCurrentFilter`。Eagle 端改动只经 `refreshWatchedItems` 原地替换，与原版对外部改动的处理一致。审计里 B3-10 说的“原地替换不重判”只适用于 Eagle 端改动，属于对齐，不是差异。
+- Eagle `item.get` 的 `isUntagged`/`isUnfiled` 每次按 `raw` 现算，所以重查拿得到新结果。
+
+### E-19：重复弹窗自动应答前检测 Eagle 结构（提交见下）
+
+- `lib/eagle-duplicate-choice.js`：`keepImportedCopiesScript` 与常驻 `startKeepingCopiesScript` 调 `dialog.save()` 前，先检查其源码（去空白后）含 `applyAll=='true'`、`usingExist=='true'`、`addToDuplicateMapping(`、`raw.push(`——即 4.0.0 的“全部应用 / 使用已有（改写已有素材）/ 保留两者”三分支结构。不符合就不应答（一次性应答直接停止轮询），弹窗留给用户。
+- `startCopyImportModeScript`：只在原 `isDuplicateImage` 源码含 `duplicateMappings`（原版按哈希查表、假值即“不重复”）时才包一层；否则返回 false、不打补丁，走原版重复队列与弹窗。
+- 已用本机 Eagle 4.0.0 解包源码核对：两项检查都通过（只读）。
+
+### E-10：原生同步脚本先做能力检测
+
+- `lib/eagle-native-sync.js` 的 `nativeSyncScript` 在核对资料库路径后、改任何内存对象前，检查 `folderMappings`、`itemMappings` 以及 `saveFolder`、`calculateImageBinding`、`resetFolderCover`、`updateSidebarList` 均为函数，缺一即整体返回 false（调用方 `executeNativeSync` 随后核对失败并报“Eagle 状态已变化或未确认同步”）。4.0.0 四个函数都在。
+
+### 测试
+
+- `node --check` 三件；新增 3 条测试（异常 save 不应答、异常 isDuplicateImage 不打补丁、缺内部函数时内存不变），既有夹具改成与 Eagle 同结构的 save / isDuplicateImage。全量结果见下方提交记录。
+- 提交：E-19 `e867de9`（全量 971/971）；E-10 `f8a0def`（`test/eagle-order.test.js` 与 `test-support/folder-cover-probe.cjs` 的假 `$bodyScope` 补上真实 Eagle 也有的 `resetFolderCover`/`updateSidebarList`；全量 972/972）。
+- 测试版重建为 `1.8.3-review.20261019.4`，严格 codesign 通过，包内已含两项改动，已后台启动。
+
+**请用户验收（会写资料库，在「MV验收」里用测试图）**
+1. B3-10：测试版开两栏（或两个窗口）都显示“未标签”，给其中一张测试图加标签 → 两处都立即消失、计数减 1。（对照：在 Eagle 里给图加标签，MultiView 的“未标签”里它留着直到刷新——与原版对 API 改动的处理一致。）
+2. E-19：复制「MV验收」里一个含图片的子文件夹（右键复制/粘贴文件夹）→ 照常完成，Eagle 不弹“发现重复”对话框，副本图片数与原文件夹相同。
+3. E-10：在「MV验收」文件夹里拖动排序一张图、置顶一张图、设一次文件夹封面 → 都照常生效，Eagle 里看结果一致。
+
+**下一步**：按第二十九节做菜单栏 → 安卓 → 合并发 1.8.4。
