@@ -24,6 +24,10 @@ android {
 
     buildTypes {
         release {
+            // A-01: published APKs are release builds (not debuggable, no WebView remote debugging)
+            // but keep the key 1.8.3 and earlier were signed with, so in-app updates keep installing
+            // over them. That key is this machine's debug keystore; it is backed up outside the repo.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -109,6 +109,30 @@ object HostUrlValidator {
         (validate(rawValue) as? HostInputResult.Valid)?.endpoint?.startUrl
 }
 
+/**
+ * Addresses only reachable inside the local network. When Wi-Fi has no internet, Android moves
+ * the default network to mobile data and these stop answering (A-10); VPN-style names such as
+ * Tailscale's `.ts.net` still route over mobile data, so they are not included.
+ */
+object LocalNetworkHost {
+    private val localSuffixes = listOf(".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain")
+
+    fun matches(endpoint: HostEndpoint): Boolean {
+        val host = try {
+            URI(endpoint.origin).host?.lowercase(Locale.US)
+        } catch (_: URISyntaxException) {
+            null
+        } ?: return false
+        val octets = host.split('.').map { it.toIntOrNull() }
+        if (octets.size == 4 && octets.all { it != null && it in 0..255 }) {
+            val (a, b) = octets.map { it!! }
+            return a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254)
+        }
+        if (host.startsWith("[")) return host.startsWith("[fe80:") || host.startsWith("[fd") || host.startsWith("[fc")
+        return !host.contains('.') || localSuffixes.any { host.endsWith(it) }
+    }
+}
+
 enum class NavigationTarget(val isTrusted: Boolean) {
     TrustedPage(true),
     TrustedLogin(true),

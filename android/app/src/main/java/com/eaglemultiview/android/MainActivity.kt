@@ -11,6 +11,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -980,12 +981,13 @@ class MainActivity : AppCompatActivity() {
                     ConnectionFailureKind.UNREACHABLE -> {
                         stateTitle.text = getString(R.string.state_unreachable_title)
                         val othersTried = failoverTried.size - 1
-                        stateMessage.text = if (othersTried > 0) {
-                            getString(R.string.state_unreachable_message) + "\n" +
-                                getString(R.string.state_unreachable_failover_suffix, othersTried)
-                        } else {
-                            getString(R.string.state_unreachable_message)
-                        }
+                        stateMessage.text = buildList {
+                            add(getString(R.string.state_unreachable_message))
+                            if (othersTried > 0) add(getString(R.string.state_unreachable_failover_suffix, othersTried))
+                            if (LocalNetworkHost.matches(state.endpoint) && onMobileData()) {
+                                add(getString(R.string.state_unreachable_cellular_hint))
+                            }
+                        }.joinToString("\n")
                     }
                     ConnectionFailureKind.HTTP_ERROR -> {
                         stateTitle.text = getString(R.string.state_http_error_title)
@@ -1102,6 +1104,14 @@ class MainActivity : AppCompatActivity() {
         } catch (_: RuntimeException) {
             networkCallback = null
         }
+    }
+
+    /** The default network is mobile data (see LocalNetworkHost, A-10). */
+    private fun onMobileData(): Boolean {
+        val capabilities = connectivityManager.activeNetwork?.let(connectivityManager::getNetworkCapabilities)
+            ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+            !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     private fun refreshNetworkAvailability() {

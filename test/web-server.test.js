@@ -774,6 +774,45 @@ test('W-01/S-11: library media is never sniffed, and HTML/SVG open sandboxed', a
   }
 });
 
+test('W-05: web clients reach Eagle\'s own PDF viewer from the installed app, and nothing else of it', async t => {
+  const srcDir = makeFixtureDir();
+  const eagleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-eagle-app-'));
+  fs.mkdirSync(path.join(eagleDir, 'pdf-viewer', 'web', 'locale', 'zh-CN'), { recursive: true });
+  fs.mkdirSync(path.join(eagleDir, 'pdf-viewer', 'build'), { recursive: true });
+  fs.mkdirSync(path.join(eagleDir, 'js', 'vendors'), { recursive: true });
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'web', 'viewer.html'), '<!doctype html>viewer');
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'web', 'locale', 'zh-CN', 'viewer.properties'), 'a=b');
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'build', 'pdf.worker.js'), '// worker');
+  fs.writeFileSync(path.join(eagleDir, 'js', 'vendors', 'jquery-1.8.0.min.js'), '// jquery');
+  fs.writeFileSync(path.join(eagleDir, 'js', 'vendors', 'other.js'), '// not the viewer');
+  fs.writeFileSync(path.join(eagleDir, 'main.js'), '// Eagle internals');
+  let root = eagleDir;
+  const server = createWebServer({ srcDir, invoke: async () => null, resolveMediaPath: async () => null,
+    eagleViewerRoot: () => root, accessKey: ACCESS_KEY, loginFailureDelayMs: 0 });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(eagleDir, { recursive: true, force: true }); });
+
+  assert.equal((await request(port, { path: '/eagle-app/pdf-viewer/web/viewer.html' })).status, 401, 'needs the session like the rest of the app');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const get = filePath => request(port, { path: filePath, headers: { Cookie: cookie } });
+  const viewer = await get('/eagle-app/pdf-viewer/web/viewer.html');
+  assert.equal(viewer.status, 200);
+  assert.match(viewer.headers['content-type'], /^text\/html/);
+  assert.equal(viewer.headers['x-content-type-options'], 'nosniff');
+  assert.equal((await request(port, { path: '/eagle-app/pdf-viewer/web/viewer.html', method: 'HEAD', headers: { Cookie: cookie } })).status, 200);
+  assert.match((await get('/eagle-app/pdf-viewer/build/pdf.worker.js')).headers['content-type'], /^text\/javascript/);
+  assert.equal((await get('/eagle-app/pdf-viewer/web/locale/zh-CN/viewer.properties')).status, 200);
+  assert.equal((await get('/eagle-app/js/vendors/jquery-1.8.0.min.js')).status, 200, 'the jQuery the viewer page loads');
+  for (const blocked of ['/eagle-app/main.js', '/eagle-app/js/vendors/other.js', '/eagle-app/pdf-viewer/../main.js',
+    '/eagle-app/pdf-viewer/web/%2e%2e/%2e%2e/main.js', '/eagle-app/pdf-viewer/web/..%2f..%2fmain.js']) {
+    assert.equal((await get(blocked)).status, 404, blocked);
+  }
+  root = null;
+  assert.equal((await get('/eagle-app/pdf-viewer/web/viewer.html')).status, 404, 'no installed Eagle: the client falls back');
+});
+
 // W-10: a single-file download resumes with Range, a zip announces its length,
 // and a started download keeps its token past the two-minute start window.
 test('W-10: exports resume single files, size zips exactly and keep a started token alive', async t => {

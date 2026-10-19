@@ -853,6 +853,17 @@ async function saveWebAccessState(state) {
   await fsp.rename(temporary, file);
 }
 
+// Eagle's own pdf.js viewer inside its app.asar (Electron's fs reads into
+// asar archives). Looked up per request so an Eagle update or move is seen;
+// null when no installed Eagle has it, and web clients then fall back.
+function eagleViewerRootForWeb() {
+  for (const appPath of ['/Applications/Eagle.app', path.join(os.homedir(), 'Applications', 'Eagle.app')]) {
+    const root = path.join(appPath, 'Contents', 'Resources', 'app.asar', 'app');
+    if (fs.existsSync(path.join(root, 'pdf-viewer', 'web', 'viewer.html'))) return root;
+  }
+  return null;
+}
+
 async function resolveMediaPathForWeb(kind, id) {
   const fileURL = await resolveMediaURL(kind, id);
   if (!fileURL || !String(fileURL).startsWith('file:')) return null;
@@ -908,6 +919,7 @@ async function applyWebAccess() {
     srcDir: path.join(__dirname, 'src'),
     invoke: invokeWebRPC,
     resolveMediaPath: resolveMediaPathForWeb,
+    eagleViewerRoot: eagleViewerRootForWeb,
     accessKey: state.key,
     requireKey: state.requireKey !== false,
     uploadImport: importWithDuplicateDecision,

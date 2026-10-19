@@ -20,11 +20,12 @@ Run commands from this `android/` directory:
 ```sh
 ./gradlew testDebugUnitTest
 ./gradlew assembleDebug
+./gradlew assembleRelease
 ./gradlew lintDebug
 ./gradlew connectedDebugAndroidTest
 ```
 
-The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `connectedDebugAndroidTest` needs one booted API 26+ emulator or connected Android device with a working WebView provider.
+The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`; the published APK is the release build at `app/build/outputs/apk/release/app-release.apk`. `connectedDebugAndroidTest` needs one booted API 26+ emulator or connected Android device with a working WebView provider.
 
 `python3 tools/run-host-url-probe.py` is an optional offline check of the original URL validator and trust policy, using existing JDK 17 / Kotlin 2.2.20 caches without downloads or Gradle changes. It checks encoded-path restore identity and port boundaries; it does not replace the project-locked JVM suite, Activity build, or device acceptance.
 
@@ -58,7 +59,7 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`. `conne
 - Import: `<input type="file">` opens the system picker (`ACTION_GET_CONTENT`, multi-select when the page asks, `accept` mapped to MIME filters, otherwise any file). Every outcome — selection, cancel, launch failure, a newer request, page/renderer/host teardown — answers the WebView callback exactly once, so the next "Import" always opens again. Only the picked content URIs reach the page; no storage permission is requested.
 - Download: WebView downloads from the active same-origin host (the web client's "download to this device") are handed to the system `DownloadManager` with the page's session cookie and User-Agent, named from the host's RFC 5987 `filename*`, saved to Downloads (Android 10+; app-scoped Downloads on 8–9, which have no permission-free shared folder), and announced by the system notification. Other origins and `blob:`/`data:` URLs are refused. Note: `DownloadManager` keeps request headers, including that cookie, in its own database for the download record's lifetime.
 
-Release signing is intentionally left to a later decision; debug builds use the local debug keystore.
+Signing: release builds are not debuggable and do not enable WebView remote debugging, but they are signed with the same key as 1.8.3 and earlier (this Mac's local debug keystore), so in-app updates keep installing over existing copies. Keep a backup of that keystore outside the repository: if it is lost or regenerated, updates can only be installed after uninstalling.
 
 ## Git hygiene
 

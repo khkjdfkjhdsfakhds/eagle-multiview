@@ -5743,11 +5743,21 @@ function previewImageURL(item) {
   return previewImageSource(item)?.url || null;
 }
 
+// Eagle's getPDFPath: viewer.html?path=<file>&locale=<language>&theme=<theme>,
+// served by the web host from the installed Eagle app (lib/web-server.js).
+function eaglePdfViewerURL(item) {
+  return `/eagle-app/pdf-viewer/web/viewer.html?path=${encodeURIComponent(mediaURL('original', item.id))}&locale=zh-CN&theme=dark`;
+}
+
 function mediaMarkup(item) {
   const url = mediaURL('original', item.id);
   const ext = String(item.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay playsinline></video>`;
   if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return `<audio src="${url}" controls autoplay></audio>`;
+  // Web clients open Eagle's own pdf.js viewer, as Eagle's preview does
+  // (phone and tablet WebViews cannot show a PDF <embed>); setupPreviewMedia
+  // loads it once the host confirms it can serve it.
+  if (ext === 'pdf' && isWebClient) return `<iframe class="pdf-viewer" data-pdf-viewer="${escapeHTML(eaglePdfViewerURL(item))}" title="${escapeHTML(item.name)}"></iframe>`;
   // Chromium's PDF viewer refuses custom-protocol streams, so the PDF embed
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
   if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
@@ -5843,6 +5853,19 @@ function changePreviewZoom(delta, anchor = null) {
   setPreviewZoom('zoom', next);
 }
 
+// Eagle's viewer page posts "Exit", "Prev" and "Next" to its parent when Esc,
+// ← or → is released inside it; Eagle's preview then closes or moves to the
+// neighbouring item, and so does this one. Only the frame of an open preview
+// counts, so a message from a viewer already closed (by Back) does nothing.
+function handleEaglePdfViewerMessage(event) {
+  if (event.origin !== location.origin || !['Exit', 'Prev', 'Next'].includes(event.data)) return;
+  const frame = [...document.querySelectorAll('iframe[data-pdf-viewer]')].find(node => node.contentWindow === event.source);
+  const paneId = frame?.closest('.content-pane')?.dataset.paneId;
+  if (!paneId || !paneById(paneId)?.previewId || !activatePane(paneId)) return;
+  if (event.data === 'Exit') closePreview();
+  else movePreview(event.data === 'Next' ? 1 : -1);
+}
+
 function setupPreviewMedia() {
   const owner = activePane();
   const ownerToken = owner.previewToken;
@@ -5867,6 +5890,24 @@ function setupPreviewMedia() {
         $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>无法读取这个素材的图像<br><span>${escapeHTML(String(item?.ext || '文件').toUpperCase())} · 原文件可能已被移动或删除</span></p></div>`;
       });
     }, { once: true });
+  }
+  const pdfViewer = $('#modalMedia iframe[data-pdf-viewer]');
+  if (pdfViewer) {
+    const viewerURL = pdfViewer.dataset.pdfViewer;
+    fetch(viewerURL, { method: 'HEAD', credentials: 'same-origin' }).then(response => response.ok, () => false).then(available => {
+      if (!validOwner() || !pdfViewer.isConnected) return;
+      if (available) {
+        pdfViewer.src = viewerURL;
+        return;
+      }
+      // No installed Eagle with its viewer on the host: say so over the
+      // first-page thumbnail instead of an error page in the frame.
+      withActivePane(owner.id, () => {
+        const item = itemById(state.previewId);
+        if (!item) return;
+        $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}" draggable="false"><p>PDF 无法在此预览<br><span>主机上找不到 Eagle 的 PDF 查看器</span></p></div>`;
+      });
+    });
   }
   const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
   if (pdfEmbed) {
@@ -12184,6 +12225,7 @@ async function start() {
   installBackRouter(window.eagleMV.shellApp ? shellBackEntry : backActionRouter);
   localizeStaticShortcutHints();
   bindEvents();
+  window.addEventListener('message', handleEaglePdfViewerMessage);
   bindHubEvents();
   bindWebAccessDialog();
   applyCapabilityVisibility();

@@ -57,6 +57,7 @@
     <string name="state_failover_title">正在尝试其他地址</string>
     <string name="state_failover_message">%1$s 无法连接，正在尝试：%2$s</string>
     <string name="failover_switched">已切换到：%1$s</string>
+    <string name="state_unreachable_cellular_hint">现在是通过移动网络联网的：当前 Wi-Fi 没有互联网时，系统会改走移动数据，局域网里的电脑就连不上。可以暂时关闭移动数据后重试。</string>
     <string name="state_unreachable_failover_suffix">另外 %1$d 个已保存的地址也无法连接。</string>
     <string name="change_host_confirm_title">返回连接页？</string>
     <string name="change_host_confirm_keeps">可以在连接页打开其他主机；这个地址已保存，切回来时仍保持登录。</string>

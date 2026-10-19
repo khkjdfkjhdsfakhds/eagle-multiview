@@ -137,3 +137,21 @@ class TrustedNavigationPolicyTest {
         assertFalse(endpoint.contains("http://example.test/"))
     }
 }
+
+class LocalNetworkHostTest {
+    private fun host(raw: String) = (HostUrlValidator.validate(raw) as HostInputResult.Valid).endpoint
+
+    @Test
+    fun `private addresses and LAN names count as local network hosts`() {
+        for (raw in listOf("192.168.1.5:41600", "10.0.0.2:41600", "172.20.1.1:41600", "169.254.3.4", "mac-mini:41600", "mac.local:41600", "nas.lan", "[fd12::1]:41600")) {
+            assertTrue(raw, LocalNetworkHost.matches(host(raw)))
+        }
+    }
+
+    @Test
+    fun `public and tunnelled hosts are not`() {
+        for (raw in listOf("172.32.0.1", "8.8.8.8", "100.101.102.103:41600", "mac.tailnet.ts.net:41600", "example.com")) {
+            assertFalse(raw, LocalNetworkHost.matches(host(raw)))
+        }
+    }
+}
