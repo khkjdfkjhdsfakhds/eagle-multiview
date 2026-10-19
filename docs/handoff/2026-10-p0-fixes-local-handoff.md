@@ -1330,3 +1330,4 @@ Eagle HTTP API 没有删除文件夹的接口。改为用 Eagle 未公开的 `/a
 - 清理：删除 `dist/branchtest` 与本次临时构建；`lsregister -u` 注销测试版、临时构建、上百条已不存在的临时路径（`eaglemv-dmg-*`/`eaglemv-swap-*`、旧 Verify 副本、`.app.staging`）和 Codex 旧 worktree 里的 3 个 `installed-backups/features-*.app`（只注销未删除）。现在 LaunchServices 里 `local.eagle.multiview*` 只剩 `/Applications` 正式版。测试版数据目录 `eagle-multiview-review-20260905` 保留；`dist/` 里旧的 publish 包等未动。
 - GitHub：**未推送**（main、分支、`v1.8.4` 都只在本地）。远端 Latest 仍是 1.8.3，所以 1.8.4 的自动检查更新会显示“已是最新”；安卓设备仍是 1.8.3。
 - 仍待：用户按第四十四节第 2 项逐项验收（现在直接在正式版里做，写资料库的步骤只用测试文件夹）；自动更新流程的端到端验证要等下一个公开 Release。
+- 追加（用户同意）：`assembleDebug` 出 1.8.4 debug APK（versionCode 5，JVM 单测 71/71），签名证书 SHA-256 `458fe641…` 与平板已装版相同；`adb install -r` 装到 Xiaomi Pad 7S Pro 12.5（25053RP5CC，Android 16），装后 versionName 1.8.4，`firstInstallTime` 未变（数据保留）。未在平板上启动验证；手机未更新。
