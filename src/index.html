@@ -277,23 +277,33 @@
             </div>
           </div>
         </section>
-        <section class="inspector-section" aria-labelledby="itemTagsLabel">
-          <h3 id="itemTagsLabel">标签</h3>
+        <!-- Eagle's 标签 / 文件夹 / 标注 / 基本信息 blocks: each folds under its
+             heading, and dragging a heading reorders them (both inspectors). -->
+        <div class="inspector-sections" data-inspector-sections>
+        <section class="inspector-section" data-inspector-section="tags" aria-labelledby="itemTagsLabel">
+          <h3 id="itemTagsLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="tags" aria-expanded="true">标签<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div id="itemTagEditor" class="tag-editor">
             <div id="itemTagChips" class="tag-chips"></div>
             <input id="itemTagInput" aria-labelledby="itemTagsLabel" placeholder="添加标签" autocomplete="off">
           </div>
+          </div>
         </section>
-        <section class="inspector-section" aria-labelledby="itemFoldersLabel">
-          <h3 id="itemFoldersLabel">文件夹</h3>
+        <section class="inspector-section" data-inspector-section="folders" aria-labelledby="itemFoldersLabel">
+          <h3 id="itemFoldersLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="folders" aria-expanded="true">文件夹<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div id="itemFolderChips" class="folder-chips"></div>
+          </div>
         </section>
-        <section id="itemCommentsSection" class="inspector-section comments-section">
-          <div class="comments-heading"><h3>评论与标注</h3><button id="addCommentButton" type="button" class="small-action" title="添加评论">添加</button></div>
+        <section id="itemCommentsSection" class="inspector-section comments-section" data-inspector-section="annotations">
+          <div class="comments-heading"><h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="annotations" aria-expanded="true">评论与标注<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3><button id="addCommentButton" type="button" class="small-action" title="添加评论">添加</button></div>
+          <div class="inspector-section-body">
           <div id="itemComments" class="item-comments"><span class="muted">正在读取…</span></div>
+          </div>
         </section>
-        <section class="inspector-section">
-          <h3>基本信息</h3>
+        <section class="inspector-section" data-inspector-section="information">
+          <h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="information" aria-expanded="true">基本信息<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div class="inspector-rating-row"><em>评分</em><div id="itemStars" class="inspector-stars" role="group" aria-label="评分"></div></div>
           <!-- The stars write this select so saving, drafts and conflict
                recovery keep reading one rating control. -->
@@ -302,7 +312,10 @@
             <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
           </select>
           <div id="itemMeta" class="item-meta"></div>
+          <div class="inspector-export"><button id="itemExportButton" type="button" class="secondary-button inspector-export-button" aria-haspopup="menu">导出</button></div>
+          </div>
         </section>
+        </div>
         <section id="generationMetadataSection" class="inspector-section generation-metadata-section hidden">
           <div class="generation-metadata-heading">
             <h3>生成元数据</h3>
@@ -332,23 +345,32 @@
             <input id="batchURL" aria-label="链接（应用到所选素材）" placeholder="http://" autocomplete="off">
           </div>
         </section>
-        <section id="sharedTagsSection" class="inspector-section shared-tags-section" aria-labelledby="sharedTagsLabel">
-          <h3 id="sharedTagsLabel">标签</h3>
+        <div class="inspector-sections" data-inspector-sections>
+        <section id="sharedTagsSection" class="inspector-section shared-tags-section" data-inspector-section="tags" aria-labelledby="sharedTagsLabel">
+          <h3 id="sharedTagsLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="tags" aria-expanded="true">标签<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div id="batchTagEditor" class="tag-editor">
             <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
             <div id="batchTagChips" class="tag-chips"></div>
             <input id="batchTagInput" aria-labelledby="sharedTagsLabel" placeholder="添加标签" autocomplete="off">
           </div>
+          </div>
         </section>
-        <section class="inspector-section" aria-labelledby="batchFoldersLabel">
-          <h3 id="batchFoldersLabel">文件夹</h3>
+        <section class="inspector-section" data-inspector-section="folders" aria-labelledby="batchFoldersLabel">
+          <h3 id="batchFoldersLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="folders" aria-expanded="true">文件夹<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div id="batchFolderChips" class="folder-chips"></div>
+          </div>
         </section>
-        <section class="inspector-section">
-          <h3>基本信息</h3>
+        <section class="inspector-section" data-inspector-section="information">
+          <h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="information" aria-expanded="true">基本信息<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
           <div class="inspector-rating-row"><em>评分</em><div id="batchStars" class="inspector-stars" role="group" aria-label="评分（应用到所选素材）"></div></div>
           <div id="batchMeta" class="item-meta"></div>
+          <div class="inspector-export"><button id="batchExportButton" type="button" class="secondary-button inspector-export-button" aria-haspopup="menu">导出</button></div>
+          </div>
         </section>
+        </div>
         <button id="batchTrashButton" class="danger-button">丢到回收站</button>
         <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
       </div>

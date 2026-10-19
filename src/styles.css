@@ -2183,6 +2183,20 @@ body.list-hide-added .list-col-added { display: none !important; }
 .folder-chip-add:hover { border-color: rgba(111, 159, 226, .5); color: var(--accent-text-soft); }
 .comments-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .comments-heading h3 { margin-bottom: 0; }
+/* Eagle's foldable, reorderable blocks: the heading folds its block, and is
+   the handle that drags it among the others. */
+.inspector-sections > .inspector-section:first-of-type { margin-top: 14px; }
+.inspector-section-toggle { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.comments-heading .inspector-section-label { flex: 1 1 auto; min-width: 0; }
+.inspector-section-chevron { flex: 0 0 auto; width: 12px; height: 12px; margin-left: auto; fill: none; stroke: currentColor; stroke-width: 1.4; opacity: .7; transition: transform .15s ease; }
+.inspector-section.collapsed .inspector-section-chevron { transform: rotate(-90deg); }
+.inspector-section.collapsed > .inspector-section-body { display: none; }
+.inspector-section.section-dragging { opacity: .45; }
+.inspector-section.drop-before { box-shadow: 0 -2px 0 var(--accent-text); }
+.inspector-section.drop-after { box-shadow: 0 2px 0 var(--accent-text); }
+.inspector-export { margin-top: 10px; }
+.inspector-export-button { width: 100%; }
+.inspector-export-button[hidden] { display: none; }
 .small-action { min-height: 24px; padding: 0 8px; border: 1px solid rgba(111, 159, 226, .28); border-radius: 5px; background: rgba(111, 159, 226, .08); color: var(--accent-text-soft); font-size: 11px; cursor: pointer; }
 .small-action:hover { border-color: rgba(111, 159, 226, .5); background: rgba(111, 159, 226, .16); }
 .item-comments { display: grid; gap: 7px; min-width: 0; }

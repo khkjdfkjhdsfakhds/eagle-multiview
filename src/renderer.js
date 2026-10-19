@@ -4748,6 +4748,115 @@ function selectedItemsInOrder() {
 
 // What the multi-select panel shows. Fields being typed into keep their text:
 // a refresh mid-edit must not wipe what the user is about to apply.
+// Eagle's inspector blocks — 标签, 文件夹, 标注, 基本信息 — fold under their
+// headings and are dragged into any order by them; Eagle keeps both for
+// every window (eagle.inspector.itemsOrder and show*), and so does this,
+// for the single and the multi-select inspector alike.
+const INSPECTOR_SECTIONS_KEY = 'eaglemv.inspector.sections.v1';
+const INSPECTOR_SECTION_KEYS = Object.freeze(['tags', 'folders', 'annotations', 'information']);
+function readInspectorSections() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(INSPECTOR_SECTIONS_KEY) || '{}') || {}; } catch {}
+  const order = (Array.isArray(stored.order) ? stored.order : []).filter((key, index, keys) => INSPECTOR_SECTION_KEYS.includes(key) && keys.indexOf(key) === index);
+  for (const key of INSPECTOR_SECTION_KEYS) if (!order.includes(key)) order.splice(Math.min(INSPECTOR_SECTION_KEYS.indexOf(key), order.length), 0, key);
+  const collapsed = Object.fromEntries(INSPECTOR_SECTION_KEYS.map(key => [key, stored.collapsed?.[key] === true]));
+  return { order, collapsed };
+}
+function applyInspectorSections(sections = readInspectorSections()) {
+  for (const container of document.querySelectorAll('[data-inspector-sections]')) {
+    for (const key of sections.order) {
+      const section = container.querySelector(`:scope > [data-inspector-section="${key}"]`);
+      if (section) container.append(section);
+    }
+  }
+  for (const section of document.querySelectorAll('[data-inspector-section]')) {
+    const folded = sections.collapsed[section.dataset.inspectorSection];
+    section.classList.toggle('collapsed', folded);
+    section.querySelector('[data-section-toggle]')?.setAttribute('aria-expanded', String(!folded));
+  }
+}
+function saveInspectorSections(patch) {
+  const sections = { ...readInspectorSections(), ...patch };
+  try { localStorage.setItem(INSPECTOR_SECTIONS_KEY, JSON.stringify(sections)); } catch {}
+  applyInspectorSections(sections);
+}
+
+function bindInspectorSections() {
+  applyInspectorSections();
+  window.addEventListener('storage', event => {
+    if (event.key === INSPECTOR_SECTIONS_KEY) applyInspectorSections();
+  });
+  // A heading moved 10px or more drags its block (Eagle's sortable uses the
+  // same distance); a plain click folds it.
+  let drag = null;
+  let draggedJustNow = false;
+  const clearMarks = () => {
+    for (const section of document.querySelectorAll('[data-inspector-section].drop-before, [data-inspector-section].drop-after, [data-inspector-section].section-dragging')) {
+      section.classList.remove('drop-before', 'drop-after', 'section-dragging');
+    }
+  };
+  document.addEventListener('pointerdown', event => {
+    const toggle = event.target.closest?.('[data-section-toggle]');
+    // A finger on a heading scrolls the drawer instead (phones, tablets).
+    if (!toggle || event.button !== 0 || event.pointerType === 'touch') return;
+    const section = toggle.closest('[data-inspector-section]');
+    drag = { section, container: section.parentElement, x: event.clientX, y: event.clientY, active: false, target: null };
+  });
+  document.addEventListener('pointermove', event => {
+    if (!drag) return;
+    if (!drag.active) {
+      if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 10) return;
+      drag.active = true;
+      drag.section.classList.add('section-dragging');
+    }
+    event.preventDefault();
+    const others = [...drag.container.querySelectorAll(':scope > [data-inspector-section]')].filter(section => section !== drag.section && section.offsetParent);
+    const over = others.find(section => {
+      const box = section.getBoundingClientRect();
+      return event.clientY >= box.top && event.clientY < box.bottom;
+    }) || (others.length && event.clientY < others[0].getBoundingClientRect().top ? others[0] : others.at(-1));
+    for (const section of others) section.classList.remove('drop-before', 'drop-after');
+    if (!over) return;
+    const box = over.getBoundingClientRect();
+    const after = event.clientY > box.top + box.height / 2;
+    over.classList.add(after ? 'drop-after' : 'drop-before');
+    drag.target = { key: over.dataset.inspectorSection, after };
+  });
+  const finish = () => {
+    const finished = drag;
+    drag = null;
+    clearMarks();
+    if (!finished?.active) return;
+    draggedJustNow = true;
+    setTimeout(() => { draggedJustNow = false; }, 0);
+    if (!finished.target) return;
+    const moving = finished.section.dataset.inspectorSection;
+    const order = readInspectorSections().order.filter(key => key !== moving);
+    order.splice(order.indexOf(finished.target.key) + (finished.target.after ? 1 : 0), 0, moving);
+    saveInspectorSections({ order });
+  };
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', () => { drag = null; clearMarks(); });
+  document.addEventListener('click', event => {
+    const toggle = event.target.closest?.('[data-section-toggle]');
+    if (!toggle) return;
+    if (draggedJustNow) return;
+    const key = toggle.dataset.sectionToggle;
+    const sections = readInspectorSections();
+    saveInspectorSections({ collapsed: { ...sections.collapsed, [key]: !sections.collapsed[key] } });
+  });
+}
+
+// 导出 at the foot of 基本信息 opens Eagle's export menu, with the one kind
+// MultiView can do (素材包, 指定格式或尺寸 and CSV are not available).
+function openInspectorExportMenu(event) {
+  event.stopPropagation();
+  const ids = [...state.selected];
+  if (!ids.length || !hasCapability('export')) return;
+  const box = event.currentTarget.getBoundingClientRect();
+  showContextMenuAt(box.left, box.bottom + 4, { kind: 'inspector-export', ids, paneId: state.activePaneId });
+}
+
 function renderMultiSelection(count) {
   const items = selectedItemsInOrder();
   $('#multiCount').textContent = count.toLocaleString();
@@ -4776,6 +4885,7 @@ function renderMultiSelection(count) {
   $('#batchStars').innerHTML = inspectorStarsHTML(star.value);
   $('#batchStars').dataset.rating = String(star.value);
   const totalSize = summary?.size || 0;
+  $('#batchExportButton').hidden = !hasCapability('export');
   $('#batchMeta').innerHTML = pending
     ? '<span><em>文件大小</em>计算中…</span>'
     : totalSize > 0 ? `<span><em>文件大小</em>${formatBytes(totalSize)}</span>` : '';
@@ -4959,6 +5069,7 @@ function renderInspector() {
   $('#itemFolderChips').innerHTML = inspectorFolderChipsHTML(item.folders);
   if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
+  $('#itemExportButton').hidden = !hasCapability('export');
   loadComments(item, { quiet: sameItem });
   $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '丢到回收站…';
   const canPin = state.currentView.kind === 'folder';
@@ -5801,6 +5912,7 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
   if (!operationToken) return;
   const selectionBefore = new Set(pane.selected);
+  const successor = deleted && pane.currentView.kind !== 'trash' ? selectionSuccessor(pane, ids) : null;
   trashMutationInFlight += 1;
   // The lock covers the writes only; the refresh after them is a plain read.
   let released = false;
@@ -5833,9 +5945,11 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
         if (!trashUndoStack[index].ids.length) trashUndoStack.splice(index, 1);
       }
     }
-    if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
     release();
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
     const done = deleted ? `${outcome.succeeded.length} 个素材已丢到回收站` : `已恢复 ${outcome.succeeded.length} 个素材`;
     toast(outcome.failed.length
       ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
@@ -5859,10 +5973,11 @@ async function setTrash(ids, deleted) {
   if (choice === 'delete') return applyTrash(ids, true, paneId);
 }
 
-async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null } = {}) {
+async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null, selectNext = false } = {}) {
   if (!ids?.length || !state.connected) return false;
   const pane = paneById(paneId);
   if (!pane) return false;
+  const successor = selectNext ? selectionSuccessor(pane, ids) : null;
   const libraryPath = state.library?.path;
   let operationToken = beginForegroundOperation(message, { key: `set:${paneId}:${field}` });
   if (!operationToken) return false;
@@ -5890,6 +6005,7 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
         renderInspector();
       });
     }
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
     toast(outcome.failed.length
       ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
@@ -5908,8 +6024,10 @@ async function addSelectionToFolder(payload) {
   if (!folderId) return false;
   const libraryPath = state.library?.path;
   // Eagle adds the folder's auto tags to items that newly join it (P1-10).
-  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId], autoTags: 'joined' }, '正在加入文件夹…', payload?.paneId || state.activePaneId, {
-    keepSelection: Boolean(payload?.keepSelection)
+  const paneId = payload?.paneId || state.activePaneId;
+  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId], autoTags: 'joined' }, '正在加入文件夹…', paneId, {
+    keepSelection: Boolean(payload?.keepSelection),
+    selectNext: paneById(paneId)?.currentView.kind === 'unfiled'
   });
   if (completed && state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
   return completed;
@@ -5934,6 +6052,7 @@ async function moveSelectionToFolder(payload) {
     return;
   }
   const delta = folderMoveDelta(payload?.sourceFolderIds || paneFolderScope(pane, sourceFolderId), folderId);
+  const successor = pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId ? selectionSuccessor(pane, ids) : null;
   let operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
   if (!operationToken) return;
   const selectionBefore = new Set(pane.selected);
@@ -5943,10 +6062,12 @@ async function moveSelectionToFolder(payload) {
       id, field: 'folders', ...delta, autoTags: 'joined', libraryPath
     }), 'Eagle 移动请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成移动');
-    if (settleBatchSelection(pane, selectionBefore, outcome.failed) && state.activePaneId === paneId) renderInspector();
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
     endForegroundOperation(operationToken);
     operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
     toast(outcome.failed.length
       ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : '已移动到目标文件夹', outcome.failed.length ? 4200 : 2400);
@@ -5966,7 +6087,8 @@ function removeSelectionFromFolder(payload) {
   const pane = paneById(paneId);
   const folderId = payload?.folderId || (pane?.currentView.kind === 'folder' ? pane.currentView.id : null);
   if (!folderId) return false;
-  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId);
+  const onScreen = pane?.currentView.kind === 'folder' && pane.currentView.id === folderId;
+  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId, { selectNext: onScreen });
 }
 
 function addTagToSelection(payload) {
@@ -6054,9 +6176,11 @@ function handleInspectorFolderClick(event) {
     const folderId = remove.dataset.removeFolder;
     if (!confirmBulkEdit(ids.length)) return;
     const name = findFolder(state.library?.folders, folderId)?.name || '文件夹';
+    const pane = activePane();
     mutateSelectionSet(ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', state.activePaneId, {
       keepSelection: true,
-      successMessage: `已从“${name}”移除`
+      successMessage: `已从“${name}”移除`,
+      selectNext: pane?.currentView.kind === 'folder' && pane.currentView.id === folderId
     });
   } else if (open) {
     openItemLocation(ids[0], open.dataset.openFolder);
@@ -8107,6 +8231,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'tag-manager-sort') return tagManagerSortMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
   if (data.kind === 'list-columns') return listColumnsMenuMarkup();
+  if (data.kind === 'inspector-export') return contextMenuRow({ icon: 'export', label: window.eagleMV.platform === 'web' ? '下载到此设备' : '导出到计算机', action: 'inspector-export' });
   if (data.kind === 'shortcut-folder-picker') {
     return `<div class="context-shortcut-picker">${contextFolderPicker(data.pickerAction || 'add-folder')}</div>`;
   }
@@ -8375,6 +8500,7 @@ async function executeContextAction(action, payload) {
   if (!data) return;
   if (action.startsWith('tm-')) return executeTagManagerMenuAction(action, payload, data);
   if (action === 'swap-panes') return swapRecentPanes(payload.paneIds);
+  if (action === 'inspector-export') return exportItems(data.ids || []);
   if (action === 'set-folder-cover') return setFolderCover(payload.folderId, data.ids?.[0], data);
   if (action === 'reset-folder-cover') return setFolderCover(payload.folderId, null, data);
   if (action === 'reveal-in-pane') return revealInPane(data.paneReveal, payload.paneId);
@@ -9585,6 +9711,39 @@ function batchFailureReason(outcome) {
 function idsStillSelectable(pane, ids) {
   const shown = new Set(pane.items.map(item => item.id));
   return ids.filter(id => shown.has(id) || !pane.itemMap?.has(id));
+}
+
+// Eagle selects the item after the ones that left the view — else the one
+// before, else nothing — when they are taken out of the folder on screen,
+// moved out of it, put in the trash, or filed from 未分类. Worked out before
+// the write, from the order on screen.
+function selectionSuccessor(pane, ids) {
+  const leaving = new Set(ids);
+  const order = withActivePane(pane.id, () => sortedItems());
+  const first = order.findIndex(item => leaving.has(item.id));
+  if (first < 0) return null;
+  return {
+    after: order.slice(first + 1).find(item => !leaving.has(item.id))?.id || null,
+    before: order[first - 1]?.id || null
+  };
+}
+
+// Only once the items have actually left and nothing else got selected
+// meanwhile (failures stay selected, a click elsewhere wins).
+function selectSuccessor(pane, successor, ids) {
+  if (!successor || !paneById(pane.id) || pane.selected.size) return false;
+  const shown = new Set(pane.items.map(item => item.id));
+  if (ids.some(id => shown.has(id))) return false;
+  const id = [successor.after, successor.before].find(candidate => candidate && shown.has(candidate));
+  if (!id) return false;
+  pane.selected = new Set([id]);
+  pane.selectionAnchor = id;
+  if (state.activePaneId === pane.id) {
+    updateCardSelectionStyles();
+    renderInspector();
+    requestAnimationFrame(() => paneRoot(pane.id)?.querySelector(`.item-card[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+  return true;
 }
 
 // A batch leaves its result selection behind only if the user has not picked
@@ -11547,6 +11706,9 @@ function bindEvents() {
   });
   $('#itemFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
   $('#batchFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
+  $('#itemExportButton').addEventListener('click', openInspectorExportMenu);
+  $('#batchExportButton').addEventListener('click', openInspectorExportMenu);
+  bindInspectorSections();
   for (const [field, selector] of [['annotation', '#batchAnnotation'], ['url', '#batchURL']]) {
     const control = $(selector);
     control.addEventListener('focus', () => beginBatchFieldEdit(field, control));
