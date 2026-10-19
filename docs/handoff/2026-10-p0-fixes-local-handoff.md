@@ -1188,3 +1188,20 @@ A-01、A-03、A-05～A-10、T-17、W-05（App 内 PDF 预览）、W-02（上传�
 - 5 标签管理：API 已查清——`tagGroup/update` 支持 name/tags/color/description，**没有群组排序接口**（顺序是 Eagle 内部数组）。计划：群组颜色（API）、批量重命名（逐个 `tag/update`）、列表布局；群组拖动排序只能做 MultiView 本地显示顺序（不改 Eagle），需在报告里说清。
 - 6 检查器：区块拖动排序/折叠（本地）、导出按钮、移出当前文件夹后自动选下一张。
 - 8 工程：元数据解析移入 worker；T-11 去掉 interaction-regression 固定 sleep。
+
+## 四十一、接手：可选项下半（标签管理、检查器、工程）（2026-10-19）
+
+HEAD 为本节提交，全量 995/995；测试版 `1.8.3-review.20261020.3` 在后台运行（41601）。规则同第三十九节。
+
+### 标签管理：已核对的原版做法（Eagle 4.0.0 `app.bundle.js`）
+
+- **群组颜色**：群组右键菜单末尾是色点行（`openTagGroupContextMenu` 里 `role: 'color'`，与文件夹同一套 8 色），`changeTagGroupColor` 设 `tagGroup.color`，无色时删除该字段。API `tagGroup/update`（`tagGroup.save`）接受 `color`，但 `color ?? 原值`，所以清除要传空字符串 `''`。原版改群组色时还会改每个标签的颜色（标签颜色不在 API 里，MultiView 本地已有“标签色回落到群组色”）。
+- **群组拖动排序**：原版群组列表可拖动排序（`tagGroupSortableOptions`）；**API 没有排序接口**（`tagGroup.save` 只认 name/tags/color/description）。只能做 MultiView 本地显示顺序（存 userData/localStorage，不改 Eagle），报告里要说清。
+- **批量重命名**：多选标签右键有“重命名 N 个项目...”（`OPEN_RENAME` type `TAGS`，`batch-rename-modal`）。两种方式：格式（默认 `*` 表示原名，`%N`/`%NN`… 序号、起始编号，`%D` 等日期）与查找替换（普通文本全部替换，或 `/regex/flags`），外加大小写（不变/大写/小写/首字母大写），有预览；≥2 个标签先确认。MultiView 实现：逐个 `tag/update`（重名用 `tag/merge`）。
+- **列表布局**：第二十九节可选里写了“列表布局”，尚未核对原版标签页是否有列表视图，先查清再做。
+- 现状代码：`src/renderer.js` 的 `tagManagerMarkup`、`tagManagerTagMenuMarkup`、`tagManagerGroupMenuMarkup`、`executeTagManagerMenuAction`、`bindTagEditorEvents`；文件夹色点行可复用（第十二节 P1-12）。
+
+### 检查器、工程
+
+- 检查器：区块（标签/文件夹/标注/基本信息）拖动排序与折叠（原版顺序可调、每块可折叠，存本地）、导出按钮、移出当前文件夹后自动选下一张——逐条先读审查文档与原版。
+- 工程：元数据解析移入 worker（E-02 余项，`lib/metadata-reader.js`）；T-11 去掉 `test-support/interaction-regression-probe.cjs` 的固定 sleep（改为等条件）。
