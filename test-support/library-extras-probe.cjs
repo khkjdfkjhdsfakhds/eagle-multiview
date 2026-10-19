@@ -26,17 +26,25 @@ async function run() {
     await reload;
     out.pinsAfterFailure = JSON.stringify(state.localPins);
     out.colorsAfterReload = JSON.stringify(state.tagColors);
-    // An older, slower load must not overwrite a newer one.
+    // An older, slower load must not overwrite a newer one; requests made
+    // while it runs fold into one more read after it (H-11).
     __extras.failPins = false;
     __extras.pinsReply = { old: { i: 1 } };
+    const readsBefore = __extras.pinReads;
     const older = loadLibraryExtras();
     await wait(10);
     __extras.holdOrders = false;
     __extras.pinsReply = { new: { i: 1 } };
-    await loadLibraryExtras();
+    const newer = [loadLibraryExtras(), loadLibraryExtras(), loadLibraryExtras()];
     __extrasRelease();
-    await older;
+    await Promise.all([older, ...newer]);
     out.pinsAfterRace = JSON.stringify(state.localPins);
+    out.readsForFourRequests = __extras.pinReads - readsBefore;
+    // A colour broadcast carries the whole table and needs no reload.
+    const colorReads = __extras.colorReads; const pinReads = __extras.pinReads;
+    await __extrasTagDataChanged({ libraryPath: state.library.path, reason: 'tag-color', colors: { blue: '#0000ff' } });
+    out.colorsFromBroadcast = JSON.stringify(state.tagColors);
+    out.readsForColorBroadcast = (__extras.colorReads - colorReads) + (__extras.pinReads - pinReads);
     return out;
   })()`);
   console.log(`EAGLEMV_LIBRARY_EXTRAS ${JSON.stringify(result)}`);

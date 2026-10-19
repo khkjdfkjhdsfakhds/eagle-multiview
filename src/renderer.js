@@ -323,6 +323,10 @@ const ratingQueues = new Map();
 // The library the extras on screen belong to, and the newest load (H-11).
 let libraryExtrasLibrary = null;
 let libraryExtrasToken = 0;
+// A library change, a tag edit and a pin change often ask for the extras at
+// once; a load already running for that library absorbs them into one more
+// read after it (H-11) instead of starting parallel ones.
+let libraryExtrasRun = null;
 
 // 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
 // has focus, otherwise undoing the last delete. An open dialog swallows it so
@@ -12680,8 +12684,15 @@ function bindHubEvents() {
       await refreshAvailableTags();
       return;
     }
-    await loadLibraryExtras();
-    if (payload.libraryPath !== state.library?.path) return;
+    // A colour change carries the library's whole colour table; nothing
+    // else changed, so the other six reads are not needed (H-11).
+    if (payload.reason === 'tag-color' && payload.colors && typeof payload.colors === 'object') {
+      state.tagColors = payload.colors;
+      renderTagColors();
+    } else {
+      await loadLibraryExtras();
+      if (payload.libraryPath !== state.library?.path) return;
+    }
     // Recolor existing chips in place, keeping partially typed tag text,
     // caret positions, metadata drafts and current focus intact.
     for (const chip of document.querySelectorAll('.tag-chip')) {
@@ -13006,9 +13017,25 @@ async function applyLibraryChange(payload) {
   if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资源库根目录', 4000);
 }
 
-async function loadLibraryExtras() {
+function loadLibraryExtras() {
   const libraryPath = state.library?.path;
-  if (!libraryPath) return;
+  if (!libraryPath) return Promise.resolve();
+  if (libraryExtrasRun?.libraryPath === libraryPath) {
+    libraryExtrasRun.again = true;
+    return libraryExtrasRun.promise;
+  }
+  const run = { libraryPath, again: false, promise: null };
+  libraryExtrasRun = run;
+  run.promise = (async () => {
+    try {
+      do { run.again = false; await readLibraryExtras(libraryPath); }
+      while (run.again && state.library?.path === libraryPath);
+    } finally { if (libraryExtrasRun === run) libraryExtrasRun = null; }
+  })();
+  return run.promise;
+}
+
+async function readLibraryExtras(libraryPath) {
   const token = ++libraryExtrasToken;
   // Reloading the same library keeps the manual orders usable meanwhile;
   // only a library switch empties them (B3-08). Dragging a sidebar folder

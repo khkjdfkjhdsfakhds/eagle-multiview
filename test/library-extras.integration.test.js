@@ -16,4 +16,7 @@ test('reloading library extras keeps orders ready, survives a failed read, and i
   assert.equal(result.pinsAfterFailure, result.pinsAtStart, 'a failed pin read keeps the pins on screen');
   assert.equal(result.colorsAfterReload, '{"red":"#ff0000"}');
   assert.equal(result.pinsAfterRace, '{"new":{"i":1}}', 'an older, slower load does not overwrite a newer one');
+  assert.equal(result.readsForFourRequests, 2, 'requests during a load fold into one more read');
+  assert.equal(result.colorsFromBroadcast, '{"blue":"#0000ff"}');
+  assert.equal(result.readsForColorBroadcast, 0, 'a colour broadcast applies its own table');
 });
