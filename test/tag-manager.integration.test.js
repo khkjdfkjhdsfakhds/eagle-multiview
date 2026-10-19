@@ -27,7 +27,7 @@ test('tag manager in a real renderer', { timeout: 60000 }, async () => {
   assert.deepEqual(result.groupView, ['动物:狗,猫']);
   assert.equal(result.description, '宠物');
   assert.deepEqual(result.selected, ['狗', '猫'], '⌘-click adds to the selection');
-  assert.deepEqual(result.tagMenu, ['搜索包含标签的项目', '重命名(off)', '添加至群组...', '移动至群组...', '从标签群组移除', '合并 2 个标签']);
+  assert.deepEqual(result.tagMenu, ['搜索包含标签的项目', '重命名 2 个项目...', '添加至群组...', '移动至群组...', '从标签群组移除', '合并 2 个标签']);
   assert.deepEqual(result.rangeSelected, ['apple', 'Banana'], '⇧-click selects the run');
   assert.equal(result.dropHighlight, true);
   assert.deepEqual(result.groupMenu, ['搜索包含群组标签的项目', '重命名', '删除群组']);

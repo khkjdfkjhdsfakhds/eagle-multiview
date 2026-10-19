@@ -39,7 +39,10 @@ const bridge = {
   removeTagsFromGroup: async data => record('remove', data),
   updateTagGroup: async data => record('update-group', data),
   getTrashItems: async () => ({ data: [], total: 0, nextOffset: 0, hasMore: false }),
-  getPins: async () => ({}), getRecentFolders: async () => [], getTagColors: async () => ({}),
+  getPins: async () => ({}), getRecentFolders: async () => [],
+  // 猫 has a colour of its own, which a group colour clears (as in Eagle).
+  getTagColors: async () => ({ 猫: '#00a2c7' }),
+  setTagColor: async data => { record('tag-color', data); return {}; },
   getComments: async () => [],
   initialWindowState: async () => null, currentEagleWindowState: async () => ({ view: { kind: 'all' } }),
   focusWindow: async () => true, isFullScreen: async () => false

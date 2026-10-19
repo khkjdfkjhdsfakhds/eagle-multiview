@@ -3138,16 +3138,21 @@ function readTagManagerPrefs() {
     return {
       sortBy: stored.sortBy === 'count' ? 'count' : 'name',
       ascending: stored.ascending !== false,
-      groupBy: stored.groupBy === 'group' ? 'group' : 'alphabet'
+      groupBy: stored.groupBy === 'group' ? 'group' : 'alphabet',
+      // Eagle's 格状 / 列表 switch (TAGVIEW_LAYOUT), one for every pane.
+      layout: stored.layout === 'list' ? 'list' : 'inline'
     };
   } catch {
-    return { sortBy: 'name', ascending: true, groupBy: 'alphabet' };
+    return { sortBy: 'name', ascending: true, groupBy: 'alphabet', layout: 'inline' };
   }
 }
 let tagManagerPrefs = readTagManagerPrefs();
 function setTagManagerPrefs(patch) {
   tagManagerPrefs = { ...tagManagerPrefs, ...patch };
   try { localStorage.setItem(TAG_MANAGER_PREFS_KEY, JSON.stringify(tagManagerPrefs)); } catch {}
+  renderTagManagerPanes();
+}
+function renderTagManagerPanes() {
   for (const pane of state.panes) {
     if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
   }
@@ -3274,7 +3279,7 @@ function tagManagerBodyMarkup(view) {
 
 function tagManagerNavRow({ mode, groupId = '', label, count, icon = 'tag', color = '' }, view) {
   const active = view.mode === mode && (mode !== 'group' || view.groupId === groupId);
-  return `<button type="button" class="tm-nav${active ? ' active' : ''}" data-tm-mode="${mode}"${groupId ? ` data-tm-group="${escapeHTML(groupId)}"` : ''} title="${escapeHTML(label)}">
+  return `<button type="button" class="tm-nav${active ? ' active' : ''}" data-tm-mode="${mode}"${groupId ? ` data-tm-group="${escapeHTML(groupId)}" draggable="true"` : ''} title="${escapeHTML(label)}">
     ${color ? `<span class="tm-group-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : uiIcon(icon, 'tm-nav-icon')}<span class="tm-nav-name">${escapeHTML(label)}</span><span class="tm-nav-count">${count || mode === 'group' ? count.toLocaleString() : ''}</span>
   </button>`;
 }
@@ -3291,7 +3296,8 @@ function tagManagerMarkup(paneId = state.activePaneId) {
   const unfiled = [...records.keys()].filter(name => !grouped.has(name)).length;
   const groups = state.tagGroups || [];
   const sortLabel = `${tagManagerPrefs.sortBy === 'count' ? '数量' : '名称'}${tagManagerPrefs.ascending ? (tagManagerPrefs.sortBy === 'count' ? '↓' : '↑') : (tagManagerPrefs.sortBy === 'count' ? '↑' : '↓')}`;
-  return `<div class="tag-manager" data-tag-manager>
+  const layoutButton = (layout, label) => `<button type="button" class="tm-layout-button${tagManagerPrefs.layout === layout ? ' active' : ''}" data-tm-layout="${layout}" title="${label}" aria-label="${label}" aria-pressed="${tagManagerPrefs.layout === layout}">${uiIcon(layout === 'list' ? 'layoutList' : 'layoutGrid', 'tm-layout-icon')}</button>`;
+  return `<div class="tag-manager${tagManagerPrefs.layout === 'list' ? ' list-mode' : ''}" data-tag-manager>
     <nav class="tm-sidebar" aria-label="标签分类">
       ${tagManagerNavRow({ mode: 'all', label: '全部', count: records.size, icon: 'tag' }, view)}
       ${tagManagerNavRow({ mode: 'unfiled', label: '未分类', count: unfiled, icon: 'unfiled' }, view)}
@@ -3303,6 +3309,7 @@ function tagManagerMarkup(paneId = state.activePaneId) {
       <header class="tm-header">
         <h1 class="tm-title">${escapeHTML(tagManagerTitle(view))}</h1>
         <input class="tm-search" type="search" placeholder="搜索标签…" value="${escapeHTML(view.keyword)}" aria-label="搜索标签" autocomplete="off">
+        <div class="tm-layout" role="group" aria-label="标签布局">${layoutButton('inline', '格状')}${layoutButton('list', '列表')}</div>
         <button type="button" class="tm-sort" data-tm-sort-menu title="排列与分组" aria-haspopup="menu">${sortLabel}</button>
       </header>
       <div class="tm-body">${tagManagerBodyMarkup(view)}</div>
@@ -3362,7 +3369,10 @@ function tagManagerTagMenuMarkup(data) {
   return [
     contextMenuRow({ icon: 'search', label: '搜索包含标签的项目', action: 'tm-filter' }),
     '<div class="context-menu-separator"></div>',
-    contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename', disabled: !one }),
+    // Eagle shows 重命名 for one tag and 重命名 N 个项目... for several.
+    one
+      ? contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename' })
+      : contextMenuRow({ icon: 'rename', label: `重命名 ${tags.length} 个项目...`, action: 'tm-batch-rename' }),
     ...(one ? [contextMenuRow({ icon: 'tag', label: '标签颜色…', action: 'tag-color', payload: { tag: tags[0] } })] : []),
     '<div class="context-menu-separator"></div>',
     contextMenuRow({ icon: 'tag', label: '添加至群组...', submenu: groupRows('tm-add-group') }),
@@ -3382,8 +3392,69 @@ function tagManagerGroupMenuMarkup(data) {
     contextMenuRow({ icon: 'search', label: '搜索包含群组标签的项目', action: 'tm-filter-group', payload: { groupId: group.id }, disabled: !(group.tags || []).length }),
     contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename-group', payload: { groupId: group.id } }),
     '<div class="context-menu-separator"></div>',
-    contextMenuRow({ icon: 'trashMenu', label: '删除群组', action: 'tm-remove-group-node', payload: { groupId: group.id }, danger: true })
+    contextMenuRow({ icon: 'trashMenu', label: '删除群组', action: 'tm-remove-group-node', payload: { groupId: group.id }, danger: true }),
+    ...tagGroupColorMenuRows(group)
   ].join('');
+}
+
+// Eagle's group menu ends with the same colour dots as a folder's
+// (changeTagGroupColor); tagGroup/update keeps the old colour for a missing
+// one, so 无 is sent as an empty string.
+function tagGroupColorMenuRows(group) {
+  const current = String(group.color || '').toLowerCase();
+  const disabled = !state.connected;
+  const swatches = folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="群组颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="tm-group-color" data-context-payload="${escapeHTML(JSON.stringify({ groupId: group.id, color }))}"></button>`;
+  }).join('');
+  return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="群组颜色">${swatches}</div>`];
+}
+
+// Eagle clears the own colour of every tag in the group, so they all show
+// the group's; here that is the colour MultiView keeps for a tag locally.
+async function setTagGroupColor(groupId, color) {
+  const libraryPath = state.library?.path;
+  const group = (state.tagGroups || []).find(candidate => candidate.id === groupId);
+  if (!group || !libraryPath || !state.connected || !folderMenuColors.includes(color)) return;
+  if (String(group.color || '').toLowerCase() === color) return;
+  await runForegroundOperation('正在设置群组颜色…', { key: `tag-group-update:${libraryPath}:${groupId}` }, async () => {
+    await window.eagleMV.updateTagGroup({ libraryPath, id: groupId, patch: { color } });
+    group.color = color;
+    for (const tag of group.tags || []) {
+      if (state.tagColors[tag]) state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color: null });
+    }
+    renderTagColors();
+    renderTagManagerPanes();
+  });
+}
+
+// 重命名 N 个项目...: Eagle's batch rename dialog, then one Eagle rename (or
+// merge, when the new name is taken) per tag.
+function openTagBatchRename(paneId, tags) {
+  const libraryPath = state.library?.path;
+  if (!libraryPath || tags.length < 2) return;
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items: tags.map(name => ({ name })),
+    initialPattern: '*',
+    historyKey: 'eaglemv.batchRename.findHistory.TAGS',
+    onRename: async (changes, total) => {
+      if (!changes.length) return;
+      // Eagle asks first whenever two or more tags are renamed.
+      if (!confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      const steps = window.EagleMVBatchRename.planTagRenames(changes.map(change => ({ from: change.before, to: change.after })), tagManagerRecords().keys());
+      await runForegroundOperation('正在重命名标签…', { key: `tag-batch-rename:${libraryPath}` }, async () => {
+        for (const step of steps) {
+          if (state.library?.path !== libraryPath) throw new Error('资源库已切换，剩余标签未重命名');
+          if (step.kind === 'merge') await window.eagleMV.mergeTag({ libraryPath, source: step.from, target: step.to });
+          else await window.eagleMV.renameTag({ libraryPath, originalName: step.from, name: step.to });
+        }
+        const renamedTo = new Map(changes.map(change => [change.before, change.after]));
+        tagManagerView(paneId).selected = new Set(tags.map(tag => renamedTo.get(tag) || tag));
+        toast(`${total} 个项目已重命名。`);
+      });
+    }
+  });
 }
 
 function tagManagerSortMenuMarkup(data) {
@@ -3428,6 +3499,8 @@ async function executeTagManagerMenuAction(action, payload, data) {
     return withActivePane(paneId, () => searchItemsWithTags(names));
   }
   if (action === 'tm-rename') return executeTagManagerAction('rename-tag', { tagName: tags[0] });
+  if (action === 'tm-batch-rename') return openTagBatchRename(paneId, tags);
+  if (action === 'tm-group-color') return setTagGroupColor(payload.groupId, payload.color);
   if (action === 'tm-rename-group') return executeTagManagerAction('rename-group', { groupId: payload.groupId });
   if (action === 'tm-remove-group-node') return executeTagManagerAction('remove-group', { groupId: payload.groupId });
   if (action === 'tm-add-group') {
@@ -3473,6 +3546,11 @@ function handleTagManagerClick(event, paneId) {
     renderGrid({ preserveScroll: false });
     return;
   }
+  // Either button flips the layout, as Eagle's toggleTagLayout does.
+  if (event.target.closest('[data-tm-layout]')) {
+    setTagManagerPrefs({ layout: tagManagerPrefs.layout === 'list' ? 'inline' : 'list' });
+    return;
+  }
   const sort = event.target.closest('[data-tm-sort-menu]');
   if (sort) {
     // The document's outside-click handler would close it on this same click.
@@ -3501,6 +3579,46 @@ function openTagManagerMenu(event, paneId) {
 }
 
 const TAG_DRAG_TYPE = 'application/x-eaglemv-tags';
+const TAG_GROUP_DRAG_TYPE = 'application/x-eaglemv-tag-group';
+
+// Eagle's 标签群组 can be dragged into order, but its API cannot store one
+// (tagGroup/update takes name, tags, color and description only). The order
+// here is MultiView's own, per library, in this app's storage; Eagle keeps
+// its own order. Groups not placed yet follow, in Eagle's order.
+const TAG_GROUP_ORDER_KEY = 'eaglemv.tagGroupOrder.v1';
+function readTagGroupOrders() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(TAG_GROUP_ORDER_KEY) || '{}');
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  } catch {
+    return {};
+  }
+}
+function orderTagGroups(groups, libraryPath = state.library?.path) {
+  const order = readTagGroupOrders()[libraryPath];
+  if (!Array.isArray(groups) || !Array.isArray(order) || !order.length) return groups;
+  const rank = new Map(order.map((id, index) => [id, index]));
+  const position = (group, index) => rank.has(group.id) ? rank.get(group.id) : order.length + index;
+  return groups.map((group, index) => ({ group, at: position(group, index) }))
+    .sort((left, right) => left.at - right.at)
+    .map(entry => entry.group);
+}
+function applyTagGroupOrder() {
+  state.tagGroups = orderTagGroups(state.tagGroups || []);
+  renderTagManagerPanes();
+}
+function saveTagGroupOrder(ids) {
+  const libraryPath = state.library?.path;
+  if (!libraryPath) return;
+  const orders = readTagGroupOrders();
+  orders[libraryPath] = ids;
+  try { localStorage.setItem(TAG_GROUP_ORDER_KEY, JSON.stringify(orders)); } catch {}
+  applyTagGroupOrder();
+}
+// Other windows of this app share the storage and follow at once.
+window.addEventListener('storage', event => {
+  if (event.key === TAG_GROUP_ORDER_KEY) applyTagGroupOrder();
+});
 
 function bindTagManagerEvents(paneId, grid) {
   grid.addEventListener('input', event => {
@@ -3550,6 +3668,49 @@ function bindTagManagerEvents(paneId, grid) {
     event.dataTransfer.effectAllowed = 'copy';
   }, true);
   const dropTarget = event => (event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE) ? event.target.closest?.('[data-tm-group]') : null;
+  // Dragging a group row reorders the groups (MultiView's order, see above).
+  let draggedGroup = null;
+  const clearGroupMarks = () => {
+    for (const row of grid.querySelectorAll('.tm-nav.drop-before, .tm-nav.drop-after')) row.classList.remove('drop-before', 'drop-after');
+  };
+  const groupDropPlace = event => {
+    const row = event.target.closest?.('.tm-groups [data-tm-group]');
+    if (!row || !draggedGroup || row.dataset.tmGroup === draggedGroup) return null;
+    const box = row.getBoundingClientRect();
+    return { row, after: event.clientY > box.top + box.height / 2 };
+  };
+  grid.addEventListener('dragstart', event => {
+    const row = event.target.closest?.('.tm-groups [data-tm-group]');
+    if (!row) return;
+    event.stopPropagation();
+    draggedGroup = row.dataset.tmGroup;
+    event.dataTransfer.setData(TAG_GROUP_DRAG_TYPE, draggedGroup);
+    event.dataTransfer.effectAllowed = 'move';
+  }, true);
+  grid.addEventListener('dragend', () => { draggedGroup = null; clearGroupMarks(); }, true);
+  grid.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_GROUP_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const place = groupDropPlace(event);
+    event.dataTransfer.dropEffect = place ? 'move' : 'none';
+    clearGroupMarks();
+    place?.row.classList.add(place.after ? 'drop-after' : 'drop-before');
+  }, true);
+  grid.addEventListener('drop', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_GROUP_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const place = groupDropPlace(event);
+    const moving = draggedGroup;
+    draggedGroup = null;
+    clearGroupMarks();
+    if (!place) return;
+    const ids = (state.tagGroups || []).map(group => group.id).filter(id => id !== moving);
+    const at = ids.indexOf(place.row.dataset.tmGroup) + (place.after ? 1 : 0);
+    ids.splice(at, 0, moving);
+    saveTagGroupOrder(ids);
+  }, true);
   grid.addEventListener('dragover', event => {
     if (!(event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE)) return;
     event.preventDefault();
@@ -12488,7 +12649,7 @@ async function loadLibraryExtras() {
   }
   if (orders) state.manualOrdersReady = true;
   state.availableTags = kept(tags, state.availableTags, []);
-  state.tagGroups = kept(tagGroups, state.tagGroups, []);
+  state.tagGroups = orderTagGroups(kept(tagGroups, state.tagGroups, []), libraryPath);
   state.starredTags = Array.isArray(starredTags) ? starredTags : kept(null, state.starredTags, []);
   state.recentFolders = kept(recentFolders, state.recentFolders, []);
   state.tagColors = kept(tagColors, state.tagColors, {});
