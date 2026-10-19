@@ -13,9 +13,9 @@ test('changing view clears the search and filters unless they are locked', { tim
   const result = JSON.parse(line.slice('EAGLEMV_FILTER_LOCK '.length));
   assert.equal(result.lockHiddenWhenIdle, true, 'the lock is offered only while something is filtered');
   assert.equal(result.lockShownWhenFiltered, true);
-  assert.deepEqual(result.sidebar, { view: 'B', search: '', rating: null, box: '' }, 'the sidebar opens B unfiltered');
-  assert.deepEqual(result.back, { view: 'A', search: 'cat', rating: 4, box: 'cat' }, 'back restores A with its search and filter');
+  assert.deepEqual(result.sidebar, { view: 'B', search: '', rating: [], box: '' }, 'the sidebar opens B unfiltered');
+  assert.deepEqual(result.back, { view: 'A', search: 'cat', rating: [4], box: 'cat' }, 'back restores A with its search and filter');
   assert.deepEqual(result.locked, { pressed: 'true', badge: true });
-  assert.deepEqual(result.lockedSidebar, { view: 'B', search: 'cat', rating: 4, box: 'cat' }, 'locked filters follow the navigation');
+  assert.deepEqual(result.lockedSidebar, { view: 'B', search: 'cat', rating: [4], box: 'cat' }, 'locked filters follow the navigation');
   assert.equal(result.clearUnlocks, false, '清除筛选 also releases the lock, as in Eagle');
 });

@@ -651,6 +651,15 @@ select:hover { border-color: rgba(247, 248, 248, .14); }
 .filter-months summary { color: var(--muted); font-size: 10.5px; cursor: pointer; }
 .filter-months[open] summary { margin-bottom: 5px; }
 .filter-range-unit { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) 52px; }
+/* 尺寸: a 宽/高 label ahead of each range, as in Eagle's menu. */
+.filter-range-labeled { grid-template-columns: 16px minmax(0, 1fr) auto minmax(0, 1fr); }
+.filter-range-label { color: var(--muted); font-size: 10.5px; }
+/* 评分 rows show the stars; the words stay for screen readers. */
+.filter-stars { flex: 1 1 auto; color: #ffce69; font-size: 11px; letter-spacing: 1px; white-space: nowrap; }
+.filter-stars-empty { color: rgba(247, 248, 248, .16); }
+.filter-check-row[data-filter-rating]:not([data-filter-rating="0"]) .filter-check-name {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 .filter-popover input:disabled { opacity: .45; }
 .tag-chip.excluded { border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 .tag-chip.excluded > span { color: var(--muted); text-decoration: line-through; }

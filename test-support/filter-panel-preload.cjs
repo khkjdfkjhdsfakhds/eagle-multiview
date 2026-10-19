@@ -7,8 +7,8 @@ const now = Date.now();
 const day = 86400000;
 const folders = [{ id: 'folder-a', name: '甲', iconColor: 'red', children: [{ id: 'folder-b', name: '乙', children: [] }] }, { id: 'folder-c', name: '丙', children: [] }];
 const items = [
-  { id: 'item-1', name: '图一', ext: 'png', width: 800, height: 600, size: 1000, tags: ['猫', '白'], folders: ['folder-a'], modificationTime: now - 1000, comments: [{ annotation: '耳朵' }] },
-  { id: 'item-2', name: '图二', ext: 'jpg', width: 800, height: 600, size: 2000, tags: ['猫'], folders: ['folder-a', 'folder-b'], modificationTime: now - 40 * day },
+  { id: 'item-1', name: '图一', ext: 'png', width: 800, height: 600, size: 1000, tags: ['猫', '白'], folders: ['folder-a'], modificationTime: now - 1000, comments: [{ annotation: '耳朵' }], star: 5, annotation: 'Blue sky, sea' },
+  { id: 'item-2', name: '图二', ext: 'jpg', width: 800, height: 600, size: 2000, tags: ['猫'], folders: ['folder-a', 'folder-b'], modificationTime: now - 40 * day, star: 3, url: 'https://example.test/2' },
   { id: 'item-3', name: '视频', ext: 'mp4', width: 1920, height: 1080, size: 9000, duration: 90, tags: [], folders: ['folder-c'], modificationTime: now - 2 * day },
   { id: 'item-4', name: '散图', ext: 'png', width: 500, height: 500, size: 500, tags: ['狗'], folders: [], modificationTime: now - 400 * day }
 ];
@@ -34,7 +34,7 @@ const bridge = {
     return { data, total: data.length, nextOffset: data.length, hasMore: false };
   },
   viewFacets: async query => {
-    const facets = { total: 0, exts: {}, folders: {}, addedMonths: {}, modifiedMonths: {} };
+    const facets = { total: 0, exts: {}, folders: {}, addedMonths: {}, modifiedMonths: {}, ratings: {}, shapes: {} };
     const bump = (map, key) => { map[key] = (map[key] || 0) + 1; };
     for (const item of visible(query)) {
       facets.total += 1;
@@ -43,6 +43,8 @@ const bridge = {
       else bump(facets.folders, 'NoFolders');
       bump(facets.addedMonths, window.EagleMVQuerySpec.monthKey(item.modificationTime));
       bump(facets.modifiedMonths, window.EagleMVQuerySpec.monthKey(item.modificationTime));
+      bump(facets.ratings, String(item.star || 0));
+      window.EagleMVQuerySpec.shapeFacetKeys(item).forEach(shape => bump(facets.shapes, shape));
     }
     return facets;
   },

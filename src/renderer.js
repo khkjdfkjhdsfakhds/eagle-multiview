@@ -2228,13 +2228,61 @@ function renderDateFilters() {
   }
 }
 
+// Eagle's 形状 menu: the orientations, the common ratios and 自定, each with
+// its count; a row the view has none of stays out unless it is ticked.
+const SHAPE_FILTER_LABELS = [
+  ['landscape', '横图'], ['portrait', '竖图'], ['square', '方形'], ['panoramic-landscape', '细长横图'], ['panoramic-portrait', '细长竖图'],
+  ['4:3', '4:3'], ['3:4', '3:4'], ['16:9', '16:9'], ['9:16', '9:16'], ['custom', '自定']
+];
+function renderShapeFilterList() {
+  const list = $('#shapeFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.shapes || null;
+  const chosen = new Set(state.query.shape || []);
+  const rows = SHAPE_FILTER_LABELS.filter(([shape]) => shape === 'custom' || chosen.has(shape) || !counts || counts[shape] > 0)
+    .map(([shape, label]) => filterCheckRow({
+      attr: 'data-filter-shape', value: shape, label,
+      count: shape === 'custom' || !filterFacets.data ? null : counts?.[shape] || 0, checked: chosen.has(shape)
+    }));
+  setListHTML(list, rows.join(''));
+  $('#shapeCustomFilter')?.classList.toggle('hidden', !chosen.has('custom'));
+}
+
+// Eagle's 评分 menu: five to one stars, then 尚未评分, each with its count.
+function renderRatingFilterList() {
+  const list = $('#ratingFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.ratings || null;
+  const chosen = new Set(state.query.rating || []);
+  const rows = [5, 4, 3, 2, 1, 0].filter(star => chosen.has(star) || !counts || counts[star] > 0)
+    .map(star => filterCheckRow({
+      attr: 'data-filter-rating', value: String(star), label: star ? `${star} 星` : '尚未评分',
+      leading: star ? `<span class="filter-stars" aria-hidden="true">${'★'.repeat(star)}<span class="filter-stars-empty">${'★'.repeat(5 - star)}</span></span>` : '',
+      count: filterFacets.data ? counts?.[star] || 0 : null, checked: chosen.has(star)
+    }));
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计评分…', empty: '没有找到相关项目' }));
+}
+
 function renderFilterLists() {
   renderFilterLogic();
   const noTags = $('#noTagsFilter');
   if (noTags) noTags.checked = Boolean(state.query.noTags);
   renderFolderFilterList();
   renderExtFilterList();
+  renderShapeFilterList();
+  renderRatingFilterList();
   renderDateFilters();
+  // 注释/链接: the keywords only narrow 有, as in Eagle's menus.
+  for (const button of document.querySelectorAll('[data-text-state]')) {
+    const [field, value] = button.dataset.textState.split(':');
+    const active = (state.query[`${field}State`] || (String(state.query[field] || '').trim() ? 'has' : '')) === value;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  for (const field of ['annotation', 'url']) {
+    const input = $(`#${field}Filter`);
+    if (input) input.disabled = (state.query[`${field}State`] || (String(state.query[field] || '').trim() ? 'has' : '')) !== 'has';
+  }
   for (const button of document.querySelectorAll('[data-comments-state]')) {
     const active = state.query.comments === button.dataset.commentsState;
     button.classList.toggle('active', active);
@@ -2279,9 +2327,8 @@ function toggleListValue(query, key, value) {
 
 // Range filters are stored as one {min, max} query key but edited through two
 // inputs, so a binding names which end it drives and how the panel's unit maps
-// to the stored one (MB and megapixels to raw counts, dates to timestamps).
+// to the stored one (MB to bytes, dates to timestamps).
 const MEGABYTE = 1024 * 1024;
-const MEGAPIXEL = 1e6;
 const scaledRange = factor => ({
   parse: value => (value === '' ? null : Number(value) * factor),
   toInput: value => (Number.isFinite(value) ? String(Math.round(value / factor * 100) / 100) : '')
@@ -2316,14 +2363,16 @@ const durationRange = {
 const filterInputBindings = [
   { key: 'search', selector: '#searchInput', event: 'input' },
   { key: 'searchScope', selector: '#searchScopeFilter', event: 'change' },
-  { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
-  { key: 'shape', selector: '#shapeFilter', event: 'change' },
+  { key: 'shapeWidth', selector: '#shapeWidthFilter', event: 'input', parse: value => (Number(value) > 0 ? Number(value) : null), toInput: value => (value ? String(value) : '') },
+  { key: 'shapeHeight', selector: '#shapeHeightFilter', event: 'input', parse: value => (Number(value) > 0 ? Number(value) : null), toInput: value => (value ? String(value) : '') },
   { key: 'annotation', selector: '#annotationFilter', event: 'input' },
   { key: 'url', selector: '#urlFilter', event: 'input' },
   { key: 'size', part: 'min', selector: '#sizeMinFilter', event: 'input', ...scaledRange(MEGABYTE) },
   { key: 'size', part: 'max', selector: '#sizeMaxFilter', event: 'input', ...scaledRange(MEGABYTE) },
-  { key: 'pixels', part: 'min', selector: '#pixelsMinFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
-  { key: 'pixels', part: 'max', selector: '#pixelsMaxFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
+  { key: 'width', part: 'min', selector: '#widthMinFilter', event: 'input', ...scaledRange(1) },
+  { key: 'width', part: 'max', selector: '#widthMaxFilter', event: 'input', ...scaledRange(1) },
+  { key: 'height', part: 'min', selector: '#heightMinFilter', event: 'input', ...scaledRange(1) },
+  { key: 'height', part: 'max', selector: '#heightMaxFilter', event: 'input', ...scaledRange(1) },
   { key: 'added', part: 'min', selector: '#addedFromFilter', event: 'change', ...dateRange(false) },
   { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) },
   { key: 'modified', part: 'min', selector: '#modifiedFromFilter', event: 'change', ...dateRange(false) },
@@ -11078,6 +11127,28 @@ function bindEvents() {
     if (comments) {
       updateActiveQuery(query => { query.comments = query.comments === comments.dataset.commentsState ? '' : comments.dataset.commentsState; });
       if (state.query.comments === 'has') $('#commentsTextFilter').focus();
+      return;
+    }
+    const shape = event.target.closest('[data-filter-shape]');
+    if (shape) {
+      updateActiveQuery(query => toggleListValue(query, 'shape', shape.dataset.filterShape));
+      if (shape.dataset.filterShape === 'custom' && state.query.shape.includes('custom')) $('#shapeWidthFilter').focus();
+      return;
+    }
+    const rating = event.target.closest('[data-filter-rating]');
+    if (rating) return updateActiveQuery(query => toggleListValue(query, 'rating', Number(rating.dataset.filterRating)));
+    // 有/没有 exclude each other; clicking the lit one clears the filter
+    // (Eagle's note.has / note.no).
+    const textState = event.target.closest('[data-text-state]');
+    if (textState) {
+      const [field, value] = textState.dataset.textState.split(':');
+      updateActiveQuery(query => {
+        const current = query[`${field}State`] || (String(query[field] || '').trim() ? 'has' : '');
+        query[`${field}State`] = current === value ? '' : value;
+        // Off clears the keywords too: on their own they would read as 有.
+        if (current === value) query[field] = '';
+      });
+      if (state.query[`${field}State`] === 'has') $(`#${field}Filter`).focus();
     }
   });
   $('#filterPopover').addEventListener('contextmenu', event => {

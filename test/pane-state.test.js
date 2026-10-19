@@ -33,7 +33,7 @@ test('clones query state without sharing tags between panes', () => {
   second.search = 'two';
   assert.equal(first.search, 'one');
   assert.deepEqual(first.tags, ['a']);
-  assert.equal(first.shape, 'portrait');
+  assert.deepEqual(first.shape, ['portrait']);
   assert.equal(second.search, 'two');
   assert.deepEqual(second.tags, ['a', 'b']);
 });
@@ -59,7 +59,7 @@ test('entering a folder search result clears only the text search', () => {
   assert.equal(next.searchScope, 'name');
   assert.deepEqual(next.tags, ['参考']);
   assert.deepEqual(next.ext, ['png']);
-  assert.equal(next.rating, 3);
+  assert.deepEqual(next.rating, [3]);
   assert.equal(next.color, '#e5484d');
   assert.equal(query.search, '人物', 'the current query stays unchanged until navigation succeeds');
 });

@@ -16,14 +16,14 @@ async function run() {
   const result = await window.webContents.executeJavaScript(`(async () => {
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (let i = 0; i < 150 && !window.state?.connected; i += 1) await wait(20);
-    const snap = () => ({ search: state.query.search, rating: state.query.rating ?? null, box: $('#searchInput').value });
+    const snap = () => ({ search: state.query.search, rating: [...(state.query.rating || [])], box: $('#searchInput').value });
     const lockButton = () => $('#lockFiltersButton');
     const out = {};
     navigate({ kind: 'folder', id: 'A' });
     await wait(40);
     out.lockHiddenWhenIdle = lockButton()?.classList.contains('hidden') ?? null;
     state.query.search = 'cat';
-    state.query.rating = 4;
+    state.query.rating = [4];
     renderQueryControls();
     out.lockShownWhenFiltered = !lockButton().classList.contains('hidden');
     document.querySelector('#folderTree .folder-row[data-folder-id="B"]').click();

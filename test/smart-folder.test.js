@@ -85,3 +85,27 @@ test('tag, folder and format lists convert with Eagle rule methods', () => {
     assert.match(build(query).unsupported, new RegExp(label));
   }
 });
+
+test('the filter menus\' multi-choice and 有/没有 rules save as their Eagle rules', () => {
+  const result = buildSmartFolderConditions({ kind: 'all' }, {
+    rating: [5, 0], shape: ['landscape'], annotationState: 'has', annotation: 'blue, sea', urlState: 'none',
+    width: { min: 1000 }, height: { min: 100, max: 800 }
+  });
+  assert.equal(result.unsupported, null);
+  const [all, ...groups] = result.conditions;
+  assert.deepEqual(all.rules, [
+    { property: 'annotation', method: 'contain', value: 'blue' },
+    { property: 'annotation', method: 'contain', value: 'sea' },
+    { property: 'url', method: 'empty' },
+    { property: 'width', method: '>=', value: [1000] },
+    { property: 'height', method: 'between', value: [100, 800] }
+  ]);
+  assert.deepEqual(groups.map(group => group.rules), [
+    [{ property: 'rating', method: 'equal', value: '5' }, { property: 'rating', method: 'equal', value: 'none' }],
+    // 横图 in the menu takes the 细长 ones too; Eagle's shape rule does not.
+    [{ property: 'shape', method: 'equal', value: 'landscape' }, { property: 'shape', method: 'equal', value: 'panoramic-landscape' }]
+  ]);
+  assert.match(buildSmartFolderConditions({ kind: 'all' }, { shape: ['16:9'] }).unsupported, /形状/);
+  assert.deepEqual(buildSmartFolderConditions({ kind: 'all' }, { annotationState: 'has' }).conditions[0].rules,
+    [{ property: 'annotation', method: 'not-empty' }]);
+});

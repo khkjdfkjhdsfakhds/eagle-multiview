@@ -68,7 +68,9 @@ const bridge = {
     if (query.folderId) data = data.filter(item => item.folders.includes(query.folderId));
     if (query.unfiled) data = data.filter(item => !item.folders.length);
     if (query.search) data = data.filter(item => item.name.toLowerCase().includes(query.search.toLowerCase()));
-    if (query.rating !== null && query.rating !== undefined) data = data.filter(item => item.star === query.rating);
+    // 评分 is a list of ticked ratings (an older single value still reads).
+    const ratings = Array.isArray(query.rating) ? query.rating : (query.rating !== null && query.rating !== undefined ? [query.rating] : []);
+    if (ratings.length) data = data.filter(item => ratings.includes(item.star));
     const offset = query.offset || 0, limit = query.limit || 160;
     return { data: clone(data.slice(offset, offset + limit)), total: data.length, nextOffset: offset + limit, hasMore: offset + limit < data.length };
   },

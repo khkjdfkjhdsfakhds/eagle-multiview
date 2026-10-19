@@ -28,10 +28,14 @@ test('createQuery keeps the historical shape and defaults', () => {
     folderLogic: 'OR',
     ext: [],
     extExclude: [],
-    rating: null,
+    rating: [],
     annotation: '',
+    annotationState: '',
     url: '',
-    shape: '',
+    urlState: '',
+    shape: [],
+    shapeWidth: null,
+    shapeHeight: null,
     color: '',
     size: null,
     added: null,
@@ -44,13 +48,15 @@ test('createQuery keeps the historical shape and defaults', () => {
     durationUnit: 's',
     comments: '',
     commentsText: '',
-    pixels: null
+    pixels: null,
+    width: null,
+    height: null
   });
   // A remembered single-format filter from before the format list.
   assert.deepEqual(createQuery({ ext: '.PNG' }).ext, ['png']);
   const normalized = createQuery({ tags: ['a', 'a', '', 'b'], rating: '3', search: 42, folderId: '' });
   assert.deepEqual(normalized.tags, ['a', 'b']);
-  assert.equal(normalized.rating, null);
+  assert.deepEqual(normalized.rating, [3], 'a stored rating reads as one ticked rating');
   assert.equal(normalized.search, '42');
   assert.equal(normalized.folderId, null);
   // View context flags are merged at refresh time, never stored in the query.
@@ -66,15 +72,43 @@ test('filtersActive/filterCount track user-visible filters only', () => {
   assert.equal(filterCount({ rating: null }), 0);
 });
 
-test('shape matches Eagle isMatchShapeRule: panoramic from 2.5:1, square only when equal', () => {
-  const shapeOf = (width, height) => ['square', 'landscape', 'portrait', 'panoramic-landscape', 'panoramic-portrait']
-    .filter(shape => matchesConstraints({ id: 's', width, height }, { shape }));
+test('shape follows Eagle\'s filter menu: 横图/竖图 include 细长, 细长 from 2.5:1, ratios exact', () => {
+  const shapeOf = (width, height) => ['square', 'landscape', 'portrait', 'panoramic-landscape', 'panoramic-portrait', '4:3', '3:4', '16:9', '9:16']
+    .filter(shape => matchesConstraints({ id: 's', width, height }, { shape: [shape] }));
   assert.deepEqual(shapeOf(2200, 1000), ['landscape']);
-  assert.deepEqual(shapeOf(2500, 1000), ['panoramic-landscape']);
+  assert.deepEqual(shapeOf(2500, 1000), ['landscape', 'panoramic-landscape']);
   assert.deepEqual(shapeOf(1000, 2200), ['portrait']);
-  assert.deepEqual(shapeOf(1000, 2500), ['panoramic-portrait']);
+  assert.deepEqual(shapeOf(1000, 2500), ['portrait', 'panoramic-portrait']);
   assert.deepEqual(shapeOf(1001, 1000), ['landscape']);
   assert.deepEqual(shapeOf(1000, 1000), ['square']);
+  assert.deepEqual(shapeOf(1600, 900), ['landscape', '16:9']);
+  assert.deepEqual(shapeOf(300, 400), ['portrait', '3:4']);
+  // Several shapes are any-of; 自定 matches its exact ratio.
+  assert.equal(matchesConstraints({ id: 's', width: 100, height: 100 }, { shape: ['portrait', 'square'] }), true);
+  assert.equal(matchesConstraints({ id: 's', width: 200, height: 100 }, { shape: ['custom'], shapeWidth: 2, shapeHeight: 1 }), true);
+  assert.equal(matchesConstraints({ id: 's', width: 300, height: 100 }, { shape: ['custom'], shapeWidth: 2, shapeHeight: 1 }), false);
+});
+
+test('ratings tick any number, 注释/链接 take 有/没有 with keywords, 尺寸 takes width and height', () => {
+  const item = { id: 'r', star: 4, annotation: 'Blue Sky, sea', url: '', width: 1200, height: 800 };
+  assert.equal(matchesConstraints(item, { rating: [5, 4] }), true);
+  assert.equal(matchesConstraints(item, { rating: [0] }), false);
+  assert.equal(matchesConstraints({ id: 'u' }, { rating: [0, 5] }), true);
+  assert.equal(matchesConstraints(item, { annotationState: 'has' }), true);
+  assert.equal(matchesConstraints(item, { annotationState: 'has', annotation: 'blue, SEA' }), true);
+  assert.equal(matchesConstraints(item, { annotationState: 'has', annotation: 'blue, land' }), false);
+  assert.equal(matchesConstraints(item, { annotationState: 'none' }), false);
+  assert.equal(matchesConstraints(item, { urlState: 'none' }), true);
+  assert.equal(matchesConstraints(item, { urlState: 'has' }), false);
+  assert.equal(matchesConstraints(item, { width: { min: 1000 }, height: { max: 800 } }), true);
+  assert.equal(matchesConstraints(item, { width: { max: 1000 } }), false);
+  // The API answers one rating and 有 with one keyword; the rest scan.
+  assert.equal(needsClientScan({ rating: [4] }), false);
+  assert.equal(needsClientScan({ rating: [4, 5] }), true);
+  assert.equal(needsClientScan({ annotation: 'sky' }), false);
+  assert.equal(needsClientScan({ annotation: 'sky,sea', annotationState: 'has' }), true);
+  assert.equal(needsClientScan({ urlState: 'none' }), true);
+  assert.equal(needsClientScan({ width: { min: 10 } }), true);
 });
 
 test('matchesConstraints derives every client-side predicate from the table', () => {
@@ -236,7 +270,8 @@ test('the filter panel and the spec table stay in step', () => {
   const indexHTML = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
   // Two inputs per range key, each declaring which end it drives.
   for (const [key, min, max] of [['size', '#sizeMinFilter', '#sizeMaxFilter'],
-                                 ['pixels', '#pixelsMinFilter', '#pixelsMaxFilter'],
+                                 ['width', '#widthMinFilter', '#widthMaxFilter'],
+                                 ['height', '#heightMinFilter', '#heightMaxFilter'],
                                  ['added', '#addedFromFilter', '#addedToFilter']]) {
     assert.ok(renderer.includes(`{ key: '${key}', part: 'min', selector: '${min}'`), `${key} min binding`);
     assert.ok(renderer.includes(`{ key: '${key}', part: 'max', selector: '${max}'`), `${key} max binding`);

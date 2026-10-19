@@ -73,23 +73,19 @@
             <div class="field-group" role="group" aria-labelledby="colorFilterLabel"><span id="colorFilterLabel">颜色</span>
               <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
             </div>
-            <label>形状
-              <select id="shapeFilter" title="图片形状">
-                <option value="">全部形状</option>
-                <option value="square">正方形</option>
-                <option value="landscape">横向</option>
-                <option value="portrait">纵向</option>
-                <option value="panoramic-landscape">全景横向</option>
-                <option value="panoramic-portrait">全景纵向</option>
-              </select>
-            </label>
-            <label>评分
-              <select id="ratingFilter" title="评分">
-                <option value="">全部评分</option>
-                <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
-                <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
-              </select>
-            </label>
+            <div class="field-group filter-section" role="group" aria-labelledby="shapeFilterLabel">
+              <span id="shapeFilterLabel">形状</span>
+              <div id="shapeFilterList" class="filter-check-list" aria-label="形状"></div>
+              <div id="shapeCustomFilter" class="filter-range hidden">
+                <input id="shapeWidthFilter" type="number" min="1" step="any" inputmode="decimal" placeholder="W" autocomplete="off" aria-label="自定比例的宽">
+                <span class="filter-range-dash" aria-hidden="true">:</span>
+                <input id="shapeHeightFilter" type="number" min="1" step="any" inputmode="decimal" placeholder="H" autocomplete="off" aria-label="自定比例的高">
+              </div>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="ratingFilterLabel">
+              <span id="ratingFilterLabel">评分</span>
+              <div id="ratingFilterList" class="filter-check-list" aria-label="评分"></div>
+            </div>
             <div class="field-group filter-section" role="group" aria-labelledby="extFilterLabel">
               <span id="extFilterLabel">格式</span>
               <input id="extFilterSearch" type="search" placeholder="搜索格式…" autocomplete="off" aria-label="搜索格式">
@@ -116,13 +112,21 @@
               </div>
               <details class="filter-months" data-date-months="modified"><summary>按月份</summary><div class="filter-check-list" data-month-list="modified"></div></details>
             </div>
-            <label>分辨率（百万像素）
-              <div class="filter-range">
-                <input id="pixelsMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小百万像素">
+            <div class="field-group filter-section" role="group" aria-labelledby="resolutionFilterLabel">
+              <span id="resolutionFilterLabel">尺寸</span>
+              <div class="filter-range filter-range-labeled">
+                <span class="filter-range-label">宽</span>
+                <input id="widthMinFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最小" autocomplete="off" aria-label="最小宽度">
                 <span class="filter-range-dash" aria-hidden="true">–</span>
-                <input id="pixelsMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大百万像素">
+                <input id="widthMaxFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最大" autocomplete="off" aria-label="最大宽度">
               </div>
-            </label>
+              <div class="filter-range filter-range-labeled">
+                <span class="filter-range-label">高</span>
+                <input id="heightMinFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最小" autocomplete="off" aria-label="最小高度">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="heightMaxFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最大" autocomplete="off" aria-label="最大高度">
+              </div>
+            </div>
             <label>时长
               <div class="filter-range filter-range-unit">
                 <input id="durationMinFilter" type="number" min="0" step="any" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最短时长">
@@ -146,12 +150,22 @@
               </div>
               <input id="commentsTextFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="标注关键字">
             </div>
-            <label>备注包含
-              <input id="annotationFilter" placeholder="筛选备注" autocomplete="off">
-            </label>
-            <label>来源包含
-              <input id="urlFilter" placeholder="筛选来源 URL" autocomplete="off">
-            </label>
+            <div class="field-group filter-section" role="group" aria-labelledby="annotationFilterLabel">
+              <span id="annotationFilterLabel">注释</span>
+              <div class="filter-presets">
+                <button type="button" class="filter-preset" data-text-state="annotation:has" aria-pressed="false">有注释</button>
+                <button type="button" class="filter-preset" data-text-state="annotation:none" aria-pressed="false">没有注释</button>
+              </div>
+              <input id="annotationFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="注释关键字">
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="urlFilterLabel">
+              <span id="urlFilterLabel">链接</span>
+              <div class="filter-presets">
+                <button type="button" class="filter-preset" data-text-state="url:has" aria-pressed="false">有链接</button>
+                <button type="button" class="filter-preset" data-text-state="url:none" aria-pressed="false">没有链接</button>
+              </div>
+              <input id="urlFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="链接关键字">
+            </div>
             <button id="toggleTagColorsButton" type="button" class="tag-colors-toggle">管理标签颜色</button>
             <div id="tagColorManager" class="tag-color-manager hidden"></div>
             <button id="saveSmartFolderButton" class="filter-save-smart" type="button">保存为智能文件夹</button>

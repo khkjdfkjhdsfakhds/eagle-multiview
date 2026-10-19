@@ -27,6 +27,10 @@ test('filter panel in a real renderer', { timeout: 60000 }, async () => {
   assert.equal(result.badgeTags, '1', 'the whole tag rule is one badge entry');
   assert.equal(result.months, 3);
   assert.equal(result.commentsTextEnabled, true, '标注 keywords open up with 有标注');
+  // Eagle's 形状 rows with counts (rows the view has none of stay out; 自定 always).
+  assert.deepEqual(result.shapes, [['横图', '3', ''], ['方形', '1', ''], ['4:3', '2', ''], ['16:9', '1', ''], ['自定', null, '']]);
+  assert.deepEqual(result.ratings.map(row => [row[0], row[1]]), [['5 星', '1'], ['3 星', '1'], ['尚未评分', '2']]);
+  assert.equal(result.annotationKeywordsDisabled, true, '注释 keywords wait for 有注释');
   assert.deepEqual(result.durationStored, { min: 60, max: null }, '1 minute is stored as 60 seconds');
   assert.equal(result.stillOpen, true);
   assert.equal(result.popoverFits, true, 'the panel stays inside a 980×640 window');

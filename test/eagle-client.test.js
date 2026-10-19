@@ -119,15 +119,21 @@ test('format filters forward a typed extension to Eagle', async () => {
 
 test('forwards Eagle v2 untagged and metadata filters', async () => {
   const client = new RecordingClient();
-  await client.queryItems({ isUntagged: true, annotation: 'note', url: 'example', shape: 'portrait', offset: 0, limit: 160 });
+  // 方形 means the same in the API as in the filter menu; 竖图 does not
+  // (the menu's includes 细长竖图), so that one scans (see below).
+  await client.queryItems({ isUntagged: true, annotation: 'note', url: 'example', shape: 'square', offset: 0, limit: 160 });
   assert.deepEqual(client.calls[0].options.body, {
     offset: 0,
     limit: 160,
     annotation: 'note',
     url: 'example',
-    shape: 'portrait',
+    shape: 'square',
     isUntagged: true
   });
+  client.calls = [];
+  await client.queryItems({ shape: 'portrait', offset: 0, limit: 160 });
+  assert.equal('shape' in client.calls[0].options.body, false);
+  assert.equal(client.calls[0].options.body.limit, 1000, 'scanned');
 });
 
 test('random view uses Eagle random ordering endpoint', async () => {
@@ -420,10 +426,27 @@ test('viewFacets counts formats, folders (with 未分类) and months over the vi
     exts: { png: 2, mp4: 1 },
     folders: { f1: 2, f2: 1, NoFolders: 1 },
     addedMonths: { '2026/05': 1, '2026/06': 2 },
-    modifiedMonths: { '2026/05': 2, '2026/06': 1 }
+    modifiedMonths: { '2026/05': 2, '2026/06': 1 },
+    ratings: { 0: 3 },
+    shapes: {}
   });
-  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'ext', 'folders', 'modificationTime', 'mtime']);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'ext', 'folders', 'modificationTime', 'mtime', 'star', 'width', 'height']);
   assert.equal(await client.viewFacets({ search: 'cat' }), null);
+});
+
+test('viewFacets counts ratings and Eagle\'s shapes', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', star: 5, width: 400, height: 300 },
+    { id: 'b', width: 3000, height: 1000 },
+    { id: 'c', star: 5, width: 900, height: 1600 },
+    { id: 'd', width: 10, height: 10 },
+    { id: 'e' }
+  ];
+  client.request = async (_path, options = {}) => ({ data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length });
+  const facets = await client.viewFacets({});
+  assert.deepEqual(facets.ratings, { 5: 2, 0: 3 });
+  assert.deepEqual(facets.shapes, { landscape: 1, '4:3': 1, 'panoramic-landscape': 1, portrait: 1, '9:16': 1, square: 1 });
 });
 
 test('viewItemIds lists a plain view by id, 1000 per request (P6-02)', async () => {

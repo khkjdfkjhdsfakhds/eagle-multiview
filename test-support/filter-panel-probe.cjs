@@ -98,6 +98,49 @@ async function run() {
     await settle(['item-2', 'item-3', 'item-4'], '没有标注');
     press(document.querySelector('[data-comments-state="none"]'));
 
+    // 形状 and 评分: Eagle's menus, counts beside each, any number ticked.
+    out.shapes = rows('#shapeFilterList');
+    out.ratings = rows('#ratingFilterList');
+    press(document.querySelector('#shapeFilterList [data-filter-shape="4:3"]'));
+    await settle(['item-1', 'item-2'], '4:3');
+    press(document.querySelector('#shapeFilterList [data-filter-shape="square"]'));
+    await settle(['item-1', 'item-2', 'item-4'], '4:3 or 方形');
+    press(document.querySelector('#shapeFilterList [data-filter-shape="4:3"]'));
+    press(document.querySelector('#shapeFilterList [data-filter-shape="square"]'));
+    await settle(['item-1', 'item-2', 'item-3', 'item-4'], 'shapes cleared');
+    press(document.querySelector('#ratingFilterList [data-filter-rating="5"]'));
+    press(document.querySelector('#ratingFilterList [data-filter-rating="0"]'));
+    await settle(['item-1', 'item-3', 'item-4'], '5 星 or 尚未评分');
+    press(document.querySelector('#ratingFilterList [data-filter-rating="5"]'));
+    press(document.querySelector('#ratingFilterList [data-filter-rating="0"]'));
+    await settle(['item-1', 'item-2', 'item-3', 'item-4'], 'ratings cleared');
+    // 注释/链接: 有 or 没有, keywords narrowing 有.
+    out.annotationKeywordsDisabled = $('#annotationFilter').disabled;
+    press(document.querySelector('[data-text-state="annotation:has"]'));
+    await settle(['item-1'], '有注释');
+    const keywords = $('#annotationFilter');
+    keywords.value = 'sky, land'; keywords.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle([], 'keywords sky and land');
+    keywords.value = 'SKY,sea'; keywords.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle(['item-1'], 'keywords sky and sea');
+    press(document.querySelector('[data-text-state="annotation:none"]'));
+    await settle(['item-2', 'item-3', 'item-4'], '没有注释');
+    press(document.querySelector('[data-text-state="annotation:none"]'));
+    press(document.querySelector('[data-text-state="url:has"]'));
+    await settle(['item-2'], '有链接');
+    press(document.querySelector('[data-text-state="url:has"]'));
+    await settle(['item-1', 'item-2', 'item-3', 'item-4'], 'text states cleared');
+    // 尺寸: width and height ranges.
+    const widthMin = $('#widthMinFilter');
+    widthMin.value = '800'; widthMin.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle(['item-1', 'item-2', 'item-3'], '宽 ≥ 800');
+    const heightMax = $('#heightMaxFilter');
+    heightMax.value = '700'; heightMax.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle(['item-1', 'item-2'], '高 ≤ 700');
+    widthMin.value = ''; widthMin.dispatchEvent(new Event('input', { bubbles: true }));
+    heightMax.value = ''; heightMax.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle(['item-1', 'item-2', 'item-3', 'item-4'], 'size cleared');
+
     const unit = $('#durationUnitFilter');
     unit.value = 'm'; unit.dispatchEvent(new Event('change', { bubbles: true }));
     const min = $('#durationMinFilter');

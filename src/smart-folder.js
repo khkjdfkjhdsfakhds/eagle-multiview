@@ -21,7 +21,7 @@
     }
     // Every active filter must have a verified conversion. New query fields
     // default to rejection rather than silently widening a saved folder.
-    const supported = new Set(['search', 'tags', 'folderInclude', 'ext', 'rating', 'annotation', 'url', 'shape']);
+    const supported = new Set(['search', 'tags', 'folderInclude', 'ext', 'rating', 'annotation', 'url', 'shape', 'width', 'height']);
     const normalized = querySpec.createQuery(query);
     const labels = {
       color: '颜色', size: '文件大小', added: '添加日期', modified: '修改日期', duration: '时长',
@@ -73,10 +73,41 @@
     if (normalized.extExclude.length) return { conditions: [], unsupported: `以下条件暂不支持无损保存：${labels.ext}（排除）` };
     if (normalized.ext.length === 1) rules.push({ property: 'type', method: 'equal', value: normalized.ext[0] });
     else if (normalized.ext.length > 1) extra.push({ match: 'OR', boolean: 'TRUE', rules: normalized.ext.map(ext => ({ property: 'type', method: 'equal', value: ext })) });
-    if (Number.isInteger(query.rating)) rules.push({ property: 'rating', method: 'equal', value: query.rating === 0 ? 'none' : String(query.rating) });
-    if (query.annotation?.trim()) rules.push({ property: 'annotation', method: 'contain', value: query.annotation.trim() });
-    if (query.url?.trim()) rules.push({ property: 'url', method: 'contain', value: query.url.trim() });
-    if (query.shape) rules.push({ property: 'shape', method: 'equal', value: query.shape });
+    const ratingRule = star => ({ property: 'rating', method: 'equal', value: star === 0 ? 'none' : String(star) });
+    if (normalized.rating.length === 1) rules.push(ratingRule(normalized.rating[0]));
+    else if (normalized.rating.length > 1) extra.push({ match: 'OR', boolean: 'TRUE', rules: normalized.rating.map(ratingRule) });
+    // 注释/链接: 有 → not-empty plus one contain rule per keyword, 没有 → empty
+    // (rule-match.js isMatchAnnotationRule/isMatchUrlRule, case-insensitive).
+    for (const [property, stateKey] of [['annotation', 'annotationState'], ['url', 'urlState']]) {
+      const keywords = String(normalized[property] || '').split(/[,，]/).map(word => word.trim()).filter(Boolean);
+      const state = normalized[stateKey] || (keywords.length ? 'has' : '');
+      if (state === 'none') rules.push({ property, method: 'empty' });
+      else if (state === 'has') {
+        if (keywords.length) rules.push(...keywords.map(value => ({ property, method: 'contain', value })));
+        else rules.push({ property, method: 'not-empty' });
+      }
+    }
+    // Eagle's shape rule knows the five orientations, each exclusive; the
+    // menu's 横图/竖图 include the 细长 ones, so those join the OR group.
+    if (normalized.shape.length) {
+      const shapes = new Set(normalized.shape);
+      if (shapes.has('landscape')) shapes.add('panoramic-landscape');
+      if (shapes.has('portrait')) shapes.add('panoramic-portrait');
+      if ([...shapes].some(shape => !['landscape', 'portrait', 'square', 'panoramic-landscape', 'panoramic-portrait'].includes(shape))) {
+        return { conditions: [], unsupported: '以下条件暂不支持无损保存：形状（比例）' };
+      }
+      const shapeRules = [...shapes].map(value => ({ property: 'shape', method: 'equal', value }));
+      if (shapeRules.length === 1) rules.push(shapeRules[0]);
+      else extra.push({ match: 'OR', boolean: 'TRUE', rules: shapeRules });
+    }
+    // 尺寸 (isMatchWidthRule/isMatchHeightRule take [value1, value2]).
+    for (const property of ['width', 'height']) {
+      const range = normalized[property];
+      if (!range) continue;
+      if (Number.isFinite(range.min) && Number.isFinite(range.max)) rules.push({ property, method: 'between', value: [range.min, range.max] });
+      else if (Number.isFinite(range.min)) rules.push({ property, method: '>=', value: [range.min] });
+      else if (Number.isFinite(range.max)) rules.push({ property, method: '<=', value: [range.max] });
+    }
     if (rules.length) conditions.push({ match: 'AND', boolean: 'TRUE', rules });
     conditions.push(...extra);
     if (!conditions.length) return { conditions: [], unsupported: '当前视图没有可保存的筛选条件' };

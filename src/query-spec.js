@@ -204,6 +204,75 @@
     return keywords.every(keyword => comments.some(comment => lower(comment?.annotation).includes(keyword)));
   }
 
+  // 注释 and 链接 the way Eagle's note/url filter menus do: 有 optionally
+  // narrowed by comma-separated keywords that must each appear, or 没有. A
+  // keyword with no state (an older saved query) means 有.
+  const TEXT_STATES = ['has', 'none'];
+  function textState(value, state) {
+    return TEXT_STATES.includes(state) ? state : (trimmed(value) ? 'has' : '');
+  }
+  function textKeywords(value) {
+    return String(value ?? '').split(/[,，]/).map(word => lower(word.trim())).filter(Boolean);
+  }
+  function matchTextRules(text, value, state) {
+    const content = lower(text);
+    if (textState(value, state) === 'none') return !content;
+    if (!content) return false;
+    return textKeywords(value).every(keyword => content.includes(keyword));
+  }
+  // The API's own contains-match covers 有 with exactly one keyword.
+  function textNeedsScan(value, state) {
+    return textState(value, state) === 'none' || textKeywords(value).length !== 1;
+  }
+
+  // 评分 and 形状 tick any number of choices, matched as any-of (Eagle's
+  // filter menus). A single value from an older saved query still reads.
+  function normalizeRatings(value) {
+    const values = Array.isArray(value) ? value : (value === null || value === undefined || value === '' ? [] : [value]);
+    return [...new Set(values.map(Number))].filter(star => Number.isInteger(star) && star >= 0 && star <= 5).sort((left, right) => right - left);
+  }
+  const SHAPES = ['landscape', 'portrait', 'square', 'panoramic-landscape', 'panoramic-portrait', '4:3', '3:4', '16:9', '9:16', 'custom'];
+  const SHAPE_RATIOS = { '4:3': 4 / 3, '3:4': 3 / 4, '16:9': 16 / 9, '9:16': 9 / 16 };
+  // Shapes whose API meaning (isMatchShapeRule) equals the menu's.
+  const API_SHAPES = new Set(['square', 'panoramic-landscape', 'panoramic-portrait']);
+  function normalizeShapes(value) {
+    const values = Array.isArray(value) ? value : (value ? [value] : []);
+    return SHAPES.filter(shape => values.map(String).includes(shape));
+  }
+  // Eagle's filterContent: 横图/竖图 take every wider/taller item (the 细长
+  // ones too), 细长 from a 2.5:1 side ratio, the ratios and 自定 exactly; 自定
+  // without both sides passes everything.
+  function matchShapeRule(item, shape, query) {
+    const width = Number(item?.width) || 0;
+    const height = Number(item?.height) || 0;
+    switch (shape) {
+      case 'landscape': return width > height;
+      case 'portrait': return height > width;
+      case 'square': return width > 0 && width === height;
+      case 'panoramic-landscape': return width > height && height > 0 && width / height >= 2.5;
+      case 'panoramic-portrait': return height > width && width > 0 && height / width >= 2.5;
+      case 'custom': {
+        const ratioWidth = Number(query?.shapeWidth) || 0;
+        const ratioHeight = Number(query?.shapeHeight) || 0;
+        return ratioWidth > 0 && ratioHeight > 0 ? height > 0 && width / height === ratioWidth / ratioHeight : true;
+      }
+      default: return height > 0 && width / height === SHAPE_RATIOS[shape];
+    }
+  }
+  // The menu's counts (Eagle's filterCounts.shape): one of the five
+  // orientations, plus a ratio when the sides match one exactly.
+  function shapeFacetKeys(item) {
+    const width = Number(item?.width) || 0;
+    const height = Number(item?.height) || 0;
+    if (!width || !height) return [];
+    const keys = [width > height ? (width / height >= 2.5 ? 'panoramic-landscape' : 'landscape')
+      : width < height ? (height / width >= 2.5 ? 'panoramic-portrait' : 'portrait') : 'square'];
+    const ratio = Object.keys(SHAPE_RATIOS).find(key => width / height === SHAPE_RATIOS[key]);
+    if (ratio) keys.push(ratio);
+    return keys;
+  }
+  const positiveOrNull = value => (Number(value) > 0 ? Number(value) : null);
+
   // One row per query field; everything else derives from this table:
   // pane defaults/clone (createQuery), filter badge state (filtersActive/
   // filterCount), client-side matching (matchesConstraints), the
@@ -360,44 +429,53 @@
     {
       key: 'rating',
       filter: true,
-      normalize: value => (Number.isInteger(value) ? value : null),
-      isActive: value => Number.isInteger(value),
-      match: (item, value) => Number(item.star || 0) === value,
-      applyBody: (value, body) => { body.rating = value; }
+      normalize: normalizeRatings,
+      isActive: value => normalizeRatings(value).length > 0,
+      // One rating is the API's rating parameter; several scan.
+      clientOnly: value => normalizeRatings(value).length !== 1,
+      match: (item, value) => normalizeRatings(value).includes(Number(item.star) || 0),
+      applyBody: (value, body) => {
+        const ratings = normalizeRatings(value);
+        if (ratings.length === 1) body.rating = ratings[0];
+      }
     },
     {
       key: 'annotation',
       filter: true,
       normalize: value => String(value ?? ''),
-      isActive: value => Boolean(trimmed(value)),
-      match: (item, value) => lower(item.annotation).includes(lower(trimmed(value))),
-      applyBody: (value, body) => { body.annotation = trimmed(value); }
+      isActive: (value, query) => Boolean(textState(value, query?.annotationState)),
+      clientOnly: (value, query) => textNeedsScan(value, query?.annotationState),
+      match: (item, value, context) => matchTextRules(item.annotation, value, context?.query?.annotationState),
+      applyBody: (value, body, query) => { if (!textNeedsScan(value, query?.annotationState)) body.annotation = trimmed(value); }
     },
+    { key: 'annotationState', normalize: value => pick(value, TEXT_STATES, '') },
     {
       key: 'url',
       filter: true,
       normalize: value => String(value ?? ''),
-      isActive: value => Boolean(trimmed(value)),
-      match: (item, value) => lower(item.url).includes(lower(trimmed(value))),
-      applyBody: (value, body) => { body.url = trimmed(value); }
+      isActive: (value, query) => Boolean(textState(value, query?.urlState)),
+      clientOnly: (value, query) => textNeedsScan(value, query?.urlState),
+      match: (item, value, context) => matchTextRules(item.url, value, context?.query?.urlState),
+      applyBody: (value, body, query) => { if (!textNeedsScan(value, query?.urlState)) body.url = trimmed(value); }
     },
+    { key: 'urlState', normalize: value => pick(value, TEXT_STATES, '') },
     {
       key: 'shape',
       filter: true,
-      normalize: value => String(value ?? ''),
-      isActive: Boolean,
-      // Eagle's isMatchShapeRule: panoramic from a 2.5:1 side ratio, square
-      // only when both sides are equal, so a local scan agrees with the API.
-      match: (item, value) => {
-        const width = Number(item.width) || 0;
-        const height = Number(item.height) || 0;
-        const shape = item.shape || (width > height
-          ? (width / height >= 2.5 ? 'panoramic-landscape' : 'landscape')
-          : width < height ? (height / width >= 2.5 ? 'panoramic-portrait' : 'portrait') : 'square');
-        return shape === value;
+      normalize: normalizeShapes,
+      isActive: value => normalizeShapes(value).length > 0,
+      clientOnly: value => {
+        const shapes = normalizeShapes(value);
+        return !(shapes.length === 1 && API_SHAPES.has(shapes[0]));
       },
-      applyBody: (value, body) => { body.shape = value; }
+      match: (item, value, context) => normalizeShapes(value).some(shape => matchShapeRule(item, shape, context?.query)),
+      applyBody: (value, body) => {
+        const shapes = normalizeShapes(value);
+        if (shapes.length === 1 && API_SHAPES.has(shapes[0])) body.shape = shapes[0];
+      }
     },
+    { key: 'shapeWidth', normalize: positiveOrNull },
+    { key: 'shapeHeight', normalize: positiveOrNull },
     {
       key: 'color',
       filter: true,
@@ -464,6 +542,23 @@
       normalize: normalizeRange,
       isActive: rangeActive,
       match: (item, value) => inRange((Number(item.width) || 0) * (Number(item.height) || 0), value)
+    },
+    // 尺寸: Eagle's width and height ranges, in pixels.
+    {
+      key: 'width',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => inRange(Number(item.width) || 0, value)
+    },
+    {
+      key: 'height',
+      filter: true,
+      clientOnly: true,
+      normalize: normalizeRange,
+      isActive: rangeActive,
+      match: (item, value) => inRange(Number(item.height) || 0, value)
     }
   ];
 
@@ -544,6 +639,10 @@
     normalizeExtensions,
     monthKey,
     matchDateRules,
+    normalizeRatings,
+    normalizeShapes,
+    shapeFacetKeys,
+    SHAPES,
     NO_FOLDER,
     DATE_PRESETS
   };
