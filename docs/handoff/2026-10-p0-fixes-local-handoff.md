@@ -1111,7 +1111,7 @@ A-01、A-03、A-05～A-10、T-17、W-05（App 内 PDF 预览）、W-02（上传�
 | A-08 | `configChanges` 补 uiMode/density/fontScale/locale/layoutDirection。原生连接页的字号、显示大小要到下次启动才更新（页面本身不重载） |
 | A-09 | `onStop` 暂停 WebView 与计时器，`onStart` 恢复；分屏可见时不暂停。真机息屏时 CDP 求值确实挂起，亮屏后恢复 |
 | A-10 | 用户选“只提示”：局域网地址连不上且当前默认网络是移动数据时，失败页加一句说明。平板无蜂窝模块，无法真机验证 |
-| A-01 | 用户选“沿用现有密钥出 release”：`release` 构建用 debug keystore 签名、不可调试、不开 WebView 调试；与已装 1.8.3 证书一致（apksigner 核对）。**发 1.8.4 时用 `assembleRelease` 的 `app-release.apk`**，发布说明不要再写“debug 签名”。**密钥 `~/.android/debug.keystore` 还没备份，需用户给位置** |
+| A-01 | 用户选“沿用现有密钥出 release”：`release` 构建用 debug keystore 签名、不可调试、不开 WebView 调试；与已装 1.8.3 证书一致（apksigner 核对）。**发 1.8.4 时用 `assembleRelease` 的 `app-release.apk`**，发布说明不要再写“debug 签名”。密钥 `~/.android/debug.keystore` 已按用户要求复制到其 iCloud 云盘“Eagle MultiView 签名”文件夹（SHA-256 一致，不在仓库） |
 | W-05 | 原版用自带 pdf.js 3.1.81 查看器（`app.asar/app/pdf-viewer/web/viewer.html?path=&locale=&theme=`）。用户选“复用 Eagle 的查看器”：网页端 PDF 预览用 iframe 打开 `/eagle-app/pdf-viewer/…`，主进程运行时从 `/Applications/Eagle.app`（或 `~/Applications`）的 asar 读，只放行查看器目录和 jQuery，仓库不复制文件；查看器发来的 Exit/Prev/Next 关闭或切换预览（与原版一致）；主机上找不到查看器时显示缩略图 + 说明。桌面版仍用 Chromium 查看器。真机：27 页 PDF 正常渲染，系统返回关闭预览 |
 | W-02 | 用户未同意往资料库导入大视频，**未做真机上传验证**（代码在 10-14 已修） |
 
@@ -1132,6 +1132,5 @@ A-01、A-03、A-05～A-10、T-17、W-05（App 内 PDF 预览）、W-02（上传�
 
 ### 待用户决定 / 之后
 
-- 备份签名密钥到哪里（不进仓库）。
 - W-02 真机上传约 1 GB 视频是否要做（会写资料库）。
 - 合并发 1.8.4（合并、推送、版本号、标签、Release 均需明确同意）。
