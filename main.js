@@ -2467,6 +2467,7 @@ function setupIPC() {
     }
     return result;
   });
+  handleRPC('folder:remove', (event, mutation) => hub.removeFolder({ ...mutation, origin: event.sender.id }));
   handleRPC('folder:copy-plan', (_event, request) => planFolderCopy(request));
   handleRPC('folder:copy', async (event, mutation) => {
     const result = await enqueueCreation(`folder-copy:${path.resolve(mutation.libraryPath)}:${mutation.sourceId}:${mutation.parentId || 'root'}`,

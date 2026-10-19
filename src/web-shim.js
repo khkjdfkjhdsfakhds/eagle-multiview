@@ -582,6 +582,7 @@
     cancelSiteImport: data => invoke('site:cancel', [data]),
     importSiteSelection: data => invoke('site:import', [data]),
     moveFolder: data => invoke('folder:move', [data]),
+    removeFolder: data => invoke('folder:remove', [data]),
     copyFolder: data => invoke('folder:copy', [data]),
     copyFolderPlan: data => invoke('folder:copy-plan', [data]),
     markFolderUsed: data => send('folder:used', [data]),

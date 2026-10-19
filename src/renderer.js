@@ -299,6 +299,8 @@ const state = {
   folderDialogResolve: null,
   folderDialogAllowEmpty: false,
   trashDialogResolve: null,
+  // Folder id -> view to open when a folder this window deleted disappears.
+  folderRemovalRedirects: new Map(),
   duplicateDialogResolve: null,
   localPins: {},
   importing: false,
@@ -5886,6 +5888,10 @@ async function canRemoveFromCurrentFolder(ids, paneId = state.activePaneId) {
 }
 
 function chooseTrashAction(ids) {
+  // The same dialog also asks 删除文件夹 (chooseFolderRemoval).
+  $('#trashDialogTitle').textContent = '删除素材';
+  $('#trashDeleteButton').textContent = '删除素材';
+  $('#trashDialogCheck').classList.add('hidden');
   $('#trashDialogMessage').textContent = `已选择 ${ids.length} 个素材。请选择只从当前文件夹移除，还是删除素材并移入回收站。`;
   $('#trashRemoveButton').classList.remove('hidden');
   $('#trashDialog').classList.remove('hidden');
@@ -7888,6 +7894,18 @@ function folderColorMenuRows(folderId) {
   return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`];
 }
 
+// Eagle's folder menus (sidebar and subfolder card) end with 删除文件夹 ⌘⌫.
+// The sidebar one then opens the next folder, the card one stays put.
+function removeFolderMenuRows(folderId, { selectNext }) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!window.eagleMV.removeFolder || !folder) return [];
+  // Eagle disables it for a locked folder; MultiView cannot unlock one.
+  return ['<div class="context-menu-separator"></div>', contextMenuRow({
+    icon: 'trashMenu', label: '删除文件夹', shortcut: '⌘ ⌫', action: 'remove-folder-node',
+    payload: { folderId, selectNext }, disabled: !state.connected || Boolean(folder.password), danger: true
+  })];
+}
+
 function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null, keepOpen = false }) {
   // keepOpen: a check row that toggles in place, like Eagle's keepOpen items.
   const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"${keepOpen ? ' data-keep-open="true"' : ''}` : '';
@@ -8254,7 +8272,8 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : []),
       ...(data.targetFolderId ? [subfolderContentMenuRow()] : []),
-      ...(data.targetFolderId ? folderColorMenuRows(data.targetFolderId) : [])
+      ...(data.targetFolderId ? folderColorMenuRows(data.targetFolderId) : []),
+      ...(data.targetFolderId ? removeFolderMenuRows(data.targetFolderId, { selectNext: true }) : [])
     ].join('');
   }
   if (data.kind === 'folder') {
@@ -8267,7 +8286,8 @@ function contextMenuMarkup(data) {
       '<div class="context-menu-separator"></div>',
       contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } }),
       subfolderContentMenuRow(),
-      ...folderColorMenuRows(data.folderId)
+      ...folderColorMenuRows(data.folderId),
+      ...removeFolderMenuRows(data.folderId, { selectNext: false })
     ].join('');
   }
   if (data.kind === 'workspace') {
@@ -8521,6 +8541,7 @@ async function executeContextAction(action, payload) {
   if (action === 'new-window-root') return openNewWindowAt('root');
   if (action === 'new-window-eagle') return openNewWindowAt('eagle');
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
+  if (action === 'remove-folder-node') return removeFolderById(payload.folderId, { selectNext: Boolean(payload.selectNext), paneId: data.paneId });
   if (action === 'set-folder-color') return setFolderColor(payload.folderId, payload.color);
   if (action === 'toggle-subfolder-content') return setCardDisplay({ subfolderContent: !cardDisplay.subfolderContent });
   if (action === 'import') return importFiles();
@@ -8655,6 +8676,7 @@ function runMenuCommand(payload = {}) {
       return;
     case 'trash':
       if (!previewOpen && selectedIds.length) setTrash(selectedIds, true);
+      else if (!previewOpen) requestFolderRemovalShortcut();
       return;
     case 'search': $('#searchInput').focus(); return;
     case 'search-all':
@@ -9233,6 +9255,124 @@ async function renameFolderById(folderId) {
   const nextName = await requestNameDialog({ title: '重命名文件夹', initialValue: folder.name || '', submitLabel: '重命名' });
   if (nextName === null || nextName === folder.name) return;
   return renameFolderTo(folder, nextName);
+}
+
+// Where Eagle's removeFolder goes after deleting a folder: the sibling now in
+// its place, else the one before, else the first; with no siblings left, the
+// parent; at the top level, 全部. Siblings in the order the sidebar shows.
+function folderViewAfterRemoval(folderId) {
+  const trail = findFolderPath(state.library?.folders || [], folderId);
+  if (!trail.length) return { kind: 'all' };
+  const parent = trail.length > 1 ? trail.at(-2) : null;
+  const view = parent ? { kind: 'folder', id: parent.id } : { kind: 'root' };
+  const siblings = window.EagleMVManualOrder.sort(parent ? parent.children || [] : state.library.folders, manualOrder(view, 'folders'));
+  const index = siblings.findIndex(folder => folder.id === folderId);
+  const rest = siblings.filter(folder => folder.id !== folderId);
+  const next = rest[index] || rest[index - 1] || rest[0];
+  if (next) return { kind: 'folder', id: next.id };
+  return parent ? { kind: 'folder', id: parent.id } : { kind: 'all' };
+}
+
+function subtreeFolderIds(folder, ids = new Set()) {
+  if (!folder?.id) return ids;
+  ids.add(folder.id);
+  for (const child of folder.children || []) subtreeFolderIds(child, ids);
+  return ids;
+}
+
+// Eagle asks only when the folder holds items or subfolders, with
+// "把文件夹内项目丢到回收站" ticked each time, focus on 确认删除.
+function chooseFolderRemoval(folder) {
+  $('#trashDialogTitle').textContent = '删除文件夹';
+  $('#trashDialogMessage').textContent = `这个操作无法进行复原，确认要删除“${folder.name || '未命名文件夹'}”文件夹吗？`;
+  $('#trashRemoveButton').classList.add('hidden');
+  $('#trashDeleteButton').textContent = '确认删除';
+  $('#trashDialogCheckbox').checked = true;
+  $('#trashDialogCheck').classList.remove('hidden');
+  $('#trashDialog').classList.remove('hidden');
+  $('#trashDeleteButton').focus();
+  return new Promise(resolve => {
+    state.trashDialogResolve = choice => resolve(choice === 'delete' ? { isDeleteImages: $('#trashDialogCheckbox').checked } : null);
+  });
+}
+
+// Eagle's 删除文件夹 (sidebar, subfolder card, ⌘⌫). The API has no delete;
+// the main process runs Eagle's own removeFolder with the answers given here.
+async function removeFolderById(folderId, { selectNext = false, paneId = state.activePaneId } = {}) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !state.connected || !window.eagleMV.removeFolder) return false;
+  // Eagle will not delete a locked folder, and MultiView cannot unlock one.
+  if (folder.password) {
+    toast('该文件夹已加密，请在 Eagle 中解锁后删除', 3600);
+    return false;
+  }
+  const libraryPath = state.library?.path;
+  const removed = subtreeFolderIds(folder);
+  const target = folderViewAfterRemoval(folder.id);
+  const showing = pane => pane.currentView.kind === 'folder' && removed.has(pane.currentView.id);
+  const moving = state.panes.filter(pane => showing(pane) || (selectNext && pane.id === paneId));
+  if (moving.length && !confirmDiscardChanges()) return false;
+  let isDeleteImages = true;
+  if ((Number(folder.imageCount) || 0) > 0 || (folder.children || []).length > 0) {
+    const choice = await chooseFolderRemoval(folder);
+    if (!choice) return false;
+    isDeleteImages = choice.isDeleteImages;
+    // Eagle then confirms when 50 or more items are affected.
+    const affected = Number.isFinite(folder.descendantImageCount) ? folder.descendantImageCount : Number(folder.imageCount) || 0;
+    if (affected >= 50 && !confirm(`批量操作确认\n\n这个操作会影响 ${affected.toLocaleString()} 个文件，确定要继续吗？`)) return false;
+  }
+  const operationToken = beginForegroundOperation('正在删除文件夹…', { key: `remove-folder:${libraryPath}:${folder.id}` });
+  if (!operationToken) return false;
+  setSyncStatus('正在删除…');
+  // The library update may reach this window before the reply; it sends
+  // panes on the deleted folders where Eagle would go, not to the root.
+  for (const id of removed) state.folderRemovalRedirects.set(id, target);
+  setTimeout(() => { for (const id of removed) if (state.folderRemovalRedirects.get(id) === target) state.folderRemovalRedirects.delete(id); }, 15000);
+  try {
+    const result = await window.eagleMV.removeFolder({ id: folder.id, baseName: folder.name, isDeleteImages, libraryPath });
+    if (result?.missing) {
+      toast('这个文件夹已不存在，已刷新', 3500);
+      scheduleRefresh();
+      return false;
+    }
+    if (result?.conflict) {
+      toast(`这个文件夹已在 Eagle 或另一个窗口中改名为“${result.current?.name || '未命名'}”，未删除；请确认后重试`, 5000);
+      scheduleRefresh();
+      return false;
+    }
+    if (!result?.ok) throw new Error('删除未完成');
+    for (const pane of state.panes) {
+      if (pane.selectedFolderCard && removed.has(pane.selectedFolderCard)) pane.selectedFolderCard = null;
+      if (showing(pane) || (selectNext && pane.id === paneId)) {
+        withActivePane(pane.id, () => navigate(target, { skipDiscard: true }) !== false
+          || navigate({ kind: 'all' }, { skipDiscard: true }));
+      }
+    }
+    if (!state.selected.size) renderInspector();
+    toast(`“${folder.name || '未命名文件夹'}”已删除。`);
+    return true;
+  } catch (error) {
+    toast(`删除文件夹失败：${error.message}`, 6000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// ⌘⌫ with no item selected: a selected subfolder card, else the folder row
+// focused in the sidebar (Eagle: sidebar focus deletes the current folder).
+function requestFolderRemovalShortcut() {
+  if (state.selectedFolderCard) {
+    removeFolderById(state.selectedFolderCard, { selectNext: false });
+    return true;
+  }
+  const row = document.activeElement?.closest?.('#folderTree [data-folder-id]');
+  if (row?.dataset.folderId) {
+    removeFolderById(row.dataset.folderId, { selectNext: true });
+    return true;
+  }
+  return false;
 }
 
 // Shared by the rename dialog and the inspector's name field; baseName is the
@@ -12112,6 +12252,10 @@ function bindEvents() {
       setTrash(selectedIds, true);
       return;
     }
+    if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && deleteKey && !event.repeat && requestFolderRemovalShortcut()) {
+      event.preventDefault();
+      return;
+    }
     // In an image preview ⌘+/⌘− zoom the image and ⌘0 switches between 原始大小
     // and fit, as in Eagle (view.zoom.actual is CmdOrCtrl+0 there).
     if (!editable && previewOpen && previewImage() && primaryKey && !event.altKey) {
@@ -12839,9 +12983,14 @@ async function applyLibraryChange(payload) {
     }
     if (confirmation.confirmed && confirmation.missingFolderIds.length) {
       const deleted = new Set(confirmation.missingFolderIds);
+      let deletedElsewhere = false;
       for (const pane of state.panes) {
         if (pane.currentView.kind === 'folder' && deleted.has(pane.currentView.id)) {
-          withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
+          // A folder this window deleted: go where Eagle goes (removeFolderById).
+          const redirect = state.folderRemovalRedirects.get(pane.currentView.id);
+          if (!redirect) deletedElsewhere = true;
+          withActivePane(pane.id, () => (redirect && navigate(redirect, { record: false, refreshView: false, skipDiscard: true }) !== false)
+            || navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
         } else if (pane.selectedFolderCard && deleted.has(pane.selectedFolderCard)) {
           pane.selectedFolderCard = null;
           if (pane.id === state.activePaneId) withActivePane(pane.id, () => renderInspector());
@@ -12849,7 +12998,7 @@ async function applyLibraryChange(payload) {
       }
       reconciliation = reconcileLibraryChangePanes();
       renderReconciledLibraryPanes();
-      toast('当前文件夹已在 Eagle 中删除，已返回资源库根目录', 4000);
+      if (deletedElsewhere) toast('当前文件夹已在 Eagle 或另一个窗口中删除，已返回资源库根目录', 4000);
     }
   }
 

@@ -2802,6 +2802,9 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 }
 .trash-dialog-card h2 { margin: 0; color: #f7f8f8; font-size: 16px; font-weight: 650; }
 .trash-dialog-card p { margin: 10px 0 18px; color: #b9bbc2; line-height: 1.55; }
+.trash-dialog-check { display: flex; align-items: center; gap: 8px; margin: -6px 0 18px; color: #d4d6db; font-size: 13px; cursor: pointer; }
+.trash-dialog-check input { flex: none; margin: 0; accent-color: var(--accent); }
+.trash-dialog-check span { min-width: 0; overflow-wrap: anywhere; }
 .trash-dialog-actions { display: flex; flex-direction: column; gap: 8px; }
 .trash-dialog-actions button { width: 100%; min-height: 34px; }
 .trash-dialog-actions .danger-button:not(:hover) { border-color: rgba(240, 116, 130, .34); background: rgba(198, 67, 83, .2); color: #f0a0a8; }
