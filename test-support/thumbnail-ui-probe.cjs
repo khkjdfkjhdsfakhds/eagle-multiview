@@ -3,7 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-thumbnail-ui-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-thumbnail-ui-');
 app.setPath('userData', profile);
 app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
 (async () => {
@@ -73,7 +73,7 @@ app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
     ctx.libraryPath='/synthetic/third'; complete({outcomes:[{id:'A',status:'completed'}],counts:{completed:1}});
     await during;
     assert(refreshes.length===0,'old operation refreshed new library');
-    assert(notices.some(x=>x.includes('先前资料库')),'changed-library result not labeled');
+    assert(notices.some(x=>x.includes('先前资源库')),'changed-library result not labeled');
   })()`);
   console.log('THUMBNAIL_UI_LIBRARY_OK');
   await win.webContents.executeJavaScript(`(async () => {

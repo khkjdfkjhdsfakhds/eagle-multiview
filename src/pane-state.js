@@ -266,22 +266,37 @@
     };
   }
 
+  // The three dates as Eagle reads them (P1-04): 添加日期 is modificationTime,
+  // when the item entered the library; 创建日期 and 修改日期 are the file's
+  // btime and mtime, each falling back to modificationTime. A file rewritten
+  // in place keeps its 添加日期 but gets new file dates.
+  function itemDates(item) {
+    const added = Number(item?.modificationTime) || 0;
+    return {
+      added,
+      created: Number(item?.btime) || added,
+      modified: Number(item?.mtime) || added
+    };
+  }
+
   // Ascending base comparators; direction is applied as a factor so every
   // sort key stays stable (equal keys keep Eagle's original order).
+  // Eagle sorts names case-insensitively with numeric runs compared as numbers
+  // (localeCompare with numeric: true), so 图2 comes before 图10 (S-08).
+  const nameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'accent' });
   const sortComparators = {
-    name: (a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'),
-    // Eagle separates 添加日期 from 修改日期: btime is when the item entered the
-    // library, modificationTime is when the file itself last changed. They are
-    // genuinely different orders — an old file imported today sorts first by
-    // one and last by the other.
-    added: (a, b) => (a?.btime || 0) - (b?.btime || 0),
-    newest: (a, b) => (a?.modificationTime || 0) - (b?.modificationTime || 0),
+    name: (a, b) => nameCollator.compare(String(a?.name || ''), String(b?.name || '')),
+    added: (a, b) => itemDates(a).added - itemDates(b).added,
+    newest: (a, b) => itemDates(a).modified - itemDates(b).modified,
+    created: (a, b) => itemDates(a).created - itemDates(b).created,
     size: (a, b) => (a?.size || 0) - (b?.size || 0),
     resolution: (a, b) => ((a?.width || 0) * (a?.height || 0)) - ((b?.width || 0) * (b?.height || 0)),
     rating: (a, b) => (Number(a?.star) || 0) - (Number(b?.star) || 0),
-    type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en')
+    type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en'),
+    // Eagle's list-header 标签 sort compares the first tag only.
+    tags: (a, b) => nameCollator.compare(String(a?.tags?.[0] ?? ''), String(b?.tags?.[0] ?? ''))
   };
-  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
+  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', created: 'desc', size: 'desc', resolution: 'desc', rating: 'desc', tags: 'asc' };
 
   // Eagle's 随机 sort. A shuffle has to be stable: the grid re-renders on every
   // lazy page and re-sorts each time, so drawing fresh randomness per compare
@@ -333,21 +348,93 @@
     return [...(shared || [])];
   }
 
-  function selectRange(items, selectedIds, targetId, additive = false) {
-    const current = new Set(selectedIds || []);
-    const targetIndex = (items || []).findIndex(item => item?.id === targetId);
-    const anchorIndex = (items || []).findIndex(item => current.has(item?.id));
-    const next = additive ? current : new Set();
-    if (targetIndex < 0) return next;
-    if (anchorIndex < 0) {
-      next.add(targetId);
-      return next;
+  // Folders every given item belongs to, in first-item order — the multi-select
+  // inspector's 文件夹 block (Eagle's calculateFolders).
+  function sharedFolders(items) {
+    let shared = null;
+    for (const item of items || []) {
+      const folders = new Set((item?.folders || []).map(String));
+      shared = shared === null ? folders : new Set([...shared].filter(id => folders.has(id)));
+      if (!shared.size) break;
     }
+    return [...(shared || [])];
+  }
+
+  // The value a multi-selection shows for one field: the common value, or the
+  // empty value when the items differ (Eagle's calculateAnnotation/Url/Star).
+  // Eagle omits an empty annotation or a zero rating, so a missing field
+  // counts as the empty value.
+  function sharedFieldValue(items, field) {
+    const empty = field === 'star' ? 0 : '';
+    const list = items || [];
+    if (!list.length) return { value: empty, mixed: false };
+    const valueOf = item => item?.[field] ?? empty;
+    const first = valueOf(list[0]);
+    const mixed = list.some(item => valueOf(item) !== first);
+    return { value: mixed ? empty : first, mixed };
+  }
+
+  // Everything the multi-select inspector derives from the selected items,
+  // in one shape whether the renderer has them all loaded or the main
+  // process read them for a selection past the loaded range (P6-02).
+  function selectionSummary(items) {
+    const list = items || [];
+    return {
+      count: list.length,
+      size: list.reduce((sum, item) => sum + (Number(item?.size) || 0), 0),
+      tags: sharedTags(list),
+      folders: sharedFolders(list),
+      annotation: sharedFieldValue(list, 'annotation'),
+      url: sharedFieldValue(list, 'url'),
+      star: sharedFieldValue(list, 'star')
+    };
+  }
+
+  // Eagle's ⇧-click: add the run from the anchor (the last plain or ⌘-click)
+  // to the target and keep everything already selected. Without an anchor in
+  // view the run starts at the first selected item, as Eagle's does.
+  function extendSelection(items, selectedIds, anchorId, targetId) {
+    const list = items || [];
+    const next = new Set(selectedIds || []);
+    const targetIndex = list.findIndex(item => item?.id === targetId);
+    if (targetIndex < 0) return next;
+    let anchorIndex = anchorId ? list.findIndex(item => item?.id === anchorId) : -1;
+    if (anchorIndex < 0) anchorIndex = list.findIndex(item => next.has(item?.id));
+    if (anchorIndex < 0) anchorIndex = targetIndex;
     for (let index = Math.min(anchorIndex, targetIndex); index <= Math.max(anchorIndex, targetIndex); index += 1) {
-      const id = items[index]?.id;
+      const id = list[index]?.id;
       if (id) next.add(id);
     }
     return next;
+  }
+
+  // Eagle's ⇧← / ⇧→ grow or shrink the selected run on the side away from
+  // the anchor. Returns the new selection and the item now at its moving edge.
+  function stepSelection(items, selectedIds, anchorId, direction) {
+    const list = items || [];
+    const next = new Set(selectedIds || []);
+    const indices = [];
+    list.forEach((item, index) => { if (next.has(item?.id)) indices.push(index); });
+    if (!indices.length) return { selected: next, edgeId: null };
+    const start = indices[0];
+    const end = indices.at(-1);
+    const anchorIndex = anchorId ? list.findIndex(item => item?.id === anchorId) : -1;
+    if (direction > 0) {
+      if (anchorIndex >= 0 && start < anchorIndex) {
+        next.delete(list[start].id);
+        return { selected: next, edgeId: list[start + 1]?.id || null };
+      }
+      if (!list[end + 1]) return { selected: next, edgeId: list[end].id };
+      next.add(list[end + 1].id);
+      return { selected: next, edgeId: list[end + 1].id };
+    }
+    if (anchorIndex >= 0 && end > anchorIndex) {
+      next.delete(list[end].id);
+      return { selected: next, edgeId: list[end - 1]?.id || null };
+    }
+    if (!list[start - 1]) return { selected: next, edgeId: list[start].id };
+    next.add(list[start - 1].id);
+    return { selected: next, edgeId: list[start - 1].id };
   }
 
   function defaultSplitRatios(layout) {
@@ -409,15 +496,20 @@
       id: pane?.id || `pane-${index + 1}`,
       view: pane?.view || (pane?.currentView ? { ...pane.currentView } : { kind: 'root' }),
       sort: pane?.sort || 'default',
-      sortDir: pane?.sortDir || 'auto'
+      sortDir: pane?.sortDir || 'auto',
+      // Pane ids are renumbered on every launch, so the layout mode and the
+      // active pane travel by position (B1-04).
+      ...(pane?.viewMode && pane.viewMode !== 'justified' ? { viewMode: pane.viewMode } : {})
     }));
+    const resolvedActiveId = activePaneId || (normalizedPanes[0]?.id || 'pane-1');
     return {
       layout: validLayout,
       splitRatios: {
         cols: Array.isArray(ratios.cols) ? [...ratios.cols] : ['1fr'],
         rows: Array.isArray(ratios.rows) ? [...ratios.rows] : ['1fr']
       },
-      activePaneId: activePaneId || (normalizedPanes[0]?.id || 'pane-1'),
+      activePaneId: resolvedActiveId,
+      activeIndex: Math.max(0, normalizedPanes.findIndex(pane => pane.id === resolvedActiveId)),
       panes: normalizedPanes
     };
   }
@@ -472,12 +564,17 @@
     filtersActive,
     filterCount,
     normalizeRange,
-    selectRange,
+    extendSelection,
+    stepSelection,
     defaultSortDir,
     effectiveSortDir,
     compareBySort,
+    itemDates,
     randomRank,
     sharedTags,
+    sharedFolders,
+    sharedFieldValue,
+    selectionSummary,
     appendableTailCount,
     paneLayoutSpecs,
     paneLayoutSpec,

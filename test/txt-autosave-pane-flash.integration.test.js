@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('TXT autosave does not rebuild an unrelated pane grid', { timeout: 20000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), [
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), [
     '--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'),
     '--scenario=textSaveDoesNotRefreshOtherPane'
   ], { env, timeout: 18000 });

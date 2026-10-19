@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('TXT editor uses remaining space and every control stays visible through recovery, errors, narrow panes, zoom and mobile Web', { timeout: 90000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/text-preview-layout-probe.cjs')], { env, timeout: 80000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/text-preview-layout-probe.cjs')], { env, timeout: 80000 });
   const rows = stdout.split('\n').filter(line => line.startsWith('TXT_LAYOUT ')).map(line => JSON.parse(line.slice(11)));
   assert.equal(rows.length, 27);
   for (const row of rows) {

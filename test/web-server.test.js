@@ -10,6 +10,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const {
+  isAllowedHost,
   createWebServer,
   generateAccessKey,
   transformIndexHTML,
@@ -287,7 +288,10 @@ test('web server: auth, static serving, rpc bridge, media ranges, websocket even
     const event = JSON.parse(await ws.nextMessage());
     assert.deepEqual(event, { channel: 'hub:items-changed', payload: { items: [{ id: 'a' }] } });
     ws.close();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Poll for the cleanup instead of a fixed sleep (T-10).
+    for (const deadline = Date.now() + 3000; !gone.includes(hello.payload.clientId) && Date.now() < deadline;) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     assert.ok(gone.includes(hello.payload.clientId), 'disconnect reports the client id for watcher cleanup');
 
     // --- key reset invalidates sessions ---
@@ -397,7 +401,7 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   const upload = await request(port, {
     path: `/upload?${new URLSearchParams({ name: '../../evil.png', folderId: 'F1', libraryPath: '/tmp/lib.library' })}`,
     method: 'POST',
-    headers: authed
+    headers: { ...authed, 'x-eaglemv-client': '1' }
   }, 'PNGDATA');
   const body = JSON.parse(upload.body.toString());
   assert.equal(body.ok, true);
@@ -407,9 +411,148 @@ test('uploads stream to staging, run the import pipeline, and sanitize names', a
   assert.equal(imports[0].folderId, 'F1');
   assert.equal(imports[0].libraryPath, '/tmp/lib.library');
 
-  const noName = await request(port, { path: '/upload?name=..%2F..%2F', method: 'POST', headers: authed }, 'x');
+  const noName = await request(port, { path: '/upload?name=..%2F..%2F', method: 'POST', headers: { ...authed, 'x-eaglemv-client': '1' } }, 'x');
   assert.equal(noName.status, 400, 'unusable names are rejected');
 
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
+// H-08: a duplicate upload waits on the host for the uploading device's choice.
+test('duplicate uploads are staged until the device picks keep-both, use-existing or cancel', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-dup-'));
+  const calls = [];
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths, folderId, duplicateChoice }) => {
+      calls.push({ paths: [...paths], folderId, duplicateChoice, exists: paths.map(file => fs.existsSync(file)) });
+      if (!duplicateChoice) return { canceled: false, needsDuplicateDecision: true, paths, duplicates: [{ path: paths[0], id: 'OLD1', name: 'old', ext: 'png' }], rejected: [] };
+      if (duplicateChoice === 'use-existing') return { canceled: false, count: 1, ready: 1, ids: ['OLD1'], rejected: [], duplicateCount: 1 };
+      return { canceled: false, count: 1, ready: 1, ids: ['NEW1'], rejected: [] };
+    },
+    uploadDir,
+    loginFailureDelayMs: 0
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const headers = { Cookie: cookie, 'x-eaglemv-client': '3' };
+  const upload = async name => JSON.parse((await request(port, { path: `/upload?name=${name}&folderId=F9`, method: 'POST', headers }, 'SAME')).body.toString());
+  const resolve = (tokens, choice, extra = {}) => request(port, { path: '/upload/resolve', method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json', ...extra } }, JSON.stringify({ tokens, choice }));
+
+  const first = await upload('dup.png');
+  assert.equal(first.result.needsDuplicateDecision, true);
+  assert.match(first.result.uploadToken, /^[0-9a-f]{32}$/);
+  assert.deepEqual(first.result.duplicates, [{ name: 'dup.png', id: 'OLD1', existingName: 'old', ext: 'png' }]);
+  assert.ok(!JSON.stringify(first).includes(uploadDir), 'host staging paths never reach the device');
+
+  assert.equal((await resolve([first.result.uploadToken], 'keep-both', { 'x-eaglemv-client': '' })).status, 403, 'client header required');
+  assert.equal((await request(port, { path: '/upload/resolve', method: 'POST', headers: { ...headers, 'Content-Type': 'text/plain' } }, '{}')).status, 415, 'JSON required');
+  assert.equal((await resolve([first.result.uploadToken], 'delete-all')).status, 400, 'unknown choices rejected');
+
+  const kept = JSON.parse((await resolve([first.result.uploadToken], 'keep-both')).body.toString());
+  assert.deepEqual(kept.result.ids, ['NEW1']);
+  assert.equal(calls[1].duplicateChoice, 'keep-both');
+  assert.equal(calls[1].folderId, 'F9', 'the staged upload keeps its target folder');
+  assert.deepEqual(calls[1].paths, calls[0].paths, 'the staged file is imported, not re-uploaded');
+  assert.deepEqual(calls[1].exists, [true]);
+  const replay = JSON.parse((await resolve([first.result.uploadToken], 'keep-both')).body.toString());
+  assert.equal(replay.result.count, 0, 'tokens are single-use');
+  assert.equal(replay.result.rejected.length, 1);
+
+  const second = await upload('dup2.png');
+  const existing = JSON.parse((await resolve([second.result.uploadToken], 'use-existing')).body.toString());
+  assert.deepEqual(existing.result.ids, ['OLD1']);
+  assert.equal(existing.result.duplicateCount, 1);
+
+  const third = await upload('dup3.png');
+  const stagedDir = path.dirname(calls.at(-1).paths[0]);
+  const canceled = JSON.parse((await resolve([third.result.uploadToken], 'cancel')).body.toString());
+  assert.equal(canceled.result.canceled, true);
+  assert.equal(calls.at(-1).duplicateChoice, undefined, 'cancel imports nothing');
+  for (let n = 0; n < 50 && fs.existsSync(stagedDir); n++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(stagedDir), false, 'a canceled upload is removed from staging');
+
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
+test('staged duplicate uploads expire', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-exp-'));
+  let stagedPath = null;
+  const server = createWebServer({
+    srcDir, invoke: async () => null, resolveMediaPath: async () => null, accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths }) => { stagedPath = paths[0]; return { needsDuplicateDecision: true, paths, duplicates: [{ path: paths[0], id: 'X' }] }; },
+    uploadDir, loginFailureDelayMs: 0, pendingUploadTtlMs: 50
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const body = JSON.parse((await request(port, { path: '/upload?name=a.png', method: 'POST', headers: { Cookie: cookie, 'x-eaglemv-client': '1' } }, 'A')).body.toString());
+  assert.ok(fs.existsSync(stagedPath));
+  for (let n = 0; n < 50 && fs.existsSync(stagedPath); n++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(stagedPath), false, 'an unanswered duplicate is cleaned up');
+  const late = JSON.parse((await request(port, { path: '/upload/resolve', method: 'POST', headers: { Cookie: cookie, 'x-eaglemv-client': '1', 'Content-Type': 'application/json' } },
+    JSON.stringify({ tokens: [body.result.uploadToken], choice: 'keep-both' }))).body.toString());
+  assert.equal(late.result.count, 0);
+  assert.match(late.result.rejected[0].message, /过期/);
+  await server.stop();
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+});
+
+// W-02: uploads end when they stall, not after a fixed total time.
+test('uploads time out when idle, not while bytes keep arriving', async () => {
+  const srcDir = makeFixtureDir();
+  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-upload-idle-'));
+  const imports = [];
+  const server = createWebServer({
+    srcDir,
+    invoke: async () => null,
+    resolveMediaPath: async () => null,
+    accessKey: ACCESS_KEY,
+    uploadImport: async ({ paths }) => {
+      imports.push(fs.readFileSync(paths[0], 'utf8'));
+      return { count: 1, ready: 1, ids: ['NEW'], rejected: [] };
+    },
+    uploadDir,
+    loginFailureDelayMs: 0,
+    uploadIdleTimeoutMs: 300
+  });
+  const { port } = await server.start(0, '127.0.0.1');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const upload = (name, chunks, gapMs, { endAfter = true } = {}) => new Promise(resolve => {
+    const req = http.request({ host: '127.0.0.1', port, path: `/upload?name=${name}`, method: 'POST',
+      headers: { Cookie: cookie, 'x-eaglemv-client': '1', 'Transfer-Encoding': 'chunked' } }, res => {
+      const parts = [];
+      res.on('data', part => parts.push(part));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(parts).toString() }));
+    });
+    req.on('error', error => resolve({ error: error.code || error.message }));
+    (async () => {
+      for (const chunk of chunks) { req.write(chunk); await wait(gapMs); }
+      if (endAfter) req.end();
+    })();
+  });
+  // Eight chunks 150 ms apart run well past the 300 ms idle limit in total.
+  const slow = await upload('slow.bin', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 150);
+  assert.equal(JSON.parse(slow.body).ok, true, 'a slow upload that keeps moving completes');
+  assert.deepEqual(imports, ['abcdefgh']);
+  const stalled = await upload('stalled.bin', ['x'], 0, { endAfter: false });
+  assert.ok(stalled.error || JSON.parse(stalled.body).ok === false, 'a stalled upload is cut off');
+  assert.deepEqual(imports, ['abcdefgh'], 'a stalled upload is never imported');
   await server.stop();
   fs.rmSync(srcDir, { recursive: true, force: true });
   fs.rmSync(uploadDir, { recursive: true, force: true });
@@ -429,7 +572,7 @@ test('transformIndexHTML adds PWA tags for the web build only', () => {
   assert.ok(transformed.includes('<link rel="icon" href="brand-icon.png">'));
 });
 
-test('export downloads one file directly and zips several (verified via ditto)', async () => {
+test('export downloads one file directly and zips several (verified via ditto)', { skip: process.platform !== 'darwin' && 'unzips with /usr/bin/ditto, which only macOS has' }, async () => {
   const { execFile } = require('node:child_process');
   const srcDir = makeFixtureDir();
   const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-export-'));
@@ -492,7 +635,7 @@ test('UW-03: exports reject 501 items explicitly and prepare a verified unique m
   assert.equal(excess.status, 400);
   assert.match(JSON.parse(excess.body).message, /500/);
   assert.equal(resolved.length, 0, 'an oversized request must not resolve a truncated subset');
-  const prepare = selected => request(port, { path: '/export/prepare', method: 'POST', headers }, JSON.stringify({ ids: selected }));
+  const prepare = selected => request(port, { path: '/export/prepare', method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' } }, JSON.stringify({ ids: selected }));
   assert.equal((await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['one'] }))).status, 401);
   for (const count of [499, 500]) {
     const prepared = await prepare(ids.slice(0, count).concat(ids[0]));
@@ -521,7 +664,7 @@ test('UW-03: export preparation stops on library changes and frozen downloads do
     accessKey: ACCESS_KEY, requireKey: false });
   const { port } = await server.start(0, '127.0.0.1');
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
-  const prepare = ids => request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids, libraryPath: '/A' }));
+  const prepare = ids => request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids, libraryPath: '/A' }));
   for (const ids of [['one', 'two'], ['last']]) {
     library = '/A'; switchOnResolve = true; resolved.length = 0;
     const stopped = await prepare(ids);
@@ -547,7 +690,7 @@ test('UW-03: oversized bytes are rejected before streaming', async t => {
     resolveMediaPath: async () => sparse, accessKey: ACCESS_KEY, requireKey: false });
   const { port } = await server.start(0, '127.0.0.1');
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
-  const response = await request(port, { path: '/export/prepare', method: 'POST' }, JSON.stringify({ ids: ['large'] }));
+  const response = await request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids: ['large'] }));
   assert.equal(response.status, 400);
   assert.match(JSON.parse(response.body).message, /3\.5GB/);
   assert.ok(response.body.length < 1000, 'no file payload is streamed');
@@ -572,7 +715,7 @@ test('TXT Web draft transport accepts a 5 MB body after worst-case JSON escaping
   t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
   const content = '\u0001'.repeat(5 * 1024 * 1024);
   const data = { libraryPath: path.join(srcDir, 'fixture.library'), id: 'TXT', draftId: 'WINDOW', revision: 1, content };
-  const rpc = (method, args) => request(port, { path: '/rpc', method: 'POST' }, JSON.stringify({ method, args }));
+  const rpc = (method, args) => request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ method, args }));
   for (const method of ['text-draft:put', 'text:save']) {
     const response = await rpc(method, [data]);
     assert.equal(response.status, 200);
@@ -584,4 +727,131 @@ test('TXT Web draft transport accepts a 5 MB body after worst-case JSON escaping
   const other = await rpc('test:other', ['x'.repeat(9 * 1024 * 1024)]);
   assert.equal(other.status, 413);
   assert.ok(!calls.includes('test:other'), 'non-text requests retain their original 8 MB boundary');
+});
+
+test('P5-03: only IP, localhost and private LAN host names are served', () => {
+  for (const host of ['127.0.0.1:41600', '192.168.1.20', '[::1]:41600', 'localhost:41600', 'macbook', 'macbook.local:41600',
+    'mac.lan', 'probe.test', 'nas.home.arpa', 'mac.tailnet-1.ts.net']) assert.equal(isAllowedHost(host), true, host);
+  for (const host of ['', 'evil.com', 'rebind.attacker.example.com:41600', '127.0.0.1.nip.io', 'mac.local.evil.com', 'a b'])
+    assert.equal(isAllowedHost(host), false, host);
+});
+
+test('P5-03/W-04: foreign hosts, cross-site origins and simple-request writes are refused', async t => {
+  const srcDir = makeFixtureDir();
+  const calls = [];
+  const server = createWebServer({ srcDir, invoke: async method => { calls.push(method); return { ok: true }; },
+    resolveMediaPath: async () => null, accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); });
+  const json = { 'Content-Type': 'application/json' };
+  const body = JSON.stringify({ method: 'tags:get', args: [] });
+  assert.equal((await request(port, { path: '/', headers: { Host: 'rebind.attacker.com:' + port } })).status, 403, 'DNS-rebound host');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Host: 'rebind.attacker.com' } }, body)).status, 403);
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: 'http://127.0.0.1:9999' } }, body)).status, 403, 'other port');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: 'null' } }, body)).status, 403, 'opaque origin');
+  assert.equal((await request(port, { path: '/rpc', method: 'POST', headers: { 'Content-Type': 'text/plain' } }, body)).status, 415, 'form-style post');
+  assert.equal((await request(port, { path: '/upload?name=a.png', method: 'POST' }, 'x')).status, 403, 'upload without client header');
+  assert.deepEqual(calls, []);
+  const same = await request(port, { path: '/rpc', method: 'POST', headers: { ...json, Origin: `http://127.0.0.1:${port}` } }, body);
+  assert.equal(same.status, 200);
+  assert.deepEqual(calls, ['tags:get']);
+});
+
+test('W-01/S-11: library media is never sniffed, and HTML/SVG open sandboxed', async t => {
+  const srcDir = makeFixtureDir();
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-media-csp-'));
+  for (const name of ['a.svg', 'a.html', 'a.png', 'a.pdf']) fs.writeFileSync(path.join(mediaDir, name), '<svg onload="fetch(`/rpc`)"/>');
+  const server = createWebServer({ srcDir, invoke: async () => null,
+    resolveMediaPath: async (_kind, id) => path.join(mediaDir, id), accessKey: ACCESS_KEY, requireKey: false });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(mediaDir, { recursive: true, force: true }); });
+  for (const name of ['a.svg', 'a.html', 'a.png', 'a.pdf']) {
+    const response = await request(port, { path: `/media/original/${name}` });
+    assert.equal(response.status, 200, name);
+    assert.equal(response.headers['x-content-type-options'], 'nosniff', name);
+    const sandboxed = /^sandbox;/.test(response.headers['content-security-policy'] || '');
+    assert.equal(sandboxed, name === 'a.svg' || name === 'a.html', name);
+  }
+});
+
+test('W-05: web clients reach Eagle\'s own PDF viewer from the installed app, and nothing else of it', async t => {
+  const srcDir = makeFixtureDir();
+  const eagleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-eagle-app-'));
+  fs.mkdirSync(path.join(eagleDir, 'pdf-viewer', 'web', 'locale', 'zh-CN'), { recursive: true });
+  fs.mkdirSync(path.join(eagleDir, 'pdf-viewer', 'build'), { recursive: true });
+  fs.mkdirSync(path.join(eagleDir, 'js', 'vendors'), { recursive: true });
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'web', 'viewer.html'), '<!doctype html>viewer');
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'web', 'locale', 'zh-CN', 'viewer.properties'), 'a=b');
+  fs.writeFileSync(path.join(eagleDir, 'pdf-viewer', 'build', 'pdf.worker.js'), '// worker');
+  fs.writeFileSync(path.join(eagleDir, 'js', 'vendors', 'jquery-1.8.0.min.js'), '// jquery');
+  fs.writeFileSync(path.join(eagleDir, 'js', 'vendors', 'other.js'), '// not the viewer');
+  fs.writeFileSync(path.join(eagleDir, 'main.js'), '// Eagle internals');
+  let root = eagleDir;
+  const server = createWebServer({ srcDir, invoke: async () => null, resolveMediaPath: async () => null,
+    eagleViewerRoot: () => root, accessKey: ACCESS_KEY, loginFailureDelayMs: 0 });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(async () => { await server.stop(); fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(eagleDir, { recursive: true, force: true }); });
+
+  assert.equal((await request(port, { path: '/eagle-app/pdf-viewer/web/viewer.html' })).status, 401, 'needs the session like the rest of the app');
+  const login = await request(port, { path: '/login', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({ key: ACCESS_KEY }));
+  const cookie = String(login.headers['set-cookie'][0]).split(';')[0];
+  const get = filePath => request(port, { path: filePath, headers: { Cookie: cookie } });
+  const viewer = await get('/eagle-app/pdf-viewer/web/viewer.html');
+  assert.equal(viewer.status, 200);
+  assert.match(viewer.headers['content-type'], /^text\/html/);
+  assert.equal(viewer.headers['x-content-type-options'], 'nosniff');
+  assert.equal((await request(port, { path: '/eagle-app/pdf-viewer/web/viewer.html', method: 'HEAD', headers: { Cookie: cookie } })).status, 200);
+  assert.match((await get('/eagle-app/pdf-viewer/build/pdf.worker.js')).headers['content-type'], /^text\/javascript/);
+  assert.equal((await get('/eagle-app/pdf-viewer/web/locale/zh-CN/viewer.properties')).status, 200);
+  assert.equal((await get('/eagle-app/js/vendors/jquery-1.8.0.min.js')).status, 200, 'the jQuery the viewer page loads');
+  for (const blocked of ['/eagle-app/main.js', '/eagle-app/js/vendors/other.js', '/eagle-app/pdf-viewer/../main.js',
+    '/eagle-app/pdf-viewer/web/%2e%2e/%2e%2e/main.js', '/eagle-app/pdf-viewer/web/..%2f..%2fmain.js']) {
+    assert.equal((await get(blocked)).status, 404, blocked);
+  }
+  root = null;
+  assert.equal((await get('/eagle-app/pdf-viewer/web/viewer.html')).status, 404, 'no installed Eagle: the client falls back');
+});
+
+// W-10: a single-file download resumes with Range, a zip announces its length,
+// and a started download keeps its token past the two-minute start window.
+test('W-10: exports resume single files, size zips exactly and keep a started token alive', async t => {
+  const srcDir = makeFixtureDir();
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-export-resume-'));
+  t.after(() => { fs.rmSync(srcDir, { recursive: true, force: true }); fs.rmSync(mediaDir, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(mediaDir, 'a.bin'), '0123456789');
+  fs.writeFileSync(path.join(mediaDir, '图.bin'), 'abc');
+  const byId = { a: path.join(mediaDir, 'a.bin'), b: path.join(mediaDir, '图.bin') };
+  const server = createWebServer({ srcDir, invoke: async () => null, resolveMediaPath: async (_kind, id) => byId[id] || null, accessKey: ACCESS_KEY, requireKey: false, loginFailureDelayMs: 0 });
+  const { port } = await server.start(0, '127.0.0.1');
+  t.after(() => server.stop());
+  const prepare = async ids => JSON.parse((await request(port, { path: '/export/prepare', method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ ids }))).body.toString()).url;
+
+  const url = await prepare(['a']);
+  const full = await request(port, { path: url });
+  assert.equal(full.headers['accept-ranges'], 'bytes');
+  assert.ok(full.headers.etag);
+  const part = await request(port, { path: url, headers: { Range: 'bytes=4-', 'If-Range': full.headers.etag } });
+  assert.equal(part.status, 206);
+  assert.equal(part.body.toString(), '456789');
+  assert.equal(part.headers['content-range'], 'bytes 4-9/10');
+  const stale = await request(port, { path: url, headers: { Range: 'bytes=4-', 'If-Range': '"other"' } });
+  assert.equal(stale.status, 200, 'a resume against another version starts over');
+  assert.equal(stale.body.toString(), '0123456789');
+  assert.equal((await request(port, { path: url, headers: { Range: 'bytes=20-' } })).status, 416);
+
+  const zipURL = await prepare(['a', 'b']);
+  const zip = await request(port, { path: zipURL });
+  assert.equal(zip.status, 200);
+  assert.equal(Number(zip.headers['content-length']), zip.body.length, 'Content-Length matches the streamed zip');
+
+  // Two minutes to start; once started the token outlives that window.
+  const realNow = Date.now;
+  t.after(() => { Date.now = realNow; });
+  const started = await prepare(['a']);
+  await request(port, { path: started });
+  const unused = await prepare(['a']);
+  Date.now = () => realNow() + 5 * 60 * 1000;
+  assert.equal((await request(port, { path: started, headers: { Range: 'bytes=0-1' } })).status, 206);
+  assert.equal((await request(port, { path: unused })).status, 410, 'an unstarted export still expires');
 });

@@ -9,7 +9,7 @@ const { loadMain } = require('./main-data-harness.cjs');
 const { createWebServer } = require('../lib/web-server');
 const { TextDraftStore } = require('../lib/text-draft-store');
 const source = path.resolve(__dirname, '..');
-const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-tag-sync-'));
+const directory = require('./temp-userdata.cjs').tempUserData('eaglemv-tag-sync-');
 app.setPath('userData', path.join(directory, 'profile'));
 app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP eaglemv-tag-sync.test 127.0.0.1');
@@ -20,6 +20,8 @@ const drafts = new TextDraftStore(path.join(directory, 'drafts'));
 const libraryA = { path: '/synthetic/tag-sync-A.library', name: 'Synthetic A', folders: [], smartFolders: [] };
 const libraryB = { ...libraryA, path: '/synthetic/tag-sync-B.library', name: 'Synthetic B' };
 let library = libraryA;
+// tag-colors:set confirms Eagle still has the library open (B4-05).
+main.client.libraryInfo = async () => library;
 const items = ['image-1', 'text-1'].map(id => ({ id, name: id, ext: id === 'text-1' ? 'txt' : 'png', tags: ['Shared tag'], folders: [], annotation: '', star: 0, size: 8 }));
 const calls = [], popups = [], errors = [], pendingReads = [];
 let delayLibraryAReads = false;

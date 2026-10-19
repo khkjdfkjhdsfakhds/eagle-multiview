@@ -9,7 +9,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 const execFileAsync = promisify(execFile);
 
 test('sync panes only while previewing; grid selection and mutations stay pane-local', { timeout: 30000 }, async () => {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/sync-panes-probe.cjs');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

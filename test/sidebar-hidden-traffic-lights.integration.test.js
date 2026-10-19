@@ -8,7 +8,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 
 test('collapsed desktop sidebar keeps the toolbar clear of macOS traffic lights at every desktop width', { timeout: 60000 }, async () => {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/sidebar-hidden-traffic-lights-probe.cjs');
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('UW-02/UW-04: real HTTP copying and every responsive pane layout remain usable', { timeout: 45000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/web-platform-probe.cjs')], { env, timeout: 40000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/web-platform-probe.cjs')], { env, timeout: 40000 });
   const line = stdout.split('\n').find(row => row.startsWith('EAGLEMV_WEB_PLATFORM '));
   assert.ok(line, stdout);
   const result = JSON.parse(line.slice('EAGLEMV_WEB_PLATFORM '.length));

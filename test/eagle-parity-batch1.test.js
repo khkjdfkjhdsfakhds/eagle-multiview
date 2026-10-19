@@ -31,9 +31,9 @@ test('number keys 0-5 set the selection rating like Eagle', () => {
   assert.ok(handler.includes('if (previewOpen) ratePreviewItem(Number(event.key));') || handler.includes('ratePreviewItem(rating);'));
 });
 
-test('grid cards render a star overlay only when rated', () => {
-  assert.ok(renderer.includes("Number(item.star) > 0 ? `<span class=\"card-stars\""));
-  assert.match(styles, /\.card-stars\s*\{/);
+test('grid cards carry no star overlay, like Eagle (rating is a 显示简介 choice)', () => {
+  assert.ok(!renderer.includes('card-stars'));
+  assert.ok(!styles.includes('.card-stars'));
 });
 
 test('inspector renders a dominant-color palette from item.palettes', () => {
@@ -48,10 +48,14 @@ test('inspector renders a dominant-color palette from item.palettes', () => {
   assert.match(styles, /\.palette-swatch\s*\{/);
 });
 
-test('file-info rows are labeled (格式/大小/尺寸/修改日期)', () => {
-  assert.ok(renderer.includes('<em>格式</em>'));
-  assert.ok(renderer.includes('<em>尺寸</em>'));
-  assert.ok(renderer.includes('<em>修改日期</em>'));
+test('基本信息 rows follow Eagle (尺寸/时长/文件大小/格式/添加·创建·修改日期)', () => {
+  const start = renderer.indexOf("$('#itemMeta').innerHTML = [");
+  assert.ok(start >= 0);
+  const block = renderer.slice(start, renderer.indexOf('.join(\'\');', start));
+  const labels = [...block.matchAll(/\['([^']+)', /g)].map(match => match[1]);
+  assert.deepEqual(labels, ['尺寸', '时长', '文件大小', '格式', '添加日期', '创建日期', '修改日期']);
+  assert.ok(block.includes("Number(item.width) > 0 ? ['尺寸'"), '尺寸 only for files with pixels');
+  assert.ok(block.includes("duration ? ['时长'"), '时长 only for timed media');
 });
 
 test('PDF preview enables the Chromium plugin viewer', () => {

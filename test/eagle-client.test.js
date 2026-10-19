@@ -119,20 +119,26 @@ test('format filters forward a typed extension to Eagle', async () => {
 
 test('forwards Eagle v2 untagged and metadata filters', async () => {
   const client = new RecordingClient();
-  await client.queryItems({ isUntagged: true, annotation: 'note', url: 'example', shape: 'portrait', offset: 0, limit: 160 });
+  // 方形 means the same in the API as in the filter menu; 竖图 does not
+  // (the menu's includes 细长竖图), so that one scans (see below).
+  await client.queryItems({ isUntagged: true, annotation: 'note', url: 'example', shape: 'square', offset: 0, limit: 160 });
   assert.deepEqual(client.calls[0].options.body, {
     offset: 0,
     limit: 160,
     annotation: 'note',
     url: 'example',
-    shape: 'portrait',
+    shape: 'square',
     isUntagged: true
   });
+  client.calls = [];
+  await client.queryItems({ shape: 'portrait', offset: 0, limit: 160 });
+  assert.equal('shape' in client.calls[0].options.body, false);
+  assert.equal(client.calls[0].options.body.limit, 1000, 'scanned');
 });
 
 test('random view uses Eagle random ordering endpoint', async () => {
   const client = new RecordingClient();
-  await client.queryItems({ random: true, offset: 0, limit: 12, search: 'cat', ext: 'png', tags: ['ref', 'blue'] });
+  await client.queryItems({ random: true, offset: 0, limit: 12, search: 'cat', ext: 'png', tags: ['ref', 'blue'], tagLogic: 'AND' });
   assert.match(client.calls[0].path, /^\/api\/item\/list\?/);
   assert.match(client.calls[0].path, /orderBy=RANDOM/);
   assert.match(client.calls[0].path, /keyword=cat/);
@@ -210,7 +216,7 @@ test('smart folder management uses Eagle v2 endpoints', async () => {
   await client.updateSmartFolder('smart-1', { name: 'PNG' });
   await client.removeSmartFolder('smart-1');
   assert.deepEqual(client.calls.map(call => call.path), [
-    '/api/v2/smartFolder/get?limit=1000',
+    '/api/v2/smartFolder/get?limit=1000&offset=0',
     '/api/v2/smartFolder/create',
     '/api/v2/smartFolder/update',
     '/api/v2/smartFolder/remove'
@@ -259,6 +265,16 @@ test('batch import uses Eagle local-path API with the target folder', async () =
   });
 });
 
+test('an import into a folder with auto tags sends per-file items carrying them (P1-10)', async () => {
+  const client = new RecordingClient();
+  await client.addItems(['/tmp/a.png', '/tmp/b.txt'], 'folder-1', ['人物', '近景']);
+  assert.equal(client.calls[0].path, '/api/item/addFromPaths');
+  assert.deepEqual(client.calls[0].options.body, {
+    items: [{ path: '/tmp/a.png', tags: ['人物', '近景'] }, { path: '/tmp/b.txt', tags: ['人物', '近景'] }],
+    folderId: 'folder-1'
+  });
+});
+
 test('single unfiled import omits a folder assignment', async () => {
   const client = new RecordingClient();
   await client.addItems(['/tmp/a.png'], null);
@@ -303,4 +319,189 @@ test('locateItemIndex scans ids only, 1000 per page, in the query order', async 
   assert.equal(await new PagedClient().locateItemIndex({}, 'missing'), -1);
   assert.equal(await new PagedClient().locateItemIndex({ search: 'cat' }, 'item-1'), null, 'search order is not the API order');
   assert.equal(await new PagedClient().locateItemIndex({ random: true }, 'item-1'), null);
+});
+
+test('getItem still finds items in the trash, so a delete can be undone', async () => {
+  // Eagle 4's v2 item/get leaves trashed items out even when asked by id;
+  // restoring one (undo delete, 恢复素材) reads it first for the conflict check.
+  class TrashClient extends EagleClient {
+    constructor(info) { super('http://unused'); this.info = info; this.paths = []; }
+    async request(path) {
+      this.paths.push(path.split('?')[0]);
+      if (path.startsWith('/api/v2/item/get')) return { data: [], total: 0 };
+      if (this.info) return this.info;
+      throw new Error('Eagle API 请求失败');
+    }
+  }
+  const trashed = new TrashClient({ id: 'T1', name: 'cat', isDeleted: true });
+  assert.deepEqual(await trashed.getItem('T1'), { id: 'T1', name: 'cat', isDeleted: true });
+  assert.deepEqual(trashed.paths, ['/api/v2/item/get', '/api/item/info']);
+  await assert.rejects(new TrashClient(null).getItem('gone'), /素材不存在/);
+  await assert.rejects(new TrashClient({ id: 'other' }).getItem('T1'), /素材不存在/);
+});
+
+test('tags, tag groups and smart folders page through every record (B2-02)', async () => {
+  const client = new RecordingClient();
+  const tags = Array.from({ length: 2345 }, (_, index) => ({ name: `tag-${index}`, imageCount: index }));
+  client.request = async path => {
+    client.calls.push({ path });
+    const url = new URL(path, 'http://unused');
+    const offset = Number(url.searchParams.get('offset') || 0);
+    const limit = Number(url.searchParams.get('limit') || 1000);
+    const source = url.pathname === '/api/v2/tag/get' ? tags : [];
+    return { data: source.slice(offset, offset + limit), total: source.length, offset, limit };
+  };
+  const listed = await client.listTags();
+  assert.equal(listed.length, 2345);
+  assert.deepEqual(listed.at(-1), { name: 'tag-2344', imageCount: 2344 });
+  assert.deepEqual(client.calls.map(call => call.path), [
+    '/api/v2/tag/get?limit=1000&offset=0',
+    '/api/v2/tag/get?limit=1000&offset=1000',
+    '/api/v2/tag/get?limit=1000&offset=2000'
+  ]);
+  assert.deepEqual(await client.listTagGroups(), []);
+  assert.deepEqual(await client.listSmartFolders(), []);
+});
+
+test('viewStats sums size over every page, reading only id and size', async () => {
+  const client = new RecordingClient();
+  const rows = Array.from({ length: 2300 }, (_, index) => ({ id: `i${index}`, size: index % 3 }));
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    const { offset, limit } = options.body;
+    return { data: rows.slice(offset, offset + limit), total: rows.length };
+  };
+  const stats = await client.viewStats({ folderId: 'f-1', search: '  ' });
+  assert.deepEqual(stats, { count: 2300, size: rows.reduce((sum, row) => sum + row.size, 0) });
+  assert.equal(client.calls.length, 3);
+  for (const call of client.calls) {
+    assert.equal(call.path, '/api/v2/item/get');
+    assert.deepEqual(call.options.body.fields, ['id', 'size']);
+    assert.deepEqual(call.options.body.folders, ['f-1']);
+    assert.equal(call.options.body.limit, 1000);
+  }
+});
+
+test('viewStats leaves searches, random and client-filtered views alone', async () => {
+  const client = new RecordingClient();
+  assert.equal(await client.viewStats({ search: 'cat' }), null);
+  assert.equal(await client.viewStats({ random: true }), null);
+  assert.equal(await client.viewStats({ color: '#ff0000' }), null);
+  assert.equal(client.calls.length, 0);
+});
+
+test('viewStats counts a folder with its subfolders by matching folders locally', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', size: 1, folders: ['parent'] },
+    { id: 'b', size: 2, folders: ['child'] },
+    { id: 'c', size: 4, folders: ['elsewhere'] },
+    { id: 'd', size: 8, folders: ['child', 'elsewhere'] }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  const stats = await client.viewStats({ folderId: 'parent', folderIds: ['parent', 'child'] });
+  assert.deepEqual(stats, { count: 3, size: 11 });
+  assert.equal('folders' in client.calls[0].options.body, false);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'size', 'folders']);
+});
+
+test('viewFacets counts formats, folders (with 未分类) and months over the view', async () => {
+  const client = new RecordingClient();
+  const may = new Date(2026, 4, 3).getTime();
+  const june = new Date(2026, 5, 9).getTime();
+  const rows = [
+    { id: 'a', ext: 'PNG', folders: ['f1'], modificationTime: may },
+    { id: 'b', ext: 'png', folders: ['f1', 'f2'], modificationTime: june, mtime: may },
+    { id: 'c', ext: 'mp4', folders: [], modificationTime: june }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  assert.deepEqual(await client.viewFacets({}), {
+    total: 3,
+    exts: { png: 2, mp4: 1 },
+    folders: { f1: 2, f2: 1, NoFolders: 1 },
+    addedMonths: { '2026/05': 1, '2026/06': 2 },
+    modifiedMonths: { '2026/05': 2, '2026/06': 1 },
+    ratings: { 0: 3 },
+    shapes: {}
+  });
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'ext', 'folders', 'modificationTime', 'mtime', 'star', 'width', 'height']);
+  assert.equal(await client.viewFacets({ search: 'cat' }), null);
+});
+
+test('viewFacets counts ratings and Eagle\'s shapes', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', star: 5, width: 400, height: 300 },
+    { id: 'b', width: 3000, height: 1000 },
+    { id: 'c', star: 5, width: 900, height: 1600 },
+    { id: 'd', width: 10, height: 10 },
+    { id: 'e' }
+  ];
+  client.request = async (_path, options = {}) => ({ data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length });
+  const facets = await client.viewFacets({});
+  assert.deepEqual(facets.ratings, { 5: 2, 0: 3 });
+  assert.deepEqual(facets.shapes, { landscape: 1, '4:3': 1, 'panoramic-landscape': 1, portrait: 1, '9:16': 1, square: 1 });
+});
+
+test('viewItemIds lists a plain view by id, 1000 per request (P6-02)', async () => {
+  const client = new RecordingClient();
+  const rows = Array.from({ length: 2500 }, (_, index) => ({ id: `i${index}` }));
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  const ids = await client.viewItemIds({ folderId: 'f1' });
+  assert.equal(ids.length, 2500);
+  assert.equal(ids[2499], 'i2499');
+  assert.equal(client.calls.length, 3);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id']);
+  assert.deepEqual(client.calls[0].options.body.folders, ['f1']);
+  assert.equal(await client.viewItemIds({ random: true }), null);
+});
+
+test('viewItemIds matches subfolders and client-side filters locally', async () => {
+  const client = new RecordingClient();
+  const rows = [
+    { id: 'a', folders: ['parent'], palettes: [] },
+    { id: 'b', folders: ['child'] },
+    { id: 'c', folders: ['elsewhere'] }
+  ];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: rows.slice(options.body.offset, options.body.offset + options.body.limit), total: rows.length };
+  };
+  assert.deepEqual(await client.viewItemIds({ folderId: 'parent', folderIds: ['parent', 'child'] }), ['a', 'b']);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'folders']);
+  client.calls = [];
+  const searchRows = [{ id: 'x', name: 'cat', ext: 'png' }, { id: 'y', name: 'cat', ext: 'jpg' }];
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: searchRows.slice(options.body.offset, options.body.offset + options.body.limit), total: searchRows.length };
+  };
+  assert.deepEqual(await client.viewItemIds({ search: 'cat', ext: ['png'] }), ['x']);
+  assert.equal(client.calls[0].path, '/api/v2/item/query');
+});
+
+test('selectionSummary reads the inspector fields in chunks of 1000', async () => {
+  const client = new RecordingClient();
+  const ids = Array.from({ length: 1500 }, (_, index) => `i${index}`);
+  client.request = async (path, options = {}) => {
+    client.calls.push({ path, options });
+    return { data: options.body.ids.map(id => ({ id, size: 2, tags: ['t', id], folders: ['f'], star: 3 })) };
+  };
+  const summary = await client.selectionSummary(ids);
+  assert.equal(client.calls.length, 2);
+  assert.deepEqual(client.calls[0].options.body.fields, ['id', 'size', 'star', 'tags', 'folders', 'annotation', 'url']);
+  assert.equal(summary.count, 1500);
+  assert.equal(summary.size, 3000);
+  assert.deepEqual(summary.tags, ['t']);
+  assert.deepEqual(summary.folders, ['f']);
+  assert.deepEqual(summary.star, { value: 3, mixed: false });
+  assert.deepEqual(summary.annotation, { value: '', mixed: false });
 });

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const root = process.env.EAGLEMV_TEST_SOURCE_ROOT || path.resolve(__dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-android-keyboard-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-android-keyboard-');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
 app.on('window-all-closed', () => {});
@@ -126,7 +126,8 @@ const dragFrom = pointerType => {
 };
 result.touchDrag = { touch: dragFrom('touch'), pen: dragFrom('pen'), mouse: dragFrom('mouse') };
 return result;`);
-  // Narrow phone: the selection strip is a mode that back leaves first.
+  // Narrow phone: with history behind it, back closes a preview and then
+  // goes straight back instead of spending a press on the selection.
   tablet.setContentSize(390, 844);
   await new Promise(resolve => setTimeout(resolve, 150));
   const phone = await run(tablet, `
@@ -134,20 +135,21 @@ navigate({ kind: 'folder', id: 'target-folder' });
 await until(() => state.currentView.kind === 'folder' && !state.loading);
 navigate({ kind: 'root' });
 await until(() => state.currentView.kind === 'root' && !state.loading && state.items.length);
-const historyBefore = state.historyIndex;
 selectItem('item-1', false, false);
 const strip = !document.querySelector('#selectionBar').classList.contains('hidden');
 const first = window.EagleMVBack.request();
-const afterFirst = { selected: state.selected.size, strip: !document.querySelector('#selectionBar').classList.contains('hidden'), history: state.historyIndex === historyBefore };
+await until(() => state.currentView.kind === 'folder');
+const afterFirst = { selected: state.selected.size, strip: !document.querySelector('#selectionBar').classList.contains('hidden') };
+navigate({ kind: 'root' });
+await until(() => state.currentView.kind === 'root' && !state.loading && state.items.length);
 openPreview('item-2'); selectItem('item-2', false, false);
 await until(() => !document.querySelector('#previewModal').classList.contains('hidden'));
 const preview = window.EagleMVBack.request();
 const previewClosed = document.querySelector('#previewModal').classList.contains('hidden');
 const second = window.EagleMVBack.request();
-const third = window.EagleMVBack.request();
 await until(() => state.currentView.kind === 'folder');
-return { compact: isCompactLayout(), strip, first: [first.status, first.reason], afterFirst,
-  preview: [preview.action, previewClosed], second: [second.status, second.reason], third: third.action };`);
+return { compact: isCompactLayout(), strip, first: [first.status, first.action], afterFirst,
+  preview: [preview.action, previewClosed], second: [second.status, second.action, state.selected.size] };`);
   tablet.destroy();
 
   const mac = await open('web-platform-preload.cjs', 1280, 800);

@@ -17,7 +17,7 @@ Eagle MultiView 是以 Eagle HTTP API 为数据与修改边界、面向 macOS Ea
 
 云会话是 Linux 容器，没有 macOS、没有 Eagle、没有用户资料库。
 
-- **可以**：改代码、`node --check`、`node --test`、写测试、推送到新分支（不要直接推 `main`）。
+- **可以**：改代码、`node --check`、`npm test`、写测试、推送到新分支（不要直接推 `main`）。
 - **不能**：`electron-builder --mac` 打包与签名、安装到 `/Applications`、GUI 验证、连接 Eagle API（`localhost:41595`）、Android 构建/模拟器验证。这些由用户在本机会话完成。
 - 本机规则“改完代码必须构建并安装”在云端不适用；在最终报告里写明“构建/安装/GUI 验证待本机完成”。
 - 不得伪造或推测 GUI/真机验证结果。
@@ -31,8 +31,10 @@ Eagle MultiView 是以 Eagle HTTP API 为数据与修改边界、面向 macOS Ea
 node --check main.js
 node --check preload.js
 node --check src/renderer.js
-node --test --test-force-exit
+npm test                      # 单个文件：npm test -- test/xxx.test.js
 ```
+
+- 跑测用 `npm test`（`test-support/run-tests.cjs`：`node --test --test-force-exit`）。测试经 `test-support/electron-binary.cjs` 启动 Electron，macOS 上用 `node_modules/.cache` 里标了 `LSUIElement` 的 Electron.app 克隆，探针不会在 Dock 里冒图标；新测试要 `require('../test-support/electron-binary.cjs')`，不要 `require('electron')`。
 
 - 部分测试依赖 Electron 窗口或本机环境（例如 `interaction-regression`、`interaction-final-review` 等打开 `http://0.0.0.0` 的用例），在云端或无显示环境下可能失败。区分“环境失败”与“本次改动导致的失败”：在改动前先跑一次记录基线，不要为了通过而修改无关测试。
 - 少数用例（如 pane-reveal）有并发偶发失败，单独重跑确认。

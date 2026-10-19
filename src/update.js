@@ -51,11 +51,18 @@
     node.type = 'button';
     node.textContent = label;
     if (primary) node.className = 'primary';
-    node.addEventListener('click', () => api.act(action, value));
+    // One click per state: buttons stay disabled until the next state
+    // replaces them, so 下载并安装 cannot be sent twice (F-10).
+    node.addEventListener('click', () => {
+      for (const other of $('buttons').querySelectorAll('button')) other.disabled = true;
+      api.act(action, value);
+    });
     return node;
   }
 
+  let phase = null;
   function render(state) {
+    phase = state.phase;
     const title = $('title');
     const subtitle = $('subtitle');
     const buttons = [];
@@ -69,7 +76,7 @@
       case 'checking':
         title.textContent = '正在检查更新…';
         progress = { text: '' };
-        buttons.push(button('取消', 'close'));
+        buttons.push(button('取消', 'cancel-check'));
         break;
       case 'latest':
         title.textContent = '已是最新版本';
@@ -106,7 +113,7 @@
         break;
       case 'ready':
         title.textContent = `Eagle MultiView ${state.version} 已准备就绪`;
-        subtitle.textContent = '重新启动后即可完成更新。选择「稍后」会在你退出 Eagle MultiView 时自动安装。';
+        subtitle.textContent = '重新启动后即可完成更新。选择“稍后”会在你退出 Eagle MultiView 时自动安装。';
         notes = renderNotes(state.notes);
         buttons.push(button('稍后', 'later'), button('立即重启并更新', 'install', { primary: true }));
         break;
@@ -135,6 +142,8 @@
       const known = typeof progress.ratio === 'number';
       $('bar').classList.toggle('indeterminate', !known);
       $('fill').style.width = known ? `${(progress.ratio * 100).toFixed(1)}%` : '';
+      if (known) $('bar').setAttribute('aria-valuenow', String(Math.round(progress.ratio * 100)));
+      else $('bar').removeAttribute('aria-valuenow');
       $('progressText').textContent = progress.text;
       $('progressText').hidden = !progress.text;
     }
@@ -145,7 +154,7 @@
 
   $('autoCheck').addEventListener('change', event => api.act('auto-check', event.target.checked));
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') api.act('close');
+    if (event.key === 'Escape') api.act(phase === 'checking' ? 'cancel-check' : 'close');
   });
   api.onState(render);
   api.getState().then(render);

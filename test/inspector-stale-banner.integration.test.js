@@ -8,7 +8,7 @@ let results;
 async function probe() {
   if (!results) results = (async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=inspectorOwnSaveEcho', '--scenario=inspectorPollEchoAndExternalConflict', '--scenario=inspectorResolvedConflict', '--scenario=inspectorResolvedThenLateConflict'], { env, timeout: 35000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=inspectorOwnSaveEcho', '--scenario=inspectorPollEchoAndExternalConflict', '--scenario=inspectorResolvedConflict', '--scenario=inspectorResolvedThenLateConflict'], { env, timeout: 35000 });
   return Object.fromEntries(stdout.split('\n').filter(row => row.startsWith('INTERACTION_AUDIT ')).map(line => {
     const result = JSON.parse(line.slice(18));
     assert.ok(!result.error, result.error);

@@ -3,7 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-features-ui-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-features-ui-');
 app.setPath('userData', profile);
 (async () => {
   await app.whenReady();
@@ -45,8 +45,15 @@ app.setPath('userData', profile);
       assert(button,'folder menu lacks move node action'); button.click();
       await until(() => document.querySelector('.feature-dialog[open]'));
     };
+    const pick = (dialog, value) => { const select = dialog.querySelector('select'); select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); };
     await open();
     let dialog = document.querySelector('.feature-dialog');
+    // F-06: the current parent is not a move.
+    assert(dialog.querySelector('[data-feature-submit]').disabled, 'move enabled for the current parent');
+    pick(dialog, 'eagle-folder');
+    assert(!dialog.querySelector('[data-feature-submit]').disabled, 'move stays disabled for another parent');
+    pick(dialog, '');
+    assert(dialog.querySelector('[data-feature-submit]').disabled, 'move re-enabled for the current parent');
     assert(!dialog.querySelector('option[value="mv-folder"]'), 'self is selectable');
     assert(!dialog.querySelector('option[value="child-folder"]'), 'descendant is selectable');
     const search = dialog.querySelector('input[aria-label="搜索目标文件夹"]');
@@ -60,7 +67,7 @@ app.setPath('userData', profile);
     dialog.querySelector('[data-feature-cancel]').click();
     assert(!window.__uiTestCalls.some(x=>x.kind==='move-folder'), 'cancel moved folder');
     await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__uiTestCalls.some(x=>x.kind==='move-folder'));
     const payload = window.__uiTestCalls.find(x=>x.kind==='move-folder').payload;
@@ -69,11 +76,16 @@ app.setPath('userData', profile);
     await until(() => !document.querySelector('.feature-dialog[open]'));
 
     const callCount = () => window.__uiTestCalls.filter(x=>x.kind==='move-folder').length;
-    await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='';
+    const nestedMoves=[];
+    const nestedUI=window.createSelectedFeatureUI({api:{moveFolder:async payload=>{nestedMoves.push(payload);return {ok:true};}},
+      context:()=>({libraryPath:'/fixture.library',folders:[{id:'p',name:'P',children:[{id:'c',name:'C',children:[]}]}]}),
+      canStart:()=>true,refresh:async()=>{},notify:()=>{}});
+    await nestedUI.moveFolder('c');
+    dialog = document.querySelector('.feature-dialog[open]');
+    pick(dialog,'');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => !document.querySelector('.feature-dialog[open]'));
-    assert(window.__uiTestCalls.filter(x=>x.kind==='move-folder').at(-1).payload.parentId===null,'root is not explicit null');
+    assert(nestedMoves.at(-1)?.parentId===null,'root is not explicit null');
 
     await open(); dialog = document.querySelector('.feature-dialog');
     const countBeforeEscape=callCount();
@@ -82,7 +94,7 @@ app.setPath('userData', profile);
 
     window.__featureState.mode='pending';
     await open(); dialog = document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     const countBeforeRepeat=callCount();
     dialog.querySelector('[data-feature-submit]').click(); dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__featureRelease);
@@ -95,7 +107,7 @@ app.setPath('userData', profile);
     for (const mode of ['failure','conflict']) {
       window.__featureState.mode=mode;
       await open(); dialog = document.querySelector('.feature-dialog');
-      dialog.querySelector('select').value='eagle-folder';
+      pick(dialog,'eagle-folder');
       const previous=callCount(); dialog.querySelector('[data-feature-submit]').click();
       await until(() => dialog.querySelector('[data-feature-cancel]').textContent==='关闭');
       assert(dialog.querySelector('[data-feature-submit]').disabled,'failed/conflict move can replay stale input');
@@ -159,8 +171,26 @@ app.setPath('userData', profile);
     paneTarget.dispatchEvent(optionDragEvent('dragover'));
     assert(paneRoot(targetPane.id).dataset.folderNodeDrop==='allowed','Option folder drag lacks destination feedback');
     paneTarget.dispatchEvent(optionDragEvent('drop'));
+    // F-03: an Option drop asks before copying and says how much it copies.
+    await until(() => document.querySelector('.feature-dialog[open] [data-copy-summary]')?.textContent.includes('3 个素材'));
+    let copyDialog = document.querySelector('.feature-dialog[open]');
+    assert(window.__uiTestCalls.filter(x=>x.kind==='copy-folder').length===copyBefore,'Option drop copied before confirmation');
+    assert(copyDialog.textContent.includes('2 个文件夹') && copyDialog.textContent.includes('Eagle 文件夹'),'copy confirmation lacks counts or destination');
+    assert(document.activeElement===copyDialog.querySelector('[data-feature-cancel]'),'copy confirmation does not default to cancel');
+    copyDialog.dispatchEvent(new Event('cancel',{cancelable:true}));
+    await until(() => !document.querySelector('.feature-dialog[open]'));
+    assert(window.__uiTestCalls.filter(x=>x.kind==='copy-folder').length===copyBefore,'Escape still copied the folder');
+    const copyAgain = new DataTransfer();
+    paneSource.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:copyAgain}));
+    copyAgain.setData('application/x-eagle-multiview-folder-node', JSON.stringify({id:'mv-folder',baseParentId:null,libraryPath:'/tmp/EagleMV-UI-Test.library'}));
+    const optionAgain = type => { const event = new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:copyAgain}); Object.defineProperty(event,'altKey',{value:true}); return event; };
+    paneTarget.dispatchEvent(optionAgain('dragover'));
+    paneTarget.dispatchEvent(optionAgain('drop'));
+    await until(() => document.querySelector('.feature-dialog[open] [data-feature-submit]')?.disabled === false);
+    document.querySelector('.feature-dialog[open] [data-feature-submit]').click();
     await until(() => window.__uiTestCalls.filter(x=>x.kind==='copy-folder').length===copyBefore+1);
     assert(window.__uiTestCalls.filter(x=>x.kind==='copy-folder').at(-1).payload.parentId==='eagle-folder','Option folder drag lost the target pane');
+    await until(() => !document.querySelector('.feature-dialog[open]'));
     withActivePane(targetPane.id, () => navigate({kind:'all'}, {refreshView:false,skipDiscard:true}));
     const blockedData = new DataTransfer();
     paneSource.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:blockedData}));
@@ -204,7 +234,7 @@ app.setPath('userData', profile);
 
     window.__featureState.mode='pending';
     await open(); dialog=document.querySelector('.feature-dialog');
-    dialog.querySelector('select').value='eagle-folder';
+    pick(dialog,'eagle-folder');
     dialog.querySelector('[data-feature-submit]').click();
     await until(() => window.__featureRelease);
     window.__featureEmit('/tmp/Other-UI-Test.library');
@@ -215,9 +245,10 @@ app.setPath('userData', profile);
     dialog.querySelector('[data-feature-cancel]').click();
     const notices=[];
     const refreshFailureUI=window.createSelectedFeatureUI({api:{moveFolder:async()=>({ok:true})},
-      context:()=>({libraryPath:'/fixture.library',folders:[{id:'x',name:'X',children:[]}]}),
+      context:()=>({libraryPath:'/fixture.library',folders:[{id:'x',name:'X',children:[]},{id:'y',name:'Y',children:[]}]}),
       canStart:()=>true,refresh:async()=>{throw Error('offline');},notify:message=>notices.push(message)});
     await refreshFailureUI.moveFolder('x');
+    pick(document.querySelector('.feature-dialog[open]'),'y');
     document.querySelector('[data-feature-submit]').click();await wait(30);
     assert(notices.some(message=>/已移动/.test(message)&&/刷新/.test(message)), 'confirmed move plus failed refresh has no visible feedback');
     notices.length=0;

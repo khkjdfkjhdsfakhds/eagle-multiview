@@ -20,7 +20,9 @@ test('the slideshow is built on the preview, not beside it', () => {
   assert.ok(renderer.includes("if (await movePreview(1, { fromSlideshow: true })) return true;"));
   assert.ok(indexHTML.includes('id="slideshowToggle"'));
   assert.ok(indexHTML.includes('id="slideshowInterval"'));
-  assert.ok(indexHTML.indexOf('id="slideshowControls"') < indexHTML.indexOf('id="closePreview"'), 'controls sit opposite the close button');
+  const controls = indexHTML.indexOf('id="slideshowControls"');
+  const close = indexHTML.indexOf('id="closePreview"');
+  assert.ok(controls >= 0 && close >= 0 && controls < close, 'controls sit opposite the close button');
 });
 
 test('a running show cannot outlive its preview', () => {

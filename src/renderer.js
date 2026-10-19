@@ -28,18 +28,31 @@ const {
   parentView: resolveParentView,
   recordViewNavigation,
   folderMoveDelta,
+  folderScopeRemovable,
   searchFolders,
+  flattenFolders: flattenFolderTree,
   itemFolderLocations
 } = window.EagleMVFolderNavigation;
+const { NO_FOLDER } = window.EagleMVQuerySpec;
 const { formatEaglePath, resolveEaglePath } = window.EagleMVLogicalPath;
 const { paneLayoutPopoverPosition } = window.EagleMVLayoutPopover;
 const {
   hasType: dragHasType,
   readItemIds,
   isInternalItemDrag,
-  classifyDrop,
-  shouldShowImportOverlay
+  droppedURL
 } = window.EagleMVDragDrop;
+// A drag that starts in this page (an inspector image, a link) carries
+// MultiView's own media addresses, never a web image to import. Item drags
+// cancel the default session and are recognised as items on their own.
+let pageDragActive = false;
+window.addEventListener('dragstart', event => { pageDragActive = !event.defaultPrevented; });
+const classifyDrop = (dataTransfer, fallbackIds = []) =>
+  window.EagleMVDragDrop.classifyDrop(dataTransfer, fallbackIds, { allowURL: !pageDragActive });
+const shouldShowImportOverlay = (dataTransfer, fallbackIds = []) =>
+  window.EagleMVDragDrop.shouldShowImportOverlay(dataTransfer, fallbackIds, { allowURL: !pageDragActive });
+const resolveDrop = (dataTransfer, options = {}) =>
+  window.EagleMVDragDrop.resolveDrop(dataTransfer, { ...options, allowURL: !pageDragActive });
 const {
   exceedsThreshold: marqueeExceedsThreshold,
   normalizeRect: marqueeNormalizeRect,
@@ -55,11 +68,16 @@ const {
   queryWithoutSearch,
   filtersActive: queryFiltersActive,
   filterCount: queryFilterCount,
-  selectRange,
+  extendSelection,
+  stepSelection,
   normalizeRange: normalizeQueryRange,
   effectiveSortDir,
   compareBySort: compareItemsBySort,
+  itemDates,
   sharedTags: computeSharedTags,
+  sharedFolders: computeSharedFolders,
+  sharedFieldValue,
+  selectionSummary: computeSelectionSummary,
   appendableTailCount,
   paneLayoutSpecs,
   paneRevealTargets,
@@ -100,8 +118,14 @@ function setSortCascadeEnabled(enabled) {
     for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
     state.sortCascade = sortCascadeEnabled;
   }
-  const cascadeCheck = $('#sortCascadeCheck');
-  if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+  syncSortCascadeChecks();
+}
+
+// "包含子文件夹" is one preference for every pane and window, so every pane's
+// checkbox must show it: a stale unchecked box in a background pane would
+// hide that its next sort change rewrites the whole subtree (B1-02).
+function syncSortCascadeChecks() {
+  for (const check of document.querySelectorAll('.sort-cascade-check')) check.checked = sortCascadeEnabled;
 }
 
 // Another MultiView window may update the shared sort preferences.
@@ -113,15 +137,56 @@ window.addEventListener('storage', event => {
       for (const pane of state.panes) pane.sortCascade = sortCascadeEnabled;
       state.sortCascade = sortCascadeEnabled;
     }
-    const cascadeCheck = $('#sortCascadeCheck');
-    if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
+    syncSortCascadeChecks();
   }
+});
+// Eagle's 子文件夹 section folds open or shut once for every view (its
+// isHideSubFolder in localStorage), open by default (P7-15).
+const SUBFOLDERS_COLLAPSED_KEY = 'eaglemv.subfoldersCollapsed';
+let subfoldersCollapsed = false;
+try { subfoldersCollapsed = localStorage.getItem(SUBFOLDERS_COLLAPSED_KEY) === 'true'; } catch {}
+window.addEventListener('storage', event => {
+  // The list columns are one setting for every pane and window, like Eagle's.
+  if (event.key === 'eaglemv.listColumns' && typeof state !== 'undefined') applyListColumnClasses();
+  if (event.key !== SUBFOLDERS_COLLAPSED_KEY) return;
+  subfoldersCollapsed = event.newValue === 'true';
+  if (typeof state !== 'undefined' && Array.isArray(state.panes)) renderSubfolderSections();
+});
+// Eagle's 布局 panel switches: card lines and 显示子文件夹内容, one global
+// setting shared by every pane and window (P1-06, P1-07).
+const cardDisplayAPI = window.EagleMVCardDisplay;
+let cardDisplay = cardDisplayAPI.parse(null);
+// 瀑布流 placement (layoutWaterfall). Declared up here: card display classes
+// are applied during start-up and already schedule a relayout.
+const waterfall = window.EagleMVWaterfall;
+let waterfallFrame = 0;
+// Pane and window resizes, the inspector opening, a split appearing.
+const waterfallResize = typeof ResizeObserver === 'function' ? new ResizeObserver(entries => {
+  for (const entry of entries) {
+    const grid = entry.target.querySelector(':scope > .asset-grid.waterfall');
+    if (grid && grid.clientWidth !== grid._waterfall?.width) layoutWaterfall(grid);
+  }
+}) : null;
+try { cardDisplay = cardDisplayAPI.parse(localStorage.getItem(cardDisplayAPI.STORAGE_KEY)); } catch {}
+window.addEventListener('storage', event => {
+  if (event.key === cardDisplayAPI.STORAGE_KEY) adoptCardDisplay(cardDisplayAPI.parse(event.newValue));
 });
 const { createOperationTracker } = window.EagleMVOperationState;
 // Single choke point for media addresses: the Electron preload mints
 // eaglemv:// protocol URLs, the web shim mints same-origin /media/ paths.
+// Folder covers follow every thumbnail change; an item thumbnail follows only
+// its own, so one custom thumbnail no longer reloads every card (H-10). A
+// change that names no items falls back to reloading them all.
 let thumbnailRevision = 0;
-const mediaURL = (kind, id) => window.eagleMV.mediaURL(kind, id) + (kind === 'thumb' && thumbnailRevision ? `?v=${thumbnailRevision}` : '');
+let allThumbnailsRevision = 0;
+const thumbnailRevisions = new Map();
+// The single item the inspector last rendered, so a re-render of it can
+// update in place (see renderInspector).
+let inspectorShown = null;
+const mediaURL = (kind, id) => {
+  const version = kind === 'thumb' ? Math.max(thumbnailRevisions.get(id) || 0, allThumbnailsRevision) : 0;
+  return window.eagleMV.mediaURL(kind, id) + (version ? `?v=${version}` : '');
+};
 // Host-bound entry points (Finder, native drag, host dialogs…) check this
 // table; the web shim serves the same keys with false so they hide cleanly.
 const caps = window.eagleMV.capabilities || {};
@@ -156,6 +221,8 @@ const $ = selector => {
   }
   return document.querySelector(selector);
 };
+// The pane the user is really in while withActivePane borrows another one.
+let foregroundPaneId = null;
 const state = {
   connected: false,
   library: null,
@@ -185,7 +252,7 @@ const state = {
   randomSeed: 'seed',
   viewMode: 'justified',
   sortCapNoticeKey: '',
-  viewTitle: '资料库',
+  viewTitle: '资源库',
   currentView: { kind: 'root' },
   history: [],
   historyIndex: -1,
@@ -203,6 +270,7 @@ const state = {
   expandedFolders: new Set(),
   availableTags: [],
   tagGroups: [],
+  starredTags: [],
   recentFolders: [],
   tagColors: {},
   viewMemory: new Map(),
@@ -229,7 +297,10 @@ const state = {
   contextMenu: null,
   openDrawer: null,
   folderDialogResolve: null,
+  folderDialogAllowEmpty: false,
   trashDialogResolve: null,
+  // Folder id -> view to open when a folder this window deleted disappears.
+  folderRemovalRedirects: new Map(),
   duplicateDialogResolve: null,
   localPins: {},
   importing: false,
@@ -242,43 +313,70 @@ const state = {
   restoreScroll: null
 };
 
-// Eagle has no client-side undo history for metadata mutations. Keep a small
-// in-memory record of the latest trash operation so Control+Z can safely send
-// the inverse API patch while this window remains open.
-const trashUndoStack = [];
 let trashMutationInFlight = 0;
+// Per pane: the rating whose writes are still in flight (setSelectionRating).
+const ratingQueues = new Map();
+// The library the extras on screen belong to, and the newest load (H-11).
+let libraryExtrasLibrary = null;
+let libraryExtrasToken = 0;
+// A library change, a tag edit and a pin change often ask for the extras at
+// once; a load already running for that library absorbs them into one more
+// read after it (H-11) instead of starting parallel ones.
+let libraryExtrasRun = null;
 
-async function undoLastTrash() {
-  if (trashMutationInFlight) { toast('删除操作尚未完成，请稍后再试', 2600); return; }
-  const entry = trashUndoStack.at(-1);
-  if (!entry?.ids?.length) { toast('没有可撤销的删除操作', 2200); return; }
-  const paneId = paneById(entry.paneId) ? entry.paneId : state.activePaneId;
+// 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
+// has focus, otherwise the 撤销 of the last notice (Eagle's $scope.undo,
+// which does nothing when there is none). An open dialog swallows it so
+// nothing changes behind the dialog.
+function routeUndoCommand() {
+  if (isEditableElement()) {
+    document.execCommand('undo');
+    return;
+  }
+  const dialogOpen = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
+    .some(dialog => !dialog.classList.contains('hidden'));
+  if (dialogOpen) return;
+  runUndo();
+}
+
+// Eagle's undo of a delete: the items leave the trash and are selected.
+async function restoreTrashed({ ids, libraryPath, paneId: wantedPaneId, viewKey }) {
+  if (trashMutationInFlight) throw new Error('删除操作尚未完成，请稍后再试');
+  const paneId = paneById(wantedPaneId) ? wantedPaneId : state.activePaneId;
   const pane = paneById(paneId);
-  const libraryPath = state.library?.path;
-  if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资料库已切换', 3500); return; }
+  if (!pane || state.library?.path !== libraryPath) throw new Error('资源库已切换');
   const operationToken = beginForegroundOperation('正在撤销删除…', { key: `trash-undo:${paneId}` });
   if (!operationToken) return;
   trashMutationInFlight += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    trashMutationInFlight -= 1;
+    endForegroundOperation(operationToken);
+  };
   setSyncStatus('正在撤销删除…');
   try {
-    const outcome = await runItemBatch(entry.ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
-      const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: item, libraryPath });
+    const outcome = await runItemBatch(ids, async id => {
+      const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: { isDeleted: true }, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化，请刷新后重试');
       return result;
     }, 'Eagle 撤销请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成撤销');
-    entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
-    if (!entry.ids.length) trashUndoStack.pop();
-    pane.selected = new Set(outcome.failed);
+    release();
     await refresh({ reset: true, preserveScroll: true, paneId });
-    toast(outcome.failed.length ? `已撤销 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败` : `已撤销删除 ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4200 : 2400);
-  } catch (error) {
-    toast(`撤销删除失败：${error.message}`, 4000);
+    if (descriptorKey(pane.currentView) === viewKey) {
+      const shown = new Set(pane.items.map(item => item.id));
+      pane.selected = new Set(outcome.succeeded.filter(id => shown.has(id)));
+      if (state.activePaneId === paneId) {
+        updateCardSelectionStyles();
+        renderInspector();
+      }
+    }
+    if (outcome.failed.length) toast(`${outcome.failed.length} 个素材未恢复${batchFailureReason(outcome)}`, 4200);
   } finally {
-    trashMutationInFlight -= 1;
     setSyncStatus('所有窗口已同步');
-    endForegroundOperation(operationToken);
+    release();
   }
 }
 window.state = state;
@@ -303,9 +401,9 @@ function paneCreationOrder(id) {
 }
 
 const paneStateKeys = [
-  'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase',
+  'items', 'itemMap', 'total', 'totalCount', 'estimatedTotal', 'offset', 'nextOffset', 'hasMore', 'loading', 'refreshToken', 'errorMessage', 'selected', 'selectedBase', 'selectionAnchor',
   'sort', 'sortDir', 'randomSeed', 'viewMode', 'viewTitle', 'currentView', 'history', 'historyIndex', 'selectedFolderCard', 'dragDepth', 'scrollTop', 'query', 'sortCascade',
-  'viewMemory', 'restoreScroll',
+  'viewMemory', 'restoreScroll', 'filterLock',
   'previewId', 'previewZoom', 'previewView', 'previewToken', 'textSession', 'textSaving', 'slideshow'
 ];
 // Eagle offers four grid layouts; 'justified' is our default, as it is there.
@@ -373,15 +471,15 @@ function paneTitleForView(view) {
   if (view?.kind === 'folder') return findFolder(state.library?.folders, view.id)?.name || '文件夹';
   if (view?.kind === 'smart') return view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
   return ({
-    root: state.library?.name || '资料库',
-    all: '全部素材',
+    root: state.library?.name || '资源库',
+    all: '全部',
     unfiled: '未分类',
-    untagged: '未加标签',
+    untagged: '未标签',
     recent: '最近使用',
     random: '随机模式',
     trash: '回收站',
     tags: '标签管理'
-  })[view?.kind] || '资料库';
+  })[view?.kind] || '资源库';
 }
 
 function createPaneState(id, source = state, { inheritCurrentViewOnly = false } = {}) {
@@ -405,6 +503,8 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     errorMessage: '',
     selected: fresh ? new Set() : new Set(source.selected || []),
     selectedBase: fresh ? null : (source.selectedBase || null),
+    // Where ⇧-click and ⇧-arrows extend from: the last plain or ⌘-click.
+    selectionAnchor: null,
     sort: fresh ? 'default' : (source.sort || 'default'),
     sortDir: source.sortDir || 'auto',
     sortCascade: sortCascadeEnabled,
@@ -413,7 +513,7 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     sortCapNoticeKey: '',
     // The new pane gets a display label derived from the inherited path, not
     // another pane's mutable presentation state.
-    viewTitle: fresh ? paneTitleForView(currentView) : (source.viewTitle || '资料库'),
+    viewTitle: fresh ? paneTitleForView(currentView) : (source.viewTitle || '资源库'),
     currentView,
     history: fresh ? [] : [...(source.history || [])],
     historyIndex: fresh ? -1 : (Number.isInteger(source.historyIndex) ? source.historyIndex : -1),
@@ -422,6 +522,8 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     draggingItemIds: null,
     scrollTop: fresh ? 0 : (Number(source.scrollTop) || 0),
     query: fresh ? createQuery() : cloneQuery(source.query),
+    // Eagle's 锁定筛选: keep the search and filters when the view changes.
+    filterLock: fresh ? false : Boolean(source.filterLock),
     viewMemory: new Map(source.viewMemory || []),
     restoreScroll: null,
     previewId: fresh ? null : (source.previewId || null),
@@ -433,7 +535,11 @@ function createPaneState(id, source = state, { inheritCurrentViewOnly = false } 
     slideshow: { timer: null, intervalMs: source.slideshow?.intervalMs || 4000 }
   };
   if (fresh) {
-    pane.sortDir = 'auto';
+    // A new pane opens its view without passing through applyView, so it
+    // reads the remembered sort here (B1-01).
+    const remembered = rememberedSortFor(currentView);
+    pane.sort = remembered?.sort || 'default';
+    pane.sortDir = remembered?.sortDir || 'auto';
     pane.randomSeed = nextRandomSeed();
     pane.viewMemory = new Map();
   }
@@ -461,6 +567,7 @@ let librarySyncTimer = null;
 let librarySyncRunning = false;
 let pendingLibraryChange = null;
 let lastAppliedLibraryRevision = -1;
+let libraryHubInstance = null;
 let newestLibraryRevision = -1;
 let visibleItemWatchQueued = false;
 let activeMarquee = null;
@@ -595,9 +702,20 @@ function paneById(id) {
 }
 function withActivePane(id, callback) {
   const previous = state.activePaneId;
+  const outerForeground = foregroundPaneId;
+  if (foregroundPaneId === null) foregroundPaneId = previous;
   state.activePaneId = id;
-  try { return callback(); } finally { state.activePaneId = previous; }
+  try { return callback(); } finally {
+    state.activePaneId = previous;
+    foregroundPaneId = outerForeground;
+  }
 }
+// True while running on behalf of a pane the user is not in. The inspector,
+// search and filter controls and the sidebar belong to the real active pane.
+function renderingBackgroundPane() {
+  return foregroundPaneId !== null && state.activePaneId !== foregroundPaneId;
+}
+const KEYBOARD_ACTIVATED_CONTROLS = 'button, a[href], summary, [role="button"], [role="menuitem"], [role="option"], [role="tab"]';
 function isEditableElement(target = document.activeElement) {
   return Boolean(target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
 }
@@ -675,7 +793,9 @@ function uiIcon(name, className = 'tree-icon-svg') {
     export: '<path d="M10 3v9M6.5 6.5 10 3l3.5 3.5M4 12.5V17h12v-4.5"></path>',
     import: '<path d="M10 3v9M6.5 8.5 10 12l3.5-3.5M4 13v3.2h12V13"></path>',
     refresh: '<path d="M16.2 8.2A6.5 6.5 0 1 0 16.5 12M16.2 4.7v3.8h-3.8"></path>',
-    lock: '<rect x="5" y="9" width="10" height="7.5" rx="1.6"></rect><path d="M7 9V6.8a3 3 0 0 1 6 0V9"></path>'
+    lock: '<rect x="5" y="9" width="10" height="7.5" rx="1.6"></rect><path d="M7 9V6.8a3 3 0 0 1 6 0V9"></path>',
+    star: '<path d="m10 3 2.1 4.4 4.8.6-3.5 3.3.9 4.8L10 13.8l-4.3 2.3.9-4.8-3.5-3.3 4.8-.6L10 3Z"></path>',
+    search: '<circle cx="8.8" cy="8.8" r="5"></circle><path d="m12.5 12.5 4 4"></path>'
   };
   return `<svg class="${className}" viewBox="0 0 20 20" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -738,7 +858,7 @@ function paneMarkup(id, index) {
           <button id="upButton" class="nav-button up" title="${keyboardPlatform.shortcutText('上一级（⌥↑ / ⌃↑）')}" disabled aria-label="上一级"><img class="nav-image-icon" src="eagle-assets/ic-arrow-up.svg" alt=""></button>
         </div>
         <div class="location-block">
-          <h1 id="viewTitle">资料库</h1>
+          <h1 id="viewTitle">资源库</h1>
           <span id="resultCount" class="muted">正在连接…</span>
         </div>
         <div class="sort-controls">
@@ -750,6 +870,7 @@ function paneMarkup(id, index) {
           </div>
           <div class="sort-select-control">
             <button id="sortSelectButton" class="sort-select-button" type="button" aria-haspopup="menu" aria-expanded="false" title="当前栏排序">
+              <svg class="sort-select-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h8M4 14.5h4"></path></svg>
               <span id="sortSelectLabel" class="sort-select-label">Eagle 顺序</span>
               <svg class="sort-select-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
             </button>
@@ -757,19 +878,29 @@ function paneMarkup(id, index) {
               <option value="default">Eagle 顺序</option>
               <option value="name">名称</option>
               <option value="added">添加日期</option>
-              <option value="newest">最近修改</option>
+              <option value="newest">修改日期</option>
+              <option value="created">创建日期</option>
               <option value="size">文件大小</option>
               <option value="resolution">分辨率</option>
               <option value="rating">评分</option>
               <option value="type">文件类型</option>
+              <option value="tags">标签</option>
               <option value="random">随机</option>
             </select>
-            <div id="sortPopover" class="sort-popover hidden" role="menu" aria-label="排序选项">
+            <div id="sortPopover" class="sort-popover hidden" popover="manual" role="menu" aria-label="排序选项">
+              <div class="sort-popover-layout" role="group" aria-label="当前栏布局">
+                <button type="button" class="sort-popover-layout-button" data-view-mode="justified" title="自适应" aria-label="自适应">${uiIcon('layoutJustified', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="grid" title="网格" aria-label="网格">${uiIcon('layoutGrid', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="waterfall" title="瀑布流" aria-label="瀑布流">${uiIcon('layoutWaterfall', 'view-mode-svg')}</button>
+                <button type="button" class="sort-popover-layout-button" data-view-mode="list" title="列表" aria-label="列表">${uiIcon('layoutList', 'view-mode-svg')}</button>
+              </div>
+              <div class="sort-popover-divider sort-popover-layout-divider"></div>
               <div class="sort-popover-options">
                 <button type="button" class="sort-popover-option" data-sort="default">Eagle 顺序</button>
                 <button type="button" class="sort-popover-option" data-sort="name">名称</button>
                 <button type="button" class="sort-popover-option" data-sort="added">添加日期</button>
-                <button type="button" class="sort-popover-option" data-sort="newest">最近修改</button>
+                <button type="button" class="sort-popover-option" data-sort="newest">修改日期</button>
+                <button type="button" class="sort-popover-option" data-sort="created">创建日期</button>
                 <button type="button" class="sort-popover-option" data-sort="size">文件大小</button>
                 <button type="button" class="sort-popover-option" data-sort="resolution">分辨率</button>
                 <button type="button" class="sort-popover-option" data-sort="rating">评分</button>
@@ -784,8 +915,20 @@ function paneMarkup(id, index) {
               <div id="sortCascadeDivider" class="sort-popover-divider"></div>
               <label id="sortCascadeItem" class="sort-popover-item sort-cascade-item">
                 <input type="checkbox" id="sortCascadeCheck" class="sort-cascade-check">
-                <span>包含子文件夹</span>
+                <span>排序应用到子文件夹</span>
               </label>
+              <div class="sort-popover-divider"></div>
+              <div class="sort-popover-toggles" role="group" aria-label="显示">
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="subfolderContent"><span>显示子文件夹内容</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="name"><span>显示名称</span></label>
+                <div class="sort-popover-item card-meta-toggle">
+                  <label><input type="checkbox" class="sort-cascade-check" data-card-display="meta"><span>显示简介</span></label>
+                  <select data-card-meta-type aria-label="简介内容">${cardDisplayAPI.META_TYPES.map(([type, label]) => `<option value="${type}">${label}</option>`).join('')}</select>
+                </div>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="ext"><span>显示扩展名</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="extLabel"><span>显示扩展名标签</span></label>
+                <label class="sort-popover-item"><input type="checkbox" class="sort-cascade-check" data-card-display="annotation"><span>显示标注数</span></label>
+              </div>
             </div>
           </div>
         </div>
@@ -797,8 +940,8 @@ function paneMarkup(id, index) {
       </div>
       <div id="emptyState" class="empty-state hidden">
         <div class="empty-icon"><img src="brand-icon.png" alt=""></div>
-        <h2>这里还没有素材</h2>
-        <p>可以调整筛选条件，或将文件导入当前文件夹。</p>
+        <h2>拖放文件到这里</h2>
+        <p>你可以一次拖拽多个文件到这里添加</p>
         <button id="emptyRetryButton" class="secondary-button empty-retry-button hidden">重新读取</button>
       </div>
       <div id="itemGrid" class="item-grid"></div>
@@ -811,7 +954,7 @@ function paneMarkup(id, index) {
         <button id="slideshowToggle" class="slideshow-button" type="button" title="幻灯片播放（S）" aria-pressed="false" aria-label="幻灯片播放">▶</button>
         <select id="slideshowInterval" class="slideshow-interval" aria-label="幻灯片间隔">
           <option value="2000">2 秒</option>
-          <option value="4000">4 秒</option>
+          <option value="4000" selected>4 秒</option>
           <option value="6000">6 秒</option>
           <option value="10000">10 秒</option>
         </select>
@@ -1115,6 +1258,7 @@ function restoreSavedSessionPanes() {
         const view = validateSessionView(saved.view, state.library?.folders, state.library?.smartFolders);
         pane.sort = saved.sort || 'default';
         pane.sortDir = saved.sortDir || 'auto';
+        if (paneViewModes.has(saved.viewMode)) pane.viewMode = saved.viewMode;
         withActivePane(pane.id, () => {
           applyView(view);
           if (saved.sort) {
@@ -1135,7 +1279,9 @@ function restoreSavedSessionPanes() {
         });
       }
     }
-    if (session.activePaneId && state.panes.some(p => p.id === session.activePaneId)) {
+    const activeByIndex = Number.isInteger(session.activeIndex) ? state.panes[session.activeIndex] : null;
+    if (activeByIndex) activatePane(activeByIndex.id);
+    else if (session.activePaneId && state.panes.some(p => p.id === session.activePaneId)) {
       activatePane(session.activePaneId);
     }
   } else {
@@ -1179,6 +1325,7 @@ function renderPaneLayout(layout = 'single', { refresh = true, splitRatios = nul
   state.panes = plan.panes;
   state.activePaneId = plan.activePaneId || state.panes[0]?.id;
   layoutRoot.dataset.layout = layout;
+  reportMenuState();
   const splitters = getLayoutSplitters(layout);
   const splittersHTML = splitters.map(s => splitterMarkup(s)).join('');
   layoutRoot.innerHTML = state.panes.map((pane, index) => paneMarkup(pane.id, index)).join('') + splittersHTML;
@@ -1301,12 +1448,39 @@ async function refreshAllPanes(options = {}) {
   await Promise.all([...state.panes].map(pane => refresh({ ...options, paneId: pane.id })));
 }
 
-function toast(message, duration = 2400) {
+// Eagle 4.0 keeps one undo (P3-05, $rootScope.notify): the notice of the
+// last undoable action carries 撤销, and the link or ⌘Z runs it until the
+// notice has been gone for 5 s. Any later notice takes its place, with or
+// without an undo of its own.
+const UNDO_GRACE_MS = 5000;
+let undoSlot = null;
+
+function toast(message, duration = 2400, { undo = null } = {}) {
   const element = $('#toast');
   element.textContent = message;
+  undoSlot = undo ? { restore: undo, expiresAt: Date.now() + duration + UNDO_GRACE_MS } : null;
+  element.classList.toggle('has-undo', Boolean(undo));
+  if (undo) {
+    const slot = undoSlot;
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'toast-undo';
+    link.textContent = '撤销';
+    link.addEventListener('click', () => runUndo(slot));
+    element.append(link);
+  }
   element.classList.remove('hidden');
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => element.classList.add('hidden'), duration);
+}
+
+function runUndo(slot = undoSlot) {
+  if (!slot || slot !== undoSlot || Date.now() > slot.expiresAt) return false;
+  undoSlot = null;
+  clearTimeout(state.toastTimer);
+  $('#toast').classList.add('hidden');
+  Promise.resolve().then(() => slot.restore()).catch(error => toast(`撤销失败：${error.message}`, 4000));
+  return true;
 }
 
 function scheduleVisibleItemWatch() {
@@ -1320,8 +1494,34 @@ function scheduleVisibleItemWatch() {
   });
 }
 
+// Batches big enough to take a while count up in the status bar (P6-02).
+const batchProgress = new Map();
+let batchProgressFrame = 0;
 function renderSyncStatus() {
-  $('#syncText').textContent = state.operationTracker.currentText();
+  let text = state.operationTracker.currentText();
+  if (batchProgress.size) {
+    let done = 0;
+    let total = 0;
+    for (const entry of batchProgress.values()) { done += entry.done; total += entry.total; }
+    text += `（${done.toLocaleString()}/${total.toLocaleString()}）`;
+  }
+  $('#syncText').textContent = text;
+}
+
+function trackBatchProgress(total) {
+  if (total < 200) return () => {};
+  const entry = { done: 0, total };
+  batchProgress.set(entry, entry);
+  renderSyncStatus();
+  return finished => {
+    if (finished) {
+      batchProgress.delete(entry);
+      renderSyncStatus();
+      return;
+    }
+    entry.done += 1;
+    if (!batchProgressFrame) batchProgressFrame = requestAnimationFrame(() => { batchProgressFrame = 0; renderSyncStatus(); });
+  };
 }
 
 function setSyncStatus(text) {
@@ -1380,7 +1580,7 @@ function setConnection(connected, message) {
     // as the host stays away.
     document.body.classList.toggle('host-offline', !connected);
   }
-  for (const selector of ['#trashButton', '#batchTrashButton', '#batchTagButton', '#addCommentButton', '#customThumbnailButton']) {
+  for (const selector of ['#trashButton', '#batchTrashButton', '#addCommentButton', '#customThumbnailButton']) {
     $(selector).disabled = !connected;
   }
   $('#pinButton').disabled = !connected || state.currentView.kind !== 'folder' || state.selected.size !== 1;
@@ -1388,10 +1588,20 @@ function setConnection(connected, message) {
 
 function formatBytes(bytes) {
   if (!Number.isFinite(Number(bytes))) return '—';
-  const units = ['B', 'KB', 'MB', 'GB'];
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = Number(bytes), index = 0;
-  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+  const shown = () => value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1);
+  // Step up on the rounded figure too, so 1023.95 KB reads "1.0 MB", not "1024 KB".
+  while ((value >= 1024 || Number(shown()) >= 1024) && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${shown()} ${units[index]}`;
+}
+
+// Eagle's inspector format, yyyy/MM/dd HH:mm.
+function formatDateTime(time) {
+  const date = new Date(Number(time) || 0);
+  if (!Number(time) || Number.isNaN(date.getTime())) return '—';
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'avif', 'bmp', 'heic', 'tif', 'tiff']);
@@ -1402,6 +1612,7 @@ const previewStandInExtensions = new Set(['psd', 'tif', 'tiff', 'heic', 'heif', 
 function itemFormat(item) { return String(item?.ext || '').trim().toUpperCase(); }
 
 function compareItemsForView(a, b) {
+  const folderCompare = state.currentView.kind === 'folder' ? eagleFolderComparator(state.currentView, state.sort) : null;
   if (state.currentView.kind === 'folder') {
     const left = pinTimestamp(a);
     const right = pinTimestamp(b);
@@ -1409,12 +1620,43 @@ function compareItemsForView(a, b) {
     if (!left && right) return 1;
     if (left !== right && state.sort !== 'manual') return right - left;
   }
+  if (folderCompare) return folderCompare(a, b);
   if (state.sort === 'manual') return window.EagleMVManualOrder.compare(manualOrder(state.currentView, 'items'), a.id, b.id);
   return compareItemsBySort(state.sort, state.sortDir, a, b, { seed: state.randomSeed });
 }
 
+// A folder view follows the folder's own Eagle order (P1-02): "Eagle 顺序"
+// is the sort the folder was given in Eagle, "自定义顺序" its manual order.
+// Built once per folder state, since the item sort calls it per pair.
+let eagleFolderOrderCache = null;
+const eagleNameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+function libraryFolder(id) {
+  return id ? findFolderInTree(state.library?.folders, id) : null;
+}
+function eagleFolderComparator(view, sort) {
+  if (view?.kind !== 'folder') return null;
+  const folder = libraryFolder(view.id);
+  const cache = eagleFolderOrderCache;
+  if (cache && cache.folder === folder && cache.sort === sort && cache.orderBy === folder?.orderBy && cache.increase === folder?.sortIncrease && cache.seed === state.randomSeed) return cache.compare;
+  const order = window.EagleMVEagleOrder.folderOrder(folder, sort);
+  let compare = order ? window.EagleMVEagleOrder.comparator(order, view.id, { collator: eagleNameCollator }) : null;
+  if (order && !compare) compare = (a, b) => compareItemsBySort('random', 'auto', a, b, { seed: state.randomSeed });
+  eagleFolderOrderCache = { folder, sort, orderBy: folder?.orderBy, increase: folder?.sortIncrease, seed: state.randomSeed, compare };
+  return compare;
+}
+// Whether the pane's order comes from the client (so every page must load)
+// rather than Eagle's API order.
+function viewHasClientOrder(view = state.currentView, sort = state.sort) {
+  return sort !== 'default' || Boolean(eagleFolderComparator(view, sort));
+}
+
 function manualScope(view) { return view.id ? `${view.kind}:${view.id}` : view.kind; }
-function supportsManual(view) { return ['root','folder','all','unfiled','untagged','smart'].includes(view.kind); }
+// A folder showing its subfolders' files mixes items the folder's own order
+// does not hold, so it has no custom order while 显示子文件夹内容 is on.
+function supportsManual(view) {
+  if (view.kind === 'folder' && cardDisplay.subfolderContent) return false;
+  return ['root','folder','all','unfiled','untagged','smart'].includes(view.kind);
+}
 function manualOrder(view, kind) { return state.localOrders[window.EagleMVManualOrder.key(manualScope(view),kind)]; }
 function acceptManualOrders(payload) {
   if (payload.libraryPath !== state.library?.path) return;
@@ -1426,7 +1668,7 @@ function acceptManualOrders(payload) {
   for (const pane of state.panes) withActivePane(pane.id, () => {
     if (adopt && manualScope(pane.currentView)===payload.scope && pane.sort===payload.startSort) {
       pane.sort='manual';pane.sortDir='auto';
-      sortMemory.remember(state.library.path,descriptorKey(pane.currentView),'manual','auto',Date.now());
+      sortMemory.remember(state.library.path,descriptorKey(pane.currentView),'manual','auto',Date.now(),state.library.folders);
     }
     renderSortControls();renderGrid({preserveScroll:true});
   });
@@ -1454,9 +1696,17 @@ function attachManualDrag() {
           if (snapshot) known = window.EagleMVManualOrder.sort(parentId ? trail.at(-2).children : state.library.folders, manualOrder(view,'folders'));
         }
         const order = manualOrder(view,kind);
+        // Folder items reorder in Eagle's own manual order, which Eagle
+        // allows only without a filter or search and while the folder shows
+        // that order (E-11).
+        const eagleItems = kind === 'items' && view.kind === 'folder';
+        // Several selected folders have no one order to write into.
+        const enabled = kind === 'items' && viewFolderSelection(view) ? false : eagleItems
+          ? supportsManual(view) && !queryFiltersActive(pane.query) && window.EagleMVEagleOrder.dragSortable(libraryFolder(view.id), pane.sort)
+          : supportsManual(view);
         return {id,kind,parentId,paneId,scope:manualScope(view),libraryPath:state.library?.path,
-          enabled:supportsManual(view),
-          ready:state.manualOrdersReady && (kind==='folders' || (!pane.loading && !pane.errorMessage)),
+          enabled,
+          ready:(eagleItems || state.manualOrdersReady) && (kind==='folders' || (!pane.loading && !pane.errorMessage)),
           knownIds:known.map(item=>item.id),revision:order?.revision || 0,
           sourceView:descriptorKey(pane.currentView),refreshToken:pane.refreshToken,startSort:pane.sort,
           windowId:state.windowId,pinned:kind==='items' && itemIsPinned(itemById(id) || {})};
@@ -1469,15 +1719,16 @@ function attachManualDrag() {
       const ids=ctx.knownIds.filter(id=>state.selected.has(id));
       ctx.mixedPinned=ids.some(id=>itemIsPinned(itemById(id))!==ctx.pinned);
       state.draggingItemIds=ids;state.dragSourcePaneId=ctx.paneId;
-      state.internalDrag={active:true,ids,sourceFolderId:ctx.parentId,sourcePaneId:ctx.paneId,sourceWindowId:state.windowId,libraryPath:ctx.libraryPath};
+      state.internalDrag={active:true,ids,sourceFolderId:ctx.parentId,sourceFolderIds:paneFolderScope(paneById(ctx.paneId),ctx.parentId),sourcePaneId:ctx.paneId,sourceWindowId:state.windowId,libraryPath:ctx.libraryPath};
       return ids;
     },
     submit: async (source,target,position) => {
-      if (source.libraryPath!==state.library?.path) throw new Error('资料库已切换，请重新拖动');
+      if (source.libraryPath!==state.library?.path) throw new Error('资源库已切换，请重新拖动');
       if (source.windowId===state.windowId) {
         const pane=paneById(source.paneId);
         if (!pane || descriptorKey(pane.currentView)!==source.sourceView || (source.kind==='items' && source.ids.some(id=>!pane.itemMap.has(id)))) throw new Error('来源视图已变化，请重新拖动');
       }
+      if (source.kind==='items' && source.scope.startsWith('folder:')) return submitEagleItemOrder(source,target,position);
       const knownIds=[...new Set([...source.knownIds,...target.knownIds])];
       const result=await window.eagleMV.moveManualOrder({libraryPath:source.libraryPath,scope:source.scope,kind:source.kind,ids:source.ids,
         syncToEagle: true,
@@ -1491,16 +1742,50 @@ function attachManualDrag() {
     nativeSource: () => state.internalDrag?.active ? state.internalDrag.orderContext : null,
     nativeStart: hasCapability('nativeDrag') ? source => {
       state.internalDrag.orderContext=source;
-      window.eagleMV.startDrag({ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+      window.eagleMV.startDrag({ids:source.ids,sourceFolderId:source.parentId,sourceFolderIds:paneFolderScope(paneById(source.paneId),source.parentId),sourcePaneId:source.paneId,
         sourceWindowId:source.windowId,libraryPath:source.libraryPath,orderContext:source});
     } : null,
     forward: source => {
       if (source.kind!=='items') return;
       if (state.internalDrag?.orderContext===source) return;
-      state.internalDrag={active:true,ids:source.ids,sourceFolderId:source.parentId,sourcePaneId:source.paneId,
+      state.internalDrag={active:true,ids:source.ids,sourceFolderId:source.parentId,sourceFolderIds:paneFolderScope(paneById(source.paneId),source.parentId),sourcePaneId:source.paneId,
         sourceWindowId:source.windowId,libraryPath:source.libraryPath};
     }
   });
+}
+
+// Reorder folder items the way Eagle's own drag does: only the moved items get
+// a new manual value, between their new neighbours, and the folder switches
+// to its manual order (E-11). Pinned and unpinned items sort apart, so the
+// neighbours come from the moved items' own group.
+async function submitEagleItemOrder(source, target, position) {
+  const folderId = source.scope.slice('folder:'.length);
+  const pane = paneById(target.paneId);
+  if (!pane) throw new Error('目标栏已关闭，请重新拖动');
+  const displayedIds = withActivePane(pane.id, () => target.knownIds.filter(id => {
+    const item = itemById(id);
+    return item && itemIsPinned(item) === source.pinned;
+  }));
+  const { block, belowId } = window.EagleMVEagleOrder.blockNeighbours(displayedIds, source.ids, target.id, position);
+  if (!belowId && pane.hasMore) throw new Error('后面还有未载入的素材，请先向下滚动载入后再拖到末尾');
+  const folder = libraryFolder(folderId);
+  const order = window.EagleMVEagleOrder.folderOrder(folder, 'manual');
+  const result = await window.eagleMV.moveEagleOrder({ libraryPath: source.libraryPath, folderId, ids: block,
+    anchorId: target.id, position, displayedIds, increase: order.increase });
+  clearDragUI();
+  if (folder && folder.orderBy !== 'MANUAL') { folder.orderBy = 'MANUAL'; folder.sortIncrease = true; }
+  for (const changed of result?.items || []) {
+    for (const candidate of state.panes) {
+      const index = candidate.items.findIndex(item => item.id === changed.id);
+      if (index < 0) continue;
+      candidate.items[index] = changed;
+      candidate.itemMap?.set(changed.id, changed);
+    }
+  }
+  for (const candidate of state.panes) {
+    if (candidate.currentView.kind === 'folder' && candidate.currentView.id === folderId) schedulePaneGridRender(candidate.id);
+  }
+  toast('顺序已同步到 Eagle');
 }
 
 function sortedItems() {
@@ -1516,6 +1801,10 @@ function firstSelectedInViewOrder() {
 }
 
 function renderViewModeControls() {
+  reportMenuState();
+  for (const button of $('#sortPopover')?.querySelectorAll('[data-view-mode]') || []) {
+    button.classList.toggle('active', button.dataset.viewMode === (state.viewMode || 'justified'));
+  }
   const group = $('#viewModeGroup');
   if (!group) return;
   for (const button of group.querySelectorAll('[data-view-mode]')) {
@@ -1538,6 +1827,7 @@ function setPaneViewMode(mode, paneId = state.activePaneId) {
     renderViewModeControls();
     renderGrid({ preserveScroll: true });
   });
+  saveSessionState();
 }
 
 const sortOptionLabels = {
@@ -1545,13 +1835,41 @@ const sortOptionLabels = {
   manual: '自定义顺序',
   name: '名称',
   added: '添加日期',
-  newest: '最近修改',
+  newest: '修改日期',
+  created: '创建日期',
   size: '文件大小',
   resolution: '分辨率',
   rating: '评分',
   type: '文件类型',
+  tags: '标签',
   random: '随机'
 };
+
+// The pane clips its overflow and, as a size container, is the containing
+// block even for fixed descendants, so a popover taller than a split pane was
+// cut off (P7-13). The top layer escapes both without moving the element out
+// of its pane; it is then placed from the button, flipping up when there is
+// no room below and scrolling when neither side fits.
+function showSortPopover(popover, button) {
+  if (!popover || !button || typeof popover.showPopover !== 'function') return;
+  if (!popover.matches(':popover-open')) popover.showPopover();
+  popover.classList.add('top-layer');
+  popover.style.maxHeight = '';
+  const margin = 8;
+  const anchor = button.getBoundingClientRect();
+  const below = window.innerHeight - anchor.bottom - 4 - margin;
+  const above = anchor.top - 4 - margin;
+  let height = popover.offsetHeight;
+  const up = height > below && above > below;
+  if (height > (up ? above : below)) {
+    height = Math.max(120, up ? above : below);
+    popover.style.maxHeight = `${height}px`;
+  }
+  const width = popover.offsetWidth;
+  const left = Math.min(Math.max(margin, anchor.right - width), window.innerWidth - width - margin);
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(up ? anchor.top - 4 - height : anchor.bottom + 4)}px`;
+}
 
 function renderSortControls() {
   renderViewModeControls();
@@ -1560,7 +1878,17 @@ function renderSortControls() {
   if (select) select.value = sortKey==='manual' ? 'default' : sortKey;
   const label = $('#sortSelectLabel');
   if (label) label.textContent = sortOptionLabels[sortKey] || 'Eagle 顺序';
-  if ($('#sortSelectButton')) $('#sortSelectButton').title = '可直接拖动调整顺序；普通文件夹内同步到 Eagle，拖到文件夹中央可移入';
+  // The drag hint only holds where dragging can reorder (B1 wording); a
+  // folder's "Eagle 顺序" names the sort the folder has in Eagle.
+  const folder = state.currentView.kind === 'folder' ? libraryFolder(state.currentView.id) : null;
+  const folderSort = sortKey === 'default' && folder?.orderBy ? window.EagleMVEagleOrder.LABELS[folder.orderBy] : null;
+  const sortName = `${sortOptionLabels[sortKey] || 'Eagle 顺序'}${folderSort ? `（此文件夹在 Eagle 中为“${folderSort}”）` : ''}`;
+  const draggable = state.currentView.kind === 'folder'
+    ? supportsManual(state.currentView) && window.EagleMVEagleOrder.dragSortable(folder, sortKey)
+    : supportsManual(state.currentView);
+  if ($('#sortSelectButton')) $('#sortSelectButton').title = draggable
+    ? `排序方式：${sortName}。也可直接拖动调整顺序`
+    : `排序方式：${sortName}`;
   const popover = $('#sortPopover');
   if (popover) {
     for (const btn of popover.querySelectorAll('[data-sort]')) {
@@ -1579,13 +1907,64 @@ function renderSortControls() {
     if (divider) divider.classList.toggle('hidden', !isFolder);
     if (cascadeItem) cascadeItem.classList.toggle('hidden', !isFolder);
     const cascadeCheck = $('#sortCascadeCheck');
-    if (cascadeCheck) cascadeCheck.checked = Boolean(state.sortCascade);
+    if (cascadeCheck) cascadeCheck.checked = sortCascadeEnabled;
   }
+  renderCardDisplayControls();
 }
 
 // Persist the active pane's sort choice for its current view, then re-render.
+function applySortDirection(direction) {
+  if (direction !== 'asc' && direction !== 'desc') return false;
+  state.sortDir = direction;
+  if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
+    sortMemory.rememberCascade(state.library?.path, state.currentView.id, state.library?.folders, state.sort, state.sortDir, Date.now());
+  }
+  commitSortChange();
+  return true;
+}
+
+// One sort choice for the pane's popover and the blank-area menu's 排序方式:
+// through the pane's own select, so random reshuffles and manual checks stay
+// in one place.
+function applySortFromMenu(sort, paneId = state.activePaneId) {
+  if (!activatePane(paneId)) return false;
+  if (sort === 'random' && state.sort === 'random') {
+    state.randomSeed = nextRandomSeed();
+    commitSortChange();
+    return true;
+  }
+  const select = paneQuery(paneId, '#sortSelect');
+  if (!select) return false;
+  select.value = sort;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function sortMenuMarkup(paneId = state.activePaneId) {
+  const pane = paneById(paneId);
+  const current = pane?.sort || 'default';
+  const sortable = Boolean(pane?.sort) && !['default', 'random', 'manual'].includes(pane.sort);
+  const direction = effectiveSortDir(pane?.sort, pane?.sortDir);
+  const options = ['default', 'name', 'added', 'newest', 'created', 'size', 'resolution', 'rating', 'type', 'random'].map(sort => contextMenuRow({
+    label: sortOptionLabels[sort], checked: current === sort, action: 'set-sort', payload: { sort, paneId }
+  }));
+  const directions = [['asc', '升序'], ['desc', '降序']].map(([dir, label]) => contextMenuRow({
+    label, checked: sortable && direction === dir, disabled: !sortable, action: 'set-sort-dir', payload: { dir, paneId }
+  }));
+  return [...options, '<div class="context-menu-separator"></div>', ...directions].join('');
+}
+
+const viewModeLabels = { justified: '自适应', grid: '网格', waterfall: '瀑布流', list: '列表' };
+function viewModeMenuMarkup(paneId = state.activePaneId) {
+  const current = paneById(paneId)?.viewMode || 'justified';
+  const icons = { justified: 'layoutJustified', grid: 'layoutGrid', waterfall: 'layoutWaterfall', list: 'layoutList' };
+  return Object.keys(viewModeLabels).map(mode => contextMenuRow({
+    icon: icons[mode], label: viewModeLabels[mode], checked: current === mode, action: 'set-view-mode', payload: { mode, paneId }
+  })).join('');
+}
+
 function commitSortChange() {
-  sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now());
+  sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now(), state.library?.folders);
   renderSortControls();
   renderGrid({ preserveScroll: true });
   renderFolderTree();
@@ -1631,11 +2010,17 @@ function currentFolder() {
 
 function visibleChildFolders() {
   if (!state.library) return [];
-  if (state.currentView.kind === 'recent') return state.recentFolders || [];
-  let folders = state.currentView.kind === 'root'
-    ? (state.library.folders || [])
-    : (currentFolder()?.children || []);
-  folders = window.EagleMVManualOrder.sort(folders,manualOrder(state.currentView,'folders'));
+  let folders;
+  // 最近使用 filters by the search box like every other folder list (B1-08).
+  if (state.currentView.kind === 'recent') folders = state.recentFolders || [];
+  // Eagle shows no subfolder cards over several selected folders.
+  else if (viewFolderSelection()) folders = [];
+  else {
+    folders = state.currentView.kind === 'root'
+      ? (state.library.folders || [])
+      : (currentFolder()?.children || []);
+    folders = window.EagleMVManualOrder.sort(folders,manualOrder(state.currentView,'folders'));
+  }
   const keyword = state.query.search.trim().toLocaleLowerCase('zh-CN');
   return keyword ? folders.filter(folder => folder.name.toLocaleLowerCase('zh-CN').includes(keyword)) : folders;
 }
@@ -1653,6 +2038,26 @@ function markFolderUsed(folderId, libraryPath = state.library?.path) {
   window.eagleMV.markFolderUsed?.({ folderId, libraryPath });
 }
 
+// The Android shell asks for Back through evaluateJavascript and gives up after
+// 1.5 s, so a confirm() inside its request outlived the request and the shell
+// reported that the page did not answer (A-02). While the shell's request runs,
+// the question waits: the request returns "blocked", the question is asked
+// right after, and an accepted answer runs the same Back step again.
+let shellBackDeferral = null;
+let preAnsweredQuestion = null;
+
+function confirmStep(message) {
+  if (preAnsweredQuestion === message) {
+    preAnsweredQuestion = null;
+    return true;
+  }
+  if (shellBackDeferral) {
+    shellBackDeferral.question ||= message;
+    return false;
+  }
+  return confirm(message);
+}
+
 function confirmDiscardChanges({ includeText = true } = {}) {
   if (includeText && state.textSaving) {
     toast('正在保存 TXT，请稍候', 2400);
@@ -1663,7 +2068,7 @@ function confirmDiscardChanges({ includeText = true } = {}) {
   // captures the selected pane and patch before its first await, so a
   // navigation can safely continue while that write finishes in background.
   if (state.inspectorDirty && !state.connected) {
-    if (!confirm('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
+    if (!confirmStep('Eagle 当前未连接，素材信息无法自动保存。\n\n按“确定”放弃素材信息修改并继续；按“取消”留在当前内容。')) return false;
     state.inspectorDirty = false;
     clearInspectorAutoSave();
   } else if (state.inspectorDirty) saveInspector();
@@ -1672,7 +2077,7 @@ function confirmDiscardChanges({ includeText = true } = {}) {
     toast('正在保存素材信息，请稍候再离开 TXT 编辑', 2400);
     return false;
   }
-  const discard = confirm('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
+  const discard = confirmStep('TXT 内容有尚未保存的修改。\n\n按“确定”放弃修改并继续；按“取消”留在当前内容。');
   if (discard && state.textSession) discardTextSession(state.textSession);
   return discard;
 }
@@ -1684,6 +2089,13 @@ function filtersActive() {
 function renderFilterState() {
   const active = filtersActive();
   $('#clearFiltersButton').classList.toggle('hidden', !active);
+  // Offered while something is filtered, as Eagle shows its lock button.
+  const lock = $('#lockFiltersButton');
+  lock.classList.toggle('hidden', !active);
+  lock.classList.toggle('active', Boolean(state.filterLock));
+  lock.setAttribute('aria-pressed', String(Boolean(state.filterLock)));
+  $('#filterButton').classList.toggle('locked', Boolean(state.filterLock) && active);
+  $('#filterButton').title = state.filterLock && active ? '筛选已锁定：切换文件夹时保留' : '打开筛选器';
   $('#filterButton').classList.toggle('active', active || !$('#filterPopover').classList.contains('hidden'));
   const count = queryFilterCount(state.query);
   $('#filterCount').textContent = count;
@@ -1716,11 +2128,239 @@ function renderColorFilter() {
   }).join('');
 }
 
+// Eagle's rule switch for the tag and folder filters (任意 / 全部 / 完全相同).
+const filterLogicChoices = Object.freeze([
+  ['OR', '任意', '任意 (OR)：包含其中任意一个'],
+  ['AND', '全部', '全部 (AND)：同时包含全部'],
+  ['EQUAL', '相同', '完全相同：恰好是这些，不多不少']
+]);
+const datePresetChoices = Object.freeze([
+  ['today', '今日'], ['yesterday', '昨日'], ['last7', '最近 7 日'],
+  ['last30', '最近 30 日'], ['last90', '最近 90 日'], ['last365', '最近 365 日']
+]);
+const FILTER_LIST_LIMIT = 400;
+
+// Counts beside formats, folders and months, read over the active pane's
+// view without its filters when the panel is open (Eagle counts what the
+// view holds). Null while loading or where the view cannot be paged.
+let filterFacets = { key: '', data: null, pending: false };
+
+function filterFacetsQuery() {
+  const pane = activePane();
+  if (!pane || !state.library || ['trash', 'tags', 'recent', 'random'].includes(pane.currentView?.kind)) return null;
+  return paneItemQuery({ ...pane, query: createQuery() }, pane.currentView);
+}
+
+function ensureFilterFacets() {
+  if ($('#filterPopover')?.classList.contains('hidden') || !window.eagleMV.viewFacets) return;
+  const query = filterFacetsQuery();
+  const key = query ? `${state.library?.path}|${categoryStatsRevision}|${JSON.stringify(query)}` : '';
+  if (key === filterFacets.key) return;
+  filterFacets = { key, data: null, pending: Boolean(query) };
+  if (!query) return;
+  window.eagleMV.viewFacets(query)
+    .then(data => { if (filterFacets.key === key) filterFacets = { key, data: data || null, pending: false }; },
+      () => { if (filterFacets.key === key) filterFacets = { key, data: null, pending: false }; })
+    .finally(() => { if (filterFacets.key === key) renderFilterLists(); });
+}
+
+function renderFilterLogic() {
+  for (const box of document.querySelectorAll('[data-filter-logic]')) {
+    const current = state.query[box.dataset.filterLogic] || 'OR';
+    box.innerHTML = filterLogicChoices.map(([value, label, title]) => `<button type="button" class="filter-logic-option${current === value ? ' active' : ''}" role="radio" aria-checked="${current === value}" data-logic-value="${value}" title="${title}">${label}</button>`).join('');
+  }
+}
+
+function filterCheckRow({ attr, value, label, title = label, count = null, checked = false, excluded = false, leading = '', depth = 0 }) {
+  const mark = excluded ? 'excluded' : checked ? 'checked' : '';
+  return `<button type="button" class="filter-check-row${mark ? ` ${mark}` : ''}" ${attr}="${escapeHTML(value)}" aria-pressed="${checked || excluded}" title="${escapeHTML(title)}${excluded ? '（已排除）' : ''}"${depth ? ` style="--depth:${Math.min(depth, 8)}"` : ''}>
+    <span class="filter-checkbox" aria-hidden="true"></span>${leading}<span class="filter-check-name">${escapeHTML(label)}</span>${count === null ? '' : `<span class="filter-check-count">${Number(count).toLocaleString()}</span>`}
+  </button>`;
+}
+
+// Re-rendering a list the user is scrolling must not jump it to the top.
+function setListHTML(list, html) {
+  if (!list) return;
+  const top = list.scrollTop;
+  list.innerHTML = html;
+  list.scrollTop = top;
+}
+
+function filterListStatus(rows, { loading, empty }) {
+  if (rows.length) return rows.join('');
+  return `<span class="filter-check-empty">${filterFacets.pending ? loading : empty}</span>`;
+}
+
+function renderFolderFilterList() {
+  const list = $('#folderFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.folders || null;
+  const included = new Set(state.query.folderInclude || []);
+  const excluded = new Set(state.query.folderExclude || []);
+  const keyword = ($('#folderFilterSearch')?.value || '').trim().toLocaleLowerCase('zh-CN');
+  const marked = id => included.has(id) || excluded.has(id);
+  const rows = [];
+  const unfiledCount = counts ? counts[NO_FOLDER] || 0 : null;
+  if ((!keyword || '未分类'.includes(keyword)) && (unfiledCount === null || unfiledCount > 0 || marked(NO_FOLDER))) {
+    rows.push(filterCheckRow({ attr: 'data-filter-folder', value: NO_FOLDER, label: '未分类', count: unfiledCount, checked: included.has(NO_FOLDER), excluded: excluded.has(NO_FOLDER) }));
+  }
+  // Without a keyword, the tree's indentation gives each name its context;
+  // a search lists matches flat, with the whole path.
+  for (const folder of flattenFolderTree(state.library?.folders || [])) {
+    if (rows.length >= FILTER_LIST_LIMIT) break;
+    const count = counts ? counts[folder.id] || 0 : null;
+    if (count === 0 && !marked(folder.id)) continue;
+    if (keyword && !folder.path.toLocaleLowerCase('zh-CN').includes(keyword)) continue;
+    const node = findFolder(state.library?.folders, folder.id);
+    rows.push(filterCheckRow({
+      attr: 'data-filter-folder', value: folder.id, label: keyword ? folder.path : folder.name, title: folder.path,
+      count, checked: included.has(folder.id), excluded: excluded.has(folder.id),
+      leading: folderColorDot(node, 'filter-folder-dot'), depth: keyword ? 0 : folder.depth
+    }));
+  }
+  if (rows.length >= FILTER_LIST_LIMIT) rows.push('<span class="filter-check-empty">结果较多，请输入关键字缩小范围</span>');
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计文件夹…', empty: keyword ? '没有匹配的文件夹' : '没有找到相关项目' }));
+}
+
+function renderExtFilterList() {
+  const list = $('#extFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.exts || {};
+  const included = new Set(state.query.ext || []);
+  const excluded = new Set(state.query.extExclude || []);
+  const keyword = ($('#extFilterSearch')?.value || '').trim().replace(/^\./, '').toLowerCase();
+  const exts = [...new Set([...Object.keys(counts), ...included, ...excluded])]
+    .filter(ext => !keyword || ext.includes(keyword))
+    .sort((left, right) => (counts[right] || 0) - (counts[left] || 0) || left.localeCompare(right));
+  const rows = exts.map(ext => filterCheckRow({
+    attr: 'data-filter-ext', value: ext, label: ext.toUpperCase(),
+    count: filterFacets.data ? counts[ext] || 0 : null, checked: included.has(ext), excluded: excluded.has(ext)
+  }));
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计格式…', empty: keyword ? '没有匹配的格式' : '没有找到相关项目' }));
+}
+
+function renderDateFilters() {
+  for (const box of document.querySelectorAll('[data-date-presets]')) {
+    const chosen = new Set(state.query[`${box.dataset.datePresets}Presets`] || []);
+    box.innerHTML = datePresetChoices.map(([value, label]) => `<button type="button" class="filter-preset${chosen.has(value) ? ' active' : ''}" data-date-preset="${value}" aria-pressed="${chosen.has(value)}">${label}</button>`).join('');
+  }
+  for (const list of document.querySelectorAll('[data-month-list]')) {
+    const key = list.dataset.monthList;
+    const counts = filterFacets.data?.[`${key}Months`] || {};
+    const chosen = new Set(state.query[`${key}Months`] || []);
+    const months = [...new Set([...Object.keys(counts), ...chosen])].sort().reverse();
+    const rows = months.map(month => {
+      const [year, number] = month.split('/');
+      return filterCheckRow({ attr: 'data-filter-month', value: month, label: `${year} 年 ${Number(number)} 月`, count: filterFacets.data ? counts[month] || 0 : null, checked: chosen.has(month) });
+    });
+    setListHTML(list, filterListStatus(rows, { loading: '正在统计月份…', empty: '没有找到相关项目' }));
+    // A chosen month stays in sight when the panel reopens.
+    const details = list.closest('details');
+    if (details && chosen.size) details.open = true;
+  }
+}
+
+// Eagle's 形状 menu: the orientations, the common ratios and 自定, each with
+// its count; a row the view has none of stays out unless it is ticked.
+const SHAPE_FILTER_LABELS = [
+  ['landscape', '横图'], ['portrait', '竖图'], ['square', '方形'], ['panoramic-landscape', '细长横图'], ['panoramic-portrait', '细长竖图'],
+  ['4:3', '4:3'], ['3:4', '3:4'], ['16:9', '16:9'], ['9:16', '9:16'], ['custom', '自定']
+];
+function renderShapeFilterList() {
+  const list = $('#shapeFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.shapes || null;
+  const chosen = new Set(state.query.shape || []);
+  const rows = SHAPE_FILTER_LABELS.filter(([shape]) => shape === 'custom' || chosen.has(shape) || !counts || counts[shape] > 0)
+    .map(([shape, label]) => filterCheckRow({
+      attr: 'data-filter-shape', value: shape, label,
+      count: shape === 'custom' || !filterFacets.data ? null : counts?.[shape] || 0, checked: chosen.has(shape)
+    }));
+  setListHTML(list, rows.join(''));
+  $('#shapeCustomFilter')?.classList.toggle('hidden', !chosen.has('custom'));
+}
+
+// Eagle's 评分 menu: five to one stars, then 尚未评分, each with its count.
+function renderRatingFilterList() {
+  const list = $('#ratingFilterList');
+  if (!list) return;
+  const counts = filterFacets.data?.ratings || null;
+  const chosen = new Set(state.query.rating || []);
+  const rows = [5, 4, 3, 2, 1, 0].filter(star => chosen.has(star) || !counts || counts[star] > 0)
+    .map(star => filterCheckRow({
+      attr: 'data-filter-rating', value: String(star), label: star ? `${star} 星` : '尚未评分',
+      leading: star ? `<span class="filter-stars" aria-hidden="true">${'★'.repeat(star)}<span class="filter-stars-empty">${'★'.repeat(5 - star)}</span></span>` : '',
+      count: filterFacets.data ? counts?.[star] || 0 : null, checked: chosen.has(star)
+    }));
+  setListHTML(list, filterListStatus(rows, { loading: '正在统计评分…', empty: '没有找到相关项目' }));
+}
+
+function renderFilterLists() {
+  renderFilterLogic();
+  const noTags = $('#noTagsFilter');
+  if (noTags) noTags.checked = Boolean(state.query.noTags);
+  renderFolderFilterList();
+  renderExtFilterList();
+  renderShapeFilterList();
+  renderRatingFilterList();
+  renderDateFilters();
+  // 注释/链接: the keywords only narrow 有, as in Eagle's menus.
+  for (const button of document.querySelectorAll('[data-text-state]')) {
+    const [field, value] = button.dataset.textState.split(':');
+    const active = (state.query[`${field}State`] || (String(state.query[field] || '').trim() ? 'has' : '')) === value;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  for (const field of ['annotation', 'url']) {
+    const input = $(`#${field}Filter`);
+    if (input) input.disabled = (state.query[`${field}State`] || (String(state.query[field] || '').trim() ? 'has' : '')) !== 'has';
+  }
+  for (const button of document.querySelectorAll('[data-comments-state]')) {
+    const active = state.query.comments === button.dataset.commentsState;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  const commentsText = $('#commentsTextFilter');
+  if (commentsText) commentsText.disabled = state.query.comments !== 'has';
+  const unit = $('#durationUnitFilter');
+  if (unit) unit.value = state.query.durationUnit || 's';
+}
+
+// One edit of the active pane's filters: apply, redraw the panel, re-query.
+function updateActiveQuery(mutate) {
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  if (!pane) return;
+  mutate(pane.query);
+  renderTagEditor('filter');
+  renderFilterLists();
+  renderFilterState();
+  schedulePaneFilterRefresh(paneId);
+}
+
+// Left-click ticks (and lifts an exclusion), right-click excludes (and lifts
+// a tick), and the same click again clears, as in Eagle's filter menus.
+function toggleIncludeExclude(query, includeKey, excludeKey, value, exclude) {
+  const included = new Set(query[includeKey] || []);
+  const excluded = new Set(query[excludeKey] || []);
+  const [target, other] = exclude ? [excluded, included] : [included, excluded];
+  if (target.has(value)) target.delete(value);
+  else { target.add(value); other.delete(value); }
+  query[includeKey] = [...included];
+  query[excludeKey] = [...excluded];
+}
+
+function toggleListValue(query, key, value) {
+  const values = new Set(query[key] || []);
+  if (values.has(value)) values.delete(value);
+  else values.add(value);
+  query[key] = [...values];
+}
+
 // Range filters are stored as one {min, max} query key but edited through two
 // inputs, so a binding names which end it drives and how the panel's unit maps
-// to the stored one (MB and megapixels to raw counts, dates to timestamps).
+// to the stored one (MB to bytes, dates to timestamps).
 const MEGABYTE = 1024 * 1024;
-const MEGAPIXEL = 1e6;
 const scaledRange = factor => ({
   parse: value => (value === '' ? null : Number(value) * factor),
   toInput: value => (Number.isFinite(value) ? String(Math.round(value / factor * 100) / 100) : '')
@@ -1732,7 +2372,7 @@ const dateRange = end => ({
     if (!value) return null;
     const date = new Date(`${value}T00:00:00`);
     if (Number.isNaN(date.getTime())) return null;
-    return end ? date.getTime() + 86399999 : date.getTime();
+    return end ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime() - 1 : date.getTime();
   },
   toInput: value => {
     if (!Number.isFinite(value)) return '';
@@ -1742,22 +2382,36 @@ const dateRange = end => ({
   }
 });
 
+// The duration range is stored in seconds and shown in the chosen unit.
+const durationUnitSeconds = Object.freeze({ s: 1, m: 60, h: 3600 });
+const durationScale = () => durationUnitSeconds[state.query.durationUnit] || 1;
+const durationRange = {
+  parse: value => (value === '' ? null : Number(value) * durationScale()),
+  toInput: value => (Number.isFinite(value) ? String(Math.round(value / durationScale() * 1000) / 1000) : '')
+};
+
 // Simple-value filter inputs bind declaratively; tags (chip editor) and
 // color (swatch row) keep their bespoke widgets.
 const filterInputBindings = [
   { key: 'search', selector: '#searchInput', event: 'input' },
   { key: 'searchScope', selector: '#searchScopeFilter', event: 'change' },
-  { key: 'ext', selector: '#extFilter', event: 'input', parse: value => normalizeExtension(value) },
-  { key: 'rating', selector: '#ratingFilter', event: 'change', parse: value => value === '' ? null : Number(value), toInput: value => Number.isInteger(value) ? String(value) : '' },
-  { key: 'shape', selector: '#shapeFilter', event: 'change' },
+  { key: 'shapeWidth', selector: '#shapeWidthFilter', event: 'input', parse: value => (Number(value) > 0 ? Number(value) : null), toInput: value => (value ? String(value) : '') },
+  { key: 'shapeHeight', selector: '#shapeHeightFilter', event: 'input', parse: value => (Number(value) > 0 ? Number(value) : null), toInput: value => (value ? String(value) : '') },
   { key: 'annotation', selector: '#annotationFilter', event: 'input' },
   { key: 'url', selector: '#urlFilter', event: 'input' },
   { key: 'size', part: 'min', selector: '#sizeMinFilter', event: 'input', ...scaledRange(MEGABYTE) },
   { key: 'size', part: 'max', selector: '#sizeMaxFilter', event: 'input', ...scaledRange(MEGABYTE) },
-  { key: 'pixels', part: 'min', selector: '#pixelsMinFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
-  { key: 'pixels', part: 'max', selector: '#pixelsMaxFilter', event: 'input', ...scaledRange(MEGAPIXEL) },
+  { key: 'width', part: 'min', selector: '#widthMinFilter', event: 'input', ...scaledRange(1) },
+  { key: 'width', part: 'max', selector: '#widthMaxFilter', event: 'input', ...scaledRange(1) },
+  { key: 'height', part: 'min', selector: '#heightMinFilter', event: 'input', ...scaledRange(1) },
+  { key: 'height', part: 'max', selector: '#heightMaxFilter', event: 'input', ...scaledRange(1) },
   { key: 'added', part: 'min', selector: '#addedFromFilter', event: 'change', ...dateRange(false) },
-  { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) }
+  { key: 'added', part: 'max', selector: '#addedToFilter', event: 'change', ...dateRange(true) },
+  { key: 'modified', part: 'min', selector: '#modifiedFromFilter', event: 'change', ...dateRange(false) },
+  { key: 'modified', part: 'max', selector: '#modifiedToFilter', event: 'change', ...dateRange(true) },
+  { key: 'duration', part: 'min', selector: '#durationMinFilter', event: 'input', ...durationRange },
+  { key: 'duration', part: 'max', selector: '#durationMaxFilter', event: 'input', ...durationRange },
+  { key: 'commentsText', selector: '#commentsTextFilter', event: 'input' }
 ];
 
 function filterBindingValue(query, binding) {
@@ -1774,6 +2428,8 @@ function renderQueryControls() {
   }
   renderColorFilter();
   renderTagEditor('filter');
+  ensureFilterFacets();
+  renderFilterLists();
   renderFilterState();
 }
 
@@ -1793,16 +2449,17 @@ function normalizeTags(tags) {
   return [...new Set((tags || []).map(tag => String(tag).trim()).filter(Boolean))];
 }
 
-function tagChipHTML(tag, { removeAttr = 'data-remove-tag', removeLabel = `移除 ${tag}`, disabled = false } = {}) {
+function tagChipHTML(tag, { removeAttr = 'data-remove-tag', removeLabel = `移除 ${tag}`, disabled = false, excluded = false } = {}) {
   const color = state.tagColors[tag];
-  return `<span class="tag-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" ${removeAttr}="${escapeHTML(tag)}" aria-label="${escapeHTML(removeLabel)}"${disabled ? ' disabled' : ''}>×</button></span>`;
+  return `<span class="tag-chip${excluded ? ' excluded' : ''}"${excluded ? ' title="已排除：右键改回包含"' : ''}${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}><span title="${escapeHTML(tag)}">${escapeHTML(tag)}</span><button type="button" ${removeAttr}="${escapeHTML(tag)}" aria-label="${escapeHTML(removeLabel)}"${disabled ? ' disabled' : ''}>×</button></span>`;
 }
 
 function renderTagEditor(kind) {
   const config = tagEditors[kind];
   const chips = $(config.chips);
   if (!chips) return;
-  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag)).join('');
+  chips.innerHTML = tagValues(kind).map(tag => tagChipHTML(tag)).join('')
+    + (kind === 'filter' ? (state.query.tagsExclude || []).map(tag => tagChipHTML(tag, { removeAttr: 'data-remove-excluded-tag', removeLabel: `取消排除 ${tag}`, excluded: true })).join('') : '');
   const input = $(config.input);
   if (input?.matches(':focus')) renderTagSuggestionPopover(kind, { open: true });
 }
@@ -1821,11 +2478,26 @@ function setTagValues(kind, tags, changed = true) {
   }
 }
 
+// The filter takes "-name" as an excluded tag, as Eagle's search does.
+function addTagEntries(kind, entries) {
+  const values = normalizeTags(entries);
+  if (kind !== 'filter') {
+    setTagValues(kind, [...tagValues(kind), ...values]);
+    return;
+  }
+  const excluded = values.filter(value => value.length > 1 && value.startsWith('-')).map(value => value.slice(1).trim()).filter(Boolean);
+  const included = values.filter(value => !(value.length > 1 && value.startsWith('-')));
+  updateActiveQuery(query => {
+    query.tags = normalizeTags([...(query.tags || []).filter(tag => !excluded.includes(tag)), ...included]);
+    query.tagsExclude = normalizeTags([...(query.tagsExclude || []).filter(tag => !included.includes(tag)), ...excluded]);
+  });
+}
+
 function commitTagInput(kind) {
   const input = $(tagEditors[kind].input);
   const pending = normalizeTags(input.value.split(/[,，\n]+/));
   if (!pending.length) return false;
-  setTagValues(kind, [...tagValues(kind), ...pending]);
+  addTagEntries(kind, pending);
   input.value = '';
   renderTagSuggestionPopover(kind, { open: true });
   return true;
@@ -1841,8 +2513,8 @@ const schedulePaneFilterRefresh = debounceByKey(paneId => {
 
 function tagSuggestionRecords(kind) {
   const input = $(tagEditors[kind].input);
-  const needle = input?.value.trim().toLocaleLowerCase() || '';
-  const selected = new Set(tagValues(kind));
+  const needle = (input?.value.trim().toLocaleLowerCase() || '').replace(kind === 'filter' ? /^-/ : /^$/, '');
+  const selected = new Set([...tagValues(kind), ...(kind === 'filter' ? state.query.tagsExclude || [] : [])]);
   return state.availableTags
     .map(tag => {
       const name = tagName(tag);
@@ -1902,10 +2574,11 @@ function openTagSuggestions(kind) {
 function chooseTagSuggestion(kind, name) {
   const input = $(tagEditors[kind].input);
   if (!name || !input) return;
-  setTagValues(kind, [...tagValues(kind), name]);
+  addTagEntries(kind, [kind === 'filter' && input.value.trim().startsWith('-') ? `-${name}` : name]);
   input.value = '';
   renderTagSuggestionPopover(kind, { open: true });
   input.focus();
+  if (kind === 'batch') applyBatchTags();
 }
 
 function renderTagSuggestions() {
@@ -1916,22 +2589,65 @@ function renderTagSuggestions() {
   }
 }
 
+const TAG_COLOR_MANAGER_LIMIT = 200;
+// An uncolored tag shows a hollow swatch; its picker starts on neutral gray
+// so that the app's blue accent stays a colour that can be chosen (B1-07).
+// Tag colours are picked from Eagle's tag group palette (BUG-02): 无 plus
+// the eight named colours. A colour set earlier as free hex stays offered.
+const tagPaletteColors = Object.freeze(['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink']);
+let tagColorManagerOpen = null;
+
+function tagColorPaletteMarkup(tag, current) {
+  const value = String(current || '').toLowerCase();
+  const swatch = (color, label) => {
+    const checked = value === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}" role="radio" aria-checked="${checked}" title="${escapeHTML(label)}" aria-label="颜色：${escapeHTML(label)}"${color ? ` style="--swatch:${escapeHTML(color)}"` : ''} data-tag-palette-color="${escapeHTML(color)}" data-tag="${escapeHTML(tag)}"></button>`;
+  };
+  const named = tagPaletteColors.map(name => [eagleNamedFolderColors[name], eagleColorLabels[name]]);
+  const custom = value && !named.some(([hex]) => hex === value) ? [[value, `当前颜色 ${value}`]] : [];
+  return `<div class="tag-color-palette" role="radiogroup" aria-label="标签“${escapeHTML(tag)}”的颜色">${[['', '无'], ...named, ...custom].map(([color, label]) => swatch(color, label)).join('')}</div>`;
+}
 function renderTagColors() {
   const manager = $('#tagColorManager');
   if (!manager) return;
-  manager.innerHTML = state.availableTags.slice(0, 200).map(tag => {
-    const name = tag.name || tag;
-    const color = state.tagColors[name] || '#0072ef';
-    return `<label class="tag-color-row"><span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><input type="color" value="${escapeHTML(color)}" data-tag-color="${escapeHTML(name)}" aria-label="${escapeHTML(name)}颜色"></label>`;
-  }).join('') || '<small class="muted">当前资料库还没有标签</small>';
+  const previous = manager.querySelector('[data-tag-color-search]');
+  const search = previous?.value || '';
+  const searchFocused = previous && document.activeElement === previous;
+  const needle = search.trim().toLocaleLowerCase();
+  const names = state.availableTags.map(tag => tag.name || tag);
+  const matches = needle ? names.filter(name => name.toLocaleLowerCase().includes(needle)) : names;
+  const rows = matches.slice(0, TAG_COLOR_MANAGER_LIMIT).map(name => {
+    const color = state.tagColors[name] || '';
+    const open = tagColorManagerOpen === name;
+    const swatch = color ? `<span class="tag-color-swatch" style="--tag-color:${escapeHTML(color)}"></span>` : '<span class="tag-color-swatch unset" title="未设置颜色"></span>';
+    const clear = color ? `<button type="button" class="tag-color-clear" data-tag-color-clear="${escapeHTML(name)}" title="清除颜色" aria-label="清除${escapeHTML(name)}的颜色">×</button>` : '';
+    // The whole row opens the palette under it; × stays a one-click clear.
+    const row = `<div class="tag-color-row${open ? ' open' : ''}"><button type="button" class="tag-color-open" data-tag-color-open="${escapeHTML(name)}" aria-expanded="${open}" title="设置颜色" aria-label="设置${escapeHTML(name)}的颜色">${swatch}<span title="${escapeHTML(name)}">${escapeHTML(name)}</span></button>${clear}</div>`;
+    return open ? `${row}${tagColorPaletteMarkup(name, color)}` : row;
+  }).join('');
+  const more = matches.length > TAG_COLOR_MANAGER_LIMIT ? `<small class="muted tag-color-more">还有 ${matches.length - TAG_COLOR_MANAGER_LIMIT} 个标签，请输入名称搜索</small>` : '';
+  const empty = !names.length ? '<small class="muted">当前资源库还没有标签</small>' : !matches.length ? '<small class="muted">没有找到相关标签</small>' : '';
+  const searchHTML = names.length ? `<input type="search" class="tag-color-search" data-tag-color-search placeholder="搜索标签" aria-label="搜索标签" autocomplete="off" value="${escapeHTML(search)}">` : '';
+  manager.innerHTML = `${searchHTML}<div class="tag-color-list">${rows}${more}${empty}</div>`;
+  if (searchFocused) {
+    const input = manager.querySelector('[data-tag-color-search]');
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+}
+
+function currentViewSmartFolderConditions() {
+  const currentSmartFolder = state.currentView.kind === 'smart'
+    ? findFolder(state.library?.smartFolders, state.currentView.id)
+    : null;
+  return buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || [], {
+    folderScope: paneItemQuery(activePane()).folderIds || null
+  });
 }
 
 async function saveCurrentViewAsSmartFolder() {
   const libraryPath = state.library?.path;
-  const currentSmartFolder = state.currentView.kind === 'smart'
-    ? findFolder(state.library?.smartFolders, state.currentView.id)
-    : null;
-  const converted = buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || []);
+  const converted = currentViewSmartFolderConditions();
   if (converted.unsupported) {
     toast(converted.unsupported, 4200);
     return;
@@ -1951,15 +2667,21 @@ async function saveCurrentViewAsSmartFolder() {
 }
 
 function createSmartFolderFromNewMenu() {
-  const currentSmartFolder = state.currentView.kind === 'smart'
-    ? findFolder(state.library?.smartFolders, state.currentView.id)
-    : null;
-  const converted = buildSmartFolderConditions(state.currentView, state.query, currentSmartFolder?.conditions || []);
-  if (!converted.unsupported) return saveCurrentViewAsSmartFolder();
-  if (converted.unsupported === '当前视图没有可保存的筛选条件') {
-    $('#filterPopover').classList.remove('hidden');
-    $('#filterButton').setAttribute('aria-expanded', 'true');
-    requestAnimationFrame(() => $('#searchInput').focus());
+  const converted = currentViewSmartFolderConditions();
+  // "New" with no filter set is not "save this view": at the root that saved
+  // 未分类, in a folder just that folder. Ask for conditions instead (B1-03).
+  const nothingChosen = !queryFiltersActive(state.query);
+  if (!converted.unsupported && !nothingChosen) return saveCurrentViewAsSmartFolder();
+  if (nothingChosen || converted.unsupported === '当前视图没有可保存的筛选条件') {
+    // Opened after the menu click has finished bubbling: the document
+    // outside-click handler closed it again within the same click (B1-03).
+    setTimeout(() => {
+      $('#filterPopover').classList.remove('hidden');
+      ensureFilterFacets();
+      renderFilterLists();
+      renderFilterState();
+      $('#searchInput').focus();
+    }, 0);
     toast('请先设置筛选条件，再点击“另存为智能文件夹”', 4200);
     return Promise.resolve(false);
   }
@@ -1973,9 +2695,18 @@ async function renameSmartFolder(id) {
   if (!folder) return;
   const name = await requestNameDialog({ title: '重命名智能文件夹', initialValue: folder.name || '', submitLabel: '重命名' });
   if (!name?.trim() || name.trim() === folder.name) return;
+  const previousName = folder.name;
+  const nextName = name.trim();
   await runForegroundOperation('正在重命名智能文件夹…', { key: `smart-update:${libraryPath}:${id}` }, async () => {
-    await window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: name.trim() } });
-    toast('智能文件夹已重命名');
+    await window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: nextName } });
+    // Eagle's changeSmartFolderName notice and 撤销 (P3-05).
+    toast(`“${previousName}”已重命名为“${nextName}”。`, 4000, { undo: async () => {
+      const current = findFolder(state.library?.smartFolders, id);
+      if (!current || state.library?.path !== libraryPath) throw new Error('智能文件夹已不在当前资源库');
+      if (current.name !== nextName) throw new Error(`智能文件夹已在别处改名为“${current.name}”`);
+      await runForegroundOperation('正在撤销…', { key: `smart-update:${libraryPath}:${id}` }, () =>
+        window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: previousName } }));
+    } });
   });
 }
 
@@ -1985,18 +2716,34 @@ async function removeSmartFolder(id) {
   if (!folder) return;
   const childCount = (folder.children || []).length;
   if (!confirm(`移除智能文件夹“${folder.name}”？${childCount ? `\n\n它的 ${childCount} 个子智能文件夹也会一并移除。` : ''}\n\n素材和普通文件夹不会被删除。`)) return;
+  const paneId = state.activePaneId;
   await runForegroundOperation('正在移除智能文件夹…', { key: `smart-remove:${libraryPath}:${id}` }, async () => {
-    await window.eagleMV.removeSmartFolder({ libraryPath, id });
-    toast('智能文件夹已移除');
+    const result = await window.eagleMV.removeSmartFolder({ libraryPath, id });
+    // Eagle's notice (5 s) and 撤销: the same smart folder comes back where
+    // it was and opens (P3-05).
+    const undo = result?.undoToken && window.eagleMV.restoreSmartFolder ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销…', { key: `smart-remove:${libraryPath}:${id}` }, () =>
+        window.eagleMV.restoreSmartFolder({ libraryPath, undoToken: result.undoToken }));
+      const deadline = Date.now() + 3000;
+      while (!findFolder(state.library?.smartFolders, id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
+      if (findFolder(state.library?.smartFolders, id) && paneById(paneId)) withActivePane(paneId, () => navigate({ kind: 'smart', id, name: folder.name }));
+    } : null;
+    toast(`“${folder.name}”已删除。`, 5000, undo ? { undo } : {});
   });
 }
 
+// An empty colour clears the tag's colour.
 async function updateTagColor(tag, color) {
-  if (!tag || !/^#[0-9a-f]{6}$/i.test(color || '')) return;
+  if (!tag) return;
+  if (color && !/^#[0-9a-f]{6}$/i.test(color)) {
+    toast('颜色需为六位十六进制，例如 #0072ef', 3200);
+    return;
+  }
   const libraryPath = state.library?.path;
   try {
     await runForegroundOperation('正在保存标签颜色…', { key: `tag-color:${libraryPath}:${tag}` }, async () => {
-      state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color });
+      state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color: color || null });
       renderTagColors();
       renderTagEditor('item');
       renderTagEditor('batch');
@@ -2009,12 +2756,13 @@ async function updateTagColor(tag, color) {
 
 function clearFilters() {
   state.query = createQuery();
+  state.filterLock = false;
   renderQueryControls();
   refresh({ reset: true, preserveScroll: false, paneId: state.activePaneId });
 }
 
 function libraryDisplayName(libraryPath) {
-  return String(libraryPath || '').split('/').filter(Boolean).pop()?.replace(/\.library$/i, '') || '资料库';
+  return String(libraryPath || '').split('/').filter(Boolean).pop()?.replace(/\.library$/i, '') || '资源库';
 }
 
 function renderLibraryList(entries) {
@@ -2025,7 +2773,7 @@ function renderLibraryList(entries) {
     known.unshift({ path: state.library.path, name: state.library.name || libraryDisplayName(state.library.path), exists: true });
   }
   if (!known.length) {
-    box.innerHTML = '<span class="muted">Eagle 没有返回资料库历史</span>';
+    box.innerHTML = '<span class="muted">Eagle 没有返回资源库历史</span>';
     return;
   }
   box.innerHTML = known.map(entry => {
@@ -2033,7 +2781,7 @@ function renderLibraryList(entries) {
     return `<button type="button" class="library-row${current ? ' current' : ''}" data-library-path="${escapeHTML(entry.path)}" data-library-name="${escapeHTML(entry.name)}" title="${escapeHTML(entry.path)}"${entry.exists ? '' : ' disabled'}>
       <span class="library-row-name">${escapeHTML(entry.name)}${entry.exists ? '' : '（找不到文件）'}</span>
       <span class="library-row-path">&lrm;${escapeHTML(entry.path)}&lrm;</span>
-      ${current ? '<span class="library-row-check" aria-label="当前资料库">✓</span>' : ''}
+      ${current ? '<span class="library-row-check" aria-label="当前资源库">✓</span>' : ''}
     </button>`;
   }).join('');
 }
@@ -2045,7 +2793,7 @@ async function openLibraryPopover() {
   popover.style.left = `${Math.round(Math.max(10, anchor.left))}px`;
   popover.classList.remove('hidden');
   $('#libraryButton').setAttribute('aria-expanded', 'true');
-  $('#libraryList').innerHTML = '<span class="muted">正在读取资料库列表…</span>';
+  $('#libraryList').innerHTML = '<span class="muted">正在读取资源库列表…</span>';
   try {
     renderLibraryList(await window.eagleMV.getLibraryHistory());
   } catch (error) {
@@ -2077,27 +2825,23 @@ function closeLibraryPopover() {
 async function switchToLibrary(libraryPath, name) {
   closeLibraryPopover();
   if (state.library?.path === libraryPath) {
-    toast('已经是当前资料库', 2200);
+    toast('已经是当前资源库', 2200);
     return;
   }
   if (!state.connected) {
-    toast('Eagle 未连接，暂时无法切换资料库', 3200);
+    toast('Eagle 未连接，暂时无法切换资源库', 3200);
     return;
   }
   if (!confirmDiscardChanges()) return;
   try {
     // Success feedback arrives through the library-changed broadcast
-    // ("Eagle 已切换资料库，所有窗口已跟随"), same as an Eagle-side switch.
-    await runForegroundOperation(`正在切换到「${name}」…`, { key: 'library-switch' }, async () => {
+    // ("Eagle 已切换资源库，所有窗口已跟随"), same as an Eagle-side switch.
+    await runForegroundOperation(`正在切换到“${name}”…`, { key: 'library-switch' }, async () => {
       await window.eagleMV.switchLibrary({ libraryPath });
     });
   } catch (error) {
-    toast(`切换资料库失败：${error.message}`, 4600);
+    toast(`切换资源库失败：${error.message}`, 4600);
   }
-}
-
-function normalizeExtension(value) {
-  return String(value || '').trim().toLowerCase().replace(/^\.+/, '');
 }
 
 // Only the web client turns narrow side panels into overlay drawers. Desktop
@@ -2129,6 +2873,7 @@ function currentThumbnailSize() {
 function applyThumbnailSize(size, { persist = true } = {}) {
   const clamped = gestures.clampThumbnailSize(size);
   document.documentElement.style.setProperty('--thumb', `${clamped}px`);
+  scheduleWaterfallRelayout();
   const slider = $('#sizeSlider');
   if (slider) slider.value = String(clamped);
   if (persist) { try { localStorage.setItem('eaglemv.thumbnailSize', String(clamped)); } catch {} }
@@ -2188,7 +2933,87 @@ function selectAllItems() {
   state.selected = new Set(state.items.map(item => item.id));
   updateCardSelectionStyles();
   renderInspector();
+  const pane = activePane();
+  if (pane?.hasMore) selectRestOfView(pane).catch(error => toast(`全选失败：${error.message}`, 4000));
   return true;
+}
+
+// The query hub:view-ids lists the whole of a pane's view with.
+function paneViewIdsQuery(pane) {
+  const query = paneItemQuery(pane);
+  return pane.currentView.kind === 'trash' ? { ...query, trash: true, libraryPath: state.library?.path } : query;
+}
+
+// Selected ids the grid has not loaded (⌘A over a big view, P6-02).
+function unloadedSelection(pane = activePane()) {
+  const ids = [];
+  for (const id of pane?.selected || []) if (!pane.itemMap?.has(id)) ids.push(id);
+  return ids;
+}
+
+// Drops unloaded selected ids that left the view (moved, deleted, filtered
+// out), once the view's full id list is back. Calls for the same pane
+// coalesce; a selection changed meanwhile is left alone.
+const selectionReconciles = new Map();
+function reconcileSelectionWithView(pane) {
+  if (selectionReconciles.has(pane.id)) return selectionReconciles.get(pane.id);
+  const viewKey = descriptorKey(pane.currentView);
+  const job = (async () => {
+    await Promise.resolve();
+    const before = new Set(pane.selected);
+    const ids = await window.eagleMV.viewIds?.(paneViewIdsQuery(pane)).catch(() => null);
+    if (!ids || paneById(pane.id) !== pane || descriptorKey(pane.currentView) !== viewKey || !sameSelection(pane, before)) return;
+    const inView = new Set(ids);
+    const next = new Set([...pane.selected].filter(id => inView.has(id) || pane.itemMap?.has(id)));
+    if (next.size === pane.selected.size) return;
+    pane.selected = next;
+    if (state.activePaneId === pane.id) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+  })().finally(() => selectionReconciles.delete(pane.id));
+  selectionReconciles.set(pane.id, job);
+  return job;
+}
+
+// Eagle's ⌘A takes the whole view, but only 160 items are loaded at first,
+// so a batch after ⌘A quietly touched a fraction of a big folder (P6-02).
+// The grid is not virtualised: it loads as far as the locate feature does
+// (SORT_FETCH_CAP), and the rest of the view joins the selection by id, so
+// batch operations reach every item while the grid stays light.
+async function selectRestOfView(pane) {
+  const paneId = pane.id;
+  const viewKey = descriptorKey(pane.currentView);
+  const chosen = new Set(pane.selected);
+  if (pane.items.length < SORT_FETCH_CAP) {
+    toast('正在载入当前视图的全部素材以便全选…', 2400);
+    await refresh({ paneId, reset: true, preserveScroll: true, minimumCount: SORT_FETCH_CAP });
+    // Picked something else, or left the view, while it loaded: leave it be.
+    if (paneById(paneId) !== pane || descriptorKey(pane.currentView) !== viewKey
+      || !sameSelection(pane, new Set([...chosen].filter(id => pane.itemMap.has(id))))) return;
+    pane.selected = new Set(pane.items.map(item => item.id));
+    if (state.activePaneId === paneId) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+  }
+  if (pane.hasMore) {
+    const loaded = new Set(pane.selected);
+    const ids = window.eagleMV.viewIds ? await window.eagleMV.viewIds(paneViewIdsQuery(pane)) : null;
+    if (paneById(paneId) !== pane || descriptorKey(pane.currentView) !== viewKey || !sameSelection(pane, loaded)) return;
+    if (!ids) {
+      toast(`已全选前 ${pane.selected.size.toLocaleString()} 个素材（当前视图共 ${Number(pane.total || 0).toLocaleString()} 个），超出部分请分批操作`, 5200);
+      return;
+    }
+    pane.selected = new Set([...loaded, ...ids]);
+    if (state.activePaneId === paneId) {
+      updateCardSelectionStyles();
+      renderInspector();
+    }
+    toast(`已全选 ${pane.selected.size.toLocaleString()} 个素材`, 2000);
+  } else if (pane.selected.size > chosen.size) {
+    toast(`已全选 ${pane.selected.size.toLocaleString()} 个素材`, 2000);
+  }
 }
 
 function clearSelection() {
@@ -2236,6 +3061,21 @@ function directionalCard(cards, current, key) {
     return { card, primary, secondary };
   }).filter(candidate => Math.sign(candidate.primary) === direction)
     .sort((a, b) => (Math.abs(a.primary) + a.secondary * 2) - (Math.abs(b.primary) + b.secondary * 2))[0]?.card || null;
+}
+
+function stepSelectionByKey(direction) {
+  if (!state.selected.size || !confirmDiscardChanges()) return false;
+  const { selected, edgeId } = stepSelection(sortedItems(), state.selected, state.selectionAnchor, direction);
+  state.selectedFolderCard = null;
+  state.selected = selected;
+  updateCardSelectionStyles();
+  renderInspector();
+  if (edgeId) requestAnimationFrame(() => {
+    const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(edgeId)}"]`);
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+  return true;
 }
 
 function moveCardFocus(key) {
@@ -2338,81 +3178,660 @@ function tagRecord(name) {
   return state.availableTags.find(tag => tagName(tag) === name) || { name };
 }
 
-function tagManagerTagMarkup(name, groupId = null) {
-  const record = tagRecord(name);
+// 标签管理, after Eagle's: a sidebar of 全部 / 未分类 / 常用标签 / 标签群组,
+// and the tags of the chosen one as chips in sections — by initial (pinyin
+// for Chinese) or by group — sorted by name or count. Sort and grouping are
+// remembered for every pane, as Eagle keeps them; the open section, search
+// and selection belong to each pane.
+const TAG_MANAGER_PREFS_KEY = 'eaglemv.tagManager.v1';
+function readTagManagerPrefs() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(TAG_MANAGER_PREFS_KEY) || '{}');
+    return {
+      sortBy: stored.sortBy === 'count' ? 'count' : 'name',
+      ascending: stored.ascending !== false,
+      groupBy: stored.groupBy === 'group' ? 'group' : 'alphabet',
+      // Eagle's 格状 / 列表 switch (TAGVIEW_LAYOUT), one for every pane.
+      layout: stored.layout === 'list' ? 'list' : 'inline'
+    };
+  } catch {
+    return { sortBy: 'name', ascending: true, groupBy: 'alphabet', layout: 'inline' };
+  }
+}
+let tagManagerPrefs = readTagManagerPrefs();
+function setTagManagerPrefs(patch) {
+  tagManagerPrefs = { ...tagManagerPrefs, ...patch };
+  try { localStorage.setItem(TAG_MANAGER_PREFS_KEY, JSON.stringify(tagManagerPrefs)); } catch {}
+  renderTagManagerPanes();
+}
+function renderTagManagerPanes() {
+  for (const pane of state.panes) {
+    if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
+}
+
+const tagManagerViews = new Map();
+function tagManagerView(paneId = state.activePaneId) {
+  if (!tagManagerViews.has(paneId)) tagManagerViews.set(paneId, { mode: 'all', groupId: null, keyword: '', selected: new Set(), anchor: null });
+  const view = tagManagerViews.get(paneId);
+  if (view.mode === 'group' && !(state.tagGroups || []).some(group => group.id === view.groupId)) Object.assign(view, { mode: 'all', groupId: null });
+  return view;
+}
+
+// Initials by pinyin: ICU's zh pinyin collation orders every hanzi after
+// the first character of its initial's block.
+const pinyinCollator = new Intl.Collator('zh-CN-u-co-pinyin');
+const PINYIN_INITIALS = [['A', '阿'], ['B', '八'], ['C', '嚓'], ['D', '哒'], ['E', '妸'], ['F', '发'], ['G', '旮'], ['H', '哈'], ['J', '讥'], ['K', '咔'], ['L', '垃'], ['M', '妈'], ['N', '拏'], ['O', '噢'], ['P', '妑'], ['Q', '七'], ['R', '呥'], ['S', '仨'], ['T', '他'], ['W', '屲'], ['X', '夕'], ['Y', '丫'], ['Z', '帀']];
+const OTHER_INITIAL = '＃';
+function tagInitial(name) {
+  const first = String(name || '').trim().charAt(0);
+  if (/[a-z]/i.test(first)) return first.toUpperCase();
+  if (!/[㐀-鿿豈-﫿]/.test(first)) return OTHER_INITIAL;
+  let letter = OTHER_INITIAL;
+  for (const [initial, boundary] of PINYIN_INITIALS) {
+    if (pinyinCollator.compare(first, boundary) < 0) break;
+    letter = initial;
+  }
+  return letter;
+}
+
+const tagNameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+function sortTagRecords(records) {
+  const byName = (left, right) => tagNameCollator.compare(left.name, right.name);
+  const sorted = [...records].sort(tagManagerPrefs.sortBy === 'count'
+    ? (left, right) => (right.count - left.count) || byName(left, right)
+    : byName);
+  return tagManagerPrefs.ascending ? sorted : sorted.reverse();
+}
+
+function tagGroupsOf(name) {
+  return (state.tagGroups || []).filter(group => (group.tags || []).includes(name));
+}
+
+function tagManagerRecords() {
+  const seen = new Map();
+  for (const tag of state.availableTags || []) {
+    const name = tagName(tag);
+    if (name && !seen.has(name)) seen.set(name, { name, count: Number(tag?.imageCount || 0) });
+  }
+  return seen;
+}
+
+// The sections of the open sidebar entry: [{ key, title, tags: [record] }].
+function tagManagerSections(view) {
+  const records = tagManagerRecords();
+  const record = name => records.get(name) || { name, count: 0 };
+  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
+  const keyword = view.keyword.trim().toLocaleLowerCase('zh-CN');
+  const matches = entry => !keyword || entry.name.toLocaleLowerCase('zh-CN').includes(keyword);
+  if (view.mode === 'group') {
+    const group = (state.tagGroups || []).find(candidate => candidate.id === view.groupId);
+    return [{ key: group.id, title: group.name || '未命名群组', group, tags: sortTagRecords((group.tags || []).map(record).filter(matches)), always: true }];
+  }
+  if (view.mode === 'starred') {
+    return [{ key: 'starred', title: '常用标签', tags: sortTagRecords((state.starredTags || []).map(record).filter(matches)), always: true }];
+  }
+  const pool = [...records.values()].filter(entry => (view.mode === 'unfiled' ? !grouped.has(entry.name) : true)).filter(matches);
+  if (tagManagerPrefs.groupBy === 'group') {
+    const sections = (state.tagGroups || []).map(group => ({
+      key: group.id, title: group.name || '未命名群组', group,
+      tags: sortTagRecords(pool.filter(entry => (group.tags || []).includes(entry.name)))
+    }));
+    sections.push({ key: 'ungrouped', title: '未分类', tags: sortTagRecords(pool.filter(entry => !grouped.has(entry.name))) });
+    return sections.filter(section => section.tags.length);
+  }
+  const byInitial = new Map();
+  for (const entry of pool) {
+    const initial = tagInitial(entry.name);
+    if (!byInitial.has(initial)) byInitial.set(initial, []);
+    byInitial.get(initial).push(entry);
+  }
+  return [...byInitial.entries()]
+    .sort(([left], [right]) => (left === OTHER_INITIAL) - (right === OTHER_INITIAL) || left.localeCompare(right))
+    .map(([initial, tags]) => ({ key: initial, title: initial, tags: sortTagRecords(tags) }));
+}
+
+function highlightedTagName(name, keyword) {
+  const needle = keyword.trim();
+  if (!needle) return escapeHTML(name);
+  const at = name.toLocaleLowerCase('zh-CN').indexOf(needle.toLocaleLowerCase('zh-CN'));
+  if (at < 0) return escapeHTML(name);
+  return `${escapeHTML(name.slice(0, at))}<mark>${escapeHTML(name.slice(at, at + needle.length))}</mark>${escapeHTML(name.slice(at + needle.length))}`;
+}
+
+function tagManagerChipMarkup(entry, view) {
+  const group = tagGroupsOf(entry.name)[0];
+  const color = state.tagColors[entry.name] || (group?.color ? eagleNamedFolderColors[group.color] : '');
+  return `<button type="button" class="tm-tag${view.selected.has(entry.name) ? ' selected' : ''}" data-tm-tag="${escapeHTML(entry.name)}" draggable="true" title="${escapeHTML(entry.name)}"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''}>
+    <span class="tm-dot" aria-hidden="true"></span><span class="tm-name">${highlightedTagName(entry.name, view.keyword)}</span><span class="tm-count">(${entry.count.toLocaleString()})</span>
+  </button>`;
+}
+
+function tagManagerBodyMarkup(view) {
+  const sections = tagManagerSections(view);
+  const total = sections.reduce((sum, section) => sum + section.tags.length, 0);
+  if (!total && !sections.some(section => section.always)) {
+    const message = view.keyword.trim() ? '没有找到相关标签'
+      : view.mode === 'unfiled' && tagManagerRecords().size ? '所有标签都已归入群组' : '当前资源库还没有标签';
+    return `<div class="tag-manager-empty">${message}</div>`;
+  }
+  return sections.map(section => {
+    const description = section.group && view.mode === 'group'
+      ? `<textarea class="tm-description" data-tm-description="${escapeHTML(section.group.id)}" rows="1" placeholder="添加描述..." aria-label="群组描述">${escapeHTML(section.group.description || '')}</textarea>`
+      : '';
+    const chips = section.tags.map(entry => tagManagerChipMarkup(entry, view)).join('')
+      || `<span class="tm-section-empty">${view.keyword.trim() ? '没有匹配的标签' : view.mode === 'starred' ? '还没有常用标签（在 Eagle 中设置）' : '群组中还没有标签，可把标签拖到左侧群组'}</span>`;
+    return `<section class="tm-section" data-tm-section="${escapeHTML(section.key)}">
+      <h2 class="tm-section-title"><span>${escapeHTML(section.title)}</span><span class="tm-section-count">(${section.tags.length.toLocaleString()})</span></h2>
+      ${description}
+      <div class="tm-chips">${chips}</div>
+    </section>`;
+  }).join('');
+}
+
+function tagManagerNavRow({ mode, groupId = '', label, count, icon = 'tag', color = '' }, view) {
+  const active = view.mode === mode && (mode !== 'group' || view.groupId === groupId);
+  return `<button type="button" class="tm-nav${active ? ' active' : ''}" data-tm-mode="${mode}"${groupId ? ` data-tm-group="${escapeHTML(groupId)}" draggable="true"` : ''} title="${escapeHTML(label)}">
+    ${color ? `<span class="tm-group-dot" style="background:${escapeHTML(color)}" aria-hidden="true"></span>` : uiIcon(icon, 'tm-nav-icon')}<span class="tm-nav-name">${escapeHTML(label)}</span><span class="tm-nav-count">${count || mode === 'group' ? count.toLocaleString() : ''}</span>
+  </button>`;
+}
+
+function tagManagerTitle(view) {
+  if (view.mode === 'group') return (state.tagGroups || []).find(group => group.id === view.groupId)?.name || '标签群组';
+  return { all: '全部标签', unfiled: '未分类', starred: '常用标签' }[view.mode];
+}
+
+function tagManagerMarkup(paneId = state.activePaneId) {
+  const view = tagManagerView(paneId);
+  const records = tagManagerRecords();
+  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
+  const unfiled = [...records.keys()].filter(name => !grouped.has(name)).length;
   const groups = state.tagGroups || [];
-  return `<div class="tag-manager-row">
-    <span class="tag-manager-name" title="${escapeHTML(name)}">${escapeHTML(name)}</span>
-    <span class="tag-manager-count">${Number(record.imageCount || 0).toLocaleString()}</span>
-    <button type="button" class="tag-manager-action" data-tag-action="filter-tag" data-tag-name="${escapeHTML(name)}">筛选</button>
-    <button type="button" class="tag-manager-action" data-tag-action="rename-tag" data-tag-name="${escapeHTML(name)}">重命名</button>
-    <button type="button" class="tag-manager-action" data-tag-action="merge-tag" data-tag-name="${escapeHTML(name)}">合并</button>
-    <select class="tag-manager-group-select" data-tag-add-group data-tag-name="${escapeHTML(name)}" aria-label="将 ${escapeHTML(name)} 加入分组">
-      <option value="">加入分组…</option>
-      ${groups.filter(group => group.id !== groupId).map(group => `<option value="${escapeHTML(group.id)}">${escapeHTML(group.name)}</option>`).join('')}
-    </select>
-    ${groupId ? `<button type="button" class="tag-manager-remove" data-tag-action="remove-from-group" data-tag-group-id="${escapeHTML(groupId)}" data-tag-name="${escapeHTML(name)}" aria-label="从分组移除">×</button>` : ''}
+  const sortLabel = `${tagManagerPrefs.sortBy === 'count' ? '数量' : '名称'}${tagManagerPrefs.ascending ? (tagManagerPrefs.sortBy === 'count' ? '↓' : '↑') : (tagManagerPrefs.sortBy === 'count' ? '↑' : '↓')}`;
+  const layoutButton = (layout, label) => `<button type="button" class="tm-layout-button${tagManagerPrefs.layout === layout ? ' active' : ''}" data-tm-layout="${layout}" title="${label}" aria-label="${label}" aria-pressed="${tagManagerPrefs.layout === layout}">${uiIcon(layout === 'list' ? 'layoutList' : 'layoutGrid', 'tm-layout-icon')}</button>`;
+  return `<div class="tag-manager${tagManagerPrefs.layout === 'list' ? ' list-mode' : ''}" data-tag-manager>
+    <nav class="tm-sidebar" aria-label="标签分类">
+      ${tagManagerNavRow({ mode: 'all', label: '全部', count: records.size, icon: 'tag' }, view)}
+      ${tagManagerNavRow({ mode: 'unfiled', label: '未分类', count: unfiled, icon: 'unfiled' }, view)}
+      ${tagManagerNavRow({ mode: 'starred', label: '常用标签', count: (state.starredTags || []).length, icon: 'star' }, view)}
+      <div class="tm-groups-label"><span>标签群组${groups.length ? ` (${groups.length})` : ''}</span><button type="button" class="tm-add-group" data-tag-action="create-group" title="添加群组" aria-label="添加群组">+</button></div>
+      <div class="tm-groups">${groups.map(group => tagManagerNavRow({ mode: 'group', groupId: group.id, label: group.name || '未命名群组', count: (group.tags || []).length, color: eagleNamedFolderColors[group.color] || '#7d838f' }, view)).join('')}</div>
+    </nav>
+    <section class="tm-main">
+      <header class="tm-header">
+        <h1 class="tm-title">${escapeHTML(tagManagerTitle(view))}</h1>
+        <input class="tm-search" type="search" placeholder="搜索标签…" value="${escapeHTML(view.keyword)}" aria-label="搜索标签" autocomplete="off">
+        <div class="tm-layout" role="group" aria-label="标签布局">${layoutButton('inline', '格状')}${layoutButton('list', '列表')}</div>
+        <button type="button" class="tm-sort" data-tm-sort-menu title="排列与分组" aria-haspopup="menu">${sortLabel}</button>
+      </header>
+      <div class="tm-body">${tagManagerBodyMarkup(view)}</div>
+    </section>
   </div>`;
 }
 
-function tagManagerMarkup() {
-  const grouped = new Set((state.tagGroups || []).flatMap(group => group.tags || []));
-  const groups = (state.tagGroups || []).map(group => `<section class="tag-manager-group">
-    <header class="tag-manager-group-heading">
-      <div><h2>${escapeHTML(group.name || '未命名分组')}</h2><span>${(group.tags || []).length.toLocaleString()} 个标签</span></div>
-      <div class="tag-manager-group-actions">
-        <button type="button" class="tag-manager-action" data-tag-action="rename-group" data-tag-group-id="${escapeHTML(group.id)}">重命名</button>
-        <button type="button" class="tag-manager-action danger" data-tag-action="remove-group" data-tag-group-id="${escapeHTML(group.id)}">移除分组</button>
-      </div>
-    </header>
-    <div class="tag-manager-list">${(group.tags || []).map(name => tagManagerTagMarkup(name, group.id)).join('') || '<span class="muted">分组中还没有标签</span>'}</div>
-  </section>`).join('');
-  const ungrouped = state.availableTags.filter(tag => !grouped.has(tagName(tag)));
-  const ungroupedHTML = ungrouped.length ? `<section class="tag-manager-group">
-    <header class="tag-manager-group-heading"><div><h2>未分组</h2><span>${ungrouped.length.toLocaleString()} 个标签</span></div></header>
-    <div class="tag-manager-list">${ungrouped.map(tag => tagManagerTagMarkup(tagName(tag))).join('')}</div>
-  </section>` : '';
-  return `<div class="tag-manager">
-    <header class="tag-manager-toolbar"><div><h1>标签管理</h1><p>通过 Eagle 管理标签与分组；标签颜色仍保存在 MultiView 本地状态。</p></div><button type="button" class="primary-button" data-tag-action="create-group">新建分组</button></header>
-    ${groups || ungroupedHTML ? `${groups}${ungroupedHTML}` : '<div class="tag-manager-empty">当前资料库还没有标签</div>'}
-  </div>`;
+// Typing in the search box redraws only the chips, keeping the field.
+function renderTagManagerBody(paneId) {
+  const body = paneQuery(paneId, '.tm-body');
+  if (body) body.innerHTML = tagManagerBodyMarkup(tagManagerView(paneId));
+}
+
+function selectTagManagerTag(paneId, name, { toggle = false, range = false } = {}) {
+  const view = tagManagerView(paneId);
+  if (range && view.anchor) {
+    const order = [...paneQuery(paneId, '.tm-body').querySelectorAll('[data-tm-tag]')].map(chip => chip.dataset.tmTag);
+    const [from, to] = [order.indexOf(view.anchor), order.indexOf(name)].sort((left, right) => left - right);
+    if (from >= 0) {
+      view.selected = new Set(order.slice(from, to + 1));
+      return paintTagManagerSelection(paneId);
+    }
+  }
+  if (toggle) {
+    if (view.selected.has(name)) view.selected.delete(name);
+    else view.selected.add(name);
+  } else {
+    view.selected = new Set([name]);
+  }
+  view.anchor = name;
+  paintTagManagerSelection(paneId);
+}
+
+function paintTagManagerSelection(paneId) {
+  const view = tagManagerView(paneId);
+  for (const chip of paneQuery(paneId, '.tm-body')?.querySelectorAll('[data-tm-tag]') || []) {
+    chip.classList.toggle('selected', view.selected.has(chip.dataset.tmTag));
+  }
+}
+
+function openTagManagerTagMenu(event, paneId, name) {
+  const view = tagManagerView(paneId);
+  if (!view.selected.has(name)) selectTagManagerTag(paneId, name);
+  showContextMenu(event, { kind: 'tag-manager-tag', paneId, tags: [...view.selected], groupId: view.mode === 'group' ? view.groupId : null });
+}
+
+function tagManagerTagMenuMarkup(data) {
+  const tags = data.tags || [];
+  const one = tags.length === 1;
+  const groups = state.tagGroups || [];
+  const inGroup = group => tags.every(tag => (group.tags || []).includes(tag));
+  const fromGroup = data.groupId || tagGroupsOf(tags[0])[0]?.id || null;
+  const groupRows = action => groups.map(group => contextMenuRow({
+    icon: 'tag', label: group.name || '未命名群组', action, payload: { groupId: group.id },
+    disabled: inGroup(group), checked: action === 'tm-add-group' ? inGroup(group) : null
+  })).join('') || contextMenuRow({ label: '还没有标签群组', disabled: true });
+  return [
+    contextMenuRow({ icon: 'search', label: '搜索包含标签的项目', action: 'tm-filter' }),
+    '<div class="context-menu-separator"></div>',
+    // Eagle shows 重命名 for one tag and 重命名 N 个项目... for several.
+    one
+      ? contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename' })
+      : contextMenuRow({ icon: 'rename', label: `重命名 ${tags.length} 个项目...`, action: 'tm-batch-rename' }),
+    ...(one ? [contextMenuRow({ icon: 'tag', label: '标签颜色…', action: 'tag-color', payload: { tag: tags[0] } })] : []),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'tag', label: '添加至群组...', submenu: groupRows('tm-add-group') }),
+    contextMenuRow({ icon: 'tag', label: '移动至群组...', submenu: groupRows('tm-move-group') }),
+    contextMenuRow({ icon: 'remove', label: '从标签群组移除', action: 'tm-remove-group', payload: { groupId: fromGroup }, disabled: !fromGroup }),
+    ...(tags.length > 1 ? [
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'tag', label: `合并 ${tags.length} 个标签`, action: 'tm-merge', disabled: tags.length > 5 })
+    ] : [])
+  ].join('');
+}
+
+function tagManagerGroupMenuMarkup(data) {
+  const group = (state.tagGroups || []).find(candidate => candidate.id === data.groupId);
+  if (!group) return contextMenuRow({ label: '群组已不存在', disabled: true });
+  return [
+    contextMenuRow({ icon: 'search', label: '搜索包含群组标签的项目', action: 'tm-filter-group', payload: { groupId: group.id }, disabled: !(group.tags || []).length }),
+    contextMenuRow({ icon: 'rename', label: '重命名', action: 'tm-rename-group', payload: { groupId: group.id } }),
+    '<div class="context-menu-separator"></div>',
+    contextMenuRow({ icon: 'trashMenu', label: '删除群组', action: 'tm-remove-group-node', payload: { groupId: group.id }, danger: true }),
+    ...tagGroupColorMenuRows(group)
+  ].join('');
+}
+
+// Eagle's group menu ends with the same colour dots as a folder's
+// (changeTagGroupColor); tagGroup/update keeps the old colour for a missing
+// one, so 无 is sent as an empty string.
+function tagGroupColorMenuRows(group) {
+  const current = String(group.color || '').toLowerCase();
+  const disabled = !state.connected;
+  const swatches = folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="群组颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="tm-group-color" data-context-payload="${escapeHTML(JSON.stringify({ groupId: group.id, color }))}"></button>`;
+  }).join('');
+  return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="群组颜色">${swatches}</div>`];
+}
+
+// Eagle clears the own colour of every tag in the group, so they all show
+// the group's; here that is the colour MultiView keeps for a tag locally.
+async function setTagGroupColor(groupId, color) {
+  const libraryPath = state.library?.path;
+  const group = (state.tagGroups || []).find(candidate => candidate.id === groupId);
+  if (!group || !libraryPath || !state.connected || !folderMenuColors.includes(color)) return;
+  if (String(group.color || '').toLowerCase() === color) return;
+  await runForegroundOperation('正在设置群组颜色…', { key: `tag-group-update:${libraryPath}:${groupId}` }, async () => {
+    await window.eagleMV.updateTagGroup({ libraryPath, id: groupId, patch: { color } });
+    group.color = color;
+    for (const tag of group.tags || []) {
+      if (state.tagColors[tag]) state.tagColors = await window.eagleMV.setTagColor({ libraryPath, tag, color: null });
+    }
+    renderTagColors();
+    renderTagManagerPanes();
+  });
+}
+
+// 重命名 N 个项目...: Eagle's batch rename dialog, then one Eagle rename (or
+// merge, when the new name is taken) per tag.
+function openTagBatchRename(paneId, tags) {
+  const libraryPath = state.library?.path;
+  if (!libraryPath || tags.length < 2) return;
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items: tags.map(name => ({ name })),
+    initialPattern: '*',
+    historyKey: 'eaglemv.batchRename.findHistory.TAGS',
+    onRename: async (changes, total) => {
+      if (!changes.length) return;
+      // Eagle asks first whenever two or more tags are renamed.
+      if (!confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      const steps = window.EagleMVBatchRename.planTagRenames(changes.map(change => ({ from: change.before, to: change.after })), tagManagerRecords().keys());
+      await runForegroundOperation('正在重命名标签…', { key: `tag-batch-rename:${libraryPath}` }, async () => {
+        for (const step of steps) {
+          if (state.library?.path !== libraryPath) throw new Error('资源库已切换，剩余标签未重命名');
+          if (step.kind === 'merge') await window.eagleMV.mergeTag({ libraryPath, source: step.from, target: step.to });
+          else await window.eagleMV.renameTag({ libraryPath, originalName: step.from, name: step.to });
+        }
+        const renamedTo = new Map(changes.map(change => [change.before, change.after]));
+        tagManagerView(paneId).selected = new Set(tags.map(tag => renamedTo.get(tag) || tag));
+        toast(`${total} 个项目已重命名。`);
+      });
+    }
+  });
+}
+
+function tagManagerSortMenuMarkup(data) {
+  const { sortBy, ascending, groupBy } = tagManagerPrefs;
+  const view = tagManagerView(data.paneId);
+  const sortRow = (label, by, up) => contextMenuRow({ label, action: 'tm-sort', payload: { sortBy: by, ascending: up }, checked: sortBy === by && ascending === up });
+  return [
+    sortRow('A > Z', 'name', true),
+    sortRow('Z > A', 'name', false),
+    sortRow('数量（多→少）', 'count', true),
+    sortRow('数量（少→多）', 'count', false),
+    ...(['all', 'unfiled'].includes(view.mode) ? [
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'more', label: '分组依据', submenu: [
+        contextMenuRow({ label: '字母', action: 'tm-group-by', payload: { groupBy: 'alphabet' }, checked: groupBy === 'alphabet' }),
+        contextMenuRow({ label: '标签群组', action: 'tm-group-by', payload: { groupBy: 'group' }, checked: groupBy === 'group' })
+      ].join('') })
+    ] : [])
+  ].join('');
+}
+
+// Merging several tags is a run of Eagle's one-to-one merges into the name
+// typed; a name that is none of them is first taken by renaming one.
+async function mergeTagManagerTags(libraryPath, tags, target) {
+  let sources = tags.filter(tag => tag !== target);
+  if (!tags.includes(target) && !tagManagerRecords().has(target)) {
+    await window.eagleMV.renameTag({ libraryPath, originalName: sources[0], name: target });
+    sources = sources.slice(1);
+  }
+  for (const source of sources) await window.eagleMV.mergeTag({ libraryPath, source, target });
+}
+
+async function executeTagManagerMenuAction(action, payload, data) {
+  const libraryPath = state.library?.path;
+  const paneId = data.paneId || state.activePaneId;
+  const tags = data.tags || [];
+  if (!libraryPath) return;
+  if (action === 'tm-sort') return setTagManagerPrefs({ sortBy: payload.sortBy, ascending: payload.ascending });
+  if (action === 'tm-group-by') return setTagManagerPrefs({ groupBy: payload.groupBy });
+  if (action === 'tm-filter' || action === 'tm-filter-group') {
+    const names = action === 'tm-filter' ? tags : ((state.tagGroups || []).find(group => group.id === payload.groupId)?.tags || []);
+    return withActivePane(paneId, () => searchItemsWithTags(names));
+  }
+  if (action === 'tm-rename') return executeTagManagerAction('rename-tag', { tagName: tags[0] });
+  if (action === 'tm-batch-rename') return openTagBatchRename(paneId, tags);
+  if (action === 'tm-group-color') return setTagGroupColor(payload.groupId, payload.color);
+  if (action === 'tm-rename-group') return executeTagManagerAction('rename-group', { groupId: payload.groupId });
+  if (action === 'tm-remove-group-node') return executeTagManagerAction('remove-group', { groupId: payload.groupId });
+  if (action === 'tm-add-group') {
+    return runForegroundOperation('正在将标签加入群组…', { key: `tag-group-add:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.addTagsToGroup({ libraryPath, groupId: payload.groupId, tags });
+      toast(tags.length > 1 ? `${tags.length} 个标签已加入群组` : '标签已加入群组');
+    });
+  }
+  if (action === 'tm-move-group') {
+    // Moving leaves every other group the tags were in, as in Eagle.
+    return runForegroundOperation('正在移动标签…', { key: `tag-group-move:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.addTagsToGroup({ libraryPath, groupId: payload.groupId, tags });
+      for (const group of state.tagGroups || []) {
+        if (group.id === payload.groupId) continue;
+        const leaving = tags.filter(tag => (group.tags || []).includes(tag));
+        if (leaving.length) await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: group.id, tags: leaving });
+      }
+      toast(tags.length > 1 ? `${tags.length} 个标签已移动到群组` : '标签已移动到群组');
+    });
+  }
+  if (action === 'tm-remove-group') {
+    return runForegroundOperation('正在从群组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}` }, async () => {
+      await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: payload.groupId, tags });
+      toast('标签已从群组移除');
+    });
+  }
+  if (action === 'tm-merge') {
+    const target = await requestNameDialog({ title: `合并 ${tags.length} 个标签`, initialValue: tags[0] || '', fieldLabel: '请输入合并后的标签名称：', submitLabel: '合并标签' });
+    if (!target?.trim()) return;
+    await runForegroundOperation('正在合并标签…', { key: `tag-merge:${libraryPath}` }, async () => {
+      await mergeTagManagerTags(libraryPath, tags, target.trim());
+      tagManagerView(paneId).selected = new Set([target.trim()]);
+      toast('合并完成');
+    });
+  }
+}
+
+function handleTagManagerClick(event, paneId) {
+  const view = tagManagerView(paneId);
+  const nav = event.target.closest('[data-tm-mode]');
+  if (nav) {
+    Object.assign(view, { mode: nav.dataset.tmMode, groupId: nav.dataset.tmGroup || null, selected: new Set(), anchor: null });
+    renderGrid({ preserveScroll: false });
+    return;
+  }
+  // Either button flips the layout, as Eagle's toggleTagLayout does.
+  if (event.target.closest('[data-tm-layout]')) {
+    setTagManagerPrefs({ layout: tagManagerPrefs.layout === 'list' ? 'inline' : 'list' });
+    return;
+  }
+  const sort = event.target.closest('[data-tm-sort-menu]');
+  if (sort) {
+    // The document's outside-click handler would close it on this same click.
+    event.stopPropagation();
+    const box = sort.getBoundingClientRect();
+    showContextMenuAt(box.left, box.bottom + 4, { kind: 'tag-manager-sort', paneId });
+    return;
+  }
+  const chip = event.target.closest('[data-tm-tag]');
+  if (chip) {
+    selectTagManagerTag(paneId, chip.dataset.tmTag, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+    return;
+  }
+  if (!event.target.closest('input, textarea, button') && view.selected.size) {
+    view.selected.clear();
+    paintTagManagerSelection(paneId);
+  }
+}
+
+function openTagManagerMenu(event, paneId) {
+  const chip = event.target.closest('[data-tm-tag]');
+  if (chip) return openTagManagerTagMenu(event, paneId, chip.dataset.tmTag);
+  const group = event.target.closest('[data-tm-group]');
+  if (group) return showContextMenu(event, { kind: 'tag-manager-group', paneId, groupId: group.dataset.tmGroup });
+  if (event.target.closest('.tm-main')) return showContextMenu(event, { kind: 'tag-manager-sort', paneId });
+}
+
+const TAG_DRAG_TYPE = 'application/x-eaglemv-tags';
+const TAG_GROUP_DRAG_TYPE = 'application/x-eaglemv-tag-group';
+
+// Eagle's 标签群组 can be dragged into order, but its API cannot store one
+// (tagGroup/update takes name, tags, color and description only). The order
+// here is MultiView's own, per library, in this app's storage; Eagle keeps
+// its own order. Groups not placed yet follow, in Eagle's order.
+const TAG_GROUP_ORDER_KEY = 'eaglemv.tagGroupOrder.v1';
+function readTagGroupOrders() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(TAG_GROUP_ORDER_KEY) || '{}');
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  } catch {
+    return {};
+  }
+}
+function orderTagGroups(groups, libraryPath = state.library?.path) {
+  const order = readTagGroupOrders()[libraryPath];
+  if (!Array.isArray(groups) || !Array.isArray(order) || !order.length) return groups;
+  const rank = new Map(order.map((id, index) => [id, index]));
+  const position = (group, index) => rank.has(group.id) ? rank.get(group.id) : order.length + index;
+  return groups.map((group, index) => ({ group, at: position(group, index) }))
+    .sort((left, right) => left.at - right.at)
+    .map(entry => entry.group);
+}
+function applyTagGroupOrder() {
+  state.tagGroups = orderTagGroups(state.tagGroups || []);
+  renderTagManagerPanes();
+}
+function saveTagGroupOrder(ids) {
+  const libraryPath = state.library?.path;
+  if (!libraryPath) return;
+  const orders = readTagGroupOrders();
+  orders[libraryPath] = ids;
+  try { localStorage.setItem(TAG_GROUP_ORDER_KEY, JSON.stringify(orders)); } catch {}
+  applyTagGroupOrder();
+}
+// Other windows of this app share the storage and follow at once.
+window.addEventListener('storage', event => {
+  if (event.key === TAG_GROUP_ORDER_KEY) applyTagGroupOrder();
+});
+
+function bindTagManagerEvents(paneId, grid) {
+  grid.addEventListener('input', event => {
+    const search = event.target.closest('.tm-search');
+    if (!search) return;
+    const view = tagManagerView(paneId);
+    view.keyword = search.value;
+    view.selected.clear();
+    renderTagManagerBody(paneId);
+  });
+  grid.addEventListener('keydown', event => {
+    if (event.target.closest('.tm-search') && event.key === 'Escape' && event.target.value) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.target.value = '';
+      event.target.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const field = event.target.closest('[data-tm-description]');
+    if (field && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); field.blur(); }
+    if (field && event.key === 'Escape') {
+      event.preventDefault();
+      field.value = (state.tagGroups || []).find(group => group.id === field.dataset.tmDescription)?.description || '';
+      field.blur();
+    }
+  });
+  // 添加描述...: saved through Eagle when the field is left changed.
+  grid.addEventListener('focusout', event => {
+    const field = event.target.closest('[data-tm-description]');
+    if (!field) return;
+    const group = (state.tagGroups || []).find(candidate => candidate.id === field.dataset.tmDescription);
+    const description = field.value.trim();
+    if (!group || description === (group.description || '')) return;
+    const libraryPath = state.library?.path;
+    runForegroundOperation('正在保存群组描述…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
+      await window.eagleMV.updateTagGroup({ libraryPath, id: group.id, patch: { description } });
+      group.description = description;
+    }).catch(error => toast(`群组描述保存失败：${error.message}`, 4200));
+  });
+  // Tags drag onto a group in the sidebar to join it, as in Eagle.
+  grid.addEventListener('dragstart', event => {
+    const chip = event.target.closest?.('[data-tm-tag]');
+    if (!chip) return;
+    event.stopPropagation();
+    const view = tagManagerView(paneId);
+    if (!view.selected.has(chip.dataset.tmTag)) selectTagManagerTag(paneId, chip.dataset.tmTag);
+    event.dataTransfer.setData(TAG_DRAG_TYPE, JSON.stringify([...view.selected]));
+    event.dataTransfer.effectAllowed = 'copy';
+  }, true);
+  const dropTarget = event => (event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE) ? event.target.closest?.('[data-tm-group]') : null;
+  // Dragging a group row reorders the groups (MultiView's order, see above).
+  let draggedGroup = null;
+  const clearGroupMarks = () => {
+    for (const row of grid.querySelectorAll('.tm-nav.drop-before, .tm-nav.drop-after')) row.classList.remove('drop-before', 'drop-after');
+  };
+  const groupDropPlace = event => {
+    const row = event.target.closest?.('.tm-groups [data-tm-group]');
+    if (!row || !draggedGroup || row.dataset.tmGroup === draggedGroup) return null;
+    const box = row.getBoundingClientRect();
+    return { row, after: event.clientY > box.top + box.height / 2 };
+  };
+  grid.addEventListener('dragstart', event => {
+    const row = event.target.closest?.('.tm-groups [data-tm-group]');
+    if (!row) return;
+    event.stopPropagation();
+    draggedGroup = row.dataset.tmGroup;
+    event.dataTransfer.setData(TAG_GROUP_DRAG_TYPE, draggedGroup);
+    event.dataTransfer.effectAllowed = 'move';
+  }, true);
+  grid.addEventListener('dragend', () => { draggedGroup = null; clearGroupMarks(); }, true);
+  grid.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_GROUP_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const place = groupDropPlace(event);
+    event.dataTransfer.dropEffect = place ? 'move' : 'none';
+    clearGroupMarks();
+    place?.row.classList.add(place.after ? 'drop-after' : 'drop-before');
+  }, true);
+  grid.addEventListener('drop', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_GROUP_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const place = groupDropPlace(event);
+    const moving = draggedGroup;
+    draggedGroup = null;
+    clearGroupMarks();
+    if (!place) return;
+    const ids = (state.tagGroups || []).map(group => group.id).filter(id => id !== moving);
+    const at = ids.indexOf(place.row.dataset.tmGroup) + (place.after ? 1 : 0);
+    ids.splice(at, 0, moving);
+    saveTagGroupOrder(ids);
+  }, true);
+  grid.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const row = dropTarget(event);
+    event.dataTransfer.dropEffect = row ? 'copy' : 'none';
+    for (const candidate of grid.querySelectorAll('.tm-nav.drop-target')) if (candidate !== row) candidate.classList.remove('drop-target');
+    row?.classList.add('drop-target');
+  }, true);
+  grid.addEventListener('dragleave', event => {
+    if (event.target.closest?.('[data-tm-group]') && !event.target.closest('[data-tm-group]').contains(event.relatedTarget)) event.target.closest('[data-tm-group]').classList.remove('drop-target');
+  }, true);
+  grid.addEventListener('drop', event => {
+    if (!(event.dataTransfer?.types || []).includes(TAG_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    for (const candidate of grid.querySelectorAll('.tm-nav.drop-target')) candidate.classList.remove('drop-target');
+    const row = dropTarget(event);
+    let tags = [];
+    try { tags = JSON.parse(event.dataTransfer.getData(TAG_DRAG_TYPE) || '[]'); } catch {}
+    if (!row || !tags.length) return;
+    const groupId = row.dataset.tmGroup;
+    const group = (state.tagGroups || []).find(candidate => candidate.id === groupId);
+    const adding = tags.filter(tag => !(group?.tags || []).includes(tag));
+    if (!adding.length) return;
+    executeTagManagerMenuAction('tm-add-group', { groupId }, { paneId, tags: adding })
+      .catch(error => toast(`加入群组失败：${error.message}`, 4200));
+  }, true);
+}
+
+// 搜索包含标签的项目: every item in the library carrying any of the tags.
+function searchItemsWithTags(names) {
+  const tags = normalizeTags(names);
+  if (!tags.length) return;
+  // Passed to navigate, which otherwise starts a new view with no filters.
+  navigate({ kind: 'all' }, { query: createQuery({ tags, tagLogic: 'OR' }) });
+  renderQueryControls();
 }
 
 async function executeTagManagerAction(action, payload = {}) {
   const libraryPath = state.library?.path;
   if (!libraryPath) return;
-  if (action === 'filter-tag') {
-    state.query.tags = [payload.tagName];
-    navigate({ kind: 'all' });
-    renderQueryControls();
-    return;
-  }
+  if (action === 'filter-tag') return searchItemsWithTags([payload.tagName]);
   if (action === 'create-group') {
-    const name = await requestNameDialog({ title: '新建标签分组', submitLabel: '创建' });
+    const name = await requestNameDialog({ title: '添加群组', submitLabel: '创建' });
     if (!name?.trim()) return;
-    await runForegroundOperation('正在创建标签分组…', { key: `tag-group-create:${libraryPath}` }, async () => {
+    await runForegroundOperation('正在创建群组…', { key: `tag-group-create:${libraryPath}` }, async () => {
       await window.eagleMV.createTagGroup({ libraryPath, name: name.trim() });
-      toast('标签分组已创建');
+      toast('群组已创建');
     });
     return;
   }
   if (action === 'rename-group') {
     const group = state.tagGroups.find(candidate => candidate.id === payload.groupId);
     if (!group) return;
-    const name = await requestNameDialog({ title: '重命名标签分组', initialValue: group.name || '', submitLabel: '重命名' });
+    const name = await requestNameDialog({ title: '重命名群组', initialValue: group.name || '', submitLabel: '重命名' });
     if (!name?.trim() || name.trim() === group.name) return;
-    await runForegroundOperation('正在重命名标签分组…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
+    await runForegroundOperation('正在重命名群组…', { key: `tag-group-update:${libraryPath}:${group.id}` }, async () => {
       await window.eagleMV.updateTagGroup({ libraryPath, id: group.id, patch: { name: name.trim() } });
-      toast('标签分组已重命名');
+      toast('群组已重命名');
     });
     return;
   }
   if (action === 'remove-group') {
     const group = state.tagGroups.find(candidate => candidate.id === payload.groupId);
-    if (!group || !confirm(`移除分组“${group.name}”？\n\n分组会被删除，标签本身和素材不会删除。`)) return;
-    await runForegroundOperation('正在移除标签分组…', { key: `tag-group-remove:${libraryPath}:${group.id}` }, async () => {
+    if (!group || !confirm(`删除群组“${group.name}”？\n\n群组会被删除，标签本身和素材不会删除。`)) return;
+    await runForegroundOperation('正在删除群组…', { key: `tag-group-remove:${libraryPath}:${group.id}` }, async () => {
       await window.eagleMV.removeTagGroup({ libraryPath, id: group.id });
-      toast('标签分组已移除');
+      toast('群组已删除');
     });
     return;
   }
@@ -2430,9 +3849,9 @@ async function executeTagManagerAction(action, payload = {}) {
     return;
   }
   if (action === 'remove-from-group') {
-    await runForegroundOperation('正在从分组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}:${payload.tagName}` }, async () => {
+    await runForegroundOperation('正在从群组移除标签…', { key: `tag-group-remove-tag:${libraryPath}:${payload.groupId}:${payload.tagName}` }, async () => {
       await window.eagleMV.removeTagsFromGroup({ libraryPath, groupId: payload.groupId, tags: [payload.tagName] });
-      toast('标签已从分组移除');
+      toast('标签已从群组移除');
     });
   }
 }
@@ -2453,6 +3872,20 @@ function bindGifHover(card) {
   });
 }
 
+// Empty-view wording follows Eagle's `empty.*` strings for each view.
+function emptyStateCopy() {
+  const kind = state.currentView.kind;
+  if (String(state.query.search || '').trim() || queryFilterCount(state.query)) return ['没有找到相关文件', '也许换个搜索规则就能找到它！'];
+  if (kind === 'trash') return ['回收站是空的', '这里会保存你删除的内容，你可以进行还原。'];
+  if (kind === 'unfiled') return ['太棒啦！', '所有文件已经都分类完成啦！'];
+  if (kind === 'untagged') return ['太棒啦！', '所有文件都已经有标签啦！'];
+  if (kind === 'recent') return ['还没有最近使用的文件夹', '打开过的文件夹会显示在这里。'];
+  if (kind === 'smart') return ['没有找到相关文件', '没有素材符合这个智能文件夹的条件。'];
+  if (kind === 'random') return ['这里还没有素材', '资源库里有素材后，随机模式会从中挑选。'];
+  if (!hasCapability('importLocal')) return ['这里还没有素材', '可以在桌面版中导入文件。'];
+  return ['拖放文件到这里', '你可以一次拖拽多个文件到这里添加'];
+}
+
 function renderGrid({ preserveScroll = true } = {}) {
   const scroller = $('#gridScroller');
   const scrollTop = scroller.scrollTop;
@@ -2468,7 +3901,20 @@ function renderGrid({ preserveScroll = true } = {}) {
     const emptyState = $('#emptyState');
     emptyState.classList.add('hidden');
     emptyState.style.display = 'none';
-    $('#itemGrid').innerHTML = tagManagerMarkup();
+    // A redraw from another window's tag change must not take the field the
+    // user is typing in: put focus, caret and an unsaved description back.
+    const grid = $('#itemGrid');
+    const focused = grid.contains(document.activeElement) ? document.activeElement : null;
+    const restore = focused?.matches('.tm-search, [data-tm-description]')
+      ? { selector: focused.matches('.tm-search') ? '.tm-search' : `[data-tm-description="${CSS.escape(focused.dataset.tmDescription)}"]`, value: focused.value, start: focused.selectionStart, end: focused.selectionEnd }
+      : null;
+    grid.innerHTML = tagManagerMarkup();
+    const field = restore && grid.querySelector(restore.selector);
+    if (field) {
+      field.value = restore.value;
+      field.focus();
+      try { field.setSelectionRange(restore.start, restore.end); } catch {}
+    }
     scroller.scrollTop = preserveScroll ? scrollTop : 0;
     if (updateSharedFooter) updateScrollUI();
     return;
@@ -2481,12 +3927,14 @@ function renderGrid({ preserveScroll = true } = {}) {
   const folders = visibleChildFolders();
   const emptyState = $('#emptyState');
   emptyState.style.display = '';
-  emptyState.querySelector('h2').textContent = state.errorMessage ? '当前栏读取失败' : '这里还没有素材';
-  emptyState.querySelector('p').textContent = state.errorMessage || '可以调整筛选条件，或将文件导入当前文件夹。';
+  const [emptyTitle, emptyText] = state.errorMessage ? ['当前栏读取失败', state.errorMessage] : emptyStateCopy();
+  emptyState.querySelector('h2').textContent = emptyTitle;
+  emptyState.querySelector('p').textContent = emptyText;
   $('#emptyRetryButton').classList.toggle('hidden', !state.errorMessage);
   $('#emptyState').classList.toggle('hidden', items.length > 0 || folders.length > 0 || state.loading);
   const folderSection = folders.length
-    ? `<div class="grid-section-heading"><span>子文件夹</span><span>${folders.length.toLocaleString()}</span></div><div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`
+    ? `<button type="button" class="grid-section-heading grid-section-toggle" data-toggle-subfolders aria-expanded="${subfoldersCollapsed ? 'false' : 'true'}" title="${subfoldersCollapsed ? '展开子文件夹' : '收起子文件夹'}"><span>${uiIcon('chevronRight', 'grid-section-chevron')}子文件夹</span><span>${folders.length.toLocaleString()}</span></button>`
+      + (subfoldersCollapsed ? '' : `<div class="folder-grid">${folders.map(folderCardMarkup).join('')}</div>`)
     : '';
   // Every layout carries its own class (including the default) so the CSS can
   // target one mode instead of excluding all the others.
@@ -2494,7 +3942,9 @@ function renderGrid({ preserveScroll = true } = {}) {
   const headingHTML = items.length && folders.length
     ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>`
     : '';
-  const gridPrefixHTML = folderSection + headingHTML;
+  // The list's column header leads the files, and changes with the sort.
+  const listHeaderHTML = items.length && state.viewMode === 'list' ? listHeaderMarkup() : '';
+  const gridPrefixHTML = folderSection + headingHTML + listHeaderHTML;
   const itemGrid = $('#itemGrid');
   // Fast path for lazy-load pages: when the already-rendered cards are an
   // exact prefix of the new list and everything before the asset grid is
@@ -2509,14 +3959,19 @@ function renderGrid({ preserveScroll = true } = {}) {
     const renderedCount = items.length - appended;
     grid.insertAdjacentHTML('beforeend', items.slice(renderedCount).map(itemCardMarkup).join(''));
     hydrateGridCards([...grid.children].slice(renderedCount));
+    layoutWaterfall(grid, { append: true });
     state.scrollTop = scrollTop;
     if (updateSharedFooter) updateScrollUI();
     scheduleVisibleItemWatch();
     return;
   }
-  const itemSection = items.length ? `${headingHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
+  const itemSection = items.length ? `${headingHTML}${listHeaderHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
   itemGrid.innerHTML = `${folderSection}${itemSection}`;
   itemGrid._gridPrefix = gridPrefixHTML;
+  // Placed before the scroll position is restored: the cards give the grid
+  // its height.
+  layoutWaterfall(itemGrid.querySelector('.asset-grid'));
+  waterfallResize?.observe(itemGrid);
   const root = paneRoot();
   hydrateGridCards(root?.querySelectorAll('#itemGrid .item-card') || []);
   for (const image of root?.querySelectorAll('.folder-cover img') || []) {
@@ -2531,37 +3986,241 @@ function renderGrid({ preserveScroll = true } = {}) {
   scheduleVisibleItemWatch();
 }
 
+function applyCardDisplayClasses() {
+  const body = document.body;
+  body.classList.toggle('hide-card-name', !cardDisplay.name);
+  body.classList.toggle('hide-card-meta', !cardDisplay.meta);
+  body.classList.toggle('hide-card-ext', !cardDisplay.ext);
+  body.classList.toggle('hide-card-ext-label', !cardDisplay.extLabel);
+  body.classList.toggle('hide-card-annotation', !cardDisplay.annotation);
+  // Hiding the name or meta line changes every card's height.
+  scheduleWaterfallRelayout();
+}
+
+// 瀑布流 cards are placed by script, row by row into the shortest column like
+// Eagle's GridLayout (D-10); CSS columns filled column by column instead, and
+// reshuffled every card whenever a lazy-load page arrived. An append continues
+// from the column heights the earlier cards left, so those never move.
+function layoutWaterfall(grid, { append = false } = {}) {
+  if (!grid?.classList.contains('waterfall')) return;
+  const width = grid.clientWidth;
+  // A hidden pane has no width; the resize observer lays it out once shown.
+  if (!width) { grid._waterfall = null; return; }
+  const columns = waterfall.columnsFor(width, currentThumbnailSize());
+  const cards = [...grid.children];
+  let layout = grid._waterfall;
+  const resumes = append && layout && layout.width === width && layout.columnWidth === columns.width && layout.count <= cards.length;
+  if (!resumes) layout = { width, columnWidth: columns.width, heights: new Array(columns.count).fill(0), count: 0 };
+  const fresh = cards.slice(layout.count);
+  // All widths first, then all heights, then all positions: one reflow.
+  for (const card of fresh) card.style.width = `${layout.columnWidth}px`;
+  const sizes = fresh.map(card => card.offsetHeight);
+  waterfall.place(layout.heights, sizes, layout.columnWidth).forEach(({ left, top }, index) => {
+    fresh[index].style.left = `${left}px`;
+    fresh[index].style.top = `${top}px`;
+  });
+  layout.count = cards.length;
+  grid.style.height = `${waterfall.contentHeight(layout.heights)}px`;
+  grid._waterfall = layout;
+}
+
+function scheduleWaterfallRelayout() {
+  if (waterfallFrame || typeof requestAnimationFrame !== 'function') return;
+  waterfallFrame = requestAnimationFrame(() => {
+    waterfallFrame = 0;
+    for (const grid of document.querySelectorAll('.asset-grid.waterfall')) layoutWaterfall(grid);
+  });
+}
+
+
+
+function renderCardDisplayControls() {
+  for (const input of document.querySelectorAll('[data-card-display]')) input.checked = Boolean(cardDisplay[input.dataset.cardDisplay]);
+  for (const select of document.querySelectorAll('[data-card-meta-type]')) {
+    select.value = cardDisplay.metaType;
+    select.disabled = !cardDisplay.meta;
+  }
+}
+
+// Every pane and window follows one setting: here, through setCardDisplay;
+// elsewhere, through the storage event.
+function adoptCardDisplay(next) {
+  const previous = cardDisplay;
+  cardDisplay = next;
+  applyCardDisplayClasses();
+  renderCardDisplayControls();
+  if (typeof state === 'undefined' || !Array.isArray(state.panes)) return;
+  if (previous.metaType !== next.metaType) {
+    for (const pane of state.panes) {
+      withActivePane(pane.id, () => {
+        // The meta line is in the card markup: rebuild, not append.
+        if ($('#itemGrid')) $('#itemGrid')._gridPrefix = null;
+        renderGrid({ preserveScroll: true });
+      });
+    }
+  }
+  if (previous.subfolderContent !== next.subfolderContent) {
+    categoryStatsRevision += 1;
+    categoryStatsCache.clear();
+    for (const pane of state.panes) {
+      if (pane.currentView.kind === 'folder') refresh({ reset: true, preserveScroll: false, paneId: pane.id });
+    }
+    renderSortControls();
+  }
+}
+
+function setCardDisplay(patch) {
+  const next = cardDisplayAPI.normalize({ ...cardDisplay, ...patch });
+  try { localStorage.setItem(cardDisplayAPI.STORAGE_KEY, JSON.stringify(next)); } catch {}
+  adoptCardDisplay(next);
+}
+
+function bindCardDisplayControls() {
+  applyCardDisplayClasses();
+  applyListColumnClasses();
+  document.addEventListener('change', event => {
+    const toggle = event.target.closest?.('[data-card-display]');
+    if (toggle) { setCardDisplay({ [toggle.dataset.cardDisplay]: toggle.checked }); return; }
+    const select = event.target.closest?.('[data-card-meta-type]');
+    if (select) setCardDisplay({ metaType: select.value });
+  });
+}
+
+function setSubfoldersCollapsed(collapsed) {
+  if (subfoldersCollapsed === collapsed) return;
+  subfoldersCollapsed = collapsed;
+  try { localStorage.setItem(SUBFOLDERS_COLLAPSED_KEY, String(collapsed)); } catch {}
+  renderSubfolderSections();
+}
+
+function renderSubfolderSections() {
+  let inspectorChanged = false;
+  for (const pane of state.panes) {
+    // A folded card cannot stay selected.
+    if (subfoldersCollapsed && pane.selectedFolderCard) {
+      pane.selectedFolderCard = null;
+      if (pane.id === state.activePaneId) inspectorChanged = true;
+    }
+    withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
+  if (inspectorChanged) renderInspector();
+}
+
 function itemCardMarkup(item) {
   const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
   const isGif = ext === 'gif';
   const thumbURL = mediaURL('thumb', item.id);
   const originalURL = mediaURL('original', item.id);
   const aspect = itemThumbnailAspect(item);
+  const annotations = cardDisplayAPI.annotationCount(item);
+  // The list layout keeps its own columns; the 显示 switches shape the grids.
+  const list = state.viewMode === 'list';
   return `
     <article class="item-card ${state.selected.has(item.id) ? 'selected' : ''} ${itemIsPinned(item) ? 'pinned' : ''}" data-id="${escapeHTML(item.id)}" draggable="true" tabindex="0" style="--item-aspect: ${aspect.toFixed(4)}">
       <div class="thumb-wrap">
         <img loading="lazy" src="${thumbURL}" alt="${escapeHTML(item.name)}"${isGif ? ` data-gif-static="${thumbURL}" data-gif-animated="${originalURL}"` : ''}>
         ${itemIsPinned(item) ? `<span class="pin-badge" title="已在当前文件夹置顶">${eagleIcon('ic-toolbar-pin.svg', 'pin-icon')}</span>` : ''}
-        ${(isGif || (!isImageItem(item) && item.ext)) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
-        ${Number(item.star) > 0 ? `<span class="card-stars" title="${Number(item.star)} 星">${'★'.repeat(Number(item.star))}</span>` : ''}
+        ${cardDisplayAPI.hasFormatLabel(item) ? `<span class="format-badge${isGif ? ' gif-badge' : ''}">${escapeHTML(itemFormat(item))}</span>` : ''}
+        ${annotations ? `<span class="annotation-badge" title="${annotations} 个标注">${annotations}</span>` : ''}
       </div>
-      <div class="card-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
-      ${state.viewMode === 'list' ? listRowColumns(item) : ''}
-      <div class="card-meta">${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}</div>
+      <div class="card-name" title="${escapeHTML(item.name)}${ext ? `.${escapeHTML(ext)}` : ''}">${escapeHTML(item.name)}${ext ? `<span class="card-ext">.${escapeHTML(ext)}</span>` : ''}</div>
+      ${list ? listRowColumns(item) : `<div class="card-meta">${escapeHTML(cardDisplayAPI.metaText(item, cardDisplay.metaType, { formatBytes, formatDateTime, itemDates }))}</div>`}
     </article>`;
 }
 
-// The list is for triage, so it earns the columns a grid cannot show: tags,
-// rating and the date the item entered the library. Rendered only in list
-// mode — the other layouts would carry three dead nodes per card, and the grid
-// holds thousands.
+// Eagle's list layout (index.html #list-layout-header): after the thumbnail
+// and name come 标签, 尺寸, 评分, 扩展名, 文件大小 and 添加日期. Right-click
+// on the header picks which show — 尺寸, 扩展名, 文件大小 and 添加日期 by
+// default — and clicking one sorts by it. Rendered only in list mode: the
+// other layouts would carry dead nodes per card, and the grid holds thousands.
+const LIST_COLUMNS = [
+  { key: 'tags', label: '标签', sort: 'tags', show: false },
+  { key: 'resolution', label: '尺寸', sort: 'resolution', show: true },
+  { key: 'rating', label: '评分', sort: 'rating', show: false },
+  { key: 'ext', label: '扩展名', sort: 'type', show: true },
+  { key: 'size', label: '文件大小', sort: 'size', show: true },
+  { key: 'added', label: '添加日期', sort: 'added', show: true }
+];
+// A header click on a new column starts from Eagle's increasing order:
+// A→Z, smallest first, newest first for the date (sortRawData).
+const LIST_HEADER_SORT_DIRS = { name: 'asc', tags: 'asc', resolution: 'asc', rating: 'asc', type: 'asc', size: 'asc', added: 'desc' };
+const LIST_COLUMNS_STORAGE_KEY = 'eaglemv.listColumns';
+
+function listColumnSettings() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(LIST_COLUMNS_STORAGE_KEY) || '{}') || {}; } catch {}
+  return Object.fromEntries(LIST_COLUMNS.map(column => [column.key, typeof stored[column.key] === 'boolean' ? stored[column.key] : column.show]));
+}
+
+function applyListColumnClasses() {
+  const settings = listColumnSettings();
+  for (const column of LIST_COLUMNS) document.body.classList.toggle(`list-hide-${column.key}`, !settings[column.key]);
+}
+
+function toggleListColumn(key) {
+  if (!LIST_COLUMNS.some(column => column.key === key)) return false;
+  const settings = listColumnSettings();
+  settings[key] = !settings[key];
+  try { localStorage.setItem(LIST_COLUMNS_STORAGE_KEY, JSON.stringify(settings)); } catch {}
+  applyListColumnClasses();
+  return settings[key];
+}
+
+function listColumnsMenuMarkup() {
+  const settings = listColumnSettings();
+  return LIST_COLUMNS.map(column => contextMenuRow({
+    label: column.label, checked: settings[column.key], action: 'toggle-list-column', payload: { key: column.key }, keepOpen: true
+  })).join('');
+}
+
+function listRatingHTML(rating) {
+  return `<span class="list-stars-lit">${'★'.repeat(rating)}</span>${'★'.repeat(5 - rating)}`;
+}
+
 function listRowColumns(item) {
   const tags = (item.tags || []).map(String).filter(Boolean);
   const rating = Math.max(0, Math.min(5, Number(item.star) || 0));
-  const added = Number(item.btime) || 0;
-  return `<div class="card-list-tags" title="${escapeHTML(tags.join('、'))}">${tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('')}</div>
-      <div class="card-list-rating"${rating ? ` title="${rating} 星"` : ''}>${rating ? '★'.repeat(rating) : ''}</div>
-      <div class="card-list-date" title="添加日期">${added ? new Date(added).toLocaleDateString('zh-CN') : ''}</div>`;
+  const { added } = itemDates(item);
+  const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
+  return `<div class="list-col list-col-tags" title="${escapeHTML(tags.join('、'))}">${tags.length ? tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('') : '-'}</div>
+      <div class="list-col list-col-resolution">${Number(item.width) || 0} x ${Number(item.height) || 0}</div>
+      <div class="list-col list-col-rating"${rating ? ` title="${rating} 星"` : ''}>${listRatingHTML(rating)}</div>
+      <div class="list-col list-col-ext">${escapeHTML(ext)}</div>
+      <div class="list-col list-col-size">${formatBytes(item.size)}</div>
+      <div class="list-col list-col-added" title="添加日期">${added ? escapeHTML(formatListDate(added)) : ''}</div>`;
+}
+
+function formatListDate(value) {
+  const date = new Date(value);
+  const pad = number => String(number).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function listHeaderMarkup() {
+  const direction = effectiveSortDir(state.sort, state.sortDir);
+  const cell = (key, label, sort) => {
+    const active = state.sort === sort;
+    const reversed = active && direction !== LIST_HEADER_SORT_DIRS[sort];
+    return `<button type="button" class="list-head-cell list-col-${key}${active ? ' active' : ''}" data-list-sort="${sort}" title="按${label}排序"><span>${label}</span>${active ? `<img class="list-head-arrow${reversed ? ' up' : ''}" src="eagle-assets/ic-list-arrow-down.svg" alt="">` : ''}</button>`;
+  };
+  return `<div class="list-header" role="row">
+    <span class="list-head-thumb" aria-hidden="true"></span>${cell('name', '名称', 'name')}${LIST_COLUMNS.map(column => cell(column.key, column.label, column.sort)).join('')}
+  </div>`;
+}
+
+// Eagle's changeListOrderBy: the sorted column flips its direction, another
+// column sorts in its increasing order.
+function applyListHeaderSort(sort, paneId = state.activePaneId) {
+  if (!activatePane(paneId) || !(sort in LIST_HEADER_SORT_DIRS)) return false;
+  if (state.sort === sort) return applySortDirection(effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc');
+  state.sort = sort;
+  state.sortDir = LIST_HEADER_SORT_DIRS[sort];
+  if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
+    sortMemory.rememberCascade(state.library?.path, state.currentView.id, state.library?.folders, state.sort, state.sortDir, Date.now());
+  }
+  commitSortChange();
+  if (viewHasClientOrder() && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
+  return true;
 }
 
 function hydrateGridCards(cards) {
@@ -2579,17 +4238,18 @@ function hydrateGridCards(cards) {
 
 function updateScrollUI() {
   const scroller = $('#gridScroller');
+  // Eagle-style "N 个项目" (GUI-06); while the grid is still paging in, say how
+  // many are loaded so far instead of a scroll percentage.
   const loaded = state.items.length;
-  const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  const percent = maximum ? Math.max(0, Math.min(100, Math.round(scroller.scrollTop / maximum * 100))) : 0;
-  $('#scrollStatus').textContent = `已载入 ${loaded.toLocaleString()} / ${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()}${maximum ? ` · ${percent}%` : ''}`;
+  const total = `${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个项目`;
+  $('#scrollStatus').textContent = loaded < state.total ? `${total} · 已载入 ${loaded.toLocaleString()}` : total;
   $('#scrollTopButton').classList.toggle('hidden', scroller.scrollTop < Math.max(240, scroller.clientHeight * 0.6));
 }
 
 function renderResultCount() {
   const childCount = visibleChildFolders().length;
   $('#resultCount').textContent = state.currentView.kind === 'tags'
-    ? `${state.availableTags.length.toLocaleString()} 个标签 · ${(state.tagGroups || []).length.toLocaleString()} 个分组`
+    ? `${state.availableTags.length.toLocaleString()} 个标签 · ${(state.tagGroups || []).length.toLocaleString()} 个群组`
     : childCount
     ? `${childCount.toLocaleString()} 个文件夹 · ${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个文件`
     : `${state.estimatedTotal ? '至少 ' : ''}${state.total.toLocaleString()} 个文件`;
@@ -2618,7 +4278,8 @@ function reconcileLocalFolderCount(folderId, total) {
 // presets (eagleNamedFolderColors, declared with the filter choices); unset
 // folders have no color field at all.
 function folderColorValue(folder) {
-  const raw = String(folder?.color || '').trim();
+  // Eagle stores a folder's colour as iconColor; `color` is a legacy alias.
+  const raw = String(folder?.iconColor || folder?.color || '').trim();
   if (!raw) return '';
   if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
   return eagleNamedFolderColors[raw.toLowerCase()] || '';
@@ -2651,6 +4312,9 @@ function countFolders(folders) {
 
 function renderFolderTree() {
   if (!state.library) return;
+  // The sidebar highlights the pane the user is in, even when a background
+  // pane's refresh is what asked for the redraw (B2-07).
+  if (renderingBackgroundPane()) return withActivePane(foregroundPaneId, renderFolderTree);
   const tree = $('#folderTree');
   const folderHTML = (folders, parentId = null) => {
     const view=parentId ? {kind:'folder',id:parentId} : {kind:'root'};
@@ -2660,7 +4324,7 @@ function renderFolderTree() {
     const expanded = state.expandedFolders.has(folder.id);
     const count = folderTreeCount(folder, children.length > 0 && expanded);
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${folderInSelection(folder.id) ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}
         ${folderCountBadge(count)}
@@ -2673,7 +4337,7 @@ function renderFolderTree() {
     const children = folder.children || [];
     const expanded = state.expandedFolders.has(folder.id);
     return `<div class="folder-node">
-      <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
+      <button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}" aria-expanded="${children.length ? String(expanded) : 'false'}">
         ${children.length ? `<span class="folder-toggle" data-toggle-folder="${escapeHTML(folder.id)}">${eagleIcon('ic-arrow-right.svg', `disclosure-icon${expanded ? ' expanded' : ''}`)}</span>` : '<span class="folder-toggle spacer"></span>'}
         <span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span>
         ${folderCountBadge(folder.imageCount)}
@@ -2684,15 +4348,15 @@ function renderFolderTree() {
   const smartHTML = smartFolderHTML(state.library.smartFolders || []);
   const quickEntries = quickAccessEntries();
   const quickHTML = quickEntries.map(folder => folder.quickType === 'smart'
-    ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}">
+    ? `<button class="folder-row ${state.currentView.kind === 'smart' && state.currentView.id === folder.id ? 'active' : ''}" data-smart-folder-id="${escapeHTML(folder.id)}" data-folder-name="${escapeHTML(folder.name)}" title="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon smart">${uiIcon('smart')}</span><span class="folder-name">${escapeHTML(folder.name)}</span></button>`
     : `<button class="folder-row ${state.currentView.kind === 'folder' && state.currentView.id === folder.id ? 'active' : ''}" data-folder-id="${escapeHTML(folder.id)}" data-folder-node-id="${escapeHTML(folder.id)}" draggable="true" data-folder-name="${escapeHTML(folder.name)}">
       <span class="folder-toggle spacer"></span><span class="folder-icon">${eagleIcon('ic-filter-item-folder.svg')}${folderColorDot(folder)}</span><span class="folder-name">${escapeHTML(folder.name)}</span>${folderLockBadge(folder)}${folderCountBadge(folder.imageCount)}</button>`).join('');
   tree.innerHTML = `
-    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资料库根目录</span></button>
-    <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部素材</span></button>
+    <button class="folder-row ${state.currentView.kind === 'root' ? 'active' : ''}" data-special="root" data-folder-node-root=""><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('library')}</span><span class="folder-name">资源库根目录</span></button>
+    <button class="folder-row ${state.currentView.kind === 'all' ? 'active' : ''}" data-special="all"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-all.svg')}</span><span class="folder-name">全部</span></button>
     <button class="folder-row ${state.currentView.kind === 'unfiled' ? 'active' : ''}" data-special="unfiled"><span class="folder-toggle spacer"></span><span class="folder-icon special">${eagleIcon('ic-sidebar-unfiled.svg')}</span><span class="folder-name">未分类</span></button>
-    <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未加标签</span></button>
+    <button class="folder-row ${state.currentView.kind === 'untagged' ? 'active' : ''}" data-special="untagged"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">未标签</span></button>
     <button class="folder-row ${state.currentView.kind === 'tags' ? 'active' : ''}" data-special="tags"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('tag')}</span><span class="folder-name">标签管理</span>${folderCountBadge(state.availableTags.length)}</button>
     <button class="folder-row ${state.currentView.kind === 'recent' ? 'active' : ''}" data-special="recent"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('recent')}</span><span class="folder-name">最近使用</span></button>
     <button class="folder-row ${state.currentView.kind === 'random' ? 'active' : ''}" data-special="random"><span class="folder-toggle spacer"></span><span class="folder-icon special">${uiIcon('random')}</span><span class="folder-name">随机模式</span></button>
@@ -2730,28 +4394,31 @@ function attachFolderDragTargets() {
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
     row.addEventListener('drop', event => {
-      const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+      const drop = resolveItemDrop(event);
+      const dropKind = drop.kind;
       if (dropKind === 'unsupported') return;
       event.preventDefault();
       event.stopPropagation();
       row.classList.remove('drop-target');
       const folderId = row.dataset.folderId;
       if (dropKind === 'external-files') {
-        scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId);
+        scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId, { ignoreDirectories: true });
         return;
       }
-      const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+      const ids = drop.ids;
       if (!ids.length) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
         return;
       }
-      const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
+      const session = drop.session;
+      const libraryPath = session?.libraryPath || state.library?.path;
       const folderName = row.dataset.folderName;
-      const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+      const sourceFolderId = session?.sourceFolderId || null;
+      const sourceFolderIds = session?.sourceFolderIds || null;
       const move = Boolean(sourceFolderId && !event.altKey);
-      const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
-      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourcePaneId }));
+      const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
+      scheduleDropTask(() => addItemsToFolder(ids, folderId, folderName, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
     });
   }
 }
@@ -2766,7 +4433,20 @@ function paneItemQuery(pane, currentView = pane.currentView) {
     isUntagged: currentView.kind === 'untagged',
     random: currentView.kind === 'random'
   };
-  if (query.folderId && String(query.search || '').trim()) {
+  const selection = viewFolderSelection(currentView)?.filter(id => findFolder(state.library?.folders, id));
+  if (selection?.length) {
+    // Several folders: items in any of them, each widened to its subtree by
+    // a search or 显示子文件夹内容, as for one folder.
+    const widen = String(query.search || '').trim() || cardDisplay.subfolderContent;
+    const ids = new Set();
+    const collect = folder => { ids.add(folder.id); if (widen) (folder.children || []).forEach(collect); };
+    selection.forEach(id => collect(findFolder(state.library.folders, id)));
+    query.folderId = selection[0];
+    query.folderIds = [...ids];
+    return query;
+  }
+  // A search, or 显示子文件夹内容, covers the folder's whole subtree.
+  if (query.folderId && (String(query.search || '').trim() || cardDisplay.subfolderContent)) {
     const folderIds = [];
     const visit = nodes => (nodes || []).forEach(folder => {
       if (folder.id === query.folderId) {
@@ -2778,6 +4458,16 @@ function paneItemQuery(pane, currentView = pane.currentView) {
     if (folderIds.length) query.folderIds = folderIds;
   }
   return query;
+}
+
+// Folders a pane's items come from: the open folder, or its whole subtree while
+// a search is active (paneItemQuery widens to descendants). Moving or removing
+// must leave all of them, or subfolder results are only copied (D-07/B2-06).
+function paneFolderScope(pane, folderId = pane?.currentView.kind === 'folder' ? pane.currentView.id : null) {
+  if (!folderId) return [];
+  if (pane?.currentView.kind !== 'folder' || pane.currentView.id !== folderId) return [folderId];
+  const { folderIds } = paneItemQuery(pane);
+  return folderIds?.length ? [...folderIds] : [folderId];
 }
 
 async function refresh({ reset = true, preserveScroll = true, paneId = state.activePaneId, quiet = false, minimumCount = 0 } = {}) {
@@ -2832,6 +4522,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       state.nextOffset = page.nextOffset ?? (offset + (page.data || []).length);
       state.hasMore = Boolean(page.hasMore ?? (state.nextOffset < state.total));
       if (reset) {
+        pane.dataRevision = (pane.dataRevision || 0) + 1;
         state.items = page.data || [];
         state.itemMap = new Map((state.items || []).filter(item => item?.id).map(item => [item.id, item]));
       } else {
@@ -2840,7 +4531,9 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         state.items = [...state.items, ...additions];
         for (const item of additions) if (item?.id) state.itemMap?.set(item.id, item);
       }
-      if (currentView.kind === 'folder') reconcileLocalFolderCount(currentView.id, state.total);
+      // Only an unfiltered folder total is the folder's own count; a search
+      // also counts subfolder matches and a filter counts a subset (B2-03).
+      if (currentView.kind === 'folder' && !queryFiltersActive(query) && !(query.folderIds?.length > 1)) reconcileLocalFolderCount(currentView.id, state.total);
       renderResultCount();
       $('#viewTitle').textContent = state.viewTitle;
       renderLocation();
@@ -2849,7 +4542,19 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
       // Append pages must keep the scroll position (`preserveScroll && reset`
       // used to reset it, teleporting scroll-driven paging back to the top)
       // — with it preserved, renderGrid can take the append fast path.
-      if (reset) state.selected = new Set([...state.selected].filter(id => state.itemMap.has(id)));
+      if (reset) {
+        // A multi-selection past the reloaded range (⌘A over a big view,
+        // P6-02) keeps its unloaded ids until the view's id list says
+        // which are still in it; a single selection settles below.
+        const kept = new Set();
+        let beyond = 0;
+        for (const id of state.selected) {
+          if (state.itemMap.has(id)) kept.add(id);
+          else if (state.hasMore && state.selected.size > 1) { kept.add(id); beyond += 1; }
+        }
+        state.selected = kept;
+        if (beyond) reconcileSelectionWithView(pane);
+      }
       if (!quiet) renderGrid({ preserveScroll });
       if (reset && !selectedId && paneIsActive) queueChangedInspectorRender(false);
       if (reset && selectedId) {
@@ -2918,7 +4623,7 @@ async function refresh({ reset = true, preserveScroll = true, paneId = state.act
         if (paneIsActive) updateScrollUI();
         const scroller = $('#gridScroller');
         const needsViewportFill = state.hasMore && scroller.scrollHeight <= scroller.clientHeight + 80;
-        const sortBackfillActive = state.sort !== 'default' && state.hasMore;
+        const sortBackfillActive = viewHasClientOrder() && state.hasMore;
         const continueBackfill = sortBackfillActive && (state.sort === 'manual' || state.items.length < SORT_FETCH_CAP);
         const restoreTarget = pane.restoreScroll;
         const continueRestore = Boolean(restoreTarget) && state.hasMore && state.items.length < restoreTarget.count;
@@ -2972,13 +4677,23 @@ function selectItem(id, additive = false, range = false) {
   if (staysOnSameItem) return true;
   if (!staysOnSameItem && !confirmDiscardChanges()) return false;
   state.selectedFolderCard = null;
-  if (range && state.selected.size) {
-    state.selected = selectRange(sortedItems(), state.selected, id, additive);
+  // Eagle's rules (P6-03): ⇧-click on a selected item drops it; on another
+  // item it adds the run from the anchor and keeps the rest; ⌘-click toggles,
+  // and a plain or adding ⌘-click becomes the new anchor.
+  if (range && state.selected.has(id)) {
+    state.selected.delete(id);
+  } else if (range && state.selected.size) {
+    state.selected = extendSelection(sortedItems(), state.selected, state.selectionAnchor, id);
   } else if (additive) {
-    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+    if (state.selected.has(id)) state.selected.delete(id);
+    else {
+      state.selected.add(id);
+      state.selectionAnchor = id;
+    }
   } else {
     state.selected.clear();
     state.selected.add(id);
+    state.selectionAnchor = id;
   }
   if (state.sort === 'manual') {
     const index=sortedItems().findIndex(item=>item.id===id);
@@ -3007,17 +4722,281 @@ function renderItemPalette(item) {
   box.classList.toggle('hidden', !box.innerHTML);
 }
 
+// A selection reaching past the loaded items is summarised by the main
+// process (P6-02); null while that is on its way, and the inspector redraws
+// when it lands. Keyed by the ids and the pane's data revision, so a batch
+// edit or a sync refresh asks again.
+const remoteSelectionSummaries = new Map();
+function selectionSignature(ids) {
+  let hash = 2166136261;
+  for (const id of ids) for (let index = 0; index < id.length; index += 1) hash = Math.imul(hash ^ id.charCodeAt(index), 16777619);
+  return `${ids.length}:${hash >>> 0}`;
+}
+
+function currentSelectionSummary(pane = activePane()) {
+  if (!pane) return computeSelectionSummary([]);
+  if (!unloadedSelection(pane).length) return computeSelectionSummary(pane.items.filter(item => pane.selected.has(item.id)));
+  const ids = [...pane.selected];
+  const key = `${state.library?.path}|${pane.id}|${pane.dataRevision || 0}|${selectionSignature(ids)}`;
+  const cached = remoteSelectionSummaries.get(key);
+  if (cached) return cached === 'pending' ? null : cached;
+  remoteSelectionSummaries.set(key, 'pending');
+  if (remoteSelectionSummaries.size > 8) remoteSelectionSummaries.delete(remoteSelectionSummaries.keys().next().value);
+  Promise.resolve(window.eagleMV.selectionSummary?.({ ids, libraryPath: state.library?.path, trash: pane.currentView.kind === 'trash' }))
+    .then(summary => remoteSelectionSummaries.set(key, summary || computeSelectionSummary([])),
+      () => remoteSelectionSummaries.delete(key))
+    .finally(() => { if (state.activePaneId === pane.id && pane.selected.size > 1) renderInspector(); });
+  return null;
+}
+
 function renderSharedTags() {
-  const section = $('#sharedTagsSection');
   const chips = $('#sharedTagChips');
-  if (!section || !chips) return;
-  const selectedItems = state.items.filter(item => state.selected.has(item.id));
-  const tags = computeSharedTags(selectedItems);
-  section.classList.toggle('hidden', !tags.length);
+  if (!chips) return;
+  const tags = currentSelectionSummary()?.tags || [];
   chips.innerHTML = tags.map(tag => tagChipHTML(tag, {
     removeAttr: 'data-remove-shared-tag',
     removeLabel: `从所选素材移除 ${tag}`
   })).join('');
+}
+
+// Eagle's 评分 row: five stars, and clicking the lit one clears the rating.
+function inspectorStarsHTML(rating) {
+  const value = Math.max(0, Math.min(5, Number(rating) || 0));
+  return [1, 2, 3, 4, 5].map(star =>
+    `<button type="button" class="inspector-star${star <= value ? ' filled' : ''}" data-inspector-star="${star}" aria-label="${star} 星" aria-pressed="${star === value}" title="${star === value ? '再次点击清除评分' : `${star} 星`}">★</button>`
+  ).join('');
+}
+
+function nextStarRating(current, clicked) {
+  return Number(clicked) === Number(current || 0) ? 0 : Number(clicked);
+}
+
+// Eagle's 文件夹 block: a chip per folder (folder colour, full path on hover)
+// that opens the folder, × to take the item out of just that folder, and
+// 添加文件夹 for the folder picker.
+function inspectorFolderChipsHTML(folderIds) {
+  const folders = state.library?.folders;
+  const chips = (folderIds || []).map(id => {
+    const path = findFolderPath(folders, id);
+    const folder = path.at(-1);
+    if (!folder) return '';
+    const color = folderColorValue(folder);
+    const fullPath = path.map(entry => entry.name).join(' / ');
+    return `<span class="tag-chip folder-chip"${color ? ` style="--tag-color:${escapeHTML(color)}"` : ''} title="${escapeHTML(fullPath)}"><button type="button" class="folder-chip-open" data-open-folder="${escapeHTML(folder.id)}" aria-label="打开文件夹 ${escapeHTML(fullPath)}">${escapeHTML(folder.name)}</button><button type="button" data-remove-folder="${escapeHTML(folder.id)}" aria-label="从文件夹“${escapeHTML(folder.name)}”移除">×</button></span>`;
+  }).join('');
+  const shortcut = keyboardPlatform.shortcutText('⌘⇧J');
+  return chips + (chips
+    ? `<button type="button" class="folder-chip-add" data-add-folder title="添加文件夹（${shortcut}）" aria-label="添加文件夹">+</button>`
+    : `<button type="button" class="folder-chip-add full" data-add-folder title="添加文件夹（${shortcut}）">+ 添加文件夹</button>`);
+}
+
+function formatMediaDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (total <= 0) return '';
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+// Eagle asks before an edit that touches 100 or more items at once.
+const BULK_CONFIRM_THRESHOLD = 100;
+function confirmBulkEdit(count) {
+  if (count < BULK_CONFIRM_THRESHOLD) return true;
+  return confirm(`批量操作确认\n\n这个操作会影响 ${count.toLocaleString()} 个文件，确定要继续吗？`);
+}
+
+function selectedItemsInOrder() {
+  return state.items.filter(item => state.selected.has(item.id));
+}
+
+// What the multi-select panel shows. Fields being typed into keep their text:
+// a refresh mid-edit must not wipe what the user is about to apply.
+// Eagle's inspector blocks — 标签, 文件夹, 标注, 基本信息 — fold under their
+// headings and are dragged into any order by them; Eagle keeps both for
+// every window (eagle.inspector.itemsOrder and show*), and so does this,
+// for the single and the multi-select inspector alike.
+const INSPECTOR_SECTIONS_KEY = 'eaglemv.inspector.sections.v1';
+const INSPECTOR_SECTION_KEYS = Object.freeze(['tags', 'folders', 'annotations', 'information']);
+function readInspectorSections() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(INSPECTOR_SECTIONS_KEY) || '{}') || {}; } catch {}
+  const order = (Array.isArray(stored.order) ? stored.order : []).filter((key, index, keys) => INSPECTOR_SECTION_KEYS.includes(key) && keys.indexOf(key) === index);
+  for (const key of INSPECTOR_SECTION_KEYS) if (!order.includes(key)) order.splice(Math.min(INSPECTOR_SECTION_KEYS.indexOf(key), order.length), 0, key);
+  const collapsed = Object.fromEntries(INSPECTOR_SECTION_KEYS.map(key => [key, stored.collapsed?.[key] === true]));
+  return { order, collapsed };
+}
+function applyInspectorSections(sections = readInspectorSections()) {
+  for (const container of document.querySelectorAll('[data-inspector-sections]')) {
+    for (const key of sections.order) {
+      const section = container.querySelector(`:scope > [data-inspector-section="${key}"]`);
+      if (section) container.append(section);
+    }
+  }
+  for (const section of document.querySelectorAll('[data-inspector-section]')) {
+    const folded = sections.collapsed[section.dataset.inspectorSection];
+    section.classList.toggle('collapsed', folded);
+    section.querySelector('[data-section-toggle]')?.setAttribute('aria-expanded', String(!folded));
+  }
+}
+function saveInspectorSections(patch) {
+  const sections = { ...readInspectorSections(), ...patch };
+  try { localStorage.setItem(INSPECTOR_SECTIONS_KEY, JSON.stringify(sections)); } catch {}
+  applyInspectorSections(sections);
+}
+
+function bindInspectorSections() {
+  applyInspectorSections();
+  window.addEventListener('storage', event => {
+    if (event.key === INSPECTOR_SECTIONS_KEY) applyInspectorSections();
+  });
+  // A heading moved 10px or more drags its block (Eagle's sortable uses the
+  // same distance); a plain click folds it.
+  let drag = null;
+  let draggedJustNow = false;
+  const clearMarks = () => {
+    for (const section of document.querySelectorAll('[data-inspector-section].drop-before, [data-inspector-section].drop-after, [data-inspector-section].section-dragging')) {
+      section.classList.remove('drop-before', 'drop-after', 'section-dragging');
+    }
+  };
+  document.addEventListener('pointerdown', event => {
+    const toggle = event.target.closest?.('[data-section-toggle]');
+    // A finger on a heading scrolls the drawer instead (phones, tablets).
+    if (!toggle || event.button !== 0 || event.pointerType === 'touch') return;
+    const section = toggle.closest('[data-inspector-section]');
+    drag = { section, container: section.parentElement, x: event.clientX, y: event.clientY, active: false, target: null };
+  });
+  document.addEventListener('pointermove', event => {
+    if (!drag) return;
+    if (!drag.active) {
+      if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 10) return;
+      drag.active = true;
+      drag.section.classList.add('section-dragging');
+    }
+    event.preventDefault();
+    const others = [...drag.container.querySelectorAll(':scope > [data-inspector-section]')].filter(section => section !== drag.section && section.offsetParent);
+    const over = others.find(section => {
+      const box = section.getBoundingClientRect();
+      return event.clientY >= box.top && event.clientY < box.bottom;
+    }) || (others.length && event.clientY < others[0].getBoundingClientRect().top ? others[0] : others.at(-1));
+    for (const section of others) section.classList.remove('drop-before', 'drop-after');
+    if (!over) return;
+    const box = over.getBoundingClientRect();
+    const after = event.clientY > box.top + box.height / 2;
+    over.classList.add(after ? 'drop-after' : 'drop-before');
+    drag.target = { key: over.dataset.inspectorSection, after };
+  });
+  const finish = () => {
+    const finished = drag;
+    drag = null;
+    clearMarks();
+    if (!finished?.active) return;
+    draggedJustNow = true;
+    setTimeout(() => { draggedJustNow = false; }, 0);
+    if (!finished.target) return;
+    const moving = finished.section.dataset.inspectorSection;
+    const order = readInspectorSections().order.filter(key => key !== moving);
+    order.splice(order.indexOf(finished.target.key) + (finished.target.after ? 1 : 0), 0, moving);
+    saveInspectorSections({ order });
+  };
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', () => { drag = null; clearMarks(); });
+  document.addEventListener('click', event => {
+    const toggle = event.target.closest?.('[data-section-toggle]');
+    if (!toggle) return;
+    if (draggedJustNow) return;
+    const key = toggle.dataset.sectionToggle;
+    const sections = readInspectorSections();
+    saveInspectorSections({ collapsed: { ...sections.collapsed, [key]: !sections.collapsed[key] } });
+  });
+}
+
+// 导出 at the foot of 基本信息 opens Eagle's export menu, with the one kind
+// MultiView can do (素材包, 指定格式或尺寸 and CSV are not available).
+function openInspectorExportMenu(event) {
+  event.stopPropagation();
+  const ids = [...state.selected];
+  if (!ids.length || !hasCapability('export')) return;
+  const box = event.currentTarget.getBoundingClientRect();
+  showContextMenuAt(box.left, box.bottom + 4, { kind: 'inspector-export', ids, paneId: state.activePaneId });
+}
+
+function renderMultiSelection(count) {
+  const items = selectedItemsInOrder();
+  $('#multiCount').textContent = count.toLocaleString();
+  $('#multiCountLine').classList.toggle('warning', count >= BULK_CONFIRM_THRESHOLD);
+  $('#multiPreview').innerHTML = items.slice(0, 5).map((item, index) =>
+    `<img src="${mediaURL('thumb', item.id)}" alt="" style="--stack-index:${index}" draggable="false">`
+  ).join('');
+  $('#multiPreview').dataset.count = String(Math.min(items.length, 5));
+  const summary = currentSelectionSummary();
+  const pending = !summary;
+  const annotation = summary?.annotation || { value: '', mixed: false };
+  const url = summary?.url || { value: '', mixed: false };
+  const annotationField = $('#batchAnnotation');
+  const urlField = $('#batchURL');
+  if (document.activeElement !== annotationField) {
+    annotationField.value = annotation.value;
+    resizeTextarea(annotationField);
+  }
+  if (document.activeElement !== urlField) {
+    urlField.value = url.value;
+    urlField.placeholder = url.mixed ? '多个链接' : 'http://';
+  }
+  renderSharedTags();
+  $('#batchFolderChips').innerHTML = inspectorFolderChipsHTML(summary?.folders || []);
+  const star = summary?.star || { value: 0, mixed: false };
+  $('#batchStars').innerHTML = inspectorStarsHTML(star.value);
+  $('#batchStars').dataset.rating = String(star.value);
+  const totalSize = summary?.size || 0;
+  $('#batchExportButton').hidden = !hasCapability('export');
+  $('#batchMeta').innerHTML = pending
+    ? '<span><em>文件大小</em>计算中…</span>'
+    : totalSize > 0 ? `<span><em>文件大小</em>${formatBytes(totalSize)}</span>` : '';
+}
+
+// Applies one inspector field to every selected item, through the same
+// field-level conflict check the single-item save uses.
+async function setSelectionFields(payload) {
+  const paneId = payload?.paneId || state.activePaneId;
+  const pane = paneById(paneId);
+  const ids = payload?.ids || [...(pane?.selected || [])];
+  const patch = payload?.patch || {};
+  if (!pane || !ids.length || !state.connected || !Object.keys(patch).length) return false;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在批量修改…', { key: `fields:${paneId}` });
+  if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
+  // A field committed on blur may land after a click already moved the
+  // selection; the new selection then stays as the user left it.
+  const editsSelection = sameSelection(pane, new Set(ids));
+  setSyncStatus('正在批量修改…');
+  try {
+    const outcome = await runItemBatch(ids, async id => {
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
+      const result = await window.eagleMV.mutate({ id, patch, base: item, libraryPath });
+      if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      return result;
+    }, 'Eagle 批量修改请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
+    const next = outcome.failed.length
+      ? outcome.failed
+      : idsStillSelectable(pane, ids);
+    if (editsSelection && settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    toast(outcome.failed.length
+      ? `已修改 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : (payload.successMessage || `已修改 ${outcome.succeeded.length} 个素材`), outcome.failed.length ? 4200 : 2400);
+    return true;
+  } catch (error) {
+    toast(`修改失败：${error.message}`, 4000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
 }
 
 function updateURLActions() {
@@ -3053,14 +5032,14 @@ function renderInspector() {
   renderSelectionBar();
   const count = state.selected.size;
   $('#noSelection').classList.toggle('hidden', count !== 0);
+  if (count) $('#categoryInspector').classList.add('hidden');
   $('#inspectorContent').classList.toggle('hidden', count !== 1);
   $('#multiSelection').classList.toggle('hidden', count < 2);
+  if (count !== 1) inspectorShown = null;
   if (count >= 2) {
-    $('#multiCount').textContent = count;
     const allDeleted = [...state.selected].every(id => itemById(id)?.isDeleted);
-    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '移入废纸篓…';
-    renderSharedTags();
-    $('#batchRating').value = '';
+    $('#batchTrashButton').textContent = allDeleted ? '恢复素材' : '丢到回收站…';
+    renderMultiSelection(count);
     state.selectedBase = null;
     state.inspectorDirty = false;
     state.inspectorEditing = false;
@@ -3076,15 +5055,7 @@ function renderInspector() {
     state.comments = [];
     $('#itemComments').innerHTML = '<span class="muted">选择单个素材查看评论</span>';
     $('#generationMetadataSection').classList.add('hidden');
-    const folder = state.selectedFolderCard ? findFolder(state.library?.folders, state.selectedFolderCard) : null;
-    if (folder) {
-      const direct = Number(folder.imageCount) || 0;
-      const descendants = Number(folder.descendantImageCount) || direct;
-      $('#noSelection').innerHTML = `<div class="inspector-folder-icon">${eagleIcon('ic-filter-item-folder.svg', 'inspector-folder-svg')}</div>
-        <h2 title="${escapeHTML(folder.name)}">${escapeHTML(folder.name)}</h2>
-        <p>${direct.toLocaleString()} 个直属文件 · ${(folder.children || []).length.toLocaleString()} 个子文件夹</p>
-        ${descendants !== direct ? `<small>共含 ${descendants.toLocaleString()} 个后代文件<br>双击或按 Return 进入</small>` : '<small>双击或按 Return 进入</small>'}`;
-    } else {
+    if (!renderCategoryInspector()) {
       $('#noSelection').innerHTML = '<div class="inspector-placeholder"><img src="brand-icon.png" alt=""></div><p>选择一个素材查看详情</p><small>多个窗口可以停留在不同文件夹和搜索结果中</small>';
     }
     state.selectedBase = null;
@@ -3095,7 +5066,7 @@ function renderInspector() {
   }
   const id = [...state.selected][0];
   const item = itemById(id);
-  if (!item) return;
+  if (!item) { inspectorShown = null; return; }
   if (state.selectedBase?.id !== id) {
     clearInspectorAutoSave();
     state.inspectorEditing = false;
@@ -3108,7 +5079,6 @@ function renderInspector() {
   $('#itemName').value = item.name || '';
   setTagValues('item', item.tags || [], false);
   $('#itemRating').value = String(item.star || 0);
-  syncRatingPlaceholder();
   $('#itemAnnotation').value = item.annotation || '';
   $('#itemURL').value = item.url || '';
   const draftKey = inspectorDraftKey(state.activePaneId, id);
@@ -3131,15 +5101,41 @@ function renderInspector() {
     if (draft.error === 'conflict') showInspectorDraftConflict(draft);
     else if (draft.error) $('#staleBanner').classList.remove('hidden');
   }
+  syncRatingPlaceholder();
   updateURLActions();
   resizeAnnotation();
-  $('#previewBox').innerHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
+  // A refresh that re-renders the item already shown (a rating, a tag,
+  // another window's change) updates it in place: rebuilding the thumbnail,
+  // re-reading the file's generation metadata (which hides the section and
+  // collapses an open workflow) and blanking the comments would flash the
+  // whole inspector for an edit that touched none of them (B2-05).
+  const shown = inspectorShown;
+  const sameItem = shown?.paneId === state.activePaneId && shown.libraryPath === state.library?.path && shown.id === id;
+  const fileKey = JSON.stringify([item.modificationTime, item.size, item.ext]);
+  inspectorShown = { paneId: state.activePaneId, libraryPath: state.library?.path, id, fileKey };
+  const previewHTML = `<img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}">${item.ext ? `<span class="preview-format-badge">${escapeHTML(itemFormat(item))}</span>` : ''}`;
+  if (!sameItem || shown.previewHTML !== previewHTML) $('#previewBox').innerHTML = previewHTML;
+  inspectorShown.previewHTML = previewHTML;
   renderItemPalette(item);
-  $('#itemMeta').innerHTML = `<span><em>格式</em>${escapeHTML(String(item.ext || '').toUpperCase())}</span><span><em>大小</em>${formatBytes(item.size)}</span><span><em>尺寸</em>${item.width || 0} × ${item.height || 0}</span><span><em>修改日期</em>${new Date(item.modificationTime || 0).toLocaleDateString('zh-CN')}</span>`;
-  loadGenerationMetadata(item);
+  // Eagle's 基本信息 order; 尺寸 only for files that have pixels, 时长 only
+  // for timed media.
+  const duration = formatMediaDuration(item.duration);
+  const dates = itemDates(item);
+  $('#itemMeta').innerHTML = [
+    Number(item.width) > 0 ? ['尺寸', `${item.width} × ${item.height || 0}`] : null,
+    duration ? ['时长', duration] : null,
+    ['文件大小', formatBytes(item.size)],
+    ['格式', String(item.ext || '').toUpperCase()],
+    ['添加日期', formatDateTime(dates.added)],
+    ['创建日期', formatDateTime(dates.created)],
+    ['修改日期', formatDateTime(dates.modified)]
+  ].filter(Boolean).map(([label, value]) => `<span title="${escapeHTML(value)}"><em>${label}</em>${escapeHTML(value)}</span>`).join('');
+  $('#itemFolderChips').innerHTML = inspectorFolderChipsHTML(item.folders);
+  if (!sameItem || shown.fileKey !== fileKey) loadGenerationMetadata(item);
   $('#customThumbnailButton').disabled = !state.connected;
-  loadComments(item);
-  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '移入废纸篓…';
+  $('#itemExportButton').hidden = !hasCapability('export');
+  loadComments(item, { quiet: sameItem });
+  $('#trashButton').textContent = item.isDeleted ? '恢复素材' : '丢到回收站…';
   const canPin = state.currentView.kind === 'folder';
   $('#pinButton').disabled = !canPin || !state.connected;
   $('#pinButton').textContent = canPin && itemIsPinned(item) ? '取消置顶' : '置顶';
@@ -3186,7 +5182,8 @@ async function loadComments(item, context = {}) {
   if (!item?.id || !commentContextMatches(target)) return false;
   state.commentsToken = (Number.isFinite(state.commentsToken) ? state.commentsToken : 0) + 1;
   const token = state.commentsToken;
-  $('#itemComments').innerHTML = '<span class="muted">正在读取…</span>';
+  // A quiet reload keeps the comments on screen until the new ones arrive.
+  if (!context.quiet) $('#itemComments').innerHTML = '<span class="muted">正在读取…</span>';
   try {
     const comments = await window.eagleMV.getComments({ id: item.id, libraryPath });
     if (token !== state.commentsToken || !commentContextMatches(target)) return false;
@@ -3206,20 +5203,22 @@ async function addCommentToSelected() {
   const id = [...(pane?.selected || [])][0];
   if (!id || !state.connected) return;
   const libraryPath = state.library?.path;
-  const annotation = prompt('评论内容', '');
+  const annotation = await askText({ title: '添加评论', fieldLabel: '评论内容', submitLabel: '添加' });
   if (annotation === null || !annotation.trim()) return;
   const item = pane.items.find(candidate => candidate.id === id);
   const payload = { id, libraryPath, annotation: annotation.trim() };
   const ext = String(item?.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) {
-    const duration = prompt('可选视频时间点（秒），留空为普通评论', '');
+    const duration = await askText({ title: '评论时间点', fieldLabel: '视频时间点（秒），留空为普通评论', placeholder: '例如 12.5', allowEmpty: true, maxLength: 32 });
+    if (duration === null) return;
     if (duration?.trim()) {
       const value = Number(duration);
       if (!Number.isFinite(value) || value < 0) { toast('时间点必须是大于等于 0 的数字', 3000); return; }
       payload.duration = value;
     }
   } else if (isImageItem(item)) {
-    const rect = prompt('可选图片框选坐标：x,y,width,height；留空为普通评论', '');
+    const rect = await askText({ title: '评论框选区域', fieldLabel: '框选坐标 x,y,width,height，留空为普通评论', placeholder: '例如 10,20,200,120', allowEmpty: true, maxLength: 80 });
+    if (rect === null) return;
     if (rect?.trim()) {
       const values = rect.split(/[,，\s]+/).map(Number);
       if (values.length !== 4 || values.some(value => !Number.isFinite(value)) || values[2] <= 0 || values[3] <= 0) {
@@ -3250,8 +5249,8 @@ async function editComment(commentId) {
   if (!id || !comment) return;
   const libraryPath = state.library?.path;
   const item = pane.items.find(candidate => candidate.id === id);
-  const annotation = prompt('编辑评论', comment.annotation || '');
-  if (annotation === null || annotation.trim() === comment.annotation) return;
+  const annotation = await askText({ title: '编辑评论', fieldLabel: '评论内容', initialValue: comment.annotation || '', submitLabel: '保存' });
+  if (annotation === null || !annotation.trim() || annotation.trim() === String(comment.annotation || '').trim()) return;
   const operationToken = beginForegroundOperation('正在更新评论…', { key: `comment:${libraryPath}:${id}` });
   if (!operationToken) return;
   try {
@@ -3276,9 +5275,16 @@ async function removeComment(commentId) {
   const operationToken = beginForegroundOperation('正在删除评论…', { key: `comment:${libraryPath}:${id}` });
   if (!operationToken) return;
   try {
-    await window.eagleMV.removeComment({ id, libraryPath, commentId });
+    const result = await window.eagleMV.removeComment({ id, libraryPath, commentId });
     if (commentContextMatches({ paneId, id, libraryPath })) await loadComments(item, { paneId, libraryPath });
-    toast('评论已删除');
+    // Eagle: "标注已删除。" with 撤销, which puts the comment back (P3-05).
+    const undo = result?.undoToken && window.eagleMV.restoreComment ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销…', { key: `comment:${libraryPath}:${id}` }, () =>
+        window.eagleMV.restoreComment({ libraryPath, undoToken: result.undoToken }));
+      if (commentContextMatches({ paneId, id, libraryPath })) await loadComments(item, { paneId, libraryPath });
+    } : null;
+    toast('标注已删除。', 4000, undo ? { undo } : {});
   } catch (error) {
     toast(`删除评论失败：${error.message}`, 4000);
   } finally {
@@ -3329,7 +5335,9 @@ function metadataViewerSection() { return $('#generationMetadataSection'); }
 
 function metadataViewerIsFocused(event = null) {
   const section = metadataViewerSection();
-  if (!section || section.classList.contains('hidden')) return false;
+  // A multi-select hides the single-item inspector around the viewer without
+  // touching the viewer's own class, so check it is really on screen (B2-15).
+  if (!section || section.classList.contains('hidden') || !section.offsetParent) return false;
   return metadataViewerFocused || section.contains(document.activeElement) || Boolean(event?.target && section.contains(event.target));
 }
 
@@ -3428,15 +5436,24 @@ function bindMetadataViewerControls() {
   }
 }
 
-function resizeAnnotation() {
-  const annotation = $('#itemAnnotation');
-  if (!annotation) return;
-  annotation.style.height = 'auto';
-  annotation.style.height = `${Math.max(annotation.scrollHeight, 38)}px`;
+function resizeTextarea(field) {
+  if (!field) return;
+  field.style.height = 'auto';
+  field.style.height = `${Math.max(field.scrollHeight, 38)}px`;
 }
 
+function resizeAnnotation() {
+  resizeTextarea($('#itemAnnotation'));
+}
+
+// The stars mirror the hidden #itemRating select, which the save, the draft
+// and the conflict recovery all read.
 function syncRatingPlaceholder() {
-  $('#itemRating')?.classList.toggle('has-value', Number($('#itemRating').value) > 0);
+  const stars = $('#itemStars');
+  if (!stars) return;
+  const rating = Number($('#itemRating').value) || 0;
+  stars.innerHTML = inspectorStarsHTML(rating);
+  stars.dataset.rating = String(rating);
 }
 
 function renderGenerationMetadata(metadata) {
@@ -3469,6 +5486,7 @@ function renderGenerationMetadata(metadata) {
 
 let generationMetadataAbort = null;
 const stealthMetadataCache = new Map();
+const STEALTH_METADATA_SETTLE_MS = 150;
 async function loadGenerationMetadata(item) {
   generationMetadataAbort?.abort();
   const controller = new AbortController();
@@ -3487,12 +5505,16 @@ async function loadGenerationMetadata(item) {
       const key = JSON.stringify([state.library?.path, url, item.modificationTime, item.size]);
       if (stealthMetadataCache.has(key)) metadata = stealthMetadataCache.get(key);
       else {
-        const imageURL = url + `?metadata=${encodeURIComponent(JSON.stringify([item.modificationTime, item.size]))}`;
-        const text = await window.EagleMVStealthMetadata.readImage(imageURL, { signal: controller.signal });
+        // Arrow-key browsing settles before an original is decoded.
+        await new Promise(resolve => setTimeout(resolve, STEALTH_METADATA_SETTLE_MS));
         if (controller.signal.aborted || token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
-        metadata = window.EagleMVNovelAIMetadata.parseNovelAIExif(text);
-        if (metadata) {
-          if (stealthMetadataCache.size >= 16) stealthMetadataCache.delete(stealthMetadataCache.keys().next().value);
+        const imageURL = url + `?metadata=${encodeURIComponent(JSON.stringify([item.modificationTime, item.size]))}`;
+        const result = await window.EagleMVStealthMetadata.inspectImage(imageURL, { signal: controller.signal });
+        if (controller.signal.aborted || token !== state.metadataToken || state.selected.size !== 1 || !state.selected.has(item.id)) return;
+        metadata = result?.text ? window.EagleMVNovelAIMetadata.parseStealthText(result.text) : null;
+        // Images without a payload are remembered too, so revisiting them is free.
+        if (result) {
+          if (stealthMetadataCache.size >= 500) stealthMetadataCache.delete(stealthMetadataCache.keys().next().value);
           stealthMetadataCache.set(key, metadata);
         }
       }
@@ -3534,16 +5556,24 @@ function queueInspectorAutoSave({ immediate = false } = {}) {
   }, INSPECTOR_AUTOSAVE_DELAY);
 }
 
-function collectPatch() {
-  const base = state.selectedBase;
-  if (!base) return {};
-  const values = {
-    name: $('#itemName').value.trim(),
+// Eagle keeps a name's or link's edge spaces until that field itself is
+// edited (B2-12): an untouched field reports its stored value, so editing only
+// the note never trims and renames the item.
+function inspectorFormValues(base) {
+  const edited = (raw, stored) => (raw === (stored ?? '') ? stored ?? '' : raw.trim());
+  return {
+    name: edited($('#itemName').value, base?.name),
     tags: [...state.draftTags],
     star: Number($('#itemRating').value),
     annotation: $('#itemAnnotation').value,
-    url: $('#itemURL').value.trim()
+    url: edited($('#itemURL').value, base?.url)
   };
+}
+
+function collectPatch() {
+  const base = state.selectedBase;
+  if (!base) return {};
+  const values = inspectorFormValues(base);
   const patch = {};
   for (const [key, value] of Object.entries(values)) {
     const equal = Array.isArray(value)
@@ -3583,29 +5613,50 @@ function persistInspectorDraft(draft, remove = false) {
   }
 }
 function offerInspectorDraftRecovery(id) {
+  const current = state.selectedBase;
   let source;
+  let sourceStorageKey;
   try {
+    const obsolete = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith('eaglemv.inspectorDraft.v1.')) continue;
       const candidate = JSON.parse(localStorage.getItem(key) || 'null');
-      if (candidate?.id === id && candidate.libraryPath === state.library?.path && candidate.values && candidate.base
-        && candidate.key !== inspectorDraftKey(state.activePaneId, id)) { source = candidate; break; }
+      if (!(candidate?.id === id && candidate.libraryPath === state.library?.path && candidate.values && candidate.base
+        && candidate.key !== inspectorDraftKey(state.activePaneId, id))) continue;
+      // A copy that matches Eagle's current values has nothing left to
+      // recover; offering it again would only stage a false conflict.
+      if (current?.id === id && !Object.keys(inspectorDraftPatch({ values: candidate.values, base: current })).length) {
+        if (!inspectorDrafts.has(candidate.key)) obsolete.push(key);
+        continue;
+      }
+      if (!source) { source = candidate; sourceStorageKey = key; }
     }
+    for (const key of obsolete) localStorage.removeItem(key);
   } catch {}
   if (!source) return;
   const paneId = state.activePaneId;
   const banner = $('#staleBanner');
   delete banner.dataset.conflictDraftKey;
   banner.classList.remove('hidden');
-  banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button>';
-  banner.querySelector('button').addEventListener('click', () => {
-    if (state.activePaneId !== paneId || state.library?.path !== source.libraryPath || !state.selected.has(id)) return;
+  banner.innerHTML = '<span>其他编辑会话有本地素材信息草稿。</span><button type="button" class="small-action" data-draft-action="recover">恢复草稿副本</button><button type="button" class="small-action" data-draft-action="discard">丢弃</button>';
+  const stillHere = () => state.activePaneId === paneId && state.library?.path === source.libraryPath && state.selected.has(id);
+  banner.querySelector('[data-draft-action="recover"]').addEventListener('click', () => {
+    if (!stillHere()) return;
     if (state.inspectorDirty && !confirm('恢复草稿将替换当前未保存的素材信息，是否继续？')) return;
     const draft = { ...structuredClone(source), key: inspectorDraftKey(paneId, id), paneId, saving: null, revision: 1 };
     inspectorDrafts.set(draft.key, draft);
-    persistInspectorDraft(draft);
+    // The copy moves to this pane; leaving the source would offer it again
+    // after saving, with a stale base that turns into a false conflict.
+    if (persistInspectorDraft(draft)) {
+      try { localStorage.removeItem(sourceStorageKey); } catch {}
+    }
     renderInspector();
+  });
+  banner.querySelector('[data-draft-action="discard"]').addEventListener('click', () => {
+    if (!stillHere() || !confirm('丢弃这份素材信息草稿？丢弃后无法恢复。')) return;
+    try { localStorage.removeItem(sourceStorageKey); } catch {}
+    banner.classList.add('hidden');
   });
 }
 function captureInspectorDraft() {
@@ -3619,7 +5670,7 @@ function captureInspectorDraft() {
     draft = { key, id, paneId: pane.id, libraryPath: state.library?.path, base: structuredClone(pane.selectedBase), revision: 0 };
     inspectorDrafts.set(key, draft);
   }
-  const values = { name: $('#itemName').value.trim(), tags: [...state.draftTags], star: Number($('#itemRating').value), annotation: $('#itemAnnotation').value, url: $('#itemURL').value.trim() };
+  const values = inspectorFormValues(draft.base);
   draft.fieldVersions ||= {};
   for (const [field, value] of Object.entries(values)) {
     if (!inspectorValuesEqual(value, (draft.values || draft.base)[field])) {
@@ -3709,7 +5760,7 @@ async function saveInspectorDraft(draft, force = false) {
     while (true) {
       const sentFieldVersions = { ...draft.fieldVersions };
       const result = await window.eagleMV.mutate({ id, patch, base, force: overwrite, libraryPath });
-      if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资料库，旧资料库的保存结果已忽略');
+      if (state.library?.path !== libraryPath) throw new Error('Eagle 已切换资源库，旧资源库的保存结果已忽略');
       if (result.conflict) {
         draft.error = 'conflict';
         persistInspectorDraft(draft);
@@ -3817,7 +5868,7 @@ async function setPinned(ids, pinned, paneId = state.activePaneId) {
   const operationToken = beginForegroundOperation(pinned ? '正在置顶素材…' : '正在取消置顶…', { key: `pins:${paneId}` });
   if (!operationToken) return;
   try {
-    state.localPins = await window.eagleMV.setPins({
+    const pins = await window.eagleMV.setPins({
       libraryPath,
       folderId,
       ids,
@@ -3825,7 +5876,9 @@ async function setPinned(ids, pinned, paneId = state.activePaneId) {
       syncToEagle: true,
       eaglePins: Object.fromEntries(ids.map(id => [id, pane.itemMap.get(id)?.pinned?.[folderId] ?? null]))
     });
+    // The reply is the old library's pin table once the library has switched.
     if (state.library?.path !== libraryPath) return;
+    state.localPins = pins;
     if (paneById(paneId)) schedulePaneGridRender(paneId);
     if (state.activePaneId === paneId) renderInspector();
     toast(pinned ? `已置顶 ${ids.length} 个素材，并同步到 Eagle` : `已取消置顶，并同步到 Eagle`);
@@ -3850,6 +5903,28 @@ function closeDuplicateDialog(choice = null) {
   resolve?.(choice);
 }
 
+// Menu commands arrive over IPC, past the keydown guard, so each one checks
+// for itself that nothing modal covers the workspace it would act on (F-05).
+// An open context menu just gives way, as a native one would.
+function whenWorkspaceFree(handler) {
+  return (...args) => {
+    if (!$('#contextMenu').classList.contains('hidden')) hideContextMenu();
+    if (blockingSurfaceOpen() || document.querySelector('dialog[open]')) {
+      toast('请先完成或关闭当前对话框', 2200);
+      return undefined;
+    }
+    return handler(...args);
+  };
+}
+
+// Outside-click checks read the event path, fixed when the click was
+// dispatched: a colour swatch or tag chip re-renders itself out of the DOM
+// in its own handler, and target.closest() then found no panel and closed
+// the filter popover under the user (B3-03).
+function clickWithin(event, selector) {
+  return event.composedPath().some(node => node instanceof Element && node.matches(selector));
+}
+
 function blockingSurfaceOpen() {
   return Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]')) ||
     ['#folderDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#webAccessDialog']
@@ -3858,7 +5933,7 @@ function blockingSurfaceOpen() {
 
 function chooseDuplicateAction(duplicates, total) {
   const duplicateCount = duplicates.length;
-  $('#duplicateDialogMessage').textContent = `${total} 个待导入文件中有 ${duplicateCount} 个与资料库已有素材内容相同。请选择使用现有素材，或仍然保留两份。`;
+  $('#duplicateDialogMessage').textContent = `${total} 个待导入文件中有 ${duplicateCount} 个与资源库已有素材内容相同。请选择使用现有素材，或仍然保留两份。`;
   $('#duplicateDialog').classList.remove('hidden');
   $('#duplicateUseExistingButton').focus();
   return new Promise(resolve => { state.duplicateDialogResolve = resolve; });
@@ -3868,23 +5943,29 @@ async function canRemoveFromCurrentFolder(ids, paneId = state.activePaneId) {
   const pane = paneById(paneId);
   const currentFolder = pane?.currentView.kind === 'folder' ? pane.currentView.id : null;
   if (!currentFolder) return false;
-  const results = await settleWithConcurrency([...new Set(ids)], id => withTimeout(
-    Promise.resolve(pane.items.find(item => item.id === id) || window.eagleMV.getItem(id)),
+  const scope = paneFolderScope(pane, currentFolder);
+  // The loaded items answer this for a folder view without reading the
+  // tens of thousands a ⌘A past the loaded range may hold (P6-02).
+  if (ids.some(id => folderScopeRemovable(pane.itemMap?.get(id)?.folders, scope))) return true;
+  const results = await settleWithConcurrency([...new Set(ids)].filter(id => !pane.itemMap?.has(id)).slice(0, 200), id => withTimeout(
+    window.eagleMV.getItem(id),
     15000,
     'Eagle 素材信息读取超时'
   ));
   const items = results.filter(result => result.ok).map(result => result.value);
-  return items.some(item => {
-    const folders = Array.isArray(item?.folders) ? item.folders : [];
-    return folders.includes(currentFolder) && folders.some(folderId => folderId !== currentFolder);
-  });
+  return items.some(item => folderScopeRemovable(item?.folders, scope));
 }
 
 function chooseTrashAction(ids) {
+  // The same dialog also asks 删除文件夹 (chooseFolderRemoval).
+  $('#trashDialogTitle').textContent = '删除素材';
+  $('#trashDeleteButton').textContent = '删除素材';
+  $('#trashDialogCheck').classList.add('hidden');
   $('#trashDialogMessage').textContent = `已选择 ${ids.length} 个素材。请选择只从当前文件夹移除，还是删除素材并移入回收站。`;
   $('#trashRemoveButton').classList.remove('hidden');
   $('#trashDialog').classList.remove('hidden');
-  $('#trashDeleteButton').focus();
+  // Return must never delete by default; the destructive choice needs a click.
+  $('#trashCancelButton').focus();
   return new Promise(resolve => { state.trashDialogResolve = resolve; });
 }
 
@@ -3892,15 +5973,34 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
   if (!ids.length) return;
   const pane = paneById(paneId);
   if (!pane) return;
+  // Items already in the requested state need no write and must not enter the
+  // undo stack: ⌫ in the trash view would otherwise "delete" deleted items
+  // and a later ⌘Z would restore them.
+  const known = new Map(pane.items.map(item => [item.id, item]));
+  ids = ids.filter(id => !known.has(id) || Boolean(known.get(id).isDeleted) !== Boolean(deleted));
+  if (!ids.length) {
+    toast(deleted ? '所选素材已在回收站中' : '所选素材不在回收站中', 2400);
+    return;
+  }
   const libraryPath = state.library?.path;
-  const action = deleted ? '移入废纸篓' : '恢复';
+  const action = deleted ? '丢到回收站' : '恢复';
   const operationToken = beginForegroundOperation(`正在${action}…`, { key: `trash:${paneId}` });
   if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
+  const successor = deleted && pane.currentView.kind !== 'trash' ? selectionSuccessor(pane, ids) : null;
   trashMutationInFlight += 1;
+  // The lock covers the writes only; the refresh after them is a plain read.
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    trashMutationInFlight -= 1;
+    endForegroundOperation(operationToken);
+  };
   setSyncStatus(`正在${action}…`);
   try {
     const outcome = await runItemBatch(ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({
         id,
         patch: { isDeleted: deleted },
@@ -3911,27 +6011,22 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
       return result;
     }, `Eagle ${action}请求超时`);
     if (!outcome.succeeded.length) throw outcome.firstError || new Error(`没有素材完成${action}`);
-    if (deleted) {
-      trashUndoStack.push({ ids: outcome.succeeded, libraryPath, paneId, viewKey: descriptorKey(pane.currentView) });
-      if (trashUndoStack.length > 20) trashUndoStack.shift();
-    } else {
-      for (const entry of trashUndoStack) entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
-      for (let index = trashUndoStack.length - 1; index >= 0; index -= 1) {
-        if (!trashUndoStack[index].ids.length) trashUndoStack.splice(index, 1);
-      }
-    }
-    pane.selected = new Set(outcome.failed);
-    if (state.activePaneId === paneId) renderInspector();
+    const restore = deleted ? { ids: outcome.succeeded, libraryPath, paneId, viewKey: descriptorKey(pane.currentView) } : null;
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
+    release();
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
+    // Eagle: "N 个项目已删除。" with 撤销 for 4 s.
+    const done = deleted ? `${outcome.succeeded.length} 个项目已删除。` : `已恢复 ${outcome.succeeded.length} 个素材`;
     toast(outcome.failed.length
-      ? `已${action} ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
-      : `已${action} ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4400 : 2400);
+      ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : done, outcome.failed.length ? 4400 : deleted ? 4000 : 2400, restore ? { undo: () => restoreTrashed(restore) } : {});
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
   } finally {
-    trashMutationInFlight -= 1;
     setSyncStatus('所有窗口已同步');
-    endForegroundOperation(operationToken);
+    release();
   }
 }
 
@@ -3946,33 +6041,46 @@ async function setTrash(ids, deleted) {
   if (choice === 'delete') return applyTrash(ids, true, paneId);
 }
 
-async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null } = {}) {
+// undo: { message: count => text, duration } gives the notice Eagle's 撤销,
+// which puts back what each item had before (P3-05).
+async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null, selectNext = false, undo = null } = {}) {
   if (!ids?.length || !state.connected) return false;
   const pane = paneById(paneId);
   if (!pane) return false;
+  const successor = selectNext ? selectionSuccessor(pane, ids) : null;
   const libraryPath = state.library?.path;
-  const operationToken = beginForegroundOperation(message, { key: `set:${paneId}:${field}` });
+  let operationToken = beginForegroundOperation(message, { key: `set:${paneId}:${field}` });
   if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
   setSyncStatus(message);
   try {
     const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
       id, field, ...delta, libraryPath
     }), 'Eagle 批量修改请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
-    pane.selected = new Set(outcome.failed.length || !keepSelection ? outcome.failed : ids);
-    if (state.activePaneId === paneId) renderInspector();
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed.length || !keepSelection ? outcome.failed : ids);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
+    const settledSelection = new Set(pane.selected);
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
-    if (keepSelection && !outcome.failed.length) {
-      const visibleIds = new Set(pane.items.map(item => item.id));
-      pane.selected = new Set(ids.filter(id => visibleIds.has(id)));
+    const visibleIds = new Set(pane.items.map(item => item.id));
+    // Ids past the loaded range stay while the view has more (P6-02).
+    const kept = id => visibleIds.has(id) || (pane.hasMore && pane.selected.has(id));
+    if (ownsSelection && keepSelection && !outcome.failed.length
+      && sameSelection(pane, new Set([...settledSelection].filter(kept)))) {
+      pane.selected = new Set(ids.filter(kept));
       if (state.activePaneId === paneId) withActivePane(paneId, () => {
         updateCardSelectionStyles();
         renderInspector();
       });
     }
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
+    const edits = undo ? inverseItemEdits(outcome.values) : [];
+    const done = undo ? undo.message(outcome.succeeded.length) : (successMessage || '操作已同步到所有窗口');
     toast(outcome.failed.length
-      ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
-      : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
+      ? `${undo ? done : `已完成 ${outcome.succeeded.length} 个素材`} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : done, outcome.failed.length ? 4200 : undo?.duration || 2400, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     return true;
   } catch (error) {
     toast(`操作失败：${error.message}`, 4000);
@@ -3987,7 +6095,13 @@ async function addSelectionToFolder(payload) {
   const folderId = payload?.folderId;
   if (!folderId) return false;
   const libraryPath = state.library?.path;
-  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId] }, '正在加入文件夹…', payload?.paneId || state.activePaneId);
+  // Eagle adds the folder's auto tags to items that newly join it (P1-10).
+  const paneId = payload?.paneId || state.activePaneId;
+  const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId], autoTags: 'joined' }, '正在加入文件夹…', paneId, {
+    keepSelection: Boolean(payload?.keepSelection),
+    selectNext: paneById(paneId)?.currentView.kind === 'unfiled',
+    undo: { message: count => `${count} 个项目已添加至“${libraryFolder(folderId)?.name || '目标文件夹'}”.`, duration: 4000 }
+  });
   if (completed && state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
   return completed;
 }
@@ -4010,21 +6124,28 @@ async function moveSelectionToFolder(payload) {
     toast('素材已经在这个文件夹中', 3000);
     return;
   }
-  const delta = folderMoveDelta(sourceFolderId, folderId);
-  const operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
+  const delta = folderMoveDelta(payload?.sourceFolderIds || paneFolderScope(pane, sourceFolderId), folderId);
+  const successor = pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId ? selectionSuccessor(pane, ids) : null;
+  let operationToken = beginForegroundOperation('正在移动到文件夹…', { key: `move:${paneId}` });
   if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
   setSyncStatus('正在移动到文件夹…');
   try {
     const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
-      id, field: 'folders', ...delta, libraryPath
+      id, field: 'folders', ...delta, autoTags: 'joined', libraryPath
     }), 'Eagle 移动请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成移动');
-    pane.selected = new Set(outcome.failed);
-    if (state.activePaneId === paneId) renderInspector();
+    const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed);
+    if (ownsSelection && state.activePaneId === paneId) renderInspector();
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
+    if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
+    const edits = inverseItemEdits(outcome.values);
+    const done = `${outcome.succeeded.length} 个项目已移动至“${libraryFolder(folderId)?.name || '目标文件夹'}”.`;
     toast(outcome.failed.length
-      ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中`
-      : '已移动到目标文件夹', outcome.failed.length ? 4200 : 2400);
+      ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : done, outcome.failed.length ? 4200 : 4000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
   } catch (error) {
@@ -4041,7 +6162,11 @@ function removeSelectionFromFolder(payload) {
   const pane = paneById(paneId);
   const folderId = payload?.folderId || (pane?.currentView.kind === 'folder' ? pane.currentView.id : null);
   if (!folderId) return false;
-  return mutateSelectionSet(payload.ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', paneId);
+  const onScreen = pane?.currentView.kind === 'folder' && pane.currentView.id === folderId;
+  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId, {
+    selectNext: onScreen,
+    undo: { message: count => `${count} 个项目已从“${libraryFolder(folderId)?.name || '文件夹'}”移除。`, duration: 5000 }
+  });
 }
 
 function addTagToSelection(payload) {
@@ -4049,7 +6174,7 @@ function addTagToSelection(payload) {
   if (!tags.length) return false;
   return mutateSelectionSet(payload.ids, 'tags', { add: tags }, '正在添加标签…', payload?.paneId || state.activePaneId, {
     keepSelection: true,
-    successMessage: tags.length === 1 ? `已添加标签「${tags[0]}」` : `已添加 ${tags.length} 个标签`
+    successMessage: tags.length === 1 ? `已添加标签“${tags[0]}”` : `已添加 ${tags.length} 个标签`
   });
 }
 
@@ -4061,31 +6186,153 @@ async function setSelectionRating(payload) {
   if (!ids.length || !state.connected) return;
   if (!pane) return;
   const libraryPath = state.library?.path;
-  const operationToken = beginForegroundOperation('正在设置评分…', { key: `rating:${paneId}` });
-  if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
+  // Ratings of one pane queue behind each other instead of refusing a key
+  // pressed while the previous write is still out ("3, →, 4" rates both).
+  let operationToken = beginForegroundOperation('正在设置评分…');
+  const previousTurn = ratingQueues.get(paneId);
+  let endTurn;
+  const turn = new Promise(resolve => { endTurn = resolve; });
+  ratingQueues.set(paneId, turn);
+  const finishTurn = () => {
+    endTurn();
+    if (ratingQueues.get(paneId) === turn) ratingQueues.delete(paneId);
+  };
   setSyncStatus('正在设置评分…');
   try {
+    await previousTurn;
+    if (state.library?.path !== libraryPath || !paneById(paneId)) return;
     const outcome = await runItemBatch(ids, async id => {
-      const item = pane.items.find(candidate => candidate.id === id) || await window.eagleMV.getItem(id);
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
       const result = await window.eagleMV.mutate({ id, patch: { star: rating }, base: item, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      // A queued rating of the same item must compare against this write,
+      // not the pre-refresh copy, or it reads as a cross-window conflict.
+      const index = pane.items.findIndex(candidate => candidate.id === id);
+      if (index >= 0 && result?.item) {
+        pane.items[index] = result.item;
+        pane.itemMap?.set(id, result.item);
+      }
       return result;
     }, 'Eagle 评分请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成评分');
     // Rating never removes anything from the view, so the selection survives —
     // Eagle keeps it too, and dropping it after every keystroke made rating a
     // run of items needlessly awkward. Failures stay selected on their own.
-    pane.selected = new Set(outcome.failed.length
+    const next = outcome.failed.length
       ? outcome.failed
-      : ids.filter(id => pane.items.some(item => item.id === id)));
-    if (state.activePaneId === paneId) renderInspector();
+      : idsStillSelectable(pane, ids);
+    if (settleBatchSelection(pane, selectionBefore, next) && state.activePaneId === paneId) renderInspector();
+    finishTurn();
+    endForegroundOperation(operationToken);
+    operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     if (state.previewId) updatePreviewChrome(itemById(state.previewId) || { id: state.previewId, name: '', ext: '' });
     toast(outcome.failed.length
-      ? `已为 ${outcome.succeeded.length} 个素材设置评分 · ${outcome.failed.length} 个失败并保持选中`
+      ? `已为 ${outcome.succeeded.length} 个素材设置评分 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
       : `已设置为 ${rating ? `${rating} 星` : '未评分'}`, outcome.failed.length ? 4200 : 2400);
   } catch (error) {
     toast(`评分失败：${error.message}`, 4000);
+  } finally {
+    finishTurn();
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// The 文件夹 block of either inspector: a chip opens its folder and shows the
+// item there (Eagle's quickOpenFolder), × takes the selection out of that one
+// folder only — not its subfolders, unlike the grid's 从文件夹移除 — and
+// 添加文件夹 opens the folder picker under the button.
+function handleInspectorFolderClick(event) {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  const remove = event.target.closest('[data-remove-folder]');
+  const open = event.target.closest('[data-open-folder]');
+  const add = event.target.closest('[data-add-folder]');
+  if (remove) {
+    const folderId = remove.dataset.removeFolder;
+    if (!confirmBulkEdit(ids.length)) return;
+    const name = findFolder(state.library?.folders, folderId)?.name || '文件夹';
+    const pane = activePane();
+    mutateSelectionSet(ids, 'folders', { remove: [folderId] }, '正在从文件夹移除…', state.activePaneId, {
+      keepSelection: true,
+      successMessage: `已从“${name}”移除`,
+      selectNext: pane?.currentView.kind === 'folder' && pane.currentView.id === folderId
+    });
+  } else if (open) {
+    openItemLocation(ids[0], open.dataset.openFolder);
+  } else if (add) {
+    showFolderAssignmentPicker(ids, { anchor: add, keepSelection: true });
+  }
+}
+
+// A multi-select note or link applies to the items selected when editing
+// began, and only if it changed: focusing and leaving a field is not an edit.
+let batchFieldEdit = null;
+function beginBatchFieldEdit(field, control) {
+  batchFieldEdit = { field, paneId: state.activePaneId, ids: [...state.selected], original: control.value };
+}
+
+function commitBatchFieldEdit(field, control) {
+  const edit = batchFieldEdit;
+  batchFieldEdit = null;
+  if (!edit || edit.field !== field) return;
+  const value = field === 'url' ? control.value.trim() : control.value;
+  const changed = value !== (field === 'url' ? edit.original.trim() : edit.original);
+  if (changed && edit.ids.length >= 2 && confirmBulkEdit(edit.ids.length)) {
+    setSelectionFields({
+      ids: edit.ids,
+      paneId: edit.paneId,
+      patch: { [field]: value },
+      successMessage: `已修改 ${edit.ids.length} 个素材的${field === 'url' ? '链接' : '注释'}`
+    });
+  }
+  // The selection may have moved while the field held the focus.
+  if (state.selected.size >= 2) renderMultiSelection(state.selected.size);
+}
+
+// Eagle's multi-select tag field applies a tag to every selected item as soon
+// as it is entered; there is no separate 添加 step.
+async function applyBatchTags() {
+  commitTagInput('batch');
+  const tags = [...state.batchTags];
+  if (!tags.length) return;
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  const ids = [...(pane?.selected || [])];
+  if (!ids.length || !confirmBulkEdit(ids.length)) return;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
+  if (!operationToken) return;
+  const selectionBefore = new Set(pane.selected);
+  setSyncStatus('正在合并标签…');
+  try {
+    const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
+      id, field: 'tags', add: tags, libraryPath
+    }), 'Eagle 批量标签请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
+    // Adding a tag keeps the selection, the way removing one already does
+    // (removeTagFromSelection passes keepSelection) — the items are all
+    // still on screen, and losing them after one tag makes the second tag a
+    // re-selection chore.
+    settleBatchSelection(pane, selectionBefore, outcome.failed.length
+      ? outcome.failed
+      : idsStillSelectable(pane, ids));
+    $('#batchTagInput').value = '';
+    setTagValues('batch', [], false);
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    if (state.activePaneId === paneId) withActivePane(paneId, () => {
+      updateCardSelectionStyles();
+      renderInspector();
+    });
+    toast(outcome.failed.length
+      ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
+  } catch (error) {
+    toast(`添加标签失败：${error.message}`, 4000);
   } finally {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
@@ -4093,12 +6340,12 @@ async function setSelectionRating(payload) {
 }
 
 function removeTagFromSelection(tag) {
-  if (!tag) return false;
+  if (!tag || !confirmBulkEdit(state.selected.size)) return false;
   // Keeps the multi-selection on success so several shared tags can be
   // removed in a row; everything else rides the shared batch pipeline.
   return mutateSelectionSet([...state.selected], 'tags', { remove: [tag] }, '正在移除标签…', state.activePaneId, {
     keepSelection: true,
-    successMessage: `已从所选素材移除「${tag}」`
+    successMessage: `已从所选素材移除“${tag}”`
   });
 }
 
@@ -4122,11 +6369,21 @@ function previewImageURL(item) {
   return previewImageSource(item)?.url || null;
 }
 
+// Eagle's getPDFPath: viewer.html?path=<file>&locale=<language>&theme=<theme>,
+// served by the web host from the installed Eagle app (lib/web-server.js).
+function eaglePdfViewerURL(item) {
+  return `/eagle-app/pdf-viewer/web/viewer.html?path=${encodeURIComponent(mediaURL('original', item.id))}&locale=zh-CN&theme=dark`;
+}
+
 function mediaMarkup(item) {
   const url = mediaURL('original', item.id);
   const ext = String(item.ext || '').toLowerCase();
   if (['mp4', 'mov', 'm4v', 'webm', 'mkv'].includes(ext)) return `<video src="${url}" controls autoplay playsinline></video>`;
   if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return `<audio src="${url}" controls autoplay></audio>`;
+  // Web clients open Eagle's own pdf.js viewer, as Eagle's preview does
+  // (phone and tablet WebViews cannot show a PDF <embed>); setupPreviewMedia
+  // loads it once the host confirms it can serve it.
+  if (ext === 'pdf' && isWebClient) return `<iframe class="pdf-viewer" data-pdf-viewer="${escapeHTML(eaglePdfViewerURL(item))}" title="${escapeHTML(item.name)}"></iframe>`;
   // Chromium's PDF viewer refuses custom-protocol streams, so the PDF embed
   // gets a direct file:// URL resolved asynchronously in setupPreviewMedia.
   if (ext === 'pdf') return `<embed data-pdf-item="${escapeHTML(item.id)}" type="application/pdf" width="100%" height="100%">`;
@@ -4181,8 +6438,11 @@ function renderPreviewZoom() {
   const fit = zoom.mode === 'fit';
   image.classList.toggle('preview-actual', !fit);
   image.classList.toggle('dragging', Boolean(zoom.dragging));
-  image.style.maxWidth = '100%';
-  image.style.maxHeight = '100%';
+  // 原始大小 shows one image pixel per CSS pixel; every other mode starts
+  // from the fitted size (B2-13).
+  const actual = zoom.mode === 'actual';
+  image.style.maxWidth = actual ? 'none' : '100%';
+  image.style.maxHeight = actual ? 'none' : '100%';
   image.style.width = 'auto';
   image.style.height = 'auto';
   image.style.transform = (zoom.x === 0 && zoom.y === 0 && zoom.scale === 1)
@@ -4219,6 +6479,19 @@ function changePreviewZoom(delta, anchor = null) {
   setPreviewZoom('zoom', next);
 }
 
+// Eagle's viewer page posts "Exit", "Prev" and "Next" to its parent when Esc,
+// ← or → is released inside it; Eagle's preview then closes or moves to the
+// neighbouring item, and so does this one. Only the frame of an open preview
+// counts, so a message from a viewer already closed (by Back) does nothing.
+function handleEaglePdfViewerMessage(event) {
+  if (event.origin !== location.origin || !['Exit', 'Prev', 'Next'].includes(event.data)) return;
+  const frame = [...document.querySelectorAll('iframe[data-pdf-viewer]')].find(node => node.contentWindow === event.source);
+  const paneId = frame?.closest('.content-pane')?.dataset.paneId;
+  if (!paneId || !paneById(paneId)?.previewId || !activatePane(paneId)) return;
+  if (event.data === 'Exit') closePreview();
+  else movePreview(event.data === 'Next' ? 1 : -1);
+}
+
 function setupPreviewMedia() {
   const owner = activePane();
   const ownerToken = owner.previewToken;
@@ -4243,6 +6516,24 @@ function setupPreviewMedia() {
         $('#modalMedia').innerHTML = `<div class="unsupported-preview"><p>无法读取这个素材的图像<br><span>${escapeHTML(String(item?.ext || '文件').toUpperCase())} · 原文件可能已被移动或删除</span></p></div>`;
       });
     }, { once: true });
+  }
+  const pdfViewer = $('#modalMedia iframe[data-pdf-viewer]');
+  if (pdfViewer) {
+    const viewerURL = pdfViewer.dataset.pdfViewer;
+    fetch(viewerURL, { method: 'HEAD', credentials: 'same-origin' }).then(response => response.ok, () => false).then(available => {
+      if (!validOwner() || !pdfViewer.isConnected) return;
+      if (available) {
+        pdfViewer.src = viewerURL;
+        return;
+      }
+      // No installed Eagle with its viewer on the host: say so over the
+      // first-page thumbnail instead of an error page in the frame.
+      withActivePane(owner.id, () => {
+        const item = itemById(state.previewId);
+        if (!item) return;
+        $('#modalMedia').innerHTML = `<div class="unsupported-preview"><img src="${mediaURL('thumb', item.id)}" alt="${escapeHTML(item.name)}" draggable="false"><p>PDF 无法在此预览<br><span>主机上找不到 Eagle 的 PDF 查看器</span></p></div>`;
+      });
+    });
   }
   const pdfEmbed = $('#modalMedia embed[data-pdf-item]');
   if (pdfEmbed) {
@@ -4342,9 +6633,35 @@ function textDraftRecord(session) {
   return { draftId: session.draftId, libraryPath: session.libraryPath, id: session.id, revision: session.revision,
     content: session.content, base: session.fingerprint, original: session.original, updatedAt: Date.now() };
 }
+// Typing persists the draft on a short throttle instead of per key: every
+// write serializes the whole text (up to 5 MB) into localStorage and sends it
+// over IPC to the host store (R2-01). Blur, save, close and discard still
+// write at once through persistTextDraft, which also cancels pending writes.
+const TEXT_DRAFT_LOCAL_DELAY = 300;
+const TEXT_DRAFT_HOST_DELAY = 1000;
+function queueTextDraftPersist(session) {
+  session.localDraftTimer ||= setTimeout(() => {
+    session.localDraftTimer = null;
+    persistLocalTextDraft(session, textDraftRecord(session));
+  }, TEXT_DRAFT_LOCAL_DELAY);
+  session.hostDraftTimer ||= setTimeout(() => {
+    session.hostDraftTimer = null;
+    persistHostTextDraft(session, textDraftRecord(session));
+  }, TEXT_DRAFT_HOST_DELAY);
+}
+function flushTextDraft(session) {
+  if (session?.localDraftTimer || session?.hostDraftTimer) persistTextDraft(session);
+}
 function persistTextDraft(session) {
   if (!session) return;
+  clearTimeout(session.localDraftTimer);
+  clearTimeout(session.hostDraftTimer);
+  session.localDraftTimer = session.hostDraftTimer = null;
   const record = textDraftRecord(session);
+  persistLocalTextDraft(session, record);
+  persistHostTextDraft(session, record);
+}
+function persistLocalTextDraft(session, record) {
   try {
     if (session.dirty || session.saving) localStorage.setItem(TEXT_DRAFT_PREFIX + session.draftId, JSON.stringify(record));
     else localStorage.removeItem(TEXT_DRAFT_PREFIX + session.draftId);
@@ -4353,6 +6670,8 @@ function persistTextDraft(session) {
     session.storageError = true;
     textSessionStatus(session, '草稿存储空间不足；请保持窗口开启并保存或复制正文');
   }
+}
+function persistHostTextDraft(session, record) {
   const { draftId, libraryPath, id, revision, content, base } = record;
   const identity = { draftId, libraryPath, id, revision };
   if (session.dirty || session.saving) {
@@ -4483,7 +6802,7 @@ function renderTextPreview(session) {
     session.dirty = session.content !== session.original;
     if (session.blocked !== 'conflict') session.blocked = false;
     if (session.dirty && !session.content.length && !session.blocked) session.blocked = 'empty';
-    persistTextDraft(session);
+    queueTextDraftPersist(session);
     textSessionStatus(session, session.blocked === 'conflict'
       ? '外部内容已变化；草稿已保留，重新载入前请核对或复制正文'
       : session.dirty ? (session.content.length ? '编辑中 · 草稿已保留' : EMPTY_TEXT_DRAFT_STATUS) : '已保存');
@@ -4491,7 +6810,10 @@ function renderTextPreview(session) {
   });
   editor.addEventListener('compositionstart', () => { session.composing = true; clearTimeout(session.autoSaveTimer); });
   editor.addEventListener('compositionend', () => { session.composing = false; queueTextAutoSave(session); });
-  editor.addEventListener('blur', () => queueTextAutoSave(session, { immediate: true }));
+  editor.addEventListener('blur', () => {
+    flushTextDraft(session);
+    queueTextAutoSave(session, { immediate: true });
+  });
   editor.addEventListener('keydown', event => {
     if (event.key === 'Tab') {
       event.preventDefault();
@@ -4622,7 +6944,7 @@ async function saveTextPreview(force = false, { session = state.textSession, aut
     try {
       do {
         const { id, libraryPath, content } = session;
-        if (state.library?.path !== libraryPath) throw new Error('资料库已切换；旧库草稿已保留');
+        if (state.library?.path !== libraryPath) throw new Error('资源库已切换；旧库草稿已保留');
         if (!content.length) {
           session.blocked = 'empty';
           textSessionStatus(session, EMPTY_TEXT_DRAFT_STATUS);
@@ -4845,6 +7167,8 @@ function renderSlideshow() {
   button.setAttribute('aria-pressed', String(playing));
   button.title = playing ? '暂停幻灯片（S）' : '幻灯片播放（S）';
   button.setAttribute('aria-label', playing ? '暂停幻灯片' : '幻灯片播放');
+  const interval = $('#slideshowInterval');
+  if (interval) interval.value = String(state.slideshow.intervalMs);
   $('#previewModal').classList.toggle('slideshow-playing', playing);
 }
 
@@ -4900,6 +7224,43 @@ function toggleSlideshow() {
   toast(`幻灯片播放中 · 每 ${Math.round(state.slideshow.intervalMs / 1000)} 秒一张`);
 }
 
+// ⌘-click (Eagle's multipleOpenFolder): the open folder and the clicked one
+// make a selection; ⌘-click on a selected one takes it out, unless it is
+// the last. Outside a folder the selection starts with the clicked one.
+function toggleFolderInSelection(folderId) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder) return false;
+  if (folder.password) { toast('该文件夹已加密，MultiView 无法解锁（Eagle API 限制）', 3600); return false; }
+  const current = viewFolderSelection() || (state.currentView.kind === 'folder' ? [state.currentView.id] : []);
+  let next;
+  if (current.includes(folderId)) {
+    if (current.length <= 1 || !viewFolderSelection()) return false;
+    next = current.filter(id => id !== folderId);
+  } else {
+    next = [...current, folderId];
+    state.folderSelectionAnchor = folderId;
+  }
+  return navigate({ kind: 'folder', id: next[0], selectedFolderIds: next });
+}
+
+// ⇧-click (Eagle's clickNode): every folder row shown between the last
+// clicked folder and this one joins the selection.
+function extendFolderSelection(folderId) {
+  const anchor = state.folderSelectionAnchor || (state.currentView.kind === 'folder' ? state.currentView.id : null);
+  if (!anchor) return false;
+  const rows = [...document.querySelectorAll('#folderTree .folder-node > .folder-row[data-folder-id]')].map(row => row.dataset.folderId);
+  let from = rows.indexOf(anchor);
+  let to = rows.indexOf(folderId);
+  if (from === -1 || to === -1) return false;
+  if (from > to) [from, to] = [to, from];
+  const next = [...(viewFolderSelection() || [])];
+  for (const id of rows.slice(from, to + 1)) {
+    if (!next.includes(id) && !findFolder(state.library?.folders, id)?.password) next.push(id);
+  }
+  if (!next.length) return false;
+  return navigate({ kind: 'folder', id: next[0], selectedFolderIds: next });
+}
+
 function descriptorFromTarget(target) {
   if (target.dataset.folderId) return { kind: 'folder', id: target.dataset.folderId };
   if (target.dataset.smartFolderId) return { kind: 'smart', id: target.dataset.smartFolderId, name: target.dataset.folderName };
@@ -4907,7 +7268,20 @@ function descriptorFromTarget(target) {
 }
 
 function descriptorKey(view) {
-  return `${view.kind}:${view.id || ''}`;
+  const selection = viewFolderSelection(view);
+  return `${view.kind}:${view.id || ''}${selection ? `:${[...selection].sort().join(',')}` : ''}`;
+}
+
+// Eagle's sidebar multi-select ($rootScope.selectedFolders, ⌘/⇧-click): one
+// view over several folders, its items those of any of them. The view keeps
+// `id` as its first folder for everything that needs one folder.
+function viewFolderSelection(view = state.currentView) {
+  return view?.kind === 'folder' && Array.isArray(view.selectedFolderIds) ? view.selectedFolderIds : null;
+}
+
+function folderInSelection(folderId, view = state.currentView) {
+  const selection = viewFolderSelection(view);
+  return selection ? selection.includes(folderId) : view?.kind === 'folder' && view.id === folderId;
 }
 
 function normalizeView(view) {
@@ -4918,23 +7292,30 @@ function applyView(view) {
   view = normalizeView(view);
   if (descriptorKey(view)!==descriptorKey(state.currentView)) activePane().manualRenderLimit=SORT_FETCH_CAP;
   state.currentView = view;
-  if (view.kind === 'folder') {
+  if (viewFolderSelection(view)) {
+    // Eagle's breadcrumb: 已选定 N 个文件夹.
+    state.viewTitle = `已选定 ${viewFolderSelection(view).length} 个文件夹`;
+  } else if (view.kind === 'folder') {
     const folder = findFolder(state.library?.folders, view.id);
     state.viewTitle = folder?.name || '文件夹';
   } else if (view.kind === 'smart') {
     state.viewTitle = view.name || findFolder(state.library?.smartFolders, view.id)?.name || '智能文件夹';
   } else {
-    state.viewTitle = ({ root: state.library?.name || '资料库', all: '全部素材', unfiled: '未分类', untagged: '未加标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资料库';
+    state.viewTitle = ({ root: state.library?.name || '资源库', all: '全部', unfiled: '未分类', untagged: '未标签', recent: '最近使用', random: '随机模式', trash: '回收站', tags: '标签管理' })[view.kind] || '资源库';
   }
   // Eagle remembers the sort per folder. Restoring here — the one place the
   // current view is assigned — covers every navigation path, including the
   // startup root view and library switches.
-  const remembered = view.kind === 'folder'
-    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders)
-    : sortMemory.recall(state.library?.path, descriptorKey(view));
+  const remembered = rememberedSortFor(view);
   state.sort = remembered?.sort || 'default';
   state.sortDir = remembered?.sortDir || 'auto';
   renderSortControls();
+}
+
+function rememberedSortFor(view) {
+  return view?.kind === 'folder'
+    ? sortMemory.recallFolderSort(state.library?.path, view.id, state.library?.folders)
+    : sortMemory.recall(state.library?.path, descriptorKey(view));
 }
 
 // Leaving a view keeps its scroll offset and loaded-item count so back/up
@@ -4969,8 +7350,12 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
   const changed = descriptorKey(view) !== descriptorKey(state.currentView);
   if (!skipDiscard && !confirmDiscardChanges()) return false;
   const currentQuery = cloneQuery(state.query);
-  const nextQuery = query ? cloneQuery(query) : exitSearch && view.kind === 'folder' && currentQuery.search
-    ? queryWithoutSearch(currentQuery)
+  // Like Eagle, moving to another view starts without the search and filters
+  // unless they are locked (R2-04); they used to follow every navigation and
+  // silently narrow the next folder. History passes the query it restores.
+  const nextQuery = query ? cloneQuery(query)
+    : changed && !state.filterLock ? createQuery()
+    : exitSearch && view.kind === 'folder' && currentQuery.search ? queryWithoutSearch(currentQuery)
     : currentQuery;
   if (record && changed) {
     const recorded = recordViewNavigation(
@@ -4986,11 +7371,12 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
     state.historyIndex = 0;
   }
   state.query = nextQuery;
-  renderQueryControls();
+  const background = renderingBackgroundPane();
+  if (!background) renderQueryControls();
   if (changed) rememberViewPosition();
   state.restoreScroll = changed && restoreScroll ? state.viewMemory.get(descriptorKey(view)) || null : null;
   applyView(view);
-  if (view.kind === 'folder') revealFolderPath(view.id);
+  if (view.kind === 'folder' && !background) revealFolderPath(view.id);
   $('#viewTitle').textContent = state.viewTitle;
   // Leaving this pane's folder is local navigation, not a preview-close gesture.
   closePreview({ commitSelection: false, skipDiscard: true, syncBroadcast: false });
@@ -5008,12 +7394,16 @@ function navigate(view, { record = true, refreshView = true, skipDiscard = false
       renderGrid({ preserveScroll: false });
     }
   }
-  renderInspector();
-  renderFolderTree();
+  // A background pane (its folder deleted elsewhere) must not redraw the
+  // shared inspector: that would drop the active pane's edit in progress.
+  if (!background) {
+    renderInspector();
+    renderFolderTree();
+  }
   renderLocation();
   if (refreshView) refresh({ reset: true, preserveScroll: false, quiet: restoring });
   // Picking a destination from the drawer should reveal the result.
-  if (isCompactLayout()) closeDrawers();
+  if (isCompactLayout() && !background) closeDrawers();
   saveSessionState();
   return true;
 }
@@ -5035,7 +7425,7 @@ function navigateHistory(delta) {
   const previousQuery = state.query;
   state.query = target.hasQuery ? cloneQuery(target.query) : createQuery();
   state.historyIndex = next;
-  if (!navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true })) {
+  if (!navigate(target.view, { record: false, skipDiscard: true, restoreScroll: true, query: state.query })) {
     state.historyIndex -= delta;
     state.query = previousQuery;
     renderQueryControls();
@@ -5044,7 +7434,7 @@ function navigateHistory(delta) {
   return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.HISTORY };
 }
 
-function closeTopTransientSurface() {
+function closeTopTransientSurface({ selection = true } = {}) {
   if (activeMarquee?.started) {
     cancelMarquee({ restoreSelection: true });
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'marquee' };
@@ -5114,12 +7504,13 @@ function closeTopTransientSurface() {
     closeDrawers();
     return { status: BACK_STATUS.HANDLED, action: BACK_ACTION.TRANSIENT, reason: 'drawer' };
   }
-  // On touch clients a selection is a mode (a tap selects before it opens):
-  // back leaves it first, like Escape, on phones and wide tablets alike —
-  // otherwise back at the root closes the app with the selection still up.
-  // A preview on top is closed by the preview step instead. The desktop app
-  // keeps Eagle's behaviour of back moving through history.
-  if (isWebClient && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
+  // On touch clients back with a selection goes straight back through
+  // history (navigating clears the selection anyway). Only with no history
+  // left does back clear the selection first, so a stray back at the root
+  // does not close the app with the selection still up. A preview on top is
+  // closed by the preview step instead. The desktop app keeps Eagle's
+  // behaviour of back moving through history.
+  if (selection && isWebClient && state.historyIndex <= 0 && (state.selected.size || state.selectedFolderCard) && $('#previewModal').classList.contains('hidden')) {
     if (!confirmDiscardChanges()) return { status: BACK_STATUS.BLOCKED, action: BACK_ACTION.TRANSIENT, reason: 'unsaved-edit' };
     state.selected.clear();
     state.selectedFolderCard = null;
@@ -5142,8 +7533,84 @@ const backActionRouter = createBackRouter({
   navigateBack: () => navigateHistory(-1)
 });
 
+const shellBackEntry = Object.freeze({
+  request() {
+    const deferral = { question: null };
+    shellBackDeferral = deferral;
+    let result;
+    try {
+      result = backActionRouter.request();
+    } finally {
+      shellBackDeferral = null;
+    }
+    if (deferral.question) {
+      setTimeout(() => {
+        if (!confirm(deferral.question)) return;
+        preAnsweredQuestion = deferral.question;
+        try {
+          backActionRouter.request();
+        } finally {
+          preAnsweredQuestion = null;
+        }
+      }, 0);
+    }
+    return result;
+  }
+});
+
 function requestBackAction() {
   return window.EagleMVBack.request();
+}
+
+// A phone or tablet browser (not the Android shell, which sends its own back
+// key) has no back semantics of its own: the gesture left the page with a
+// preview, a drawer or a selection still up (W-08). While back has something
+// to close, one sentinel history entry sits above the page; popping it runs
+// the same back router, and it is re-armed while more remains. With nothing
+// left it is removed, so the next back leaves the page as usual.
+const browserBackGuard = isWebClient && !window.eagleMV.shellApp && typeof history?.pushState === 'function';
+document.body.classList.toggle('browser-back', browserBackGuard);
+let backGuardArmed = false;
+let backGuardDisarming = false;
+let backGuardSyncQueued = false;
+
+function hasBackTarget() {
+  if (activeMarquee?.started || document.querySelector('dialog[open], .sort-popover:not(.hidden), .tag-suggestion-popover:not(.hidden)')) return true;
+  const surfaces = ['#folderDialog', '#webAccessDialog', '#trashDialog', '#duplicateDialog', '#contextMenu', '#tagColorManager', '#filterPopover', '#paneLayoutPopover', '#libraryPopover', '#previewModal'];
+  if (surfaces.some(selector => $(selector) && !$(selector).classList.contains('hidden'))) return true;
+  return Boolean(state.openDrawer || state.selected.size || state.selectedFolderCard || state.historyIndex > 0);
+}
+
+function syncBrowserBackGuard() {
+  backGuardSyncQueued = false;
+  if (!browserBackGuard || backGuardDisarming) return;
+  const wanted = hasBackTarget();
+  if (wanted && !backGuardArmed) {
+    history.pushState({ eaglemvBackGuard: true }, '');
+    backGuardArmed = true;
+  } else if (!wanted && backGuardArmed && history.state?.eaglemvBackGuard) {
+    backGuardArmed = false;
+    backGuardDisarming = true;
+    history.back();
+  }
+}
+
+function scheduleBackGuardSync() {
+  if (!browserBackGuard || backGuardSyncQueued) return;
+  backGuardSyncQueued = true;
+  setTimeout(syncBrowserBackGuard, 0);
+}
+
+if (browserBackGuard) {
+  window.addEventListener('popstate', () => {
+    if (backGuardDisarming) { backGuardDisarming = false; return; }
+    if (!backGuardArmed) return;
+    backGuardArmed = false;
+    requestBackAction();
+    syncBrowserBackGuard();
+  });
+  // Surfaces open and close on user input, so re-check after each one.
+  for (const type of ['click', 'pointerup', 'keyup', 'touchend']) document.addEventListener(type, scheduleBackGuardSync, true);
 }
 
 function parentView() {
@@ -5307,8 +7774,10 @@ function observeBreadcrumbLayout(breadcrumb) {
 
 function renderLocation() {
   if (!state.library) return;
-  let crumbs = [{ label: state.library.name || '资料库', view: { kind: 'root' } }];
-  if (state.currentView.kind === 'folder') {
+  let crumbs = [{ label: state.library.name || '资源库', view: { kind: 'root' } }];
+  if (viewFolderSelection()) {
+    crumbs.push({ label: state.viewTitle, view: state.currentView });
+  } else if (state.currentView.kind === 'folder') {
     const folderPath = findFolderPath(state.library.folders, state.currentView.id);
     crumbs = folderPath.length
       ? crumbs.concat(folderPath.map(folder => ({ label: folder.name, view: { kind: 'folder', id: folder.id } })))
@@ -5389,21 +7858,34 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
   state.importing = true;
   setSyncStatus('正在导入到 Eagle…');
   try {
-    const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}) };
+    const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}), ...(target.ignoreDirectories ? { ignoreDirectories: true } : {}) };
     let result = source === 'clipboard'
       ? await window.eagleMV.importClipboard(payload)
-      : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
+      : source === 'url'
+        ? await window.eagleMV.importURL({ ...payload, url: target.url, image: Boolean(target.image) })
+        : await window.eagleMV.importItems({ ...payload, ...(paths?.length ? { paths } : {}) });
     if (result.canceled) return;
     if (result.needsDuplicateDecision) {
       const rejected = result.rejected || [];
-      const choice = await chooseDuplicateAction(result.duplicates || [], result.paths?.length || paths?.length || 0);
-      if (!choice || choice === 'cancel') return;
+      const choice = await chooseDuplicateAction(result.duplicates || [], result.total || result.paths?.length || paths?.length || 0) || 'cancel';
+      // Web uploads already imported the rest of the batch and the host holds
+      // the duplicates, so a cancel is still sent to release them.
+      if (choice === 'cancel' && !result.stagedUploads) return;
+      const { ignoredDirectories } = result;
       result = await window.eagleMV.importItems({ ...payload, paths: result.paths, duplicateChoice: choice });
       result.rejected = [...rejected, ...(result.rejected || [])];
+      result.ignoredDirectories = ignoredDirectories;
       if (result.canceled) return;
     }
+    // Eagle leaves folders dropped on a sidebar folder out; say where they go.
+    const ignored = result.ignoredDirectories ? `已忽略 ${result.ignoredDirectories} 个文件夹（拖到侧栏空白处可按目录结构导入）` : '';
     if (!result.count) {
-      toast(result.error || result.duplicateFailed ? importResultMessage(result) : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片' : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
+      const uncertain = result.unknown?.length || result.notSubmitted?.length;
+      if (ignored && !result.error && !uncertain && !result.rejected?.length) { toast(ignored, 5000); return; }
+      toast(result.error || result.duplicateFailed || uncertain ? importResultMessage(result)
+        : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片'
+        : source === 'url' ? (result.source === 'unsupported' ? '网页端暂不支持拖入网址；请在主机窗口中拖入' : '没有可导入的网址')
+        : (result.rejected?.[0]?.message || '没有可导入的文件'), 5000);
       return;
     }
     if (result.nativeDecisionPending) {
@@ -5411,7 +7893,7 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     } else await window.eagleMV.focusWindow().catch(() => {});
     await refreshAllPanes({ reset: true, preserveScroll: true });
     const pending = Math.max(0, result.count - result.ready);
-    toast(importResultMessage(result, pending), result.partial || result.duplicateFailed ? 6500 : 4200);
+    toast(importResultMessage(result, pending) + (ignored ? ` · ${ignored}` : ''), result.partial || result.duplicateFailed || ignored ? 6500 : 4200);
     if (pending) {
       const refreshPaneIds = new Set([targetPaneId]);
       if (folderId && Array.isArray(state.panes)) {
@@ -5428,6 +7910,69 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     }
   } catch (error) {
     toast(`导入失败：${error.message}`, 4600);
+  } finally {
+    state.importing = false;
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// 导入本地文件夹 (P4-01): the 文件 menu, the 新建 menu and folders dropped on
+// the sidebar's blank area. As in Eagle, each picked folder becomes a folder
+// of the same name at the library root with the same sub-folders, each file
+// goes into the folder it sat in, and the last new folder opens.
+async function importFolders(paths = null, { paneId = state.activePaneId, dropped = false } = {}) {
+  if (!state.connected || state.importing || !window.eagleMV.planFolderImport) return false;
+  const libraryPath = state.library?.path;
+  const operationToken = beginForegroundOperation('正在导入到 Eagle…', { key: 'import' });
+  if (!operationToken) return false;
+  state.importing = true;
+  setSyncStatus('正在导入到 Eagle…');
+  try {
+    const plan = await window.eagleMV.planFolderImport({ libraryPath, ...(paths?.length ? { paths } : {}) });
+    if (plan.canceled) return false;
+    if (!plan.roots?.length) {
+      toast(plan.rejected?.[0]?.message || (dropped ? '侧栏空白处只接受文件夹（按目录结构导入）；文件请拖到文件夹或内容区' : '没有可导入的文件夹'), 4600);
+      return false;
+    }
+    // Eagle's two questions, asked per folder.
+    const accept = [];
+    plan.roots.forEach((root, index) => {
+      if (root.tooLarge) {
+        alert('批量导入提示\n\n导入的文件或文件夹过多，Eagle 不支持一次导入超过 15 阶层以上的文件夹。');
+        return;
+      }
+      if (root.needsConfirm && !confirm(`批量导入提示\n\n文件夹包含 ${root.fileCount} 个文件，导入可能需要花费一些时间，确定要导入吗？`)) return;
+      accept.push(index);
+    });
+    if (!accept.length) return false;
+    const payload = { token: plan.token, accept, parentId: null, libraryPath };
+    let result = await window.eagleMV.runFolderImport(payload);
+    if (result.needsDuplicateDecision) {
+      const choice = await chooseDuplicateAction(result.duplicates || [], result.total || 0) || 'cancel';
+      result = await window.eagleMV.runFolderImport({ ...payload, duplicateChoice: choice });
+    }
+    if (result.canceled) return false;
+    result.rejected = [...(plan.rejected || []), ...(result.rejected || [])];
+    const openId = result.rootIds?.at(-1);
+    if (openId && state.library?.path === libraryPath) {
+      const deadline = Date.now() + 3000;
+      while (state.library?.path === libraryPath && !findFolder(state.library?.folders, openId) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 60));
+      }
+      if (findFolder(state.library?.folders, openId) && paneById(paneId)) {
+        state.expandedFolders.add(openId);
+        withActivePane(paneId, () => navigate({ kind: 'folder', id: openId }));
+      }
+    }
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+    const folders = `已创建 ${result.folders || 0} 个文件夹`;
+    toast(result.error && !result.count ? `${folders} · 导入未完成：${result.error.message}` : `${folders} · ${importResultMessage(result, Math.max(0, (result.count || 0) - (result.ready || 0)))}`,
+      result.error || result.rejected.length ? 6500 : 4200);
+    return true;
+  } catch (error) {
+    toast(`导入失败：${error.message}`, 4600);
+    return false;
   } finally {
     state.importing = false;
     setSyncStatus('所有窗口已同步');
@@ -5472,7 +8017,8 @@ function bindTagEditor(kind) {
       chooseTagSuggestion(kind, suggestions[activeIndex].name);
     } else if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
       event.preventDefault();
-      commitTagInput(kind);
+      if (kind === 'batch' && event.key === 'Enter') applyBatchTags();
+      else commitTagInput(kind);
     } else if (event.key === 'Backspace' && !input.value && tagValues(kind).length) {
       removeTag(kind, tagValues(kind).at(-1));
     }
@@ -5480,7 +8026,9 @@ function bindTagEditor(kind) {
   input.addEventListener('focus', () => openTagSuggestions(kind));
   input.addEventListener('input', () => renderTagSuggestionPopover(kind, { open: true }));
   input.addEventListener('blur', () => {
-    commitTagInput(kind);
+    // A multi-select tag applies on Return only, as in Eagle: leaving the
+    // field must not tag a whole selection with a half-typed word.
+    if (kind !== 'batch') commitTagInput(kind);
     if (kind === 'item') queueInspectorAutoSave({ immediate: true });
     setTimeout(() => {
       if (document.activeElement !== input && !popover?.contains(document.activeElement)) closeTagSuggestions(kind);
@@ -5490,11 +8038,24 @@ function bindTagEditor(kind) {
     const text = event.clipboardData?.getData('text') || '';
     if (!/[,，\n]/.test(text)) return;
     event.preventDefault();
-    setTagValues(kind, [...tagValues(kind), ...text.split(/[,，\n]+/)]);
+    addTagEntries(kind, text.split(/[,，\n]+/));
   });
   chips.addEventListener('click', event => {
     const button = event.target.closest('[data-remove-tag]');
     if (button) removeTag(kind, button.dataset.removeTag);
+    const excluded = event.target.closest('[data-remove-excluded-tag]');
+    if (excluded) updateActiveQuery(query => { query.tagsExclude = (query.tagsExclude || []).filter(tag => tag !== excluded.dataset.removeExcludedTag); });
+  });
+  // Right-click turns a filter tag into an excluded one and back (Eagle's
+  // 排除 on the tag list).
+  if (kind === 'filter') chips.addEventListener('contextmenu', event => {
+    const chip = event.target.closest('.tag-chip');
+    const button = chip?.querySelector('[data-remove-tag], [data-remove-excluded-tag]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const tag = button.dataset.removeTag ?? button.dataset.removeExcludedTag;
+    updateActiveQuery(query => toggleIncludeExclude(query, 'tags', 'tagsExclude', tag, button.dataset.removeTag !== undefined));
   });
   popover?.addEventListener('pointerdown', event => {
     const suggestion = event.target.closest('[data-tag-suggestion]');
@@ -5507,12 +8068,71 @@ function bindTagEditor(kind) {
   });
 }
 
-function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false }) {
-  const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"` : '';
-  const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}`;
+// Eagle's folder menu ends with a row of colour dots: 无 plus the eight
+// colours /api/v2/folder/update accepts (P1-12). Each dot is its own action.
+const folderMenuColors = Object.freeze(['', 'red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'pink']);
+// Eagle's folder menu toggles the same global 显示子文件夹内容 switch.
+function subfolderContentMenuRow() {
+  return '<div class="context-menu-separator"></div>' + contextMenuRow({ label: '在父文件夹显示子文件夹内容', checked: cardDisplay.subfolderContent, action: 'toggle-subfolder-content' });
+}
+
+function folderColorMenuRows(folderId) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !window.eagleMV.updateFolderProperties) return [];
+  const current = String(folder.iconColor || '').toLowerCase();
+  const disabled = !state.connected;
+  const swatches = folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="文件夹颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="set-folder-color" data-context-payload="${escapeHTML(JSON.stringify({ folderId, color }))}"></button>`;
+  }).join('');
+  return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`];
+}
+
+// Eagle's menu for several selected folders (openFolderContextMenu,
+// isMultiple): 移动文件夹, 重命名 N 个项目..., the colours, 删除文件夹.
+function multipleFoldersMenuMarkup(folderIds = []) {
+  const folders = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (!folders.length) return '';
+  const disabled = !state.connected;
+  const colors = new Set(folders.map(folder => String(folder.iconColor || '').toLowerCase()));
+  const current = colors.size === 1 ? [...colors][0] : null;
+  const swatches = window.eagleMV.updateFolderProperties ? folderMenuColors.map(color => {
+    const label = color ? eagleColorLabels[color] : '无';
+    const checked = current === color;
+    return `<button type="button" class="context-color-swatch${color ? '' : ' none'}${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}" role="menuitemradio" aria-checked="${checked}" aria-disabled="${disabled}" title="${label}" aria-label="文件夹颜色：${label}"${color ? ` style="--swatch:${eagleNamedFolderColors[color]}"` : ''} data-context-action="set-folders-color" data-context-payload="${escapeHTML(JSON.stringify({ folderIds, color }))}"></button>`;
+  }).join('') : '';
+  return [
+    ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹', action: 'move-folder-nodes', payload: { folderIds }, disabled })] : []),
+    contextMenuRow({ icon: 'rename', label: `重命名 ${folders.length} 个项目...`, action: 'batch-rename-folders', payload: { folderIds }, disabled }),
+    ...(swatches ? ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`] : []),
+    ...(window.eagleMV.removeFolder ? ['<div class="context-menu-separator"></div>', contextMenuRow({
+      icon: 'trashMenu', label: '删除文件夹', shortcut: '⌘ ⌫', action: 'remove-folder-nodes', payload: { folderIds }, disabled, danger: true
+    })] : [])
+  ].join('');
+}
+
+// Eagle's folder menus (sidebar and subfolder card) end with 删除文件夹 ⌘⌫.
+// The sidebar one then opens the next folder, the card one stays put.
+function removeFolderMenuRows(folderId, { selectNext }) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!window.eagleMV.removeFolder || !folder) return [];
+  // Eagle disables it for a locked folder; MultiView cannot unlock one.
+  return ['<div class="context-menu-separator"></div>', contextMenuRow({
+    icon: 'trashMenu', label: '删除文件夹', shortcut: '⌘ ⌫', action: 'remove-folder-node',
+    payload: { folderId, selectNext }, disabled: !state.connected || Boolean(folder.password), danger: true
+  })];
+}
+
+function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null, keepOpen = false }) {
+  // keepOpen: a check row that toggles in place, like Eagle's keepOpen items.
+  const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"${keepOpen ? ' data-keep-open="true"' : ''}` : '';
+  const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}${checked ? ' checked' : ''}`;
   const child = submenu ? `<span class="context-menu-arrow">›</span><div class="context-submenu">${submenu}</div>` : '';
-  return `<div class="${className}" role="menuitem"${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
-    <span class="context-menu-leading">${uiIcon(icon, 'context-menu-icon')}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(keyboardPlatform.shortcutText(shortcut))}</span>` : ''}${child}
+  // A choice row (checked true/false) leads with a check mark, like a native menu.
+  const leading = checked === null ? uiIcon(icon, 'context-menu-icon') : (checked ? '<span class="context-menu-check" aria-hidden="true">✓</span>' : '');
+  return `<div class="${className}" role="${checked === null ? 'menuitem' : 'menuitemradio'}"${checked === null ? '' : ` aria-checked="${checked ? 'true' : 'false'}"`}${attributes} aria-disabled="${disabled ? 'true' : 'false'}">
+    <span class="context-menu-leading">${leading}</span><span class="context-menu-label">${escapeHTML(label)}</span>${shortcut ? `<span class="context-menu-shortcut">${escapeHTML(keyboardPlatform.shortcutText(shortcut))}</span>` : ''}${child}
   </div>`;
 }
 
@@ -5535,6 +8155,7 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
     // Phones have no menu bar and no right-click: this row is the touch
     // entry point for imports (desktop keeps it too — same pipeline).
     ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', shortcut: '⌘ ⇧ O', action: 'import', disabled: !state.connected || state.importing })] : []),
+    ...(hasCapability('importLocal') && window.eagleMV.planFolderImport ? [contextMenuRow({ icon: 'import', label: '导入本地文件夹…', action: 'import-folders', disabled: !state.connected || state.importing })] : []),
     ...(window.eagleMV.startSiteImport ? [contextMenuRow({ icon: 'import', label: '站点导入', submenu: [
       contextMenuRow({ label: 'ArtStation 作品挑选…', action: 'site-import', disabled: !state.connected }),
       contextMenuRow({ label: 'Pinterest 导入说明', action: 'pinterest-help' })
@@ -5722,7 +8343,7 @@ async function openItemLocation(id, folderId = null, { paneId = state.activePane
       position = (await window.eagleMV.locateItem({ query: paneItemQuery(pane), id }))?.index ?? null;
     } catch {}
     if (!stillCurrent()) return false;
-    const where = targetView.kind === 'all' ? '全部素材' : `「${targetView.name}」`;
+    const where = targetView.kind === 'all' ? '全部' : `“${targetView.name}”`;
     if (position === -1) {
       toast(`${where}中没有找到该素材，它可能已被移动或删除`, 4200);
       saveSessionState();
@@ -5842,9 +8463,14 @@ function openItemLocationMenuMarkup(id, paneId = state.activePaneId) {
 
 function contextMenuMarkup(data) {
   if (data.kind === 'new-menu') return newCreationMenuMarkup(data);
+  if (data.kind === 'tag-manager-tag') return tagManagerTagMenuMarkup(data);
+  if (data.kind === 'tag-manager-group') return tagManagerGroupMenuMarkup(data);
+  if (data.kind === 'tag-manager-sort') return tagManagerSortMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
+  if (data.kind === 'list-columns') return listColumnsMenuMarkup();
+  if (data.kind === 'inspector-export') return contextMenuRow({ icon: 'export', label: window.eagleMV.platform === 'web' ? '下载到此设备' : '导出到计算机', action: 'inspector-export' });
   if (data.kind === 'shortcut-folder-picker') {
-    return `<div class="context-shortcut-picker">${contextFolderPicker('add-folder')}</div>`;
+    return `<div class="context-shortcut-picker">${contextFolderPicker(data.pickerAction || 'add-folder')}</div>`;
   }
   if (data.kind === 'smart-folder') {
     return [
@@ -5855,14 +8481,19 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'trashMenu', label: '移除智能文件夹…', action: 'remove-smart-folder', payload: { id: data.smartFolderId }, danger: true })
     ].join('');
   }
+  if (data.kind === 'sidebar-folders') return multipleFoldersMenuMarkup(data.folderIds);
   if (data.kind === 'sidebar') {
     return [
       revealInPaneMenuMarkup(data),
       restoreFolderCoverMenu(data.targetFolderId),
       ...(data.targetFolderId && window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.targetFolderId } })] : []),
+      ...(data.targetFolderId && window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.targetFolderId } })] : []),
       ...(data.targetFolderId ? [contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.targetFolderId } }), '<div class="context-menu-separator"></div>'] : []),
       contextMenuRow({ icon: 'folder', label: '新建同级文件夹', action: 'create-folder', payload: { parentId: data.siblingParentId || null, subfolder: false, paneId: data.paneId } }),
-      ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : [])
+      ...(data.targetFolderId ? [contextMenuRow({ icon: 'folder', label: '新建子文件夹', shortcut: '⌥ N', action: 'create-folder', payload: { parentId: data.targetFolderId, subfolder: true } })] : []),
+      ...(data.targetFolderId ? [subfolderContentMenuRow()] : []),
+      ...(data.targetFolderId ? folderColorMenuRows(data.targetFolderId) : []),
+      ...(data.targetFolderId ? removeFolderMenuRows(data.targetFolderId, { selectNext: true }) : [])
     ].join('');
   }
   if (data.kind === 'folder') {
@@ -5870,9 +8501,13 @@ function contextMenuMarkup(data) {
       revealInPaneMenuMarkup(data),
       restoreFolderCoverMenu(data.folderId),
       ...(window.eagleMV.moveFolder ? [contextMenuRow({ icon: 'folder', label: '移动文件夹本身…', action: 'move-folder-node', payload: { folderId: data.folderId } })] : []),
+      ...(window.eagleMV.copyFolder ? [contextMenuRow({ icon: 'copy', label: '复制文件夹…', action: 'copy-folder-node', payload: { folderId: data.folderId } })] : []),
       contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename-folder', payload: { folderId: data.folderId } }),
       '<div class="context-menu-separator"></div>',
-      contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } })
+      contextMenuRow({ icon: 'folder', label: '新建子文件夹', action: 'create-folder', payload: { parentId: data.folderId, subfolder: true, paneId: data.paneId } }),
+      subfolderContentMenuRow(),
+      ...folderColorMenuRows(data.folderId),
+      ...removeFolderMenuRows(data.folderId, { selectNext: false })
     ].join('');
   }
   if (data.kind === 'workspace') {
@@ -5886,6 +8521,9 @@ function contextMenuMarkup(data) {
       '<div class="context-menu-separator"></div>',
       ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', action: 'import', disabled: !state.connected || state.importing })] : []),
       contextMenuRow({ icon: 'refresh', label: '刷新所有分栏', action: 'refresh-all', disabled: !state.connected }),
+      '<div class="context-menu-separator"></div>',
+      contextMenuRow({ icon: 'more', label: '排序方式', submenu: sortMenuMarkup(data.paneId) }),
+      contextMenuRow({ icon: 'layoutJustified', label: '布局', submenu: viewModeMenuMarkup(data.paneId) }),
       contextMenuRow({ icon: 'layoutGrid', label: '分栏布局', submenu: paneLayoutMenuMarkup(data.paneId) })
     ].join('');
   }
@@ -5902,11 +8540,15 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'copy', label: '从剪贴板设置…', action: 'thumbnail-clipboard' }),
       contextMenuRow({ label: '取消自定义：接口尚不支持', action: 'thumbnail-clear' })
     ].join('') })] : []),
-    contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename', disabled: !one }),
+    // Eagle: 重命名 for one item, 重命名 N 个项目... (batch rename) for several.
+    one
+      ? contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename' })
+      : contextMenuRow({ icon: 'rename', label: `重命名 ${data.ids.length.toLocaleString()} 个项目...`, shortcut: '⌘ R', action: 'batch-rename' }),
     contextMenuRow({ icon: 'copy', label: one ? '复制素材名称' : `复制 ${data.ids.length} 个素材名称`, action: 'copy-name' }),
     contextMenuRow({ icon: 'tag', label: '添加标签', submenu: contextTagPicker('add-tag', '搜索或输入标签…') }),
     contextMenuRow({ icon: 'copy', label: '复制标签', shortcut: '⌘ ⇧ C', action: 'copy-tags' }),
     contextMenuRow({ icon: 'tag', label: '粘贴标签', shortcut: '⌘ ⇧ V', action: 'paste-tags', disabled: !state.copiedTags.length }),
+    contextMenuRow({ icon: 'remove', label: '清除标签', action: 'clear-tags' }),
     contextMenuRow({ icon: 'more', label: '设置评分', submenu: ratingEntries }),
     contextMenuRow({ icon: 'tag', label: '标签颜色', submenu: contextTagPicker('tag-color') })
   ].join('');
@@ -6005,7 +8647,9 @@ async function navigateToCurrentEaglePath() {
 
 function contextMenuAriaLabel(kind) {
   if (kind === 'new-window-menu') return '新窗口位置';
+  if (kind === 'list-columns') return '列表显示的列';
   if (kind === 'new-menu') return '新建项目';
+  if (kind === 'sidebar-folders') return '文件夹操作菜单';
   return '素材操作菜单';
 }
 
@@ -6033,8 +8677,11 @@ function showContextMenuAt(x, y, data) {
     libraryPath: state.library?.path, coverRevisions: state.localFolderCovers.covers };
   const menu = $('#contextMenu');
   menu.setAttribute('aria-label', contextMenuAriaLabel(data.kind));
-  menu.innerHTML = contextMenuMarkup(state.contextMenu)
-    + ((!data.kind || ['workspace', 'folder', 'sidebar', 'smart-folder', 'items', 'item'].includes(data.kind)) ? swapPanesMenuMarkup() : '');
+  const body = contextMenuMarkup(state.contextMenu);
+  const swap = (!data.kind || ['workspace', 'folder', 'sidebar', 'smart-folder', 'items', 'item'].includes(data.kind)) ? swapPanesMenuMarkup() : '';
+  // A folder menu ends with its colour dots; keep them a block of their own.
+  const endsWithColors = /<div class="context-menu-colors"[^]*<\/button><\/div>$/.test(body);
+  menu.innerHTML = body + (swap && endsWithColors ? '<div class="context-menu-separator"></div>' : '') + swap;
   menu.classList.remove('hidden');
   // Narrow screens get a bottom sheet instead of a cursor-anchored panel: the
   // menu is 294px wide and its submenus fly out another 270px, which on a
@@ -6052,18 +8699,24 @@ function showContextMenuAt(x, y, data) {
   menu.style.top = `${Math.max(8, y)}px`;
   requestAnimationFrame(() => {
     const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
-    const targets = menu.querySelector('.pane-target-options');
-    if (targets) {
-      const submenu = targets.parentElement;
-      const row = submenu.parentElement.getBoundingClientRect();
-      const width = parseFloat(getComputedStyle(submenu).width);
-      const flip = row.right + width > window.innerWidth - 8;
-      submenu.style.left = flip ? 'auto' : 'calc(100% - 2px)';
-      submenu.style.right = flip ? 'calc(100% - 2px)' : 'auto';
-    }
+    const position = window.EagleMVContextMenuPosition.menuPosition({ x, y }, rect, { width: window.innerWidth, height: window.innerHeight });
+    menu.style.left = `${position.left}px`;
+    menu.style.top = `${position.top}px`;
   });
+}
+
+// Submenus are fixed-positioned so the scrolling menu cannot clip them; each
+// one is measured when it opens and kept inside the window.
+function placeContextSubmenu(row) {
+  const menu = $('#contextMenu');
+  if (!row || menu.classList.contains('context-menu-sheet')) return;
+  const submenu = row.querySelector(':scope > .context-submenu');
+  if (!submenu) return;
+  const size = submenu.getBoundingClientRect();
+  const position = window.EagleMVContextMenuPosition.submenuPosition(row.getBoundingClientRect(), size,
+    { width: window.innerWidth, height: window.innerHeight });
+  submenu.style.left = `${position.left}px`;
+  submenu.style.top = `${position.top}px`;
 }
 
 function showContextMenu(event, data) {
@@ -6078,6 +8731,12 @@ function openSidebarContextMenu(target, point) {
     return;
   }
   const targetFolderId = target.closest?.('[data-folder-id]')?.dataset.folderId || null;
+  // A row of several selected folders opens Eagle's menu for all of them.
+  const selection = viewFolderSelection();
+  if (targetFolderId && selection?.length > 1 && selection.includes(targetFolderId)) {
+    showContextMenuAt(point.x, point.y, { kind: 'sidebar-folders', ids: [], folderIds: [...selection], paneId: state.activePaneId });
+    return;
+  }
   showContextMenuAt(point.x, point.y, {
     kind: 'sidebar',
     ids: [],
@@ -6090,13 +8749,20 @@ function openSidebarContextMenu(target, point) {
 async function executeContextAction(action, payload) {
   const data = state.contextMenu;
   if (!data) return;
+  if (action.startsWith('tm-')) return executeTagManagerMenuAction(action, payload, data);
   if (action === 'swap-panes') return swapRecentPanes(payload.paneIds);
+  if (action === 'inspector-export') return exportItems(data.ids || []);
   if (action === 'set-folder-cover') return setFolderCover(payload.folderId, data.ids?.[0], data);
   if (action === 'reset-folder-cover') return setFolderCover(payload.folderId, null, data);
   if (action === 'reveal-in-pane') return revealInPane(data.paneReveal, payload.paneId);
   if (action === 'site-import') return siteFeatureUI().open();
   if (action === 'pinterest-help') return window.eagleMV.openExternal('https://docs-cn.eagle.cool/article/828-import-from-pinterest');
   if (action === 'move-folder-node') return selectedFeatureUI().moveFolder(payload.folderId);
+  if (action === 'move-folder-nodes') return selectedFeatureUI().moveFolders(payload.folderIds);
+  if (action === 'batch-rename-folders') return openFolderBatchRename(payload.folderIds);
+  if (action === 'set-folders-color') return setFoldersColor(payload.folderIds, payload.color);
+  if (action === 'remove-folder-nodes') return removeFoldersById(payload.folderIds, { paneId: data.paneId });
+  if (action === 'copy-folder-node') return selectedFeatureUI().copyFolder(payload.folderId);
   if (action === 'save-smart-folder') return saveCurrentViewAsSmartFolder();
   if (action === 'rename-smart-folder') return renameSmartFolder(payload.id);
   if (action === 'remove-smart-folder') return removeSmartFolder(payload.id);
@@ -6107,8 +8773,25 @@ async function executeContextAction(action, payload) {
   if (action === 'new-window-root') return openNewWindowAt('root');
   if (action === 'new-window-eagle') return openNewWindowAt('eagle');
   if (action === 'rename-folder') return renameFolderById(payload.folderId || data.folderId);
+  if (action === 'remove-folder-node') return removeFolderById(payload.folderId, { selectNext: Boolean(payload.selectNext), paneId: data.paneId });
+  if (action === 'set-folder-color') return setFolderColor(payload.folderId, payload.color);
+  if (action === 'toggle-subfolder-content') return setCardDisplay({ subfolderContent: !cardDisplay.subfolderContent });
   if (action === 'import') return importFiles();
+  if (action === 'import-folders') return importFolders();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
+  if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
+  if (action === 'toggle-list-column') return toggleListColumn(payload.key);
+  if (action === 'set-sort-dir') {
+    const paneId = payload.paneId || data.paneId;
+    if (paneId && !activatePane(paneId)) return false;
+    return applySortDirection(payload.dir);
+  }
+  if (action === 'set-view-mode') {
+    const paneId = payload.paneId || data.paneId || state.activePaneId;
+    if (!activatePane(paneId)) return false;
+    setPaneViewMode(payload.mode, paneId);
+    return true;
+  }
   if (action === 'set-pane-layout') {
     const paneId = payload.paneId || data.paneId;
     if (paneId && !activatePane(paneId)) return false;
@@ -6123,23 +8806,11 @@ async function executeContextAction(action, payload) {
   const firstId = ids[0];
   if (action === 'open-window') return openSelectionInNewWindow(ids);
   if (action === 'open-default') return openWithDefault(firstId);
-  if (action === 'open-other') {
-    return window.eagleMV.openOther({ ids: [firstId] }).then(result => {
-      if (result?.message) toast(result.message, 4000);
-      else if (result?.missing) toast(`已打开 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
-    });
-  }
+  if (action === 'open-other') return openWithOtherApp(firstId);
   if (action === 'finder') return showItemInFileManager(firstId);
   if (action === 'open-item-location') return openItemLocation(payload.id || firstId, payload.folderId ?? null, { paneId: data.paneId });
   if (action === 'copy-files') return copySelectedFiles(ids);
-  if (action === 'export') {
-    return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
-      if (result?.canceled) return;
-      toast(result?.downloaded
-        ? `已开始下载 ${result?.count || 0} 个文件${(result?.count || 0) > 1 ? '（打包为 zip）' : ''}`
-        : `已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
-    });
-  }
+  if (action === 'export') return exportItems(ids);
   if (action === 'share') {
     return window.eagleMV.shareFiles({ ids }).then(result => {
       if (!result?.ok) toast(result?.message || '无法打开分享菜单', 4000);
@@ -6150,7 +8821,8 @@ async function executeContextAction(action, payload) {
   if (action === 'copy-path') return copyItemPath(firstId);
   if (action === 'copy-tags') return copyTagsFromItems(ids);
   if (action === 'paste-tags') return pasteTagsToItems(ids);
-  if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId });
+  if (action === 'clear-tags') return clearTagsOnItems(ids);
+  if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId, keepSelection: Boolean(data.keepSelection) });
   if (action === 'move-folder') return moveSelectionToFolder({ ids, folderId: payload.folderId });
   if (action === 'remove-folder') return removeSelectionFromFolder({ ids, folderId: state.currentView.id });
   if (action === 'last-folder') return addSelectionToFolder({ ids, folderId: state.recentFolders[0]?.id });
@@ -6158,8 +8830,8 @@ async function executeContextAction(action, payload) {
   if (action === 'tag-color') {
     const tag = String(payload.tag || '').trim();
     if (!tag) return;
-    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, state.tagColors[tag] || '#0072ef');
-    if (color !== null) return updateTagColor(tag, color.trim());
+    const color = await askTagColor(tag);
+    if (color !== null) return updateTagColor(tag, color);
     return;
   }
   if (action === 'rating') return setSelectionRating({ ids, rating: payload.rating });
@@ -6167,11 +8839,220 @@ async function executeContextAction(action, payload) {
   if (action === 'rename') {
     return renameItem(itemById(firstId));
   }
+  if (action === 'batch-rename') return openItemBatchRename(ids);
   if (action === 'trash') return setTrash(ids, !data.allDeleted);
+}
+
+function openWithOtherApp(id) {
+  return window.eagleMV.openOther({ ids: [id] }).then(result => {
+    if (result?.message) toast(result.message, 4000);
+    else if (result?.missing) toast(`已打开 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
+  });
+}
+
+function exportItems(ids) {
+  return window.eagleMV.exportFiles({ ids, libraryPath: state.library?.path }).then(result => {
+    if (result?.canceled) return;
+    toast(result?.downloaded
+      ? `已开始下载 ${result?.count || 0} 个文件${(result?.count || 0) > 1 ? '（打包为 zip）' : ''}`
+      : `已导出 ${result?.count || 0} 个文件${result?.missing ? ` · ${result.missing} 个原文件缺失` : ''}`, 4000);
+  });
+}
+
+// Menu-bar commands (command:menu). Each one checks what the matching
+// keyboard shortcut checks, so a click on the menu item and the key do the
+// same thing — and a key the page left alone (no selection, preview open)
+// stays a no-op after main hands it to the menu.
+function runMenuCommand(payload = {}) {
+  const command = payload.command;
+  const previewOpen = !$('#previewModal').classList.contains('hidden');
+  const selectedIds = selectedActionIds();
+  const activeItemId = previewOpen && state.previewId ? state.previewId : selectedIds[0];
+  const singleItemId = state.previewId || (state.selected.size === 1 ? [...state.selected][0] : null);
+  const report = error => toast(`操作失败：${error.message}`, 4000);
+  switch (command) {
+    case 'switch-library': return openLibraryPopover();
+    case 'new-menu': $('#newButton')?.click(); return;
+    case 'import-folders': importFolders(); return;
+    case 'export':
+      if (hasCapability('export') && selectedIds.length) exportItems(selectedIds).catch(report);
+      return;
+    case 'copy-items': {
+      const ids = selectedActionIds({ includePreview: previewOpen });
+      if (hasCapability('clipboardFiles') && ids.length) copySelectedFiles(ids).catch(error => toast(`复制失败：${error.message}`, 4000));
+      return;
+    }
+    case 'select-all': selectAllItems(); return;
+    case 'copy-path':
+      if (hasCapability('copyPath') && activeItemId) copyItemPath(activeItemId).catch(error => toast(`复制路径失败：${error.message}`, 4000));
+      return;
+    case 'copy-name': {
+      const names = selectedActionIds({ includePreview: previewOpen }).map(id => itemById(id)?.name || '').filter(Boolean);
+      if (names.length) copyTextWithFeedback(names.join('\n'));
+      return;
+    }
+    case 'duplicate':
+      if (!previewOpen && selectedIds.length) duplicateSelection(selectedIds).catch(error => toast(`创建副本失败：${error.message}`, 4000));
+      return;
+    case 'thumbnail':
+      if (window.eagleMV.thumbnailOperation && ['refresh', 'file', 'clipboard'].includes(payload.operation) && selectedIds.length) {
+        thumbnailFeatureUI().run(payload.operation, selectedIds);
+      }
+      return;
+    case 'move-current-folder': {
+      const folderId = state.selectedFolderCard || (state.currentView.kind === 'folder' ? state.currentView.id : null);
+      if (folderId && window.eagleMV.moveFolder) selectedFeatureUI().moveFolder(folderId);
+      return;
+    }
+    case 'remove-from-folder':
+      if (previewOpen || !selectedIds.length) return;
+      if (state.currentView.kind !== 'folder') toast('请在具体文件夹中使用“从文件夹中移除”', 3500);
+      else removeSelectionFromFolder({ ids: selectedIds, folderId: state.currentView.id });
+      return;
+    case 'trash':
+      if (!previewOpen && selectedIds.length) setTrash(selectedIds, true);
+      else if (!previewOpen) requestFolderRemovalShortcut();
+      return;
+    case 'search': $('#searchInput').focus(); return;
+    case 'search-all':
+      if (navigate({ kind: 'all' }) !== false) requestAnimationFrame(() => $('#searchInput').focus());
+      return;
+    case 'toggle-filter': $('#filterButton').click(); return;
+    case 'reset-filter': clearFilters(); return;
+    case 'folder-picker':
+      if (previewOpen || !selectedIds.length) return;
+      if (payload.action === 'move-folder' && state.currentView.kind !== 'folder') {
+        toast('请在具体文件夹中使用“移动到文件夹”', 3500);
+        return;
+      }
+      showFolderAssignmentPicker(selectedIds, { action: payload.action === 'move-folder' ? 'move-folder' : 'add-folder' });
+      return;
+    case 'last-folder': {
+      if (previewOpen || !selectedIds.length) return;
+      const folderId = state.recentFolders[0]?.id;
+      if (folderId) addSelectionToFolder({ ids: selectedIds, folderId });
+      else toast('还没有上次使用的文件夹', 3000);
+      return;
+    }
+    case 'add-tag': focusSelectionTagInput(previewOpen); return;
+    case 'rating': {
+      const rating = Math.max(0, Math.min(5, Number(payload.rating) || 0));
+      if (previewOpen) ratePreviewItem(rating);
+      else if (state.selected.size) setSelectionRating({ ids: [...state.selected], rating });
+      return;
+    }
+    case 'copy-tags':
+      if (!previewOpen && selectedIds.length) copyTagsFromItems(selectedIds);
+      return;
+    case 'paste-tags':
+      if (!previewOpen && selectedIds.length) pasteTagsToItems(selectedIds);
+      return;
+    case 'clear-tags':
+      if (!previewOpen && selectedIds.length) clearTagsOnItems(selectedIds);
+      return;
+    case 'toggle-pin': {
+      if (previewOpen || !selectedIds.length) return;
+      if (state.currentView.kind !== 'folder') { toast('请在具体文件夹中使用“置顶”', 3500); return; }
+      const items = selectedIds.map(itemById).filter(Boolean);
+      setPinned(selectedIds, !(items.length && items.every(itemIsPinned)));
+      return;
+    }
+    case 'view-mode': setPaneViewMode(payload.mode, state.activePaneId); return;
+    case 'pane-layout': renderPaneLayout(payload.layout, { refresh: true }); return;
+    case 'scroll':
+      if (!previewOpen) scrollGridByKey(payload.key);
+      return;
+    case 'zoom': {
+      const step = Number(payload.step) || 0;
+      if (previewOpen && previewImage()) {
+        if (step) changePreviewZoom(step * .25);
+        else setPreviewZoom(state.previewZoom.mode === 'actual' ? 'fit' : 'actual');
+      } else if (step) changeThumbnailSize(step);
+      else resetThumbnailSize();
+      return;
+    }
+    case 'grayscale':
+      if (previewOpen) togglePreviewGrayscale();
+      return;
+    case 'open-window':
+      if (singleItemId) openSelectionInNewWindow([singleItemId]);
+      return;
+    case 'open-default':
+      if (hasCapability('openDefault') && singleItemId) openWithDefault(singleItemId);
+      return;
+    case 'open-other':
+      if (hasCapability('openOther') && activeItemId) openWithOtherApp(activeItemId).catch(report);
+      return;
+    case 'finder':
+      if (hasCapability('finder') && activeItemId) showItemInFileManager(activeItemId);
+      return;
+    case 'open-url': {
+      const url = String(itemById(activeItemId)?.url || '').trim();
+      if (/^https?:\/\//i.test(url)) window.eagleMV.openExternal(url).catch(error => toast(`打开来源失败：${error.message}`, 4000));
+      return;
+    }
+    case 'toggle-panel':
+      if (payload.panel === 'both') {
+        if (isCompactLayout()) return;
+        const show = !(state.sidebarVisible || state.inspectorVisible);
+        state.sidebarVisible = show;
+        state.inspectorVisible = show;
+        renderPanels();
+      } else if (payload.panel === 'sidebar' || payload.panel === 'inspector') {
+        togglePanel(payload.panel);
+      }
+      return;
+    case 'card-display':
+      if (['name', 'meta', 'annotation', 'subfolderContent'].includes(payload.key)) setCardDisplay({ [payload.key]: !cardDisplay[payload.key] });
+      return;
+  }
+}
+
+// Eagle's ⌘T opens the tag field of the right panel for the selection.
+function focusSelectionTagInput(previewOpen) {
+  if (previewOpen || !state.selected.size) return;
+  if (isCompactLayout()) {
+    if (state.openDrawer !== 'inspector') { state.openDrawer = 'inspector'; renderPanels(); }
+  } else if (!state.inspectorVisible) {
+    state.inspectorVisible = true;
+    renderPanels();
+  }
+  requestAnimationFrame(() => {
+    const input = ['#itemTagInput', '#batchTagInput'].map(selector => $(selector))
+      .find(element => element && !element.disabled && element.getClientRects().length);
+    input?.focus();
+  });
+}
+
+// Main asks this before running a menu command (MENU_FOCUS_PROBE): a shortcut
+// typed into a field is ignored, and copy / select-all stay with the text.
+window.eagleMVMenuFocus = () => {
+  const target = document.activeElement;
+  const editable = isEditableElement(target) || Boolean(target?.closest?.('iframe, webview')) || Boolean(state.inspectorEditing) ||
+    Boolean(document.querySelector('.web-copy-dialog[open], .feature-dialog[open]'));
+  const selection = window.getSelection?.();
+  const textSelected = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+  return {
+    editable,
+    nativeCopy: editable || textSelected,
+    nativeSelectAll: editable || textSelected || Boolean(target?.closest?.('#generationMetadataSection, .generation-metadata'))
+  };
+};
+
+// The menu bar ticks the focused window's view mode and pane layout; main
+// keeps the last report per window.
+function reportMenuState() {
+  const report = { viewMode: state.viewMode || 'justified', paneLayout: $('#paneLayout')?.dataset.layout || 'single' };
+  const key = `${report.viewMode}|${report.paneLayout}`;
+  if (reportMenuState.last === key) return;
+  reportMenuState.last = key;
+  window.eagleMV.reportMenuState?.(report);
 }
 
 function closeFolderDialog(name = null) {
   $('#folderDialog').classList.add('hidden');
+  $('#folderDialog').classList.remove('palette-mode');
+  $('#folderDialogPalette').replaceChildren();
   const resolve = state.folderDialogResolve;
   state.folderDialogResolve = null;
   if (resolve) resolve(name);
@@ -6246,6 +9127,45 @@ function requestNameDialog({ title, initialValue = '', submitLabel = '确认', f
   return new Promise(resolve => { state.folderDialogResolve = resolve; });
 }
 
+// Electron has no window.prompt(): it returns null without showing anything.
+// Text questions reuse the in-app name dialog instead. Resolves to null when
+// cancelled and to the trimmed text (possibly empty when allowed) otherwise.
+// The in-app dialog showing the palette instead of the text field. Resolves
+// to the picked colour ('' for 无, which clears) or null when cancelled.
+function askTagColor(tag) {
+  if (state.folderDialogResolve) {
+    toast('请先完成当前的输入', 2800);
+    return Promise.resolve(null);
+  }
+  const dialog = $('#folderDialog');
+  dialog.classList.add('palette-mode');
+  $('#folderDialogTitle').textContent = `设置标签“${tag}”颜色`;
+  $('#folderDialogPalette').innerHTML = tagColorPaletteMarkup(tag, state.tagColors[tag]);
+  dialog.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    const palette = $('#folderDialogPalette');
+    (palette.querySelector('[aria-checked="true"]') || palette.querySelector('button'))?.focus();
+  });
+  return new Promise(resolve => { state.folderDialogResolve = resolve; });
+}
+
+async function askText({ title, fieldLabel, initialValue = '', placeholder = '', submitLabel = '确定', allowEmpty = false, maxLength = 4000 }) {
+  if (state.folderDialogResolve) {
+    toast('请先完成当前的输入', 2800);
+    return null;
+  }
+  const input = $('#folderNameInput');
+  const defaultMaxLength = input.maxLength;
+  state.folderDialogAllowEmpty = allowEmpty;
+  input.maxLength = maxLength;
+  try {
+    return await requestNameDialog({ title, initialValue, submitLabel, fieldLabel, placeholder });
+  } finally {
+    state.folderDialogAllowEmpty = false;
+    input.maxLength = defaultMaxLength;
+  }
+}
+
 function folderCreationParentForPane(paneId = state.activePaneId) {
   const pane = paneById(paneId);
   return pane?.currentView.kind === 'folder' ? pane.currentView.id : null;
@@ -6270,6 +9190,7 @@ async function revealCreatedFolder({ paneId, viewKey, libraryPath, parentId, id 
     : pane.currentView.kind === 'root';
   if (!destinationIsVisible) return false;
   pane.selected.clear();
+  setSubfoldersCollapsed(false);
   pane.selectedFolderCard = id;
   withActivePane(paneId, () => {
     // The ordering reconciliation emits a second library snapshot. Its
@@ -6453,6 +9374,74 @@ async function renameItem(item) {
   }
 }
 
+// Eagle's batch rename for several items (OPEN_RENAME type IMAGE): the
+// same dialog as for tags, starting from the last name used (else
+// 新名字 - %N), with thumbnails; ten or more ask first. Each item is renamed
+// through Eagle with the usual conflict check; a name changed elsewhere
+// meanwhile is left alone and reported.
+const ITEM_BATCH_RENAME_NAME_KEY = 'eaglemv.batchRename.lastName';
+async function openItemBatchRename(ids) {
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  const libraryPath = state.library?.path;
+  if (!pane || !libraryPath || !state.connected || ids.length < 2) return false;
+  if (!confirmDiscardChanges()) return false;
+  const wanted = new Set(ids);
+  const loaded = withActivePane(paneId, () => sortedItems()).filter(item => wanted.has(item.id));
+  const missing = ids.filter(id => !pane.itemMap?.has(id));
+  let fetched = [];
+  if (missing.length) {
+    const outcome = await runForegroundOperation('正在读取所选素材…', { key: `batch-rename-read:${paneId}` }, () =>
+      settleWithConcurrency(missing, id => window.eagleMV.getItem(id), 6));
+    fetched = (outcome || []).filter(result => result?.ok && result.value).map(result => result.value);
+  }
+  const items = [...loaded, ...fetched];
+  if (items.length < 2) return false;
+  let initialPattern = '新名字 - %N';
+  try { initialPattern = localStorage.getItem(ITEM_BATCH_RENAME_NAME_KEY) || initialPattern; } catch {}
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items,
+    kind: 'file',
+    initialPattern,
+    historyKey: 'eaglemv.batchRename.findHistory.IMAGE',
+    folderNamesOf: item => (item.folders || []).map(id => findFolder(state.library?.folders, id)?.name).filter(Boolean),
+    thumbnailOf: item => mediaURL('thumb', item.id),
+    onRename: async (changes, total, { pattern }) => {
+      if (pattern) try { localStorage.setItem(ITEM_BATCH_RENAME_NAME_KEY, pattern); } catch {}
+      if (!changes.length) return;
+      if (total >= 10 && !confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      if (state.library?.path !== libraryPath) return;
+      let operationToken = beginForegroundOperation('正在重命名素材…', { key: `batch-rename:${paneId}` });
+      if (!operationToken) return;
+      setSyncStatus('正在重命名…');
+      try {
+        const next = new Map(changes.map(change => [change.item.id, change]));
+        const outcome = await runItemBatch([...next.keys()], async id => {
+          const change = next.get(id);
+          const result = await window.eagleMV.mutate({ id, patch: { name: change.after }, base: { name: change.before }, libraryPath });
+          if (result?.conflict) throw new Error('名称已在其他窗口或 Eagle 中修改');
+          if (!result?.ok) throw new Error('重命名未完成');
+          return result;
+        }, 'Eagle 重命名请求超时');
+        endForegroundOperation(operationToken);
+        operationToken = null;
+        await refresh({ reset: true, preserveScroll: true, paneId });
+        // Eagle keeps this notice 10 s; its 撤销 gives every item its name back.
+        const edits = outcome.succeeded.map(id => ({ id, patch: { name: next.get(id).before }, base: { name: next.get(id).after } }));
+        toast(outcome.failed.length
+          ? `${outcome.succeeded.length} 个项目已重命名。 · ${outcome.failed.length} 个未重命名${batchFailureReason(outcome)}`
+          : `${outcome.succeeded.length} 个项目已重命名。`, 10000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
+      } catch (error) {
+        toast(`重命名失败：${error.message}`, 4000);
+      } finally {
+        setSyncStatus('所有窗口已同步');
+        endForegroundOperation(operationToken);
+      }
+    }
+  });
+  return true;
+}
+
 let selectedFeatureController;
 let siteFeatureController;
 function siteFeatureUI() {
@@ -6492,7 +9481,9 @@ function selectedFeatureUI() {
       paneId: state.activePaneId, ids: [...state.selected] }),
     canStart: () => state.connected && confirmDiscardChanges(),
     refresh: () => refreshAllPanes({ reset: true, preserveScroll: true }),
-    notify: toast
+    notify: toast,
+    // This window's own store: its cached parse sees the copies at once.
+    cloneSortMemory: (libraryPath, folderMap) => sortMemory.cloneFolders(libraryPath, folderMap)
   });
   return selectedFeatureController;
 }
@@ -6503,23 +9494,170 @@ async function renameFolderById(folderId) {
   if (!confirmDiscardChanges()) return;
   const nextName = await requestNameDialog({ title: '重命名文件夹', initialValue: folder.name || '', submitLabel: '重命名' });
   if (nextName === null || nextName === folder.name) return;
+  return renameFolderTo(folder, nextName);
+}
+
+// Where Eagle's removeFolder goes after deleting a folder: the sibling now in
+// its place, else the one before, else the first; with no siblings left, the
+// parent; at the top level, 全部. Siblings in the order the sidebar shows.
+function folderViewAfterRemoval(folderId) {
+  const trail = findFolderPath(state.library?.folders || [], folderId);
+  if (!trail.length) return { kind: 'all' };
+  const parent = trail.length > 1 ? trail.at(-2) : null;
+  const view = parent ? { kind: 'folder', id: parent.id } : { kind: 'root' };
+  const siblings = window.EagleMVManualOrder.sort(parent ? parent.children || [] : state.library.folders, manualOrder(view, 'folders'));
+  const index = siblings.findIndex(folder => folder.id === folderId);
+  const rest = siblings.filter(folder => folder.id !== folderId);
+  const next = rest[index] || rest[index - 1] || rest[0];
+  if (next) return { kind: 'folder', id: next.id };
+  return parent ? { kind: 'folder', id: parent.id } : { kind: 'all' };
+}
+
+function subtreeFolderIds(folder, ids = new Set()) {
+  if (!folder?.id) return ids;
+  ids.add(folder.id);
+  for (const child of folder.children || []) subtreeFolderIds(child, ids);
+  return ids;
+}
+
+// Eagle asks only when the folder holds items or subfolders, with
+// "把文件夹内项目丢到回收站" ticked each time, focus on 确认删除.
+function chooseFolderRemoval(folder) {
+  $('#trashDialogTitle').textContent = '删除文件夹';
+  // Several selected folders: Eagle's dialog.removeFolder.descMultiple.
+  $('#trashDialogMessage').textContent = folder.count
+    ? `这个操作无法进行复原，确认要删除 ${folder.count} 个文件夹吗？`
+    : `这个操作无法进行复原，确认要删除“${folder.name || '未命名文件夹'}”文件夹吗？`;
+  $('#trashRemoveButton').classList.add('hidden');
+  $('#trashDeleteButton').textContent = '确认删除';
+  $('#trashDialogCheckbox').checked = true;
+  $('#trashDialogCheck').classList.remove('hidden');
+  $('#trashDialog').classList.remove('hidden');
+  $('#trashDeleteButton').focus();
+  return new Promise(resolve => {
+    state.trashDialogResolve = choice => resolve(choice === 'delete' ? { isDeleteImages: $('#trashDialogCheckbox').checked } : null);
+  });
+}
+
+// Eagle's 删除文件夹 (sidebar, subfolder card, ⌘⌫). The API has no delete;
+// the main process runs Eagle's own removeFolder with the answers given here.
+async function removeFolderById(folderId, { selectNext = false, paneId = state.activePaneId } = {}) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !state.connected || !window.eagleMV.removeFolder) return false;
+  // Eagle will not delete a locked folder, and MultiView cannot unlock one.
+  if (folder.password) {
+    toast('该文件夹已加密，请在 Eagle 中解锁后删除', 3600);
+    return false;
+  }
+  const libraryPath = state.library?.path;
+  const removed = subtreeFolderIds(folder);
+  const target = folderViewAfterRemoval(folder.id);
+  const showing = pane => pane.currentView.kind === 'folder' && removed.has(pane.currentView.id);
+  const moving = state.panes.filter(pane => showing(pane) || (selectNext && pane.id === paneId));
+  if (moving.length && !confirmDiscardChanges()) return false;
+  let isDeleteImages = true;
+  if ((Number(folder.imageCount) || 0) > 0 || (folder.children || []).length > 0) {
+    const choice = await chooseFolderRemoval(folder);
+    if (!choice) return false;
+    isDeleteImages = choice.isDeleteImages;
+    // Eagle then confirms when 50 or more items are affected.
+    const affected = Number.isFinite(folder.descendantImageCount) ? folder.descendantImageCount : Number(folder.imageCount) || 0;
+    if (affected >= 50 && !confirm(`批量操作确认\n\n这个操作会影响 ${affected.toLocaleString()} 个文件，确定要继续吗？`)) return false;
+  }
+  const operationToken = beginForegroundOperation('正在删除文件夹…', { key: `remove-folder:${libraryPath}:${folder.id}` });
+  if (!operationToken) return false;
+  setSyncStatus('正在删除…');
+  // The library update may reach this window before the reply; it sends
+  // panes on the deleted folders where Eagle would go, not to the root.
+  for (const id of removed) state.folderRemovalRedirects.set(id, target);
+  setTimeout(() => { for (const id of removed) if (state.folderRemovalRedirects.get(id) === target) state.folderRemovalRedirects.delete(id); }, 15000);
+  try {
+    const result = await window.eagleMV.removeFolder({ id: folder.id, baseName: folder.name, isDeleteImages, libraryPath });
+    if (result?.missing) {
+      toast('这个文件夹已不存在，已刷新', 3500);
+      scheduleRefresh();
+      return false;
+    }
+    if (result?.conflict) {
+      toast(`这个文件夹已在 Eagle 或另一个窗口中改名为“${result.current?.name || '未命名'}”，未删除；请确认后重试`, 5000);
+      scheduleRefresh();
+      return false;
+    }
+    if (!result?.ok) throw new Error('删除未完成');
+    for (const pane of state.panes) {
+      if (pane.selectedFolderCard && removed.has(pane.selectedFolderCard)) pane.selectedFolderCard = null;
+      if (showing(pane) || (selectNext && pane.id === paneId)) {
+        withActivePane(pane.id, () => navigate(target, { skipDiscard: true }) !== false
+          || navigate({ kind: 'all' }, { skipDiscard: true }));
+      }
+    }
+    if (!state.selected.size) renderInspector();
+    // Eagle keeps this notice 7 s; its 撤销 is Eagle's own restore, which
+    // MultiView runs, then opens the folder again as Eagle does (P3-05).
+    const undo = result.undoToken && window.eagleMV.restoreRemovedFolder ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销删除…', { key: `remove-folder:${libraryPath}:${folder.id}` }, () =>
+        window.eagleMV.restoreRemovedFolder({ id: folder.id, undoToken: result.undoToken, libraryPath }));
+      const deadline = Date.now() + 3000;
+      while (!findFolder(state.library?.folders, folder.id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
+      if (findFolder(state.library?.folders, folder.id) && paneById(paneId)) {
+        revealFolderPath(folder.id);
+        withActivePane(paneId, () => navigate({ kind: 'folder', id: folder.id }, { skipDiscard: true }));
+      }
+    } : null;
+    toast(`“${folder.name || '未命名文件夹'}”已删除。`, 7000, undo ? { undo } : {});
+    return true;
+  } catch (error) {
+    toast(`删除文件夹失败：${error.message}`, 6000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// ⌘⌫ with no item selected: a selected subfolder card, else the folder row
+// focused in the sidebar (Eagle: sidebar focus deletes the current folder).
+function requestFolderRemovalShortcut() {
+  if (state.selectedFolderCard) {
+    removeFolderById(state.selectedFolderCard, { selectNext: false });
+    return true;
+  }
+  const row = document.activeElement?.closest?.('#folderTree [data-folder-id]');
+  const selection = viewFolderSelection();
+  if (row?.dataset.folderId && selection?.length > 1 && selection.includes(row.dataset.folderId)) {
+    removeFoldersById(selection);
+    return true;
+  }
+  if (row?.dataset.folderId) {
+    removeFolderById(row.dataset.folderId, { selectNext: true });
+    return true;
+  }
+  return false;
+}
+
+// Shared by the rename dialog and the inspector's name field; baseName is the
+// name the user started from, for the cross-window conflict check.
+async function renameFolderTo(folder, nextName, { baseName = folder.name } = {}) {
   const libraryPath = state.library?.path;
   const operationToken = beginForegroundOperation('正在重命名文件夹…', { key: `rename-folder:${libraryPath}:${folder.id}` });
-  if (!operationToken) return;
+  if (!operationToken) return false;
   setSyncStatus('正在重命名…');
   try {
     let result = await window.eagleMV.mutateFolder({
       id: folder.id,
       name: nextName,
-      baseName: folder.name,
+      baseName,
       libraryPath
     });
+    let replacedName = baseName;
     if (result?.conflict) {
       const overwrite = confirm(`这个文件夹已在 Eagle 或另一个窗口中重命名为“${result.current?.name || '未命名'}”。\n\n按“确定”覆盖为当前名称；按“取消”载入最新名称。`);
       if (!overwrite) {
         scheduleRefresh();
-        return;
+        return false;
       }
+      replacedName = result.current?.name || folder.name;
       result = await window.eagleMV.mutateFolder({
         id: folder.id,
         name: nextName,
@@ -6545,17 +9683,334 @@ async function renameFolderById(folderId) {
     revealFolderPath(folder.id);
     renderFolderTree();
     renderGrid({ preserveScroll: true });
-    if (state.selectedFolderCard === folder.id) renderInspector();
-    toast('文件夹已重命名');
+    if (!state.selected.size) renderInspector();
+    // Eagle: "“A”已重命名为“B”。" with 撤销 (P3-05); the undo renames back
+    // unless the name changed again meanwhile.
+    const previousName = replacedName;
+    toast(`“${previousName}”已重命名为“${nextName}”。`, 4000, { undo: async () => {
+      const current = libraryFolder(folder.id);
+      if (!current || state.library?.path !== libraryPath) throw new Error('文件夹已不在当前资源库');
+      const undone = await window.eagleMV.mutateFolder({ id: folder.id, name: previousName, baseName: nextName, libraryPath });
+      if (undone?.conflict) throw new Error(`文件夹已在别处改名为“${undone.current?.name || '未命名'}”`);
+      if (!undone?.ok) throw new Error('重命名未完成');
+      if (state.library?.folders) state.library.folders = overlayFolder(state.library.folders, folder.id, { name: previousName });
+      for (const pane of state.panes) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === folder.id) pane.viewTitle = previousName;
+      }
+      if (state.currentView.kind === 'folder' && state.currentView.id === folder.id) {
+        state.viewTitle = previousName;
+        $('#viewTitle').textContent = previousName;
+      }
+      renderLocation();
+      renderFolderTree();
+      renderGrid({ preserveScroll: true });
+    } });
+    return true;
   } finally {
     setSyncStatus('所有窗口已同步');
     endForegroundOperation(operationToken);
   }
 }
 
+// Colour and description writes (P1-12, P2-05). Eagle has no conflict
+// prompt, but another window may have changed the same field since this one
+// drew it: ask before overwriting, as a rename does.
+async function writeFolderProperties(folder, patch, { label, done, base = null }) {
+  const libraryPath = state.library?.path;
+  base ||= Object.fromEntries(Object.keys(patch).map(field => [field, folder[field] ?? '']));
+  const operationToken = beginForegroundOperation(label, { key: `folder-properties:${libraryPath}:${folder.id}` });
+  if (!operationToken) return false;
+  setSyncStatus(label);
+  try {
+    let result = await window.eagleMV.updateFolderProperties({ id: folder.id, patch, base, libraryPath });
+    if (result?.conflict) {
+      const fieldNames = { iconColor: '颜色', description: '描述' };
+      const fields = result.conflicts.map(conflict => fieldNames[conflict.field] || conflict.field).join('、');
+      const overwrite = confirm(`这个文件夹的${fields}已在 Eagle 或另一个窗口中修改。\n\n按“确定”用你的修改覆盖；按“取消”载入最新内容。`);
+      if (!overwrite) {
+        scheduleRefresh();
+        return false;
+      }
+      result = await window.eagleMV.updateFolderProperties({ id: folder.id, patch, base, force: true, libraryPath });
+    }
+    if (!result?.ok) throw new Error('修改未完成');
+    if (state.library?.folders) {
+      const confirmed = result.folder || { ...folder, ...patch };
+      state.library.folders = overlayFolder(state.library.folders, folder.id, {
+        iconColor: confirmed.iconColor || undefined,
+        description: confirmed.description ?? folder.description
+      });
+    }
+    renderFolderTree();
+    renderGrid({ preserveScroll: true });
+    if (!state.selected.size) renderInspector();
+    if (done) toast(done);
+    return true;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// With no item selected the inspector describes the selected folder card, or
+// else the view itself, as Eagle's does (P2-05): a folder's name and
+// description are editable there; every view shows its file count and size.
+let categoryShown = null;
+let categoryStatsRevision = 0;
+const categoryStatsCache = new Map();
+
+function categoryTarget() {
+  const pane = paneById(state.activePaneId);
+  const card = Boolean(state.selectedFolderCard);
+  const view = card ? { kind: 'folder', id: state.selectedFolderCard } : state.currentView;
+  if (!pane || !state.library || !view || ['tags', 'recent'].includes(view.kind)) return null;
+  // Several selected folders describe the selection, not its first folder.
+  const folder = view.kind === 'folder' && !viewFolderSelection(view) ? findFolder(state.library.folders, view.id) : null;
+  if (view.kind === 'folder' && !folder && !viewFolderSelection(view)) return null;
+  return {
+    key: `${state.library.path}|${descriptorKey(view)}`,
+    view, folder, card,
+    name: folder ? folder.name || '' : state.viewTitle,
+    locked: Boolean(folder?.password),
+    editable: Boolean(folder && !folder.password && state.connected),
+    // Count and size are of the view itself, without the search and filters.
+    query: view.kind === 'trash' ? null : paneItemQuery({ ...pane, query: createQuery() }, view)
+  };
+}
+
+function categoryStats(target) {
+  if (!target.query || target.locked || !window.eagleMV.viewStats) return null;
+  const key = `${state.library?.path}|${categoryStatsRevision}|${JSON.stringify(target.query)}`;
+  if (categoryStatsCache.has(key)) return categoryStatsCache.get(key);
+  categoryStatsCache.set(key, 'pending');
+  window.eagleMV.viewStats(target.query)
+    .then(stats => categoryStatsCache.set(key, stats || null), () => categoryStatsCache.set(key, null))
+    .finally(() => { if (categoryShown && !state.selected.size) renderCategoryInspector(); });
+  return 'pending';
+}
+
+function resizeCategoryDescription() {
+  const field = $('#categoryDescription');
+  field.style.height = 'auto';
+  field.style.height = `${Math.max(field.scrollHeight, 38)}px`;
+}
+
+function renderCategoryInspector() {
+  const target = categoryTarget();
+  $('#categoryInspector').classList.toggle('hidden', !target);
+  $('#noSelection').classList.toggle('hidden', Boolean(target));
+  if (!target) { categoryShown = null; return false; }
+  const nameField = $('#categoryName');
+  const descriptionField = $('#categoryDescription');
+  const same = categoryShown?.key === target.key;
+  // Never overwrite a field the user is typing in; a broadcast of their own
+  // earlier save would otherwise undo the characters typed since.
+  const keepName = same && document.activeElement === nameField;
+  const keepDescription = same && document.activeElement === descriptionField;
+  if (!keepName) nameField.value = target.name;
+  nameField.readOnly = !target.editable;
+  nameField.title = target.locked ? '该文件夹已加密，MultiView 无法解锁（Eagle API 限制）' : '';
+  descriptionField.closest('.inspector-field').classList.toggle('hidden', !target.editable);
+  if (!keepDescription) descriptionField.value = target.folder?.description || '';
+  resizeCategoryDescription();
+  categoryShown = {
+    key: target.key,
+    folderId: target.folder?.id || null,
+    baseName: keepName ? categoryShown.baseName : target.name,
+    baseDescription: keepDescription ? categoryShown.baseDescription : target.folder?.description || ''
+  };
+  const stats = categoryStats(target);
+  const filtered = queryFiltersActive(state.query) || String(state.query.search || '').trim();
+  const count = stats && stats !== 'pending' ? stats.count
+    : target.card ? Number(target.folder.imageCount) || 0
+      : !filtered && !state.estimatedTotal ? state.total : null;
+  const size = stats === 'pending' ? '计算中…' : stats ? formatBytes(stats.size) : '—';
+  const rows = target.locked ? [['状态', '已加密']] : [
+    ['文件数', Number.isFinite(count) ? count.toLocaleString() : '—'],
+    ['占用空间', size],
+    ...(target.folder?.modificationTime ? [['添加日期', formatDateTime(target.folder.modificationTime)]] : [])
+  ];
+  $('#categoryMeta').innerHTML = rows.map(([label, value]) => `<span title="${escapeHTML(value)}"><em>${label}</em>${escapeHTML(value)}</span>`).join('');
+  $('#categoryHint').textContent = target.card ? '双击或按 Return 进入' : '';
+  return true;
+}
+
+async function commitCategoryName() {
+  const shown = categoryShown;
+  const field = $('#categoryName');
+  if (!shown?.folderId || field.readOnly) return;
+  const next = field.value.trim();
+  if (!next || next === shown.baseName) { field.value = shown.baseName; return; }
+  const folder = findFolder(state.library?.folders, shown.folderId);
+  if (!folder) return;
+  shown.baseName = next;
+  try {
+    if (!await renameFolderTo(folder, next, { baseName: folder.name })) renderCategoryInspector();
+  } catch (error) {
+    toast(`重命名失败：${error.message}`, 4000);
+    renderCategoryInspector();
+  }
+}
+
+async function commitCategoryDescription() {
+  const shown = categoryShown;
+  const value = $('#categoryDescription').value;
+  if (!shown?.folderId || value === shown.baseDescription) return;
+  const folder = findFolder(state.library?.folders, shown.folderId);
+  if (!folder) return;
+  const base = shown.baseDescription;
+  shown.baseDescription = value;
+  try {
+    const saved = await writeFolderProperties(folder, { description: value }, { label: '正在保存文件夹描述…', base: { description: base } });
+    if (!saved && categoryShown === shown) shown.baseDescription = base;
+  } catch (error) {
+    if (categoryShown === shown) shown.baseDescription = base;
+    toast(`描述未保存：${error.message}`, 4000);
+  }
+}
+
+function bindCategoryInspector() {
+  const nameField = $('#categoryName');
+  const descriptionField = $('#categoryDescription');
+  nameField.addEventListener('keydown', event => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') { event.preventDefault(); nameField.blur(); }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      nameField.value = categoryShown?.baseName ?? nameField.value;
+      nameField.blur();
+    }
+  });
+  nameField.addEventListener('blur', () => { commitCategoryName(); });
+  descriptionField.addEventListener('input', resizeCategoryDescription);
+  descriptionField.addEventListener('keydown', event => {
+    if (event.isComposing || event.key !== 'Escape') return;
+    event.preventDefault();
+    descriptionField.value = categoryShown?.baseDescription ?? descriptionField.value;
+    resizeCategoryDescription();
+    descriptionField.blur();
+  });
+  descriptionField.addEventListener('blur', () => { commitCategoryDescription(); });
+}
+
+async function setFolderColor(folderId, color) {
+  const folder = findFolder(state.library?.folders, folderId);
+  if (!folder || !state.connected || !folderMenuColors.includes(color)) return false;
+  if (String(folder.iconColor || '').toLowerCase() === color) return false;
+  return writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' });
+}
+
+// Eagle's changeSelectedFoldersColor: every selected folder takes the colour.
+async function setFoldersColor(folderIds = [], color) {
+  if (!state.connected || !folderMenuColors.includes(color)) return false;
+  let changed = 0;
+  for (const id of folderIds) {
+    const folder = findFolder(state.library?.folders, id);
+    if (!folder || String(folder.iconColor || '').toLowerCase() === color) continue;
+    if (await writeFolderProperties(folder, { iconColor: color }, { label: '正在设置文件夹颜色…' }).catch(error => { toast(`设置颜色失败：${error.message}`, 4000); return false; })) changed += 1;
+  }
+  return changed > 0;
+}
+
+// Eagle's removeSelectedFolders: one question for all of them (with the
+// 把文件夹内项目丢到回收站 box), then 批量操作确认, then each folder goes
+// as a single delete does — without the 撤销 notice, as in Eagle.
+async function removeFoldersById(folderIds = [], { paneId = state.activePaneId } = {}) {
+  if (!state.connected || !window.eagleMV.removeFolder) return false;
+  const all = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (!all.length) return false;
+  if (all.length === 1) return removeFolderById(all[0].id, { selectNext: true, paneId });
+  // A folder inside another selected one goes with it.
+  const inside = folder => findFolderPath(state.library.folders, folder.id).slice(0, -1).some(ancestor => folderIds.includes(ancestor.id));
+  const folders = all.filter(folder => !folder.password && !inside(folder));
+  const removed = new Set(folders.flatMap(folder => [...subtreeFolderIds(folder)]));
+  const moving = state.panes.filter(pane => pane.currentView.kind === 'folder' && (removed.has(pane.currentView.id) || (viewFolderSelection(pane.currentView) || []).some(id => removed.has(id))));
+  if (moving.length && !confirmDiscardChanges()) return false;
+  const choice = await chooseFolderRemoval({ name: '', count: all.length });
+  if (!choice) return false;
+  if (!confirm(`批量操作确认\n\n这个操作会影响 ${all.length.toLocaleString()} 个文件，确定要继续吗？`)) return false;
+  const libraryPath = state.library?.path;
+  const operationToken = beginForegroundOperation('正在删除文件夹…', { key: `remove-folders:${libraryPath}` });
+  if (!operationToken) return false;
+  setSyncStatus('正在删除…');
+  for (const id of removed) state.folderRemovalRedirects.set(id, { kind: 'all' });
+  setTimeout(() => { for (const id of removed) if (state.folderRemovalRedirects.get(id)?.kind === 'all') state.folderRemovalRedirects.delete(id); }, 15000);
+  let done = 0;
+  let firstError = null;
+  try {
+    for (const folder of folders) {
+      try {
+        const result = await window.eagleMV.removeFolder({ id: folder.id, baseName: folder.name, isDeleteImages: choice.isDeleteImages, libraryPath });
+        if (result?.ok) done += 1;
+        else firstError ||= new Error(result?.conflict ? `“${folder.name}”已在别处改名` : `“${folder.name}”已不存在`);
+      } catch (error) {
+        firstError ||= error;
+        if (error.uncertain) break;
+      }
+    }
+    for (const pane of moving) withActivePane(pane.id, () => navigate({ kind: 'all' }, { skipDiscard: true }));
+    if (!state.selected.size) renderInspector();
+    const skipped = all.length - folders.length - all.filter(inside).length;
+    toast(`已删除 ${done} 个文件夹${skipped ? ` · ${skipped} 个加密文件夹未删除` : ''}${firstError ? ` · 未完成：${firstError.message}` : ''}`, firstError || skipped ? 6000 : 3000);
+    return done > 0;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// Eagle's batchRenameFolders: the batch rename dialog over the selected
+// folders, then each renamed with the conflict check; its notice keeps
+// 撤销 for 10 s, which gives every folder its name back.
+function openFolderBatchRename(folderIds = []) {
+  const folders = folderIds.map(id => findFolder(state.library?.folders, id)).filter(Boolean);
+  if (folders.length < 2 || !window.EagleMVBatchRename) return false;
+  const libraryPath = state.library?.path;
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items: folders.map(folder => ({ id: folder.id, name: folder.name, tags: folder.tags || [] })),
+    kind: 'folder',
+    historyKey: 'eaglemv.batchRename.findHistory.FOLDER',
+    onRename: async (changes, total) => {
+      if (!changes.length || state.library?.path !== libraryPath) return;
+      if (total >= 10 && !confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      const renamed = [];
+      let failed = 0;
+      await runForegroundOperation('正在重命名文件夹…', { key: `batch-rename-folders:${libraryPath}` }, async () => {
+        for (const change of changes) {
+          const result = await window.eagleMV.mutateFolder({ id: change.item.id, name: change.after, baseName: change.before, libraryPath }).catch(() => null);
+          if (result?.ok) renamed.push(change); else failed += 1;
+        }
+      });
+      renderFolderTree();
+      renderLocation();
+      const restore = async () => {
+        if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+        await runForegroundOperation('正在撤销…', { key: `batch-rename-folders:${libraryPath}` }, async () => {
+          for (const change of renamed) await window.eagleMV.mutateFolder({ id: change.item.id, name: change.before, baseName: change.after, libraryPath }).catch(() => null);
+        });
+      };
+      toast(`${renamed.length} 个项目已重命名。${failed ? ` · ${failed} 个未重命名（已在别处修改）` : ''}`, 10000, renamed.length ? { undo: restore } : {});
+    }
+  });
+  return true;
+}
+
+// Eagle's ⌘R in a tag group (renameCurrentFolder): several selected tags
+// open the batch rename, one is renamed, none renames the group itself.
+function renameInTagManager() {
+  const paneId = state.activePaneId;
+  const view = tagManagerView(paneId);
+  if (view.mode !== 'group') return false;
+  const tags = [...view.selected];
+  if (tags.length > 1) return openTagBatchRename(paneId, tags);
+  if (tags.length === 1) return executeTagManagerAction('rename-tag', { tagName: tags[0] });
+  return executeTagManagerAction('rename-group', { groupId: view.groupId });
+}
+
 async function renameSelection() {
+  if (state.currentView.kind === 'tags') return renameInTagManager();
   if (state.selected.size === 1) return renameItem(itemById([...state.selected][0]));
-  if (state.selected.size > 1) return false;
+  if (state.selected.size > 1) return openItemBatchRename([...state.selected]);
   if (state.selectedFolderCard) return renameFolderById(state.selectedFolderCard);
   const activeFolderRow = document.activeElement?.closest?.('[data-folder-id]');
   if (activeFolderRow?.dataset.folderId) return renameFolderById(activeFolderRow.dataset.folderId);
@@ -6602,7 +10057,7 @@ async function showItemInFileManager(id) {
     if (!shown) toast('找不到素材原文件', 3500);
     return shown;
   } catch (error) {
-    toast(`无法在 Finder 中显示：${error.message}`, 4000);
+    toast(`无法在访达中打开：${error.message}`, 4000);
     return false;
   }
 }
@@ -6641,6 +10096,45 @@ function pasteTagsToItems(ids = selectedActionIds()) {
     return false;
   }
   return addTagToSelection({ ids, tag: state.copiedTags });
+}
+
+// 整理 › 标签 › 清除标签 (Eagle's clearAllTags): every tag of the selected
+// items goes; the notice "已清除标签" carries 撤销 (P3-05).
+async function clearTagsOnItems(ids = selectedActionIds(), paneId = state.activePaneId) {
+  const uniqueIds = [...new Set(ids || [])].filter(Boolean);
+  const pane = paneById(paneId);
+  if (!uniqueIds.length || !pane || !state.connected || !confirmBulkEdit(uniqueIds.length)) return false;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在清除标签…', { key: `clear-tags:${paneId}` });
+  if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
+  setSyncStatus('正在清除标签…');
+  try {
+    const outcome = await runItemBatch(uniqueIds, async id => {
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
+      if (!item?.tags?.length) return { unchanged: true };
+      const result = await window.eagleMV.mutate({ id, patch: { tags: [] }, base: { tags: item.tags }, libraryPath });
+      if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      if (!result?.ok) throw new Error('清除标签未完成');
+      return { previous: { tags: item.tags }, item: result.item || { tags: [] } };
+    }, 'Eagle 清除标签请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
+    settleBatchSelection(pane, selectionBefore, outcome.failed.length ? outcome.failed : idsStillSelectable(pane, uniqueIds));
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    if (state.activePaneId === paneId) withActivePane(paneId, () => { updateCardSelectionStyles(); renderInspector(); });
+    const edits = inverseItemEdits(outcome.values);
+    toast(outcome.failed.length ? `已清除标签 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}` : '已清除标签',
+      outcome.failed.length ? 4200 : 4000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
+    return true;
+  } catch (error) {
+    toast(`清除标签失败：${error.message}`, 4000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
 }
 
 async function duplicateSelection(ids = selectedActionIds(), paneId = state.activePaneId) {
@@ -6692,17 +10186,30 @@ async function duplicateSelection(ids = selectedActionIds(), paneId = state.acti
   });
 }
 
-function showFolderAssignmentPicker(ids = selectedActionIds()) {
+// `anchor` opens the picker under that element (the inspector's 添加文件夹)
+// instead of the first selected card; `keepSelection` keeps the items
+// selected afterwards, as Eagle's inspector does.
+function scrollGridByKey(key) {
+  if (!['PageDown', 'PageUp', 'Home', 'End'].includes(key)) return;
+  const grid = $('#gridScroller');
+  if (!grid) return;
+  const top = key === 'Home' ? 0 : key === 'End' ? grid.scrollHeight : grid.scrollTop + (key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
+  grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
+}
+
+function showFolderAssignmentPicker(ids = selectedActionIds(), { anchor = null, keepSelection = false, action = 'add-folder' } = {}) {
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   if (!uniqueIds.length) return false;
-  const card = paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(uniqueIds[0])}"]`);
+  const card = anchor || paneRoot()?.querySelector(`.item-card[data-id="${CSS.escape(uniqueIds[0])}"]`);
   const rect = card?.getBoundingClientRect();
-  const x = rect ? rect.left + Math.min(rect.width, 34) : Math.round(window.innerWidth / 2 - 147);
+  const x = rect ? rect.left + (anchor ? 0 : Math.min(rect.width, 34)) : Math.round(window.innerWidth / 2 - 147);
   const y = rect ? Math.min(rect.bottom + 6, window.innerHeight - 180) : Math.round(window.innerHeight / 2 - 180);
   showContextMenuAt(x, y, {
     kind: 'shortcut-folder-picker',
     ids: uniqueIds,
-    folderId: state.currentView.kind === 'folder' ? state.currentView.id : null
+    folderId: state.currentView.kind === 'folder' ? state.currentView.id : null,
+    pickerAction: action === 'move-folder' ? 'move-folder' : 'add-folder',
+    keepSelection
   });
   requestAnimationFrame(() => $('#contextMenu').querySelector('.context-folder-search')?.focus());
   return true;
@@ -6713,36 +10220,72 @@ function activeDraggedItemIds() {
   return sharedIds?.length ? sharedIds : (state.draggingItemIds || []);
 }
 
+// Decides at drop time what was dropped. Electron never delivers dragend for
+// a native drag that ends outside the window, so drag state can outlive its
+// session; the dropped paths, not leftover ids, decide whether files from
+// Finder are imports or library items being re-filed.
+function resolveItemDrop(event) {
+  const dataTransfer = event.dataTransfer;
+  let paths = [];
+  if (dragHasType(dataTransfer, 'Files') && !dragHasType(dataTransfer, window.EagleMVDragDrop.ITEM_TYPE)) {
+    try {
+      paths = [...(dataTransfer.files || [])].map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
+    } catch {}
+  }
+  const drop = resolveDrop(dataTransfer, {
+    sessionIds: activeDraggedItemIds(),
+    sessionFiles: state.internalDrag?.files || [],
+    libraryPaths: [state.internalDrag?.libraryPath, state.library?.path].filter(Boolean),
+    paths
+  });
+  return { ...drop, session: drop.fromSession ? state.internalDrag : null };
+}
+
 function externalDropImportables(dataTransfer) {
   const files = [...(dataTransfer?.files || [])];
   const paths = files.map(file => window.eagleMV.pathForFile(file)).filter(Boolean);
   return paths.length ? paths : (window.eagleMV.platform === 'web' ? files : []);
 }
 
-function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId) {
+function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId, { ignoreDirectories = false } = {}) {
   const importable = externalDropImportables(dataTransfer);
-  if (!importable.length) {
-    clearDragUI();
-    return false;
-  }
   const libraryPath = state.library?.path;
-  scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId }));
-  return true;
+  if (importable.length) {
+    scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId, ignoreDirectories }));
+    return true;
+  }
+  // A browser image or link imports its address, like Eagle (D-08).
+  const link = dragHasType(dataTransfer, 'Files') ? null : droppedURL(dataTransfer);
+  clearDragUI();
+  if (link && (/^https?:/i.test(link.url) || /^data:image\//i.test(link.url))) {
+    scheduleDropTask(() => importFiles(null, 'url', { folderId, libraryPath, paneId, url: link.url, image: link.image }));
+    return true;
+  }
+  toast(link?.url.startsWith('blob:') ? '这张图片是浏览器的临时地址，无法直接添加；请先存到本地再拖入'
+    : link?.url.startsWith('data:') ? '只能添加网页里的图片'
+    : dragHasType(dataTransfer, 'Files') ? '无法读取拖入的项目（例如“照片”App 中的照片）；请先导出到 Finder 再拖入'
+    : '只能拖入文件、网页图片或网址', 4600);
+  return false;
 }
 
-function clearDragUI() {
-  const token = state.internalDrag?.token || null;
+function resetDragState() {
+  pageDragActive = false;
   state.dragDepth = 0;
   state.draggingItemIds = null;
   state.dragSourcePaneId = null;
   state.internalDrag = null;
-  if (token) window.eagleMV.cancelDrag?.(token);
   for (const pane of state.panes || []) {
     pane.dragDepth = 0;
     pane.draggingItemIds = null;
   }
   for (const target of document.querySelectorAll('.drop-target')) target.classList.remove('drop-target');
   for (const overlay of document.querySelectorAll('.drop-overlay')) overlay.classList.add('hidden');
+}
+
+function clearDragUI() {
+  const token = state.internalDrag?.token || null;
+  resetDragState();
+  if (token) window.eagleMV.cancelDrag?.(token);
 }
 
 function scheduleDropTask(task) {
@@ -6777,6 +10320,7 @@ function withTimeout(promise, milliseconds, message = '操作超时，请重试'
 async function settleWithConcurrency(values, worker, concurrency = 4) {
   const results = [];
   let cursor = 0;
+  const progress = trackBatchProgress(values.length);
   const run = async () => {
     while (cursor < values.length) {
       const index = cursor++;
@@ -6785,10 +10329,74 @@ async function settleWithConcurrency(values, worker, concurrency = 4) {
       } catch (error) {
         results[index] = { ok: false, error };
       }
+      progress(false);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, run));
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, run));
+  } finally {
+    progress(true);
+  }
   return results;
+}
+
+// The first failure's reason, so a batch over thousands says why some
+// stayed behind instead of only how many.
+function batchFailureReason(outcome) {
+  const message = String(outcome?.firstError?.message || '').trim();
+  return message ? `（${message.length > 40 ? `${message.slice(0, 40)}…` : message}）` : '';
+}
+
+// What a batch leaves selected when nothing failed: the ids still shown,
+// plus those past the loaded range, which the next refresh reconciles.
+function idsStillSelectable(pane, ids) {
+  const shown = new Set(pane.items.map(item => item.id));
+  return ids.filter(id => shown.has(id) || !pane.itemMap?.has(id));
+}
+
+// Eagle selects the item after the ones that left the view — else the one
+// before, else nothing — when they are taken out of the folder on screen,
+// moved out of it, put in the trash, or filed from 未分类. Worked out before
+// the write, from the order on screen.
+function selectionSuccessor(pane, ids) {
+  const leaving = new Set(ids);
+  const order = withActivePane(pane.id, () => sortedItems());
+  const first = order.findIndex(item => leaving.has(item.id));
+  if (first < 0) return null;
+  return {
+    after: order.slice(first + 1).find(item => !leaving.has(item.id))?.id || null,
+    before: order[first - 1]?.id || null
+  };
+}
+
+// Only once the items have actually left and nothing else got selected
+// meanwhile (failures stay selected, a click elsewhere wins).
+function selectSuccessor(pane, successor, ids) {
+  if (!successor || !paneById(pane.id) || pane.selected.size) return false;
+  const shown = new Set(pane.items.map(item => item.id));
+  if (ids.some(id => shown.has(id))) return false;
+  const id = [successor.after, successor.before].find(candidate => candidate && shown.has(candidate));
+  if (!id) return false;
+  pane.selected = new Set([id]);
+  pane.selectionAnchor = id;
+  if (state.activePaneId === pane.id) {
+    updateCardSelectionStyles();
+    renderInspector();
+    requestAnimationFrame(() => paneRoot(pane.id)?.querySelector(`.item-card[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+  return true;
+}
+
+// A batch leaves its result selection behind only if the user has not picked
+// something else while it ran; otherwise "rate A, → to B" snapped back to A.
+function sameSelection(pane, snapshot) {
+  return pane.selected.size === snapshot.size && [...snapshot].every(id => pane.selected.has(id));
+}
+
+function settleBatchSelection(pane, snapshot, next) {
+  if (!sameSelection(pane, snapshot)) return false;
+  pane.selected = new Set(next);
+  return true;
 }
 
 async function runItemBatch(ids, worker, timeoutMessage) {
@@ -6800,18 +10408,56 @@ async function runItemBatch(ids, worker, timeoutMessage) {
   ));
   const succeeded = [];
   const failed = [];
+  const values = new Map();
   let firstError = null;
   results.forEach((result, index) => {
-    if (result?.ok) succeeded.push(uniqueIds[index]);
-    else {
+    if (result?.ok) {
+      succeeded.push(uniqueIds[index]);
+      values.set(uniqueIds[index], result.value);
+    } else {
       failed.push(uniqueIds[index]);
       firstError ||= result?.error || new Error('操作失败');
     }
   });
-  return { succeeded, failed, firstError };
+  return { succeeded, failed, firstError, values };
 }
 
-async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourcePaneId = null } = {}) {
+// The inverse of item writes whose results carry `previous` (mutateSet):
+// each item gets back what the write replaced, checked against what the
+// write left, so an item changed again since is left alone.
+function inverseItemEdits(values) {
+  return [...values].flatMap(([id, value]) => value?.previous && value.item
+    ? [{ id, patch: value.previous, base: Object.fromEntries(Object.keys(value.previous).map(key => [key, value.item[key] ?? []])) }]
+    : []);
+}
+
+async function restoreItemEdits(edits, libraryPath) {
+  if (!edits.length) return;
+  if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+  let operationToken = beginForegroundOperation('正在撤销…', { key: `undo:${libraryPath}` });
+  if (!operationToken) throw new Error('有操作正在进行，请稍后再试');
+  setSyncStatus('正在撤销…');
+  try {
+    const byId = new Map(edits.map(edit => [edit.id, edit]));
+    const outcome = await runItemBatch([...byId.keys()], async id => {
+      const { patch, base } = byId.get(id);
+      const result = await window.eagleMV.mutate({ id, patch, base, libraryPath });
+      if (result?.conflict) throw new Error('素材已在 Eagle 或另一个窗口中修改');
+      if (!result?.ok) throw new Error('撤销未完成');
+      return result;
+    }, 'Eagle 撤销请求超时');
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+    if (outcome.failed.length) toast(`${outcome.failed.length} 个素材未撤销${batchFailureReason(outcome)}`, 4200);
+    return outcome;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourceFolderIds = null, sourcePaneId = null } = {}) {
   const uniqueIds = [...new Set((ids || []).filter(Boolean))];
   if (!uniqueIds.length || (!folderId && !(move && sourceFolderId))) return false;
   if (!state.connected) {
@@ -6824,7 +10470,8 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   }
   // Dragging out of "全部/未分类" has no source folder to leave, so an
   // ⌥-drop there degrades to a plain add, mirroring Eagle.
-  const delta = folderId ? folderMoveDelta(move ? sourceFolderId : null, folderId) : { add: [], remove: [sourceFolderId] };
+  const sourceScope = sourceFolderIds?.length ? sourceFolderIds : [sourceFolderId];
+  const delta = folderId ? folderMoveDelta(move ? sourceScope : null, folderId) : { add: [], remove: sourceScope };
   const moving = delta.remove.length > 0;
   const verb = moving ? '移动' : '归类';
   const operationToken = beginForegroundOperation(`正在${verb} ${uniqueIds.length} 个素材…`, { key: `folder-${moving ? 'move' : 'add'}:${libraryPath}:${folderId}` });
@@ -6832,10 +10479,12 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   setSyncStatus(`正在${verb} ${uniqueIds.length} 个素材…`);
   try {
     const results = await settleWithConcurrency(uniqueIds, id => withTimeout(
+      // A drop files like Eagle's classifySelected, auto tags included.
       window.eagleMV.mutateSet({
         id,
         field: 'folders',
         ...delta,
+        autoTags: 'always',
         libraryPath
       }),
       15000,
@@ -6849,13 +10498,14 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
       const movedIds = new Set();
       results.forEach((res, idx) => { if (res?.ok) movedIds.add(uniqueIds[idx]); });
       for (const pane of state.panes) {
-        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId
+          && !paneFolderScope(pane).includes(folderId)) {
           pane.items = pane.items.filter(item => !movedIds.has(item.id));
           movedIds.forEach(id => { pane.itemMap?.delete(id); });
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
           if ('totalCount' in pane) pane.totalCount = pane.total;
           movedIds.forEach(id => pane.selected.delete(id));
-          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (movedIds.has(pane.selectedBase?.id)) pane.selectedBase = null;
           if (pane.id === state.activePaneId) {
             renderResultCount();
             updateScrollUI();
@@ -6868,7 +10518,16 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
       }
     }
 
-    toast(`${moving ? '已移动到' : '已加入'}“${folderName || '目标文件夹'}”${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+    // Eagle's classifySelected notice, with 撤销 (P3-05).
+    const values = new Map();
+    results.forEach((result, index) => { if (result?.ok) values.set(uniqueIds[index], result.value); });
+    const edits = inverseItemEdits(values);
+    const target = folderId ? `“${folderName || '目标文件夹'}”` : '';
+    const done = folderId
+      ? `${succeeded} 个项目已${moving ? '移动' : '添加'}至${target}.`
+      : `${succeeded} 个项目已从“${libraryFolder(sourceFolderId)?.name || '文件夹'}”移除。`;
+    toast(`${done}${failed.length ? ` · ${failed.length} 个失败` : ''}`, folderId ? 4000 : 5000,
+      edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (failed.length) console.warn('Some dragged items could not be assigned:', failed.map(result => result.error?.message));
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
@@ -6881,24 +10540,28 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
   }
 }
 
-function paneItemDropContext(targetPaneId, event) {
+function paneItemDropContext(targetPaneId, event, drop = resolveItemDrop(event)) {
   const targetPane = paneById(targetPaneId);
-  const internalDrag = state.internalDrag;
-  const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+  const internalDrag = drop.session;
+  const ids = drop.ids;
   if (!targetPane || !ids.length) return null;
-  let sourcePaneId = state.dragSourcePaneId || internalDrag?.sourcePaneId || null;
+  let sourcePaneId = internalDrag ? (state.dragSourcePaneId || internalDrag.sourcePaneId || null) : null;
   try { sourcePaneId = event.dataTransfer.getData('application/x-eagle-multiview-source-pane') || sourcePaneId; } catch {}
   const sourceIsThisWindow = !internalDrag?.sourceWindowId || internalDrag.sourceWindowId === state.windowId;
   const sourcePane = sourceIsThisWindow && sourcePaneId ? paneById(sourcePaneId) : null;
   const sourceFolderId = sourcePane?.currentView.kind === 'folder'
     ? sourcePane.currentView.id
     : (internalDrag?.sourceFolderId || null);
+  const sourceFolderIds = sourcePane?.currentView.kind === 'folder'
+    ? paneFolderScope(sourcePane)
+    : (internalDrag?.sourceFolderIds || (sourceFolderId ? [sourceFolderId] : []));
   return {
     targetPaneId,
     ids,
     libraryPath: internalDrag?.libraryPath || state.library?.path,
     targetFolderId: targetPane.currentView.kind === 'folder' ? targetPane.currentView.id : null,
     sourceFolderId,
+    sourceFolderIds,
     sourcePaneId,
     move: Boolean(sourceFolderId && !event.altKey)
   };
@@ -6906,11 +10569,11 @@ function paneItemDropContext(targetPaneId, event) {
 
 async function handlePaneItemDrop(context) {
   if (!context) return false;
-  const { targetPaneId, ids, libraryPath, targetFolderId, sourceFolderId, move } = context;
+  const { targetPaneId, ids, libraryPath, targetFolderId, sourceFolderId, sourceFolderIds, move } = context;
   if (!state.connected) { toast('Eagle 未连接，暂时无法修改归类', 3500); return true; }
   if (!targetFolderId) { toast('请将素材拖入一个具体文件夹栏', 3500); return true; }
   if (sourceFolderId && sourceFolderId === targetFolderId) { toast('素材已经在这个文件夹中'); return true; }
-  const operationToken = beginForegroundOperation(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`, { key: `pane-drop:${targetPaneId}` });
+  let operationToken = beginForegroundOperation(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`, { key: `pane-drop:${targetPaneId}` });
   if (!operationToken) return true;
   setSyncStatus(`${move ? '正在移动' : '正在复制'} ${ids.length} 个素材…`);
   try {
@@ -6918,8 +10581,8 @@ async function handlePaneItemDrop(context) {
       window.eagleMV.mutateSet({
         id,
         field: 'folders',
-        add: [targetFolderId],
-        remove: move && sourceFolderId ? [sourceFolderId] : [],
+        ...folderMoveDelta(move && sourceFolderId ? (sourceFolderIds?.length ? sourceFolderIds : [sourceFolderId]) : null, targetFolderId),
+        autoTags: 'always',
         libraryPath
       }),
       15000,
@@ -6934,13 +10597,14 @@ async function handlePaneItemDrop(context) {
       const movedIds = new Set();
       results.forEach((res, idx) => { if (res?.ok) movedIds.add(ids[idx]); });
       for (const pane of state.panes) {
-        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === sourceFolderId
+          && !paneFolderScope(pane).includes(targetFolderId)) {
           pane.items = pane.items.filter(item => !movedIds.has(item.id));
           movedIds.forEach(id => { pane.itemMap?.delete(id); });
           pane.total = Math.max(0, (Number(pane.total) || 0) - movedIds.size);
           if ('totalCount' in pane) pane.totalCount = pane.total;
           movedIds.forEach(id => pane.selected.delete(id));
-          if (movedIds.has(pane.selectedBase)) pane.selectedBase = null;
+          if (movedIds.has(pane.selectedBase?.id)) pane.selectedBase = null;
           if (pane.id === state.activePaneId) {
             renderResultCount();
             updateScrollUI();
@@ -6953,11 +10617,22 @@ async function handlePaneItemDrop(context) {
       }
     }
 
-    toast(`${move ? '已移动' : '已复制'} ${succeeded} 个素材到当前栏${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+    // A drop between panes files like Eagle's classifySelected: its notice
+    // and 撤销 (P3-05).
+    const values = new Map();
+    results.forEach((result, index) => { if (result?.ok) values.set(ids[index], result.value); });
+    const edits = inverseItemEdits(values);
+    const movedOut = move && sourceFolderId;
+    toast(`${succeeded} 个项目已${movedOut ? '移动' : '添加'}至“${libraryFolder(targetFolderId)?.name || '目标文件夹'}”.${failed.length ? ` · ${failed.length} 个失败` : ''}`, 4000,
+      edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (state.library?.path === libraryPath) markFolderUsed(targetFolderId, libraryPath);
+    endForegroundOperation(operationToken);
+    operationToken = null;
     // Refresh the drop target now, but do not hold the native drop completion
     // open while every other pane performs a network query.
-    await withTimeout(refresh({ reset: true, preserveScroll: true, paneId: targetPaneId }), 12000, '刷新目标栏超时');
+    // The move is done; a slow refresh must not be reported as a failed move.
+    await withTimeout(refresh({ reset: true, preserveScroll: true, paneId: targetPaneId }), 12000, '刷新目标栏超时')
+      .catch(error => console.warn('Drop target refresh after a completed drop:', error.message));
     setTimeout(() => refreshAllPanes({ reset: true, preserveScroll: true }).catch(() => {}), 0);
   } catch (error) {
     toast(`${move ? '移动' : '复制'}失败：${error.message}`, 4200);
@@ -7097,16 +10772,17 @@ function bindMarqueeSelection(paneId, scroller) {
   };
   // Card rectangles are read per frame instead of cached: lazy-load refreshes
   // replace the grid DOM mid-drag and stale rectangles would select blindly.
+  // Measured in the same scroller-content frame as the pointer: offsetLeft
+  // and offsetTop would be relative to the 瀑布流 grid, whose cards are
+  // placed inside it.
   const cardRects = () => {
     const cards = [];
+    const box = scroller.getBoundingClientRect();
     for (const card of scroller.querySelectorAll('#itemGrid .item-card')) {
-      cards.push({
-        id: card.dataset.id,
-        left: card.offsetLeft,
-        top: card.offsetTop,
-        right: card.offsetLeft + card.offsetWidth,
-        bottom: card.offsetTop + card.offsetHeight
-      });
+      const rect = card.getBoundingClientRect();
+      const left = rect.left - box.left + scroller.scrollLeft;
+      const top = rect.top - box.top + scroller.scrollTop;
+      cards.push({ id: card.dataset.id, left, top, right: left + rect.width, bottom: top + rect.height });
     }
     return cards;
   };
@@ -7151,7 +10827,7 @@ function bindMarqueeSelection(paneId, scroller) {
     // (preventDefault here would kill native touch scrolling entirely).
     if (event.pointerType === 'touch') return;
     if (activeMarquee) cancelMarquee();
-    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a')) return;
+    if (event.target.closest('.item-card, .folder-card, button, input, select, textarea, a, [data-tag-manager]')) return;
     const box = scroller.getBoundingClientRect();
     if (event.clientX - box.left >= scroller.clientWidth || event.clientY - box.top >= scroller.clientHeight) return;
     if (!confirmDiscardChanges()) return;
@@ -7330,15 +11006,28 @@ function bindPaneEvents(paneId) {
     }
     if (!activatePane(paneId)) stopRejectedActivation(event);
   }, true);
-  query('#backButton').addEventListener('click', () => { activatePane(paneId); requestBackAction(); });
-  query('#forwardButton').addEventListener('click', () => { activatePane(paneId); navigateHistory(1); });
-  query('#upButton').addEventListener('click', () => { activatePane(paneId); navigateUp(); });
+  query('#backButton').addEventListener('click', () => { if (activatePane(paneId)) requestBackAction(); });
+  query('#forwardButton').addEventListener('click', () => { if (activatePane(paneId)) navigateHistory(1); });
+  query('#upButton').addEventListener('click', () => { if (activatePane(paneId)) navigateUp(); });
   const pathRow = root.querySelector('.heading-path-row');
   const breadcrumb = query('#breadcrumb');
-  const crumbDropTarget = event => event.target.closest('[data-crumb-folder-id], [data-crumb-root]');
+  // Folder crumbs take items like sidebar rows. The library root takes only
+  // Finder files (an import without a folder): like the sidebar, which has
+  // no root row, it is no target for library items (B3-07).
+  const crumbDropTarget = (event, kind) => (kind === 'internal-items'
+    ? event.target.closest('[data-crumb-folder-id]')
+    : event.target.closest('[data-crumb-folder-id], [data-crumb-root]'));
   if (breadcrumb) breadcrumb.addEventListener('dragover', event => {
-    const target = crumbDropTarget(event);
-    if (!target || classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'unsupported') return;
+    const kind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    if (kind === 'unsupported') return;
+    const target = crumbDropTarget(event, kind);
+    if (!target) {
+      if (kind === 'internal-items' && event.target.closest('[data-crumb-root]')) {
+        event.preventDefault(); event.stopPropagation();
+        event.dataTransfer.dropEffect = 'none';
+      }
+      return;
+    }
     event.preventDefault(); event.stopPropagation();
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
     event.dataTransfer.dropEffect = sourceFolderId && !event.altKey ? 'move' : 'copy';
@@ -7349,8 +11038,9 @@ function bindPaneEvents(paneId) {
     if (target && !target.contains(event.relatedTarget)) target.classList.remove('drop-target');
   });
   if (breadcrumb) breadcrumb.addEventListener('drop', event => {
-    const target = crumbDropTarget(event);
-    const kind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    const drop = resolveItemDrop(event);
+    const kind = drop.kind;
+    const target = crumbDropTarget(event, kind);
     if (!target || kind === 'unsupported') return;
     event.preventDefault(); event.stopPropagation();
     breadcrumb.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target'));
@@ -7359,13 +11049,15 @@ function bindPaneEvents(paneId) {
       scheduleExternalFolderImport(event.dataTransfer, folderId, paneId);
       return;
     }
-    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
-    const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
-    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || null;
+    const ids = drop.ids;
+    const session = drop.session;
+    const libraryPath = session?.libraryPath || state.library?.path;
+    const sourceFolderId = session?.sourceFolderId || null;
+    const sourceFolderIds = session?.sourceFolderIds || null;
+    const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || null) : null;
     const name = target.textContent;
     const move = Boolean(sourceFolderId && !event.altKey);
-    scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourcePaneId }));
+    scheduleDropTask(() => addItemsToFolder(ids, folderId, name, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
   });
   pathRow?.addEventListener('pointerdown', event => {
     if (breadcrumb.classList.contains('is-editing')) return;
@@ -7395,7 +11087,7 @@ function bindPaneEvents(paneId) {
   });
   query('#sortSelectButton')?.addEventListener('click', event => {
     event.stopPropagation();
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     const popover = query('#sortPopover');
     if (!popover) return;
     const opening = popover.classList.contains('hidden');
@@ -7406,53 +11098,39 @@ function bindPaneEvents(paneId) {
       b.setAttribute('aria-expanded', 'false');
     }
     if (opening) {
+      renderSortControls();
       popover.classList.remove('hidden');
+      showSortPopover(popover, query('#sortSelectButton'));
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'true');
     }
   });
   query('#sortPopover')?.addEventListener('click', event => {
+    const layoutBtn = event.target.closest('[data-view-mode]');
+    if (layoutBtn) {
+      if (!activatePane(paneId)) return;
+      setPaneViewMode(layoutBtn.dataset.viewMode, paneId);
+      query('#sortPopover')?.classList.add('hidden');
+      query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
+      return;
+    }
     const optionBtn = event.target.closest('[data-sort]');
     if (optionBtn) {
-      activatePane(paneId);
-      const targetSort = optionBtn.dataset.sort;
-      if (targetSort === 'random' && state.sort === 'random') {
-        state.randomSeed = nextRandomSeed();
-        commitSortChange();
-      } else {
-        const select = query('#sortSelect');
-        if (select) {
-          select.value = targetSort;
-          select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }
+      applySortFromMenu(optionBtn.dataset.sort, paneId);
       query('#sortPopover')?.classList.add('hidden');
       query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
       return;
     }
     const dirBtn = event.target.closest('[data-sort-dir]');
     if (dirBtn && !dirBtn.disabled) {
-      activatePane(paneId);
-      const targetDir = dirBtn.dataset.sortDir;
-      if (targetDir === 'asc' || targetDir === 'desc') {
-        state.sortDir = targetDir;
-        if (state.sortCascade && state.currentView?.kind === 'folder') {
-          sortMemory.rememberCascade(
-            state.library?.path,
-            state.currentView.id,
-            state.library?.folders,
-            state.sort,
-            state.sortDir,
-            Date.now()
-          );
-        }
-        commitSortChange();
+      if (!activatePane(paneId)) return;
+      if (applySortDirection(dirBtn.dataset.sortDir)) {
         query('#sortPopover')?.classList.add('hidden');
         query('#sortSelectButton')?.setAttribute('aria-expanded', 'false');
       }
     }
   });
   query('#sortCascadeCheck')?.addEventListener('change', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) { syncSortCascadeChecks(); return; }
     const checked = event.target.checked;
     setSortCascadeEnabled(checked);
     if (checked && state.currentView?.kind === 'folder') {
@@ -7468,14 +11146,14 @@ function bindPaneEvents(paneId) {
     }
   });
   query('#sortSelect').addEventListener('change', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     if (event.target.value==='manual' && (!supportsManual(state.currentView) || !state.manualOrdersReady)) {renderSortControls();return;}
     state.sort = event.target.value;
     state.sortDir = 'auto';
     // Picking 随机 deals a new order; re-picking it from the dropdown fires no
     // change event, which is why the direction button doubles as reshuffle.
     if (state.sort === 'random') state.randomSeed = nextRandomSeed();
-    if (state.sortCascade && state.currentView?.kind === 'folder') {
+    if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
       sortMemory.rememberCascade(
         state.library?.path,
         state.currentView.id,
@@ -7486,23 +11164,36 @@ function bindPaneEvents(paneId) {
       );
     }
     commitSortChange();
-    if (state.sort !== 'default' && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
+    if (viewHasClientOrder() && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#viewModeGroup').addEventListener('click', event => {
     const button = event.target.closest('[data-view-mode]');
     if (!button) return;
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     setPaneViewMode(button.dataset.viewMode, paneId);
   });
   query('#itemGrid').addEventListener('click', event => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     if (Date.now() < suppressTouchClickUntil) return;
+    if (event.target.closest('[data-toggle-subfolders]')) {
+      setSubfoldersCollapsed(!subfoldersCollapsed);
+      return;
+    }
+    const listSort = event.target.closest('[data-list-sort]');
+    if (listSort) {
+      applyListHeaderSort(listSort.dataset.listSort, paneId);
+      return;
+    }
     const tagAction = event.target.closest('[data-tag-action]');
     if (tagAction) {
       executeTagManagerAction(tagAction.dataset.tagAction, {
         tagName: tagAction.dataset.tagName,
         groupId: tagAction.dataset.tagGroupId
       }).catch(error => toast(`标签操作失败：${error.message}`, 4200));
+      return;
+    }
+    if (event.target.closest('[data-tag-manager]')) {
+      handleTagManagerClick(event, paneId);
       return;
     }
     const touch = isTouchEvent(event);
@@ -7554,29 +11245,14 @@ function bindPaneEvents(paneId) {
       triggerTouchLongPress(card, paneId, point);
     }
   });
-  query('#itemGrid').addEventListener('change', async event => {
-    if (!activatePane(paneId)) return;
-    const select = event.target.closest('[data-tag-add-group]');
-    if (!select?.value) return;
-    const libraryPath = state.library?.path;
-    const groupId = select.value;
-    const tag = select.dataset.tagName;
-    select.disabled = true;
-    try {
-      await runForegroundOperation('正在将标签加入分组…', { key: `tag-group-add:${libraryPath}:${groupId}:${tag}` }, async () => {
-        await window.eagleMV.addTagsToGroup({ libraryPath, groupId, tags: [tag] });
-        toast('标签已加入分组');
-      });
-    } catch (error) {
-      toast(`加入分组失败：${error.message}`, 4200);
-    } finally {
-      select.value = '';
-      select.disabled = false;
-    }
-  });
+  bindTagManagerEvents(paneId, query('#itemGrid'));
   query('#itemGrid').addEventListener('dblclick', event => {
     if (Date.now() - lastTouchGridTapAt < 600) return;
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
+    const tagChip = event.target.closest('[data-tm-tag]');
+    if (tagChip) { searchItemsWithTags([tagChip.dataset.tmTag]); return; }
+    const groupRow = event.target.closest('[data-tm-group]');
+    if (groupRow) { executeTagManagerAction('rename-group', { groupId: groupRow.dataset.tmGroup }).catch(error => toast(`标签操作失败：${error.message}`, 4200)); return; }
     const folder = event.target.closest('.folder-card');
     if (folder) { enterFolderFromGrid(folder.dataset.openFolder); return; }
     const card = event.target.closest('.item-card');
@@ -7596,6 +11272,19 @@ function bindPaneEvents(paneId) {
     }
     if (!activatePane(paneId)) {
       event.preventDefault();
+      return;
+    }
+    if (event.target.closest('[data-tag-manager]')) {
+      if (event.target.closest('input, textarea')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openTagManagerMenu(event, paneId);
+      return;
+    }
+    if (event.target.closest('.list-header')) {
+      event.preventDefault();
+      event.stopPropagation();
+      showContextMenu(event, { kind: 'list-columns', ids: [], paneId });
       return;
     }
     const folderCard = event.target.closest('.folder-card');
@@ -7635,6 +11324,7 @@ function bindPaneEvents(paneId) {
     const ids = [...state.selected];
     const libraryPath = state.library?.path;
     const sourceFolderId = state.currentView.kind === 'folder' ? state.currentView.id : null;
+    const sourceFolderIds = paneFolderScope(paneById(paneId), sourceFolderId);
     if (hasCapability('nativeDrag')) {
       // Electron's native file drag must replace Chromium's default HTML5
       // drag session. Leaving the default session alive can make macOS wait
@@ -7653,6 +11343,7 @@ function bindPaneEvents(paneId) {
       token: null,
       ids,
       sourceFolderId,
+      sourceFolderIds,
       sourcePaneId: paneId,
       sourceWindowId: state.windowId,
       libraryPath
@@ -7660,6 +11351,7 @@ function bindPaneEvents(paneId) {
     window.eagleMV.startDrag({
       ids,
       sourceFolderId,
+      sourceFolderIds,
       sourcePaneId: paneId,
       sourceWindowId: state.windowId,
       libraryPath
@@ -7685,27 +11377,30 @@ function bindPaneEvents(paneId) {
     }
     const folder = event.target.closest('.folder-card');
     if (!folder) return;
-    const dropKind = classifyDrop(event.dataTransfer, activeDraggedItemIds());
+    const drop = resolveItemDrop(event);
+    const dropKind = drop.kind;
     if (dropKind === 'unsupported') return;
     event.preventDefault();
     event.stopPropagation();
     folder.classList.remove('drop-target');
     if (dropKind === 'external-files') {
-      scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId);
+      scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId, { ignoreDirectories: true });
       return;
     }
-    const ids = readItemIds(event.dataTransfer, activeDraggedItemIds());
+    const ids = drop.ids;
     if (!ids.length) {
       toast('无法识别拖入的素材，请重新拖动', 3500);
       clearDragUI();
       return;
     }
     const target = findFolder(state.library?.folders, folder.dataset.openFolder);
-    const libraryPath = state.internalDrag?.libraryPath || state.library?.path;
-    const sourceFolderId = state.internalDrag?.sourceFolderId || null;
+    const session = drop.session;
+    const libraryPath = session?.libraryPath || state.library?.path;
+    const sourceFolderId = session?.sourceFolderId || null;
+    const sourceFolderIds = session?.sourceFolderIds || null;
     const move = Boolean(sourceFolderId && !event.altKey);
-    const sourcePaneId = state.internalDrag?.sourcePaneId || state.dragSourcePaneId || paneId;
-    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourcePaneId }));
+    const sourcePaneId = session ? (session.sourcePaneId || state.dragSourcePaneId || paneId) : null;
+    scheduleDropTask(() => addItemsToFolder(ids, folder.dataset.openFolder, target?.name, libraryPath, { move, sourceFolderId, sourceFolderIds, sourcePaneId }));
   });
   const scroller = query('#gridScroller');
   bindMarqueeSelection(paneId, scroller);
@@ -7762,47 +11457,69 @@ function bindPaneEvents(paneId) {
     if (!pane.loading && pane.hasMore && element.scrollTop + element.clientHeight > element.scrollHeight - 500) refresh({ reset: false, preserveScroll: true, paneId });
   });
   query('#scrollTopButton').addEventListener('click', () => {
-    activatePane(paneId);
-    scroller.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!activatePane(paneId)) return;
+    scroller.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   });
   query('#emptyRetryButton').addEventListener('click', () => {
-    activatePane(paneId);
+    if (!activatePane(paneId)) return;
     refresh({ reset: true, preserveScroll: true, paneId });
   });
+  // A drag only passing over this pane must not activate it: that would
+  // rebuild the shared sidebar and inspector mid-drag (and could raise a
+  // discard confirm inside the native drag session). The drop activates it.
+  // The overlay and its depth counter are this pane's own, never the active
+  // pane's, so enter/leave pairs of neighbouring panes cannot cross.
   scroller.addEventListener('dragenter', event => {
     const fallbackIds = activeDraggedItemIds();
     if (classifyDrop(event.dataTransfer, fallbackIds) === 'unsupported') return;
     event.preventDefault();
-    if (!activatePane(paneId)) {
-      clearDragUI();
-      return;
-    }
-    if (!hasCapability('importLocal') || !shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
-    state.dragDepth += 1;
-    $('#dropOverlay').classList.remove('hidden');
+    const pane = paneById(paneId);
+    if (!pane || !hasCapability('importLocal') || !shouldShowImportOverlay(event.dataTransfer, fallbackIds)) return;
+    pane.dragDepth = (pane.dragDepth || 0) + 1;
+    query('#dropOverlay').classList.remove('hidden');
   });
+  // Items let go in the folder they came from are already there: refuse the
+  // drop with the cursor instead of acting or reporting it.
+  const dropsIntoSourceFolder = () => {
+    const drag = state.internalDrag;
+    if (!drag?.active) return false;
+    const sameWindow = !drag.sourceWindowId || drag.sourceWindowId === state.windowId;
+    if (sameWindow && (drag.sourcePaneId || state.dragSourcePaneId) === paneId) return true;
+    const view = paneById(paneId)?.currentView;
+    return Boolean(drag.sourceFolderId && view?.kind === 'folder' && view.id === drag.sourceFolderId);
+  };
   scroller.addEventListener('dragover', event => {
     const fallbackIds = activeDraggedItemIds();
     const dropKind = classifyDrop(event.dataTransfer, fallbackIds);
     if (dropKind === 'unsupported') return;
     event.preventDefault();
+    if (dropKind === 'internal-items' && dropsIntoSourceFolder()) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
     const sourceFolderId = state.internalDrag?.sourceFolderId || null;
     event.dataTransfer.dropEffect = dropKind === 'internal-items' && sourceFolderId && !event.altKey ? 'move' : 'copy';
   });
   scroller.addEventListener('dragleave', () => {
-    if ($('#dropOverlay').classList.contains('hidden')) return;
-    state.dragDepth = Math.max(0, state.dragDepth - 1);
-    if (!state.dragDepth) $('#dropOverlay').classList.add('hidden');
+    const overlay = query('#dropOverlay');
+    const pane = paneById(paneId);
+    if (!pane || overlay.classList.contains('hidden')) return;
+    pane.dragDepth = Math.max(0, (pane.dragDepth || 0) - 1);
+    if (!pane.dragDepth) overlay.classList.add('hidden');
   });
   scroller.addEventListener('drop', event => {
     event.preventDefault();
+    const drop = resolveItemDrop(event);
+    if (drop.kind === 'unsupported' || (drop.kind === 'internal-items' && dropsIntoSourceFolder())) {
+      clearDragUI();
+      return;
+    }
     if (!activatePane(paneId)) {
       clearDragUI();
       return;
     }
-    const fallbackIds = activeDraggedItemIds();
-    if (classifyDrop(event.dataTransfer, fallbackIds) === 'internal-items') {
-      const context = paneItemDropContext(paneId, event);
+    if (drop.kind === 'internal-items') {
+      const context = paneItemDropContext(paneId, event, drop);
       if (!context) {
         toast('无法识别拖入的素材，请重新拖动', 3500);
         clearDragUI();
@@ -7811,18 +11528,8 @@ function bindPaneEvents(paneId) {
       scheduleDropTask(() => handlePaneItemDrop(context));
       return;
     }
-    const importable = externalDropImportables(event.dataTransfer);
-    if (!importable.length) {
-      clearDragUI();
-      return;
-    }
     const targetPane = paneById(paneId);
-    const target = {
-      paneId,
-      libraryPath: state.library?.path,
-      folderId: targetPane?.currentView.kind === 'folder' ? targetPane.currentView.id : null
-    };
-    scheduleDropTask(() => importFiles(importable, 'drop', target));
+    scheduleExternalFolderImport(event.dataTransfer, targetPane?.currentView.kind === 'folder' ? targetPane.currentView.id : null, paneId);
   });
   const previewModal = query('#previewModal');
   if (previewModal) {
@@ -7873,7 +11580,7 @@ function bindPaneEvents(paneId) {
       event.stopPropagation();
       const star = event.target.closest('[data-preview-rating]');
       if (!star) return;
-      activatePane(paneId);
+      if (!activatePane(paneId)) return;
       const value = Number(star.dataset.previewRating);
       const rating = value === Number(event.currentTarget.dataset.rating || 0) ? 0 : value;
       withActivePane(paneId, () => {
@@ -8252,8 +11959,22 @@ function bindEvents() {
     if (button.dataset.commentAction === 'remove') removeComment(row.dataset.commentId);
   });
   $('#clearFiltersButton').addEventListener('click', clearFilters);
+  $('#lockFiltersButton').addEventListener('click', () => {
+    state.filterLock = !state.filterLock;
+    renderFilterState();
+    toast(state.filterLock ? '已锁定筛选：切换文件夹时保留搜索与筛选' : '已解除筛选锁定', 2400);
+  });
+  // The search box's icon, padding and shortcut hint are part of the field:
+  // a tap there (a finger rarely lands on the 18px-tall input) focuses it (W-07).
+  document.querySelector('.search-box')?.addEventListener('pointerdown', event => {
+    if (event.target.closest('input, button, select')) return;
+    event.preventDefault();
+    $('#searchInput').focus();
+  });
   $('#filterButton').addEventListener('click', () => {
     $('#filterPopover').classList.toggle('hidden');
+    ensureFilterFacets();
+    renderFilterLists();
     renderFilterState();
   });
   $('#saveSmartFolderButton').addEventListener('click', () => saveCurrentViewAsSmartFolder().catch(error => toast(`智能文件夹保存失败：${error.message}`, 4200)));
@@ -8265,21 +11986,41 @@ function bindEvents() {
     $('#tagColorManager').classList.toggle('hidden');
     renderTagColors();
   });
-  $('#tagColorManager').addEventListener('change', event => {
-    const input = event.target.closest('[data-tag-color]');
-    if (input) updateTagColor(input.dataset.tagColor, input.value);
+  $('#tagColorManager').addEventListener('input', event => {
+    if (event.target.closest('[data-tag-color-search]')) renderTagColors();
+  });
+  $('#tagColorManager').addEventListener('click', event => {
+    const clear = event.target.closest('[data-tag-color-clear]');
+    if (clear) { tagColorManagerOpen = null; updateTagColor(clear.dataset.tagColorClear, ''); return; }
+    const open = event.target.closest('[data-tag-color-open]');
+    if (open) {
+      tagColorManagerOpen = tagColorManagerOpen === open.dataset.tagColorOpen ? null : open.dataset.tagColorOpen;
+      renderTagColors();
+      return;
+    }
+    const swatch = event.target.closest('[data-tag-palette-color]');
+    if (swatch) {
+      tagColorManagerOpen = null;
+      updateTagColor(swatch.dataset.tag, swatch.dataset.tagPaletteColor);
+    }
+  });
+  // The sort popover is placed in window coordinates when it opens; a window
+  // or splitter resize would leave it floating away from its button.
+  window.addEventListener('resize', () => {
+    for (const popover of document.querySelectorAll('.sort-popover.top-layer:not(.hidden)')) popover.classList.add('hidden');
+    for (const button of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) button.setAttribute('aria-expanded', 'false');
   });
   document.addEventListener('click', event => {
-    if (!event.target.closest('#filterButton, #filterPopover')) {
+    if (!clickWithin(event, '#filterButton, #filterPopover')) {
       $('#filterPopover').classList.add('hidden');
       renderFilterState();
     }
-    if (!event.target.closest('#paneLayoutButton, #paneLayoutPopover')) {
+    if (!clickWithin(event, '#paneLayoutButton, #paneLayoutPopover')) {
       $('#paneLayoutPopover').classList.add('hidden');
       $('#paneLayoutButton').setAttribute('aria-expanded', 'false');
     }
-    if (!event.target.closest('#libraryButton, #libraryPopover')) closeLibraryPopover();
-    if (!event.target.closest('.sort-select-control')) {
+    if (!clickWithin(event, '#libraryButton, #libraryPopover')) closeLibraryPopover();
+    if (!clickWithin(event, '.sort-select-control')) {
       for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) {
         p.classList.add('hidden');
       }
@@ -8342,10 +12083,14 @@ function bindEvents() {
   $('#folderDialogForm').addEventListener('submit', event => {
     event.preventDefault();
     const name = $('#folderNameInput').value.trim();
-    if (!name) { $('#folderNameInput').focus(); return; }
+    if (!name && !state.folderDialogAllowEmpty) { $('#folderNameInput').focus(); return; }
     closeFolderDialog(name);
   });
   $('#folderDialogCancelButton').addEventListener('click', () => closeFolderDialog());
+  $('#folderDialogPalette').addEventListener('click', event => {
+    const swatch = event.target.closest('[data-tag-palette-color]');
+    if (swatch) closeFolderDialog(swatch.dataset.tagPaletteColor);
+  });
   $('#folderDialog').addEventListener('click', event => {
     if (event.target === event.currentTarget) closeFolderDialog();
   });
@@ -8374,6 +12119,77 @@ function bindEvents() {
     renderFilterState();
     schedulePaneFilterRefresh(paneId);
   });
+  $('#filterPopover').addEventListener('click', event => {
+    const logic = event.target.closest('[data-logic-value]');
+    if (logic) {
+      const key = logic.closest('[data-filter-logic]').dataset.filterLogic;
+      updateActiveQuery(query => { query[key] = logic.dataset.logicValue; });
+      return;
+    }
+    const folder = event.target.closest('[data-filter-folder]');
+    if (folder) return updateActiveQuery(query => toggleIncludeExclude(query, 'folderInclude', 'folderExclude', folder.dataset.filterFolder, false));
+    const ext = event.target.closest('[data-filter-ext]');
+    if (ext) return updateActiveQuery(query => toggleIncludeExclude(query, 'ext', 'extExclude', ext.dataset.filterExt, false));
+    const preset = event.target.closest('[data-date-preset]');
+    if (preset) {
+      const key = `${preset.closest('[data-date-presets]').dataset.datePresets}Presets`;
+      return updateActiveQuery(query => toggleListValue(query, key, preset.dataset.datePreset));
+    }
+    const month = event.target.closest('[data-filter-month]');
+    if (month) {
+      const key = `${month.closest('[data-month-list]').dataset.monthList}Months`;
+      return updateActiveQuery(query => toggleListValue(query, key, month.dataset.filterMonth));
+    }
+    const comments = event.target.closest('[data-comments-state]');
+    if (comments) {
+      updateActiveQuery(query => { query.comments = query.comments === comments.dataset.commentsState ? '' : comments.dataset.commentsState; });
+      if (state.query.comments === 'has') $('#commentsTextFilter').focus();
+      return;
+    }
+    const shape = event.target.closest('[data-filter-shape]');
+    if (shape) {
+      updateActiveQuery(query => toggleListValue(query, 'shape', shape.dataset.filterShape));
+      if (shape.dataset.filterShape === 'custom' && state.query.shape.includes('custom')) $('#shapeWidthFilter').focus();
+      return;
+    }
+    const rating = event.target.closest('[data-filter-rating]');
+    if (rating) return updateActiveQuery(query => toggleListValue(query, 'rating', Number(rating.dataset.filterRating)));
+    // 有/没有 exclude each other; clicking the lit one clears the filter
+    // (Eagle's note.has / note.no).
+    const textState = event.target.closest('[data-text-state]');
+    if (textState) {
+      const [field, value] = textState.dataset.textState.split(':');
+      updateActiveQuery(query => {
+        const current = query[`${field}State`] || (String(query[field] || '').trim() ? 'has' : '');
+        query[`${field}State`] = current === value ? '' : value;
+        // Off clears the keywords too: on their own they would read as 有.
+        if (current === value) query[field] = '';
+      });
+      if (state.query[`${field}State`] === 'has') $(`#${field}Filter`).focus();
+    }
+  });
+  $('#filterPopover').addEventListener('contextmenu', event => {
+    const folder = event.target.closest('[data-filter-folder]');
+    const ext = event.target.closest('[data-filter-ext]');
+    if (!folder && !ext) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (folder) updateActiveQuery(query => toggleIncludeExclude(query, 'folderInclude', 'folderExclude', folder.dataset.filterFolder, true));
+    else updateActiveQuery(query => toggleIncludeExclude(query, 'ext', 'extExclude', ext.dataset.filterExt, true));
+  });
+  $('#noTagsFilter').addEventListener('change', event => updateActiveQuery(query => { query.noTags = event.target.checked; }));
+  $('#folderFilterSearch').addEventListener('input', renderFolderFilterList);
+  $('#extFilterSearch').addEventListener('input', renderExtFilterList);
+  // The numbers stay and are read in the new unit, as in Eagle.
+  $('#durationUnitFilter').addEventListener('change', event => updateActiveQuery(query => {
+    const before = durationUnitSeconds[query.durationUnit] || 1;
+    const after = durationUnitSeconds[event.target.value] || 1;
+    query.durationUnit = event.target.value;
+    if (query.duration) {
+      const scale = value => (Number.isFinite(value) ? value / before * after : null);
+      query.duration = normalizeQueryRange({ min: scale(query.duration.min), max: scale(query.duration.max) });
+    }
+  }));
   $('#sizeSlider').addEventListener('input', event => applyThumbnailSize(event.target.value));
   $('#folderTree').addEventListener('click', event => {
     // A long-press just opened the menu; its synthetic click must not also
@@ -8382,7 +12198,36 @@ function bindEvents() {
     const toggle = event.target.closest('[data-toggle-folder]');
     if (toggle) { event.stopPropagation(); toggleFolder(toggle.dataset.toggleFolder); return; }
     const row = event.target.closest('.folder-row');
-    if (row) navigate(descriptorFromTarget(row));
+    if (!row) return;
+    if (row.dataset.folderId && (event.metaKey || event.ctrlKey)) { toggleFolderInSelection(row.dataset.folderId); return; }
+    if (row.dataset.folderId && event.shiftKey) { extendFolderSelection(row.dataset.folderId); return; }
+    if (row.dataset.folderId) state.folderSelectionAnchor = row.dataset.folderId;
+    navigate(descriptorFromTarget(row));
+  });
+  // Folders from Finder dropped on the sidebar outside a folder row are
+  // imported with their structure at the library root (P4-01, Eagle's
+  // onDropSidebar); folder rows take their own drops first.
+  const folderTreeElement = $('#folderTree');
+  const sidebarBlankDrop = event => window.eagleMV.planFolderImport && !event.target.closest?.('[data-folder-id], [data-smart-folder-id]')
+    && classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files' && dragHasType(event.dataTransfer, 'Files');
+  folderTreeElement.addEventListener('dragover', event => {
+    if (!sidebarBlankDrop(event)) { folderTreeElement.classList.remove('drop-target'); return; }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    folderTreeElement.classList.add('drop-target');
+  });
+  folderTreeElement.addEventListener('dragleave', event => {
+    if (!folderTreeElement.contains(event.relatedTarget)) folderTreeElement.classList.remove('drop-target');
+  });
+  folderTreeElement.addEventListener('drop', event => {
+    folderTreeElement.classList.remove('drop-target');
+    if (!sidebarBlankDrop(event)) return;
+    const drop = resolveItemDrop(event);
+    if (drop.kind !== 'external-files') return;
+    event.preventDefault();
+    const paths = externalDropImportables(event.dataTransfer).filter(entry => typeof entry === 'string');
+    if (!paths.length) return;
+    scheduleDropTask(() => importFolders(paths, { dropped: true }));
   });
   $('.sidebar').addEventListener('contextmenu', event => {
     event.preventDefault();
@@ -8415,6 +12260,7 @@ function bindEvents() {
           }
         } else {
           submenu.classList.add('submenu-open');
+          placeContextSubmenu(submenu);
         }
         submenu.querySelector('.context-picker-search')?.focus();
       }
@@ -8424,6 +12270,15 @@ function bindEvents() {
     let payload = {};
     try { payload = JSON.parse(row.dataset.contextPayload || '{}'); } catch {}
     const execution = executeContextAction(row.dataset.contextAction, payload);
+    if (row.dataset.keepOpen === 'true') {
+      execution.then(checked => {
+        if (typeof checked !== 'boolean') return;
+        row.classList.toggle('checked', checked);
+        row.setAttribute('aria-checked', String(checked));
+        row.querySelector('.context-menu-leading').innerHTML = checked ? '<span class="context-menu-check" aria-hidden="true">✓</span>' : '';
+      }).catch(error => toast(`操作失败：${error.message}`, 4000));
+      return;
+    }
     hideContextMenu();
     execution.catch(error => toast(`操作失败：${error.message}`, 4000));
   });
@@ -8460,9 +12315,17 @@ function bindEvents() {
     execution.catch(error => toast(`添加标签失败：${error.message}`, 4000));
   });
   $('#contextMenu').addEventListener('mouseenter', event => {
+    // Only entering the row itself places its submenu. Entering something
+    // inside an open submenu must not move it: a filtered picker would slide
+    // away from under the pointer and the whole menu would close.
     const row = event.target.closest('.has-submenu');
-    if (row) row.classList.add('submenu-open');
+    if (!row || event.target !== row) return;
+    row.classList.add('submenu-open');
+    placeContextSubmenu(row);
   }, true);
+  $('#contextMenu').addEventListener('scroll', () => {
+    for (const row of $('#contextMenu').querySelectorAll('.has-submenu.submenu-open')) placeContextSubmenu(row);
+  });
   $('#contextMenu').addEventListener('mouseleave', event => {
     const row = event.target.closest('.has-submenu');
     if (row && !row.contains(event.relatedTarget)) row.classList.remove('submenu-open');
@@ -8472,7 +12335,8 @@ function bindEvents() {
     // menu that same long-press just opened. Cards were exempted by selector;
     // the folder tree and the pane heading need the shared timestamp.
     if (Date.now() < suppressTouchClickUntil) return;
-    if (!event.target.closest('#contextMenu') && !event.target.closest('.item-card') && !event.target.closest('#newButton') && !event.target.closest('.new-window-control')) hideContextMenu();
+    // The inspector's 添加文件夹 opens the folder picker with this very click.
+    if (!clickWithin(event, '#contextMenu, .item-card, #newButton, .new-window-control, [data-add-folder]')) hideContextMenu();
   });
   for (const selector of ['#itemName', '#itemURL']) {
     $(selector).addEventListener('input', markDirty);
@@ -8505,11 +12369,20 @@ function bindEvents() {
     if (!url) return;
     await copyTextWithFeedback(url, '已复制来源网址', 2000);
   });
+  $('#itemStars').addEventListener('click', event => {
+    const star = event.target.closest('[data-inspector-star]');
+    if (!star) return;
+    const select = $('#itemRating');
+    select.value = String(nextStarRating(select.value, star.dataset.inspectorStar));
+    select.dispatchEvent(new Event('change'));
+  });
   $('#itemRating').addEventListener('change', () => {
     syncRatingPlaceholder();
     markDirty();
     queueInspectorAutoSave({ immediate: true });
   });
+  bindCategoryInspector();
+  bindCardDisplayControls();
   $('#itemAnnotation').addEventListener('input', () => { resizeAnnotation(); markDirty(); });
   $('#itemAnnotation').addEventListener('blur', () => queueInspectorAutoSave({ immediate: true }));
   $('#itemPalette').addEventListener('click', event => {
@@ -8539,59 +12412,45 @@ function bindEvents() {
   $('#trashButton').addEventListener('click', () => { const item = itemById([...state.selected][0]); if (item) setTrash([item.id], !item.isDeleted); });
   $('#batchTrashButton').addEventListener('click', () => {
     const ids = [...state.selected];
-    const restore = ids.length > 0 && ids.every(id => itemById(id)?.isDeleted);
+    // Judged on the loaded items: a ⌘A past the loaded range holds ids
+    // whose items the grid never read (P6-02).
+    const loaded = ids.map(itemById).filter(Boolean);
+    const restore = loaded.length > 0 && loaded.every(item => item.isDeleted);
     setTrash(ids, !restore);
-  });
-  $('#batchTagButton').addEventListener('click', async () => {
-    commitTagInput('batch');
-    const tags = [...state.batchTags];
-    if (!tags.length) return;
-    const paneId = state.activePaneId;
-    const pane = paneById(paneId);
-    const ids = [...(pane?.selected || [])];
-    const libraryPath = state.library?.path;
-    const operationToken = beginForegroundOperation('正在合并标签…', { key: `batch-tags:${paneId}` });
-    if (!operationToken) return;
-    setSyncStatus('正在合并标签…');
-    try {
-      const outcome = await runItemBatch(ids, id => window.eagleMV.mutateSet({
-        id, field: 'tags', add: tags, libraryPath
-      }), 'Eagle 批量标签请求超时');
-      if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成标签修改');
-      // Adding a tag keeps the selection, the way removing one already does
-      // (removeTagFromSelection passes keepSelection) — the items are all
-      // still on screen, and losing them after one tag makes the second tag a
-      // re-selection chore.
-      pane.selected = new Set(outcome.failed.length
-        ? outcome.failed
-        : ids.filter(id => pane.items.some(item => item.id === id)));
-      $('#batchTagInput').value = '';
-      setTagValues('batch', [], false);
-      await refresh({ reset: true, preserveScroll: true, paneId });
-      if (state.activePaneId === paneId) withActivePane(paneId, () => {
-        updateCardSelectionStyles();
-        renderInspector();
-      });
-      toast(outcome.failed.length
-        ? `已为 ${outcome.succeeded.length} 个素材添加标签 · ${outcome.failed.length} 个失败并保持选中`
-        : `已为 ${outcome.succeeded.length} 个素材添加标签`, outcome.failed.length ? 4200 : 2400);
-    } catch (error) {
-      toast(`添加标签失败：${error.message}`, 4000);
-    } finally {
-      setSyncStatus('所有窗口已同步');
-      endForegroundOperation(operationToken);
-    }
   });
   $('#sharedTagChips').addEventListener('click', event => {
     const button = event.target.closest('[data-remove-shared-tag]');
     if (button) removeTagFromSelection(button.dataset.removeSharedTag);
   });
-  $('#batchRating').addEventListener('change', event => {
-    const value = event.target.value;
-    event.target.value = '';
-    if (value === '') return;
-    setSelectionRating({ ids: [...state.selected], rating: Number(value) });
+  $('#batchStars').addEventListener('click', event => {
+    const star = event.target.closest('[data-inspector-star]');
+    const ids = [...state.selected];
+    if (!star || ids.length < 2 || !confirmBulkEdit(ids.length)) return;
+    setSelectionRating({ ids, rating: nextStarRating(event.currentTarget.dataset.rating, star.dataset.inspectorStar) });
   });
+  $('#itemFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
+  $('#batchFolderChips').addEventListener('click', event => handleInspectorFolderClick(event));
+  $('#itemExportButton').addEventListener('click', openInspectorExportMenu);
+  $('#batchExportButton').addEventListener('click', openInspectorExportMenu);
+  bindInspectorSections();
+  for (const [field, selector] of [['annotation', '#batchAnnotation'], ['url', '#batchURL']]) {
+    const control = $(selector);
+    control.addEventListener('focus', () => beginBatchFieldEdit(field, control));
+    control.addEventListener('blur', () => commitBatchFieldEdit(field, control));
+    control.addEventListener('keydown', event => {
+      // Return applies a link; a note takes newlines like the single field.
+      if (field === 'url' && event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault();
+        control.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (batchFieldEdit?.field === field) control.value = batchFieldEdit.original;
+        batchFieldEdit = null;
+        control.blur();
+      }
+    });
+  }
+  $('#batchAnnotation').addEventListener('input', event => resizeTextarea(event.target));
   $('#previewBox').addEventListener('click', () => { const id = [...state.selected][0]; if (id) openPreview(id); });
   $('#closePreview').addEventListener('click', closePreview);
   $('#slideshowToggle').addEventListener('click', event => {
@@ -8784,18 +12643,13 @@ function bindEvents() {
       return;
     }
     if (event.key === 'Escape') {
-      if (activeMarquee?.started) { event.preventDefault(); cancelMarquee({ restoreSelection: true }); return; }
-      if (!$('#folderDialog').classList.contains('hidden')) { event.preventDefault(); closeFolderDialog(); return; }
-      if (!$('#webAccessDialog').classList.contains('hidden')) { event.preventDefault(); closeWebAccessDialog(); return; }
-      if (!$('#trashDialog').classList.contains('hidden')) { event.preventDefault(); closeTrashDialog(); return; }
-      if (!$('#duplicateDialog').classList.contains('hidden')) { event.preventDefault(); closeDuplicateDialog('cancel'); return; }
-      if (!$('#contextMenu').classList.contains('hidden')) { event.preventDefault(); hideContextMenu(); return; }
-      if (document.querySelector('.sort-popover:not(.hidden)')) {
-        event.preventDefault();
-        for (const p of document.querySelectorAll('.sort-popover:not(.hidden)')) p.classList.add('hidden');
-        for (const b of document.querySelectorAll('.sort-select-button[aria-expanded="true"]')) b.setAttribute('aria-expanded', 'false');
-        return;
-      }
+      // Already handled: a control's own Esc (tag suggestions, path editing),
+      // an IME composition, or a native modal <dialog>'s cancel.
+      if (event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]')) return;
+      // Esc peels off the topmost surface the way back does — dialogs and
+      // menus, then the filter, library and layout popovers, the tag colour
+      // manager and drawers — before it touches the preview or the selection.
+      if (closeTopTransientSurface({ selection: false })) { event.preventDefault(); return; }
       if (previewOpen) { event.preventDefault(); closePreview(); return; }
       // Off Apple platforms an unconsumed Esc in a text field reaches the
       // Android shell as system Back and can close the app; leave the field
@@ -8891,13 +12745,24 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
       event.preventDefault();
-      undoLastTrash();
+      runUndo();
       return;
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && deleteKey && selectedIds.length) {
       event.preventDefault();
       setTrash(selectedIds, true);
       return;
+    }
+    if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && deleteKey && !event.repeat && requestFolderRemovalShortcut()) {
+      event.preventDefault();
+      return;
+    }
+    // In an image preview ⌘+/⌘− zoom the image and ⌘0 switches between 原始大小
+    // and fit, as in Eagle (view.zoom.actual is CmdOrCtrl+0 there).
+    if (!editable && previewOpen && previewImage() && primaryKey && !event.altKey) {
+      if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); changePreviewZoom(.25); return; }
+      if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); changePreviewZoom(-.25); return; }
+      if (event.code === 'Digit0' || event.code === 'Numpad0') { event.preventDefault(); setPreviewZoom(state.previewZoom.mode === 'actual' ? 'fit' : 'actual'); return; }
     }
     if ((!editable || metadataViewerIsFocused(event)) && (event.metaKey || event.ctrlKey) && !event.altKey) {
       if (metadataViewerIsFocused(event) && (!event.shiftKey || event.code === 'Equal' || event.code === 'NumpadAdd')) {
@@ -8927,7 +12792,7 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && !event.shiftKey && !event.altKey &&
         ((primaryKey && event.key.toLowerCase() === 'r') ||
-         (!primaryKey && event.key === 'F2' && state.selected.size === 1))) {
+         (!primaryKey && event.key === 'F2'))) {
       event.preventDefault();
       requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000));
       return;
@@ -8941,8 +12806,12 @@ function bindEvents() {
       openWithDefault(state.previewId || [...state.selected][0]);
       return;
     }
-    if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); enterFolderFromGrid(state.selectedFolderCard); }
-    else if (!editable && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
+    // Enter and Space on a keyboard-focused button or link activate it (B3-05);
+    // a button that merely kept focus after a mouse click does not count, so
+    // Space after clicking a toolbar button still opens or closes the preview.
+    const keyboardControl = Boolean(event.target?.closest?.(KEYBOARD_ACTIVATED_CONTROLS) && event.target.matches?.(':focus-visible'));
+    if (!editable && !keyboardControl && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selectedFolderCard) { event.preventDefault(); enterFolderFromGrid(state.selectedFolderCard); }
+    else if (!editable && !keyboardControl && !previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key === 'Enter' && state.selected.size === 1) { event.preventDefault(); openPreview([...state.selected][0]); }
     if (!editable && previewOpen && !primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault();
       toggleSlideshow();
@@ -8958,14 +12827,14 @@ function bindEvents() {
       togglePreviewGrayscale();
       return;
     }
-    if (!editable && event.code === 'Space' && previewOpen) {
+    if (!editable && !keyboardControl && event.code === 'Space' && previewOpen) {
       event.preventDefault();
       // Eagle: space toggles playback while a video/audio preview is open;
       // for stills it keeps closing the preview.
       const media = $('#modalMedia video, #modalMedia audio');
       if (media) media.paused ? media.play().catch(() => {}) : media.pause();
       else closePreview();
-    } else if (!editable && event.code === 'Space' && state.selected.size) {
+    } else if (!editable && !keyboardControl && event.code === 'Space' && state.selected.size) {
       event.preventDefault();
       const first = firstSelectedInViewOrder();
       if (first) {
@@ -8988,30 +12857,35 @@ function bindEvents() {
       event.preventDefault();
       selectAllItems();
     }
-    if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && state.selected.size) {
+    // In the preview ⌘C copies the item on screen, like ⌘⌥C and ⌘Enter do:
+    // Eagle's preview moves the selection along as it pages, so its ⌘C
+    // always means the viewed item (B3-01).
+    const copyIds = selectedActionIds({ includePreview: previewOpen });
+    if (!editable && hasCapability('clipboardFiles') && !event.shiftKey && !event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && copyIds.length) {
       const selection = window.getSelection?.();
       const hasTextSelection = Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
       if (!hasTextSelection) {
         event.preventDefault();
-        copySelectedFiles([...state.selected]).catch(error => toast(`复制失败：${error.message}`, 4000));
+        copySelectedFiles(copyIds).catch(error => toast(`复制失败：${error.message}`, 4000));
       }
     }
     if (!editable && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !previewOpen && !event.altKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
-      moveCardFocus(event.key);
+      if (event.shiftKey) {
+        // ⇧← ⇧→ grow or shrink the run (P6-04); ⇧↑ ⇧↓ do the same in the
+        // list layout and nothing in the grid layouts, as in Eagle.
+        const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+        if (horizontal || state.viewMode === 'list') stepSelectionByKey(event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1);
+      } else {
+        moveCardFocus(event.key);
+      }
     }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowUp') { event.preventDefault(); navigateUp(); }
     if (!editable && (event.altKey || event.ctrlKey) && event.key === 'ArrowRight') { event.preventDefault(); navigateHistory(1); }
     if (!editable && keyboardPlatform.primaryKey(event) && event.key === ']') { event.preventDefault(); navigateHistory(1); }
     if (!editable && !previewOpen && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
-      const scrollGrid = key => {
-        const grid = $('#gridScroller');
-        if (!grid) return;
-        const top = key === 'Home' ? 0 : key === 'End' ? grid.scrollHeight : grid.scrollTop + (key === 'PageDown' ? 1 : -1) * grid.clientHeight * .86;
-        grid.scrollTo({ top, behavior: key.startsWith('Page') ? 'smooth' : 'auto' });
-      };
-      scrollGrid(event.key);
+      scrollGridByKey(event.key);
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !state.textSession && state.inspectorDirty) {
       event.preventDefault();
@@ -9050,8 +12924,19 @@ function bindEvents() {
 }
 
 // --- Web access settings (desktop only; the menu triggers command:web-access)
+// What the host last reported, to tell unapplied edits apart (F-08).
+let webAccessApplied = null;
+function webAccessFormValues() {
+  return { enabled: $('#webAccessEnabled').checked, port: String($('#webAccessPort').value).trim(), requireKey: !$('#webAccessNoKey').checked };
+}
+
 function closeWebAccessDialog() {
+  const form = webAccessFormValues();
+  if (webAccessApplied && !$('#webAccessDialog').classList.contains('hidden')
+      && (form.enabled !== webAccessApplied.enabled || form.port !== webAccessApplied.port || form.requireKey !== webAccessApplied.requireKey)
+      && !confirm('有尚未应用的修改，关闭后将放弃。仍要关闭？')) return false;
   $('#webAccessDialog').classList.add('hidden');
+  return true;
 }
 
 function renderWebAccessStatus(status) {
@@ -9064,6 +12949,7 @@ function renderWebAccessStatus(status) {
   $('#webAccessKey').textContent = status.key || '启用后自动生成';
   $('#webAccessCopyKey').disabled = !status.key;
   $('#webAccessNoKey').checked = status.requireKey === false;
+  webAccessApplied = webAccessFormValues();
   const addresses = $('#webAccessAddresses');
   if (status.running && status.addresses?.length) {
     addresses.innerHTML = status.addresses.map((entry, index) => `
@@ -9104,12 +12990,21 @@ function bindWebAccessDialog() {
   });
   $('#webAccessSaveButton').addEventListener('click', async () => {
     const button = $('#webAccessSaveButton');
+    const form = webAccessFormValues();
+    const port = Number(form.port);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      toast('端口需为 1024–65535 之间的整数', 3600);
+      $('#webAccessPort').focus();
+      return;
+    }
+    if (form.enabled && !form.requireKey && webAccessApplied?.requireKey !== false
+        && !confirm('免密访问后，同一网络里的任何设备都能读写整个资源库。确定开启？')) return;
     button.disabled = true;
     try {
       const status = await window.eagleMV.setWebAccess({
-        enabled: $('#webAccessEnabled').checked,
-        port: Number($('#webAccessPort').value) || 41600,
-        requireKey: !$('#webAccessNoKey').checked
+        enabled: form.enabled,
+        port,
+        requireKey: form.requireKey
       });
       renderWebAccessStatus(status);
       if (status?.error) toast(`Web 服务启动失败：${status.error}`, 4600);
@@ -9163,21 +13058,22 @@ function bindHubEvents() {
       state.internalDrag = payload;
       return;
     }
-    if (!state.internalDrag || payload?.token !== state.internalDrag.token) return;
-    state.internalDrag = null;
-    for (const pane of state.panes) {
-      pane.draggingItemIds = null;
-      pane.dragDepth = 0;
-    }
-    state.dragSourcePaneId = null;
-    for (const target of document.querySelectorAll('.drop-target')) target.classList.remove('drop-target');
-    for (const overlay of document.querySelectorAll('.drop-overlay')) overlay.classList.add('hidden');
+    // Only a different, known session's end is ignored. A failed native
+    // start reports no token, and the pending local drag never got one.
+    if (!state.internalDrag && !state.draggingItemIds && !state.dragSourcePaneId) return;
+    const currentToken = state.internalDrag?.token;
+    if (payload?.token && currentToken && payload.token !== currentToken) return;
+    resetDragState();
   });
   window.eagleMV.onDragFinished(result => {
     if (!result?.ok) toast(`拖动失败：${result?.message || '无法导出素材文件'}`, 4000);
     else if (result.missing) toast(`已拖动 ${result.count} 个文件 · ${result.missing} 个原文件缺失`, 3500);
   });
   window.eagleMV.onRequestClose(async () => {
+    // Answer at once so main knows this window is alive; only an actual
+    // refusal below cancels the close (and with it a pending quit).
+    approvedWindowClose = false;
+    window.eagleMV.deferClose?.();
     const pendingOperations = blockingForegroundOperations();
     const anyTextSaving = state.panes.some(pane => pane.textSession?.saving);
     if (state.inspectorSaving || anyTextSaving || pendingOperations.length) {
@@ -9192,21 +13088,24 @@ function bindHubEvents() {
     }
     // Metadata is auto-saved on input/blur. A close request is the final
     // flush for a very recent edit instead of a discard prompt.
-    if (state.inspectorDirty) {
-      window.eagleMV.cancelClose();
-      await saveInspector();
-    }
+    if (state.inspectorDirty) await saveInspector();
+    // A folder name or description still being typed is saved, not dropped.
+    if (document.activeElement === $('#categoryName')) await commitCategoryName();
+    if (document.activeElement === $('#categoryDescription')) await commitCategoryDescription();
     const failedDrafts = [...inspectorDrafts.values()].filter(draft => Object.keys(inspectorDraftPatch(draft)).length);
     const failedDraft = failedDrafts[0];
     if (failedDraft) {
-      window.eagleMV.cancelClose();
-      if (!failedDrafts.every(draft => persistInspectorDraft(draft))) return;
+      if (!failedDrafts.every(draft => persistInspectorDraft(draft))) {
+        window.eagleMV.cancelClose();
+        return;
+      }
       if (!confirm(`有 ${failedDrafts.length} 个素材信息草稿尚未提交，已保存在本机。\n\n按“确定”保留草稿并关闭，下次打开原素材可恢复；按“取消”继续编辑。`)) {
         if (failedDraft.libraryPath === state.library?.path && paneById(failedDraft.paneId)) {
           activatePane(failedDraft.paneId);
           const pane = paneById(failedDraft.paneId);
           if (pane.items.some(item => item.id === failedDraft.id)) { pane.selected = new Set([failedDraft.id]); renderInspector(); }
         }
+        window.eagleMV.cancelClose();
         return;
       }
     }
@@ -9216,50 +13115,57 @@ function bindHubEvents() {
     }
     state.inspectorDirty = false;
     saveSessionState();
+    // Stays approved until the next close request; main also overrides a
+    // beforeunload guard once it has allowed the close.
     approvedWindowClose = true;
-    setTimeout(() => { approvedWindowClose = false; }, 1000);
     window.eagleMV.confirmClose();
   });
-  window.eagleMV.onTrashSelection(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true));
-  window.eagleMV.onUndoDelete?.(() => undoLastTrash());
-  window.eagleMV.onPinSelection(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId));
-  window.eagleMV.onAddToFolder(payload => addSelectionToFolder(payload));
-  window.eagleMV.onMoveToFolder(payload => moveSelectionToFolder(payload));
-  window.eagleMV.onRemoveFromFolder(payload => removeSelectionFromFolder(payload));
-  window.eagleMV.onAddTag(payload => addTagToSelection(payload));
-  window.eagleMV.onSetRating(payload => setSelectionRating(payload));
-  window.eagleMV.onSetTagColor(async payload => {
+  window.eagleMV.onTrashSelection(whenWorkspaceFree(payload => setTrash(payload?.ids || [...state.selected], payload?.deleted ?? true)));
+  window.eagleMV.onUndoDelete?.(() => routeUndoCommand());
+  window.eagleMV.onPinSelection(whenWorkspaceFree(payload => setPinned(payload?.ids || [...state.selected], payload.pinned, payload?.paneId || state.activePaneId)));
+  window.eagleMV.onAddToFolder(whenWorkspaceFree(payload => addSelectionToFolder(payload)));
+  window.eagleMV.onMoveToFolder(whenWorkspaceFree(payload => moveSelectionToFolder(payload)));
+  window.eagleMV.onRemoveFromFolder(whenWorkspaceFree(payload => removeSelectionFromFolder(payload)));
+  window.eagleMV.onAddTag(whenWorkspaceFree(payload => addTagToSelection(payload)));
+  window.eagleMV.onSetRating(whenWorkspaceFree(payload => setSelectionRating(payload)));
+  window.eagleMV.onSetTagColor(whenWorkspaceFree(async payload => {
     const tag = String(payload?.tag || '').trim();
     if (!tag) return;
-    const current = state.tagColors[tag] || '#0072ef';
-    const color = prompt(`设置标签“${tag}”颜色（六位十六进制）`, current);
-    if (color !== null) updateTagColor(tag, color.trim());
-  });
-  window.eagleMV.onRenameRequest(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000)));
-  window.eagleMV.onImportRequest(() => importFiles());
-  window.eagleMV.onSiteImportRequest?.(() => siteFeatureUI().open());
-  window.eagleMV.onWebAccessRequest(() => openWebAccessDialog());
-  window.eagleMV.onCreateFolderRequest(() => {
+    const color = await askTagColor(tag);
+    if (color !== null) updateTagColor(tag, color);
+  }));
+  window.eagleMV.onRenameRequest(whenWorkspaceFree(() => requestRenameSelection().catch(error => toast(`重命名失败：${error.message}`, 4000))));
+  window.eagleMV.onImportRequest(whenWorkspaceFree(() => importFiles()));
+  window.eagleMV.onSiteImportRequest?.(whenWorkspaceFree(() => siteFeatureUI().open()));
+  window.eagleMV.onWebAccessRequest(whenWorkspaceFree(() => openWebAccessDialog()));
+  window.eagleMV.onCreateFolderRequest(whenWorkspaceFree(() => {
     const paneId = state.activePaneId;
     const parentId = folderCreationParentForPane(paneId);
     createFolder(parentId, Boolean(parentId), paneId).catch(error => toast(`创建失败：${error.message}`, 4000));
-  });
-  window.eagleMV.onCreateDocumentRequest(payload => {
+  }));
+  window.eagleMV.onCreateDocumentRequest(whenWorkspaceFree(payload => {
     const paneId = state.activePaneId;
     createNewDocument(payload?.type, { folderId: folderCreationParentForPane(paneId), paneId })
       .catch(error => toast(`新建文件失败：${error.message}`, 4000));
-  });
-  window.eagleMV.onCreateSmartFolderRequest(() => {
+  }));
+  window.eagleMV.onCreateSmartFolderRequest(whenWorkspaceFree(() => {
     createSmartFolderFromNewMenu().catch(error => toast(`智能文件夹创建失败：${error.message}`, 4200));
-  });
+  }));
   window.eagleMV.onNewWindowRequest(requestDefaultNewWindow);
-  window.eagleMV.onOpenView?.(view => {
+  window.eagleMV.onMenuCommand?.(whenWorkspaceFree(payload => runMenuCommand(payload)));
+  window.eagleMV.onOpenView?.(whenWorkspaceFree(view => {
     if (!view || !state.library) return;
     if (!navigate(view, { restoreScroll: true })) toast('无法打开 MultiView 当前路径', 3200);
-  });
+  }));
   window.eagleMV.onFolderUsed(payload => {
     if (!payload?.folderId || payload.libraryPath !== state.library?.path) return;
     rememberRecentFolderUsage(payload.folderId);
+  });
+  // Web uploads report bytes so a long upload is visibly alive.
+  window.eagleMV.onUploadProgress?.(progress => {
+    if (!progress || !state.importing) return;
+    const percent = progress.size ? Math.min(100, Math.floor(progress.loaded / progress.size * 100)) : 0;
+    setSyncStatus(`正在上传 ${progress.index + 1}/${progress.total} · ${percent}%`);
   });
   window.eagleMV.onPinsChanged(payload => {
     if (payload.libraryPath !== state.library?.path) return;
@@ -9271,8 +13177,19 @@ function bindHubEvents() {
   window.eagleMV.onFolderCoversChanged?.(acceptFolderCovers);
   window.eagleMV.onTagDataChanged(async payload => {
     if (payload?.libraryPath !== state.library?.path) return;
-    await loadLibraryExtras();
-    if (payload.libraryPath !== state.library?.path) return;
+    if (payload.reason === 'item-tags') {
+      await refreshAvailableTags();
+      return;
+    }
+    // A colour change carries the library's whole colour table; nothing
+    // else changed, so the other six reads are not needed (H-11).
+    if (payload.reason === 'tag-color' && payload.colors && typeof payload.colors === 'object') {
+      state.tagColors = payload.colors;
+      renderTagColors();
+    } else {
+      await loadLibraryExtras();
+      if (payload.libraryPath !== state.library?.path) return;
+    }
     // Recolor existing chips in place, keeping partially typed tag text,
     // caret positions, metadata drafts and current focus intact.
     for (const chip of document.querySelectorAll('.tag-chip')) {
@@ -9290,6 +13207,10 @@ function bindHubEvents() {
     for (const pane of state.panes) {
       const session = pane.textSession;
       if (!session || payload.id !== session.id) continue;
+      // Our own save echoes back: same content version, or this window's save
+      // still waiting for its receipt (H-07).
+      if (payload.fingerprint && JSON.stringify(payload.fingerprint) === JSON.stringify(session.fingerprint)) continue;
+      if (session.saving && payload.origin != null && payload.origin === state.windowId) continue;
       if (session.dirty || session.saving) {
         textSessionStatus(session, '另一个编辑会话已修改此 TXT；保存时会检查冲突');
         continue;
@@ -9298,6 +13219,7 @@ function bindHubEvents() {
     }
   });
   window.eagleMV.onStatus(payload => setConnection(payload.connected, payload.message));
+  window.eagleMV.onIdentityChanged?.(windowId => { if (windowId) state.windowId = windowId; });
   window.eagleMV.onItemsChanged(payload => {
     if (payload.libraryPath && payload.libraryPath !== state.library?.path) return;
     let touchedSelection = false;
@@ -9318,16 +13240,23 @@ function bindHubEvents() {
   window.eagleMV.onLibraryChanged(payload => scheduleLibraryChange(payload));
   window.eagleMV.onQueryInvalidated(payload => {
     if (payload?.libraryPath && payload.libraryPath !== state.library?.path) return;
-    if (payload?.thumbnailRevision) thumbnailRevision = payload.thumbnailRevision;
+    if (payload?.thumbnailRevision) {
+      thumbnailRevision = payload.thumbnailRevision;
+      if (Array.isArray(payload.thumbnailIds)) for (const id of payload.thumbnailIds) thumbnailRevisions.set(String(id), payload.thumbnailRevision);
+      else allThumbnailsRevision = payload.thumbnailRevision;
+    }
     // TXT saves already have their own text:changed notification. Re-querying
     // every pane here rebuilds both grids behind the editor and makes an
     // unrelated pane visibly flash after each autosave.
     if (payload?.reason === 'text-saved') return;
+    categoryStatsRevision += 1;
+    categoryStatsCache.clear();
     scheduleRefresh();
   });
 }
 
 function scheduleLibraryChange(payload) {
+  adoptLibraryHubInstance(payload);
   if (libraryChangeIsStale(payload)) return;
   if (pendingLibraryChange) {
     const comparison = compareLibrarySnapshots(payload, pendingLibraryChange);
@@ -9360,7 +13289,12 @@ async function drainLibraryChanges() {
     }
   } finally {
     librarySyncRunning = false;
-    if (pendingLibraryChange) scheduleLibraryChange(pendingLibraryChange);
+    // A change that arrived while a failed sync was running must get its own
+    // timer; rescheduling the pending payload against itself was deduplicated
+    // away and left it hanging until the next event (H-06).
+    const leftover = pendingLibraryChange;
+    pendingLibraryChange = null;
+    if (leftover) scheduleLibraryChange(leftover);
   }
 }
 
@@ -9386,6 +13320,19 @@ function compareLibrarySnapshots(left, right) {
   return 0;
 }
 
+// The host restarted: its revisions count from 0 again, so the counters kept
+// from the previous host process say nothing about the new snapshots.
+function adoptLibraryHubInstance(payload) {
+  const instance = payload?.hubInstance;
+  if (!instance || instance === libraryHubInstance) return;
+  if (libraryHubInstance) {
+    lastAppliedLibraryRevision = -1;
+    newestLibraryRevision = -1;
+    if (pendingLibraryChange && pendingLibraryChange.hubInstance !== instance) pendingLibraryChange = null;
+  }
+  libraryHubInstance = instance;
+}
+
 function libraryChangeIsStale(payload) {
   if (!payload?.library) return true;
   const revision = librarySnapshotRevision(payload);
@@ -9405,6 +13352,7 @@ function libraryChangeIsSuperseded(payload) {
 }
 
 function recordAppliedLibrarySnapshot(payload) {
+  adoptLibraryHubInstance(payload);
   const revision = librarySnapshotRevision(payload);
   if (revision === null) return;
   lastAppliedLibraryRevision = Math.max(lastAppliedLibraryRevision, revision);
@@ -9415,6 +13363,18 @@ function reconcileLibraryChangePanes() {
   const missingFolderIds = new Set();
   let missingSmartFolder = false;
   for (const pane of state.panes) {
+    const selection = viewFolderSelection(pane.currentView);
+    if (selection) {
+      // A selected folder gone elsewhere leaves the selection; the view goes
+      // only when none is left.
+      const kept = selection.filter(id => findFolder(state.library?.folders, id));
+      if (!kept.length) missingFolderIds.add(pane.currentView.id);
+      else {
+        if (kept.length !== selection.length) pane.currentView = { ...pane.currentView, id: kept[0], selectedFolderIds: kept };
+        pane.viewTitle = `已选定 ${kept.length} 个文件夹`;
+      }
+      continue;
+    }
     if (pane.currentView.kind === 'folder') {
       const folder = findFolder(state.library?.folders, pane.currentView.id);
       if (folder) pane.viewTitle = folder.name || '文件夹';
@@ -9448,6 +13408,8 @@ function renderReconciledLibraryPanes() {
   // would discard an in-progress metadata edit. A folder-card inspector is
   // safe to redraw once its ID is present in the fresh tree.
   if (active?.selectedFolderCard && findFolder(state.library?.folders, active.selectedFolderCard)) renderInspector();
+  // The view inspector (no selection) shows folder names and descriptions.
+  else if (active && !active.selected.size) renderInspector();
 }
 
 async function confirmMissingCurrentFolders(folderIds, payload) {
@@ -9482,6 +13444,11 @@ async function applyLibraryChange(payload) {
     captureInspectorDraft();
     for (const pane of state.panes) persistTextDraft(pane.textSession);
   }
+  // Before the tree is replaced: a folder that left a 包含子文件夹 subtree
+  // keeps the sort it showed (S-09).
+  if (!pathChanged && state.library?.folders && Array.isArray(payload.library.folders)) {
+    sortMemory.followMovedFolders(payload.library.path, state.library.folders, payload.library.folders);
+  }
   state.library = payload.library;
   recordAppliedLibrarySnapshot(payload);
   $('#windowTitle').textContent = 'Eagle MultiView';
@@ -9513,7 +13480,7 @@ async function applyLibraryChange(payload) {
     renderQueryControls();
     renderFolderTree();
     await refreshAllPanes({ reset: true, preserveScroll: false });
-    toast(hadUnsaved ? 'Eagle 已切换资料库；旧库草稿已保留，返回原库后可继续编辑' : 'Eagle 已切换资料库，所有窗口已跟随', 4200);
+    toast(hadUnsaved ? 'Eagle 已切换资源库；旧库草稿已保留，返回原库后可继续编辑' : 'Eagle 已切换资源库，所有窗口已跟随', 4200);
     return;
   }
 
@@ -9536,9 +13503,14 @@ async function applyLibraryChange(payload) {
     }
     if (confirmation.confirmed && confirmation.missingFolderIds.length) {
       const deleted = new Set(confirmation.missingFolderIds);
+      let deletedElsewhere = false;
       for (const pane of state.panes) {
         if (pane.currentView.kind === 'folder' && deleted.has(pane.currentView.id)) {
-          withActivePane(pane.id, () => navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
+          // A folder this window deleted: go where Eagle goes (removeFolderById).
+          const redirect = state.folderRemovalRedirects.get(pane.currentView.id);
+          if (!redirect) deletedElsewhere = true;
+          withActivePane(pane.id, () => (redirect && navigate(redirect, { record: false, refreshView: false, skipDiscard: true }) !== false)
+            || navigate({ kind: 'root' }, { record: false, refreshView: false, skipDiscard: true }));
         } else if (pane.selectedFolderCard && deleted.has(pane.selectedFolderCard)) {
           pane.selectedFolderCard = null;
           if (pane.id === state.activePaneId) withActivePane(pane.id, () => renderInspector());
@@ -9546,46 +13518,91 @@ async function applyLibraryChange(payload) {
       }
       reconciliation = reconcileLibraryChangePanes();
       renderReconciledLibraryPanes();
-      toast('当前文件夹已在 Eagle 中删除，已返回资料库根目录', 4000);
+      if (deletedElsewhere) toast('当前文件夹已在 Eagle 或另一个窗口中删除，已返回资源库根目录', 4000);
     }
   }
 
   await refreshAllPanes({ reset: true, preserveScroll: true });
-  if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资料库根目录', 4000);
+  if (reconciliation.missingSmartFolder) toast('当前智能文件夹已在 Eagle 中移除，已返回资源库根目录', 4000);
 }
 
-async function loadLibraryExtras() {
+function loadLibraryExtras() {
   const libraryPath = state.library?.path;
-  if (!libraryPath) return;
-  state.manualOrdersReady = false;
-  if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;}
+  if (!libraryPath) return Promise.resolve();
+  if (libraryExtrasRun?.libraryPath === libraryPath) {
+    libraryExtrasRun.again = true;
+    return libraryExtrasRun.promise;
+  }
+  const run = { libraryPath, again: false, promise: null };
+  libraryExtrasRun = run;
+  run.promise = (async () => {
+    try {
+      do { run.again = false; await readLibraryExtras(libraryPath); }
+      while (run.again && state.library?.path === libraryPath);
+    } finally { if (libraryExtrasRun === run) libraryExtrasRun = null; }
+  })();
+  return run.promise;
+}
+
+async function readLibraryExtras(libraryPath) {
+  const token = ++libraryExtrasToken;
+  // Reloading the same library keeps the manual orders usable meanwhile;
+  // only a library switch empties them (B3-08). Dragging a sidebar folder
+  // during any library change used to say the order was not ready yet.
+  if (state.manualOrdersLibrary !== libraryPath) {state.localOrders={};state.manualOrdersLibrary=libraryPath;state.manualOrdersReady=false;}
   if (state.folderCoversLibrary !== libraryPath) {
     state.localFolderCovers = { revision: 0, covers: {} };
     state.folderCoversReady = false;
     state.folderCoversLibrary = libraryPath;
   }
-  const [pins, tags, tagGroups, recentFolders, tagColors, orders, covers] = await Promise.all([
-    window.eagleMV.getPins({ libraryPath }).catch(() => ({})),
-    window.eagleMV.getTags().catch(() => []),
-    window.eagleMV.getTagGroups().catch(() => []),
-    window.eagleMV.getRecentFolders().catch(() => []),
-    window.eagleMV.getTagColors({ libraryPath }).catch(() => ({})),
+  const [pins, tags, tagGroups, starredTags, recentFolders, tagColors, orders, covers] = await Promise.all([
+    window.eagleMV.getPins({ libraryPath }).catch(() => null),
+    window.eagleMV.getTags().catch(() => null),
+    window.eagleMV.getTagGroups().catch(() => null),
+    window.eagleMV.getStarredTags?.().catch(() => null) ?? null,
+    window.eagleMV.getRecentFolders().catch(() => null),
+    window.eagleMV.getTagColors({ libraryPath }).catch(() => null),
     window.eagleMV.getManualOrders?.({ libraryPath }).catch(error => {toast(`本地排序读取失败：${error.message}`,5000);return null;}) ?? null,
     window.eagleMV.getFolderCovers?.({ libraryPath }).catch(error => {toast(`封面设置读取失败：${error.message}`,5000);return null;}) ?? null
   ]);
-  if (state.library?.path !== libraryPath) return;
-  state.localPins = pins || {};
+  // A newer load supersedes this one, and its answer may already be shown.
+  if (state.library?.path !== libraryPath || token !== libraryExtrasToken) return;
+  // A failed read keeps what this library already showed instead of wiping
+  // every pin and tag colour off screen; a new library starts empty.
+  const sameLibrary = libraryExtrasLibrary === libraryPath;
+  libraryExtrasLibrary = libraryPath;
+  const kept = (value, current, empty) => value ?? (sameLibrary ? current : empty);
+  state.localPins = kept(pins, state.localPins, {});
   if (covers) acceptFolderCovers({ libraryPath, ...covers });
   for (const [key,order] of Object.entries(orders || {})) {
     if ((state.localOrders[key]?.revision || 0) <= order.revision) state.localOrders[key]=order;
   }
-  state.manualOrdersReady = Boolean(orders);
-  state.availableTags = tags || [];
-  state.tagGroups = tagGroups || [];
-  state.recentFolders = recentFolders || [];
-  state.tagColors = tagColors || {};
+  if (orders) state.manualOrdersReady = true;
+  state.availableTags = kept(tags, state.availableTags, []);
+  state.tagGroups = orderTagGroups(kept(tagGroups, state.tagGroups, []), libraryPath);
+  state.starredTags = Array.isArray(starredTags) ? starredTags : kept(null, state.starredTags, []);
+  state.recentFolders = kept(recentFolders, state.recentFolders, []);
+  state.tagColors = kept(tagColors, state.tagColors, {});
   renderTagSuggestions();
   renderTagColors();
+}
+
+// An item edit added or removed tags (V-01): only the tag list and its counts
+// change, so pins, orders, colours and the inspector stay as they are.
+let availableTagsToken = 0;
+async function refreshAvailableTags() {
+  const libraryPath = state.library?.path;
+  const token = ++availableTagsToken;
+  const extrasToken = libraryExtrasToken;
+  const tags = await window.eagleMV.getTags().catch(() => null);
+  // A newer read, or a full reload that started meanwhile, has the last word.
+  if (!tags || token !== availableTagsToken || extrasToken !== libraryExtrasToken || state.library?.path !== libraryPath) return;
+  state.availableTags = tags;
+  renderTagSuggestions();
+  renderFolderTree();
+  for (const pane of state.panes) {
+    if (pane.currentView.kind === 'tags') withActivePane(pane.id, () => renderGrid({ preserveScroll: true }));
+  }
 }
 
 async function restoreInitialWindowState() {
@@ -9630,9 +13647,10 @@ function localizeStaticShortcutHints() {
 }
 
 async function start() {
-  installBackRouter(backActionRouter);
+  installBackRouter(window.eagleMV.shellApp ? shellBackEntry : backActionRouter);
   localizeStaticShortcutHints();
   bindEvents();
+  window.addEventListener('message', handleEaglePdfViewerMessage);
   bindHubEvents();
   bindWebAccessDialog();
   applyCapabilityVisibility();
@@ -9657,69 +13675,75 @@ async function start() {
     const thumbnailSize = Number(localStorage.getItem('eaglemv.thumbnailSize'));
     if (Number.isFinite(thumbnailSize) && thumbnailSize > 0) applyThumbnailSize(thumbnailSize, { persist: false });
   } catch {}
+  // The saved slideshow interval and preview background apply to every pane
+  // restored at launch, not only the active one (B3-09).
   try {
     const interval = Number(localStorage.getItem(SLIDESHOW_INTERVAL_KEY));
     if ([...$('#slideshowInterval').options].some(option => Number(option.value) === interval)) {
-      state.slideshow.intervalMs = interval;
+      for (const pane of state.panes) pane.slideshow.intervalMs = interval;
     }
   } catch {}
-  $('#slideshowInterval').value = String(state.slideshow.intervalMs);
-  renderSlideshow();
   try {
     const stored = JSON.parse(localStorage.getItem(PREVIEW_VIEW_KEY) || 'null');
-    if (PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)) state.previewView.background = stored.background;
-    state.previewView.grayscale = Boolean(stored?.grayscale);
+    for (const pane of state.panes) {
+      if (PREVIEW_BACKGROUNDS.some(option => option.key === stored?.background)) pane.previewView.background = stored.background;
+      pane.previewView.grayscale = Boolean(stored?.grayscale);
+    }
   } catch {}
-  renderPreviewView();
+  for (const pane of state.panes) withActivePane(pane.id, () => { renderSlideshow(); renderPreviewView(); });
   renderPanels();
   renderQueryControls();
+  // Only the connection is retried; a failure after it is reported as what
+  // it is instead of "start Eagle", and one chained timer replaces the
+  // overlapping 2.5 s interval (H-05).
+  let connection;
   try {
     state.windowId = await window.eagleMV.identity();
-    const { app, library } = await window.eagleMV.connect();
-    state.library = library;
-    recordAppliedLibrarySnapshot({ library });
-    await loadLibraryExtras();
-    $('#windowTitle').textContent = 'Eagle MultiView';
-    $('.sidebar-library-label').textContent = library.name || '资源库';
-    setConnection(true);
-    renderFolderTree();
-    const initial = await restoreInitialWindowState();
-    if (!initial) restoreSavedSessionPanes();
-    else renderFolderTree();
-    await refreshAllPanes({ reset: true, preserveScroll: false });
-    if (initial?.selectedIds?.length) {
-      const missing = initial.selectedIds.filter(id => !itemById(id));
-      if (missing.length) {
-        const fetched = await Promise.all(missing.map(id => window.eagleMV.getItem(id).catch(() => null)));
-        const pane = activePane();
-        pane.items = [...pane.items, ...fetched.filter(Boolean)];
-      }
-      activePane().selected = new Set(initial.selectedIds.filter(id => itemById(id)));
-      renderGrid({ preserveScroll: true });
-      renderInspector();
-    }
-    if (initial?.previewId && itemById(initial.previewId)) await openPreview(initial.previewId);
-    toast(`已连接 Eagle ${app.version}`);
-  } catch (error) {
+    connection = await window.eagleMV.connect();
+  } catch {
     setConnection(false, '请先启动 Eagle 4');
     $('#resultCount').textContent = '等待 Eagle 启动';
     toast('未连接 Eagle。启动 Eagle 后本窗口会自动重试。', 5000);
-    const retry = setInterval(async () => {
+    const retry = () => setTimeout(async () => {
+      let result;
       try {
-        const result = await window.eagleMV.connect();
-        clearInterval(retry);
-        state.library = result.library;
-        recordAppliedLibrarySnapshot({ library: result.library });
-        await loadLibraryExtras();
-        setConnection(true);
-        renderFolderTree();
-        const initial = await restoreInitialWindowState();
-        if (!initial) restoreSavedSessionPanes();
-        else renderFolderTree();
-        await refreshAllPanes({ reset: true, preserveScroll: false });
-      } catch {}
+        if (state.windowId == null) state.windowId = await window.eagleMV.identity();
+        result = await window.eagleMV.connect();
+      } catch { retry(); return; }
+      finishStartup(result).catch(error => toast(`载入窗口失败：${error.message}`, 5000));
     }, 2500);
+    retry();
+    return;
   }
+  await finishStartup(connection).catch(error => toast(`载入窗口失败：${error.message}`, 5000));
+}
+
+async function finishStartup({ app, library, hubInstance }) {
+  state.library = library;
+  recordAppliedLibrarySnapshot({ library, hubInstance });
+  await loadLibraryExtras();
+  $('#windowTitle').textContent = 'Eagle MultiView';
+  $('.sidebar-library-label').textContent = library.name || '资源库';
+  setConnection(true);
+  renderFolderTree();
+  const initial = await restoreInitialWindowState();
+  if (!initial) restoreSavedSessionPanes();
+  else renderFolderTree();
+  await refreshAllPanes({ reset: true, preserveScroll: false });
+  if (initial?.selectedIds?.length) {
+    const missing = initial.selectedIds.filter(id => !itemById(id));
+    if (missing.length) {
+      const fetched = (await Promise.all(missing.map(id => window.eagleMV.getItem(id).catch(() => null)))).filter(Boolean);
+      const pane = activePane();
+      pane.items = [...pane.items, ...fetched];
+      for (const item of fetched) pane.itemMap?.set(item.id, item);
+    }
+    activePane().selected = new Set(initial.selectedIds.filter(id => itemById(id)));
+    renderGrid({ preserveScroll: true });
+    renderInspector();
+  }
+  if (initial?.previewId && itemById(initial.previewId)) await openPreview(initial.previewId);
+  toast(`已连接 Eagle ${app?.version || ''}`.trim());
 }
 
 start();

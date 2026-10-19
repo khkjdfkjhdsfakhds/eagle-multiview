@@ -10,7 +10,8 @@ const {
   queryWithoutSearch,
   filtersActive,
   filterCount,
-  selectRange,
+  extendSelection,
+  stepSelection,
   coordinatePaneLayout,
   paneLayoutSpecs,
   defaultSplitRatios,
@@ -30,22 +31,9 @@ test('clones query state without sharing tags between panes', () => {
   const second = cloneQuery(first);
   second.tags.push('b');
   second.search = 'two';
-  assert.deepEqual(first, {
-    folderId: null,
-    smartFolderId: null,
-    search: 'one',
-    searchScope: '',
-    tags: ['a'],
-    ext: '',
-    rating: null,
-    annotation: '',
-    url: '',
-    shape: 'portrait',
-    color: '',
-    size: null,
-    added: null,
-    pixels: null
-  });
+  assert.equal(first.search, 'one');
+  assert.deepEqual(first.tags, ['a']);
+  assert.deepEqual(first.shape, ['portrait']);
   assert.equal(second.search, 'two');
   assert.deepEqual(second.tags, ['a', 'b']);
 });
@@ -70,8 +58,8 @@ test('entering a folder search result clears only the text search', () => {
   assert.equal(next.search, '');
   assert.equal(next.searchScope, 'name');
   assert.deepEqual(next.tags, ['参考']);
-  assert.equal(next.ext, 'png');
-  assert.equal(next.rating, 3);
+  assert.deepEqual(next.ext, ['png']);
+  assert.deepEqual(next.rating, [3]);
   assert.equal(next.color, '#e5484d');
   assert.equal(query.search, '人物', 'the current query stays unchanged until navigation succeeds');
 });
@@ -86,8 +74,38 @@ test('folder cards share the search-exiting navigation path', () => {
 
 test('range selection falls back safely when the previous anchor disappeared', () => {
   const items = [{ id: 'A' }, { id: 'B' }, { id: 'C' }];
-  assert.deepEqual([...selectRange(items, new Set(['removed']), 'C')], ['C']);
-  assert.deepEqual([...selectRange(items, new Set(['A']), 'C')], ['A', 'B', 'C']);
+  assert.deepEqual([...extendSelection(items, new Set(['removed']), 'removed', 'C')], ['removed', 'C']);
+  assert.deepEqual([...extendSelection(items, new Set(['A']), null, 'C')], ['A', 'B', 'C']);
+});
+
+test('⇧-click extends from the last click and keeps the rest, as in Eagle (P6-03)', () => {
+  const items = Array.from({ length: 40 }, (_, index) => ({ id: String(index) }));
+  const ids = set => [...set].map(Number).sort((a, b) => a - b);
+  const range = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+  // Click 20, ⇧-click 10, ⇧-click 30: the anchor stays at 20 and Eagle adds.
+  let selected = extendSelection(items, new Set(['20']), '20', '10');
+  assert.deepEqual(ids(selected), range(10, 20));
+  selected = extendSelection(items, selected, '20', '30');
+  assert.deepEqual(ids(selected), range(10, 30));
+  // Click 20, ⌘-click 5 (new anchor), ⇧-click 10: 5–10 joins 20.
+  selected = extendSelection(items, new Set(['20', '5']), '5', '10');
+  assert.deepEqual(ids(selected), [...range(5, 10), 20]);
+});
+
+test('⇧-arrows grow and shrink the run away from the anchor (P6-04)', () => {
+  const items = ['A', 'B', 'C', 'D', 'E'].map(id => ({ id }));
+  let step = stepSelection(items, new Set(['C']), 'C', 1);
+  assert.deepEqual([...step.selected].sort(), ['C', 'D']);
+  assert.equal(step.edgeId, 'D');
+  step = stepSelection(items, step.selected, 'C', -1);
+  assert.deepEqual([...step.selected].sort(), ['C'], '⇧← first shrinks the run back to the anchor');
+  step = stepSelection(items, step.selected, 'C', -1);
+  assert.deepEqual([...step.selected].sort(), ['B', 'C']);
+  step = stepSelection(items, step.selected, 'C', 1);
+  assert.deepEqual([...step.selected].sort(), ['C'], '⇧→ shrinks from the far side of the anchor');
+  step = stepSelection(items, new Set(['E']), 'E', 1);
+  assert.deepEqual([...step.selected], ['E'], 'nothing past the last item');
+  assert.deepEqual([...stepSelection(items, new Set(), null, 1).selected], [], 'no selection, nothing to extend');
 });
 
 test('adding a vertical pane fills the middle slot without changing edge pane identity', () => {
@@ -293,7 +311,9 @@ test('inspector auto-save stays behind the live editor and queues in-flight typi
   const scheduleHandler = source.slice(scheduleStart, scheduleEnd);
   assert.ok(scheduleHandler.includes('state.inspectorSaving'));
   assert.ok(scheduleHandler.includes('state.inspectorEditing'));
-  assert.ok(scheduleHandler.indexOf('return;') < scheduleHandler.indexOf('renderInspector();'));
+  const earlyReturn = scheduleHandler.indexOf('return;');
+  const rerender = scheduleHandler.indexOf('renderInspector();');
+  assert.ok(earlyReturn >= 0 && rerender >= 0 && earlyReturn < rerender);
 });
 
 test('window close waits for an inspector save instead of abandoning an in-flight write', () => {
@@ -307,10 +327,17 @@ test('window close waits for an inspector save instead of abandoning an in-fligh
   assert.ok(pendingWrites >= 0);
   assert.ok(savingGuard > pendingWrites);
   assert.ok(savingGuard < unsavedCheck);
-  assert.ok(handler.includes('window.eagleMV.cancelClose();'));
   assert.ok(handler.includes('if (state.inspectorDirty)'));
-  assert.ok(handler.includes('await saveInspector();'));
   assert.ok(handler.includes('failedDrafts.every(draft => persistInspectorDraft(draft))'));
+  // T-05 rewritten for H-04: the close is deferred (answered) before the
+  // final save, and nothing between the busy guard and that save cancels it —
+  // cancelClose() would also cancel a pending ⌘Q, so the app would not quit.
+  const defer = handler.indexOf('window.eagleMV.deferClose?.();');
+  const busyReturn = handler.indexOf('return;', savingGuard);
+  const save = handler.indexOf('if (state.inspectorDirty) await saveInspector();');
+  assert.ok(defer >= 0 && defer < pendingWrites, 'the close request is answered first');
+  assert.ok(busyReturn > savingGuard && save > busyReturn, 'the save runs after the busy guard');
+  assert.doesNotMatch(handler.slice(busyReturn, save), /cancelClose/, 'saving does not cancel the close or a pending quit');
 });
 
 test('high-risk writes register and release a close-blocking foreground operation', () => {
@@ -427,7 +454,8 @@ test('blocking dialogs consume Escape before workspace shortcuts can run', () =>
   const shortcut = handler.indexOf("event.key.toLowerCase() === 'n'");
   assert.ok(escape >= 0);
   assert.ok(escape < shortcut);
-  assert.ok(handler.includes("closeDuplicateDialog('cancel')"));
+  assert.ok(handler.includes('closeTopTransientSurface({ selection: false })'));
+  assert.ok(source.includes("closeDuplicateDialog('cancel');\n    return { status: BACK_STATUS.HANDLED"));
   assert.ok(handler.includes('if (blockingSurfaceOpen()) return;'));
 });
 
@@ -459,17 +487,16 @@ test('bulk folder, rating, and trash operations use bounded batches with partial
     assert.ok(start >= 0, `${functionName} exists`);
     assert.ok(handler.includes('runItemBatch('), `${functionName} batches Eagle writes`);
   }
-  assert.ok(source.includes('pane.selected = new Set(outcome.failed);'));
+  assert.ok(source.includes('settleBatchSelection(pane, selectionBefore, outcome.failed)'));
 });
 
-test('trash deletion records an inverse operation and Control+Z restores it through the conflict-safe mutation path', () => {
+test('trash deletion offers Eagle\'s 撤销 and Control+Z restores it through the conflict-safe mutation path', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-  assert.ok(source.includes('const trashUndoStack = [];'));
-  assert.ok(source.includes('trashUndoStack.push({ ids: outcome.succeeded'));
-  assert.ok(source.includes('async function undoLastTrash()'));
-  assert.ok(source.includes("patch: { isDeleted: false }"));
+  assert.ok(source.includes("{ undo: () => restoreTrashed(restore) }"));
+  assert.ok(source.includes('async function restoreTrashed('));
+  assert.ok(source.includes("patch: { isDeleted: false }, base: { isDeleted: true }"));
   assert.ok(source.includes("event.key.toLowerCase() === 'z'"));
-  assert.ok(source.includes("onUndoDelete?.(() => undoLastTrash())"));
+  assert.ok(source.includes("onUndoDelete?.(() => routeUndoCommand())"));
 });
 
 test('one pane query failure stays local and offers a retry instead of disabling the app', () => {
@@ -493,7 +520,7 @@ test('slow bulk mutations remain bound to the pane that started them', () => {
     const end = Math.min(...candidates);
     const handler = source.slice(start, end);
     assert.ok(handler.includes('paneId'), `${functionName} captures a pane id`);
-    assert.ok(handler.includes('pane.selected = new Set(outcome.failed'), `${functionName} restores failures in its source pane`);
+    assert.ok(handler.includes('settleBatchSelection(pane, selectionBefore'), `${functionName} restores failures in its source pane`);
     assert.ok(handler.includes('paneId }'), `${functionName} refreshes its source pane`);
   }
 });
@@ -552,6 +579,7 @@ test('createSessionState conforms to eaglemv.sessionState schema specification',
   assert.equal(session.layout, 'vertical2');
   assert.deepEqual(session.splitRatios, { cols: ['1fr', '1fr'], rows: ['1fr'] });
   assert.equal(session.activePaneId, 'pane-1');
+  assert.equal(session.activeIndex, 1, 'the active pane is also kept by position (B1-04)');
   assert.equal(session.panes.length, 2);
   assert.deepEqual(session.panes[0], {
     id: 'pane-0',
@@ -565,6 +593,19 @@ test('createSessionState conforms to eaglemv.sessionState schema specification',
     sort: 'name',
     sortDir: 'asc'
   });
+});
+
+test('session state keeps each pane\'s layout mode by position (B1-04)', () => {
+  const session = createSessionState({
+    activePaneId: 'pane-7',
+    panes: [
+      { id: 'pane-6', currentView: { kind: 'root' }, viewMode: 'justified' },
+      { id: 'pane-7', currentView: { kind: 'all' }, viewMode: 'list' }
+    ]
+  });
+  assert.equal(session.activeIndex, 1);
+  assert.equal(session.panes[0].viewMode, undefined);
+  assert.equal(session.panes[1].viewMode, 'list');
 });
 
 test('calculateSplitRatios clamps proportions within min size limits', () => {
@@ -626,4 +667,31 @@ test('app initialization restores session layout, split ratios, and validates pa
   assert.ok(source.includes("eaglemv.sessionState"), 'reads eaglemv.sessionState during startup');
   assert.ok(source.includes('if (!state.library) return;'), 'saveSessionState guards against early library null writes');
   assert.ok(source.includes('renderFolderTree();'), 'calls renderFolderTree during start and session restoration');
+});
+
+test('the delete dialog opens with Cancel focused so Return never deletes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function chooseTrashAction(');
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  assert.ok(body.includes("$('#trashCancelButton').focus();"));
+  assert.equal(body.includes("$('#trashDeleteButton').focus();"), false);
+});
+
+test('inspector keeps an untouched name or link verbatim so a note edit never renames (B2-12)', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function inspectorFormValues(');
+  const body = source.slice(start, source.indexOf('\n}\n', start) + 2);
+  const fields = { '#itemName': 'photo ', '#itemRating': '0', '#itemAnnotation': 'new note', '#itemURL': ' https://a.example ' };
+  const inspectorFormValues = new Function('$', 'state', `${body}; return inspectorFormValues;`)(
+    selector => ({ value: fields[selector] }), { draftTags: [] });
+  const base = { name: 'photo ', url: ' https://a.example ', annotation: '' };
+  assert.equal(inspectorFormValues(base).name, 'photo ');
+  assert.equal(inspectorFormValues(base).url, ' https://a.example ');
+  fields['#itemName'] = ' renamed ';
+  assert.equal(inspectorFormValues(base).name, 'renamed', 'an edited name is trimmed like Eagle');
+  assert.equal(inspectorFormValues({}).url, 'https://a.example');
+  for (const fn of ['function collectPatch()', 'function captureInspectorDraft()']) {
+    const at = source.indexOf(fn);
+    assert.ok(source.slice(at, source.indexOf('\n}\n', at)).includes('inspectorFormValues('), fn);
+  }
 });

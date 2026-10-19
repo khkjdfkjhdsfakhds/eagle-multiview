@@ -8,7 +8,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 
 async function probeLayoutPopover({ zoom, sidebar = '', inspector = '' } = {}) {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/layout-popover-probe.cjs');
   const env = {
     ...process.env,

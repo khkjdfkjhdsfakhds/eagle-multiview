@@ -104,3 +104,20 @@ test('empty folders are rejected with a clear message', async t => {
   assert.equal(result.rejected[0].message, '文件夹内没有可导入的文件');
   assert.equal(calls.length, 0);
 });
+
+test('an Eagle library, or a folder inside one, is never walked for import (E-20)', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eaglemv-import-library-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const library = path.join(root, 'Art.library');
+  await fs.mkdir(path.join(library, 'images', 'ABC.info'), { recursive: true });
+  await fs.writeFile(path.join(library, 'metadata.json'), '{}');
+  await fs.writeFile(path.join(library, 'images', 'ABC.info', 'metadata.json'), '{}');
+  const outside = path.join(root, 'Drop');
+  await fs.mkdir(path.join(outside, 'Nested.library'), { recursive: true });
+  await fs.writeFile(path.join(outside, 'keep.png'), 'x');
+  await fs.writeFile(path.join(outside, 'Nested.library', 'metadata.json'), '{}');
+  const { prepareImportPaths } = require('../lib/import-service');
+  const result = await prepareImportPaths([library, path.join(library, 'images'), outside]);
+  assert.deepEqual(result.paths, [path.join(outside, 'keep.png')]);
+  assert.equal(result.rejected.filter(entry => /资源库/.test(entry.message)).length, 3);
+});

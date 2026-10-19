@@ -68,6 +68,10 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
     log: { error: value => errors.push(value) }
   };
   const timers = new Set();
+  // Every timer the plugin ever scheduled, and the most alive at once, so a
+  // test can wait for real poll cycles instead of sleeping (T-09).
+  let scheduled = 0;
+  let peakTimers = 0;
   const hostRequire = createRequire(path.join(root, 'Eagle.app', 'app', 'js', 'plugin', 'api.js'));
   const lexicalRequire = name => {
     if (interceptRequire) {
@@ -85,6 +89,8 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
     setTimeout: (callback, delay) => {
       const timer = setTimeout(() => { timers.delete(timer); callback(); }, delay);
       timers.add(timer);
+      scheduled += 1;
+      peakTimers = Math.max(peakTimers, timers.size);
       return timer;
     },
     clearTimeout: timer => { timers.delete(timer); clearTimeout(timer); }
@@ -121,7 +127,10 @@ async function fixture(t, { wrapper = loaderContract, initialPath = true, interc
     unload: () => events.beforeunload?.(),
     get registered() { return typeof callbacks.create === 'function'; },
     get replacements() { return replacements; },
-    get timerCount() { return timers.size; }
+    get timerCount() { return timers.size; },
+    get scheduled() { return scheduled; },
+    get peakTimers() { return peakTimers; },
+    resetPeak: () => { peakTimers = timers.size; }
   };
 }
 

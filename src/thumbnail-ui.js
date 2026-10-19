@@ -21,7 +21,7 @@ window.createThumbnailUI = function ({ api, context, refresh, notify, canStart }
     const current = context();
     const selected = [...new Set(ids || current.ids || [])];
     if (!selected.length || !current.libraryPath) {
-      notify('请先连接资料库并选择素材。', 4000);
+      notify('请先连接资源库并选择素材。', 4000);
       return Promise.resolve({ canceled: true });
     }
     const requestId = globalThis.crypto?.randomUUID?.() || `thumb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -57,10 +57,10 @@ window.createThumbnailUI = function ({ api, context, refresh, notify, canStart }
       submit.onclick = async () => {
         if (busy || submit.disabled) return;
         if (context().libraryPath !== frozen.libraryPath) {
-          status.textContent = '资料库已切换，请关闭后重新选择。'; submit.disabled = true; return;
+          status.textContent = '资源库已切换，请关闭后重新选择。'; submit.disabled = true; return;
         }
         busy = true; submit.disabled = true; cancel.disabled = !api.cancelThumbnailOperation; cancel.textContent = '停止后续';
-        status.textContent = `正在处理 ${selected.length} 项缩略图… 请求发出后将核对真实结果，不重复提交。`;
+        status.textContent = `正在处理 ${selected.length} 项缩略图…`;
         try {
           const result = await api.thumbnailOperation({ operation, ids: [...selected], libraryPath: frozen.libraryPath, requestId });
           if (result?.canceled && !result.outcomes?.length) { busy = false; close(result); return; }
@@ -69,7 +69,7 @@ window.createThumbnailUI = function ({ api, context, refresh, notify, canStart }
           let summary = [`已完成 ${counts.completed || 0}`, `已提交生成 ${counts.accepted || 0}（尚未确认完成）`,
             `结果未确认 ${counts.unknown || 0}`, `失败 ${counts.failed || 0}`, `未执行 ${counts.canceled || 0}`].join('；');
           let refreshFailed = false;
-          if (context().libraryPath !== frozen.libraryPath) summary += '。结果对应先前资料库，当前视图未刷新。';
+          if (context().libraryPath !== frozen.libraryPath) summary += '。结果对应先前资源库，当前视图未刷新。';
           else if (counts.completed > 0) {
             try { await refresh({ ...frozen, ids: [...selected], preserveSelection: true }); }
             catch (error) { refreshFailed = true; summary += `。视图刷新失败：${error.message}；已完成的写入保留，请勿重复提交。`; }

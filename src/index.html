@@ -15,7 +15,7 @@
   <main class="workspace">
     <aside class="sidebar">
       <div class="sidebar-app-title app-title">
-        <button id="libraryButton" class="library-switch-button" title="切换资料库" aria-haspopup="true" aria-expanded="false">
+        <button id="libraryButton" class="library-switch-button" title="切换资源库" aria-haspopup="dialog" aria-expanded="false">
           <span class="app-mark"><img src="brand-icon.png" alt=""></span>
           <span class="app-title-copy">
             <span id="windowTitle">Eagle MultiView</span>
@@ -23,9 +23,9 @@
           </span>
           <svg class="library-switch-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8.5 4 4 4-4"></path></svg>
         </button>
-        <div id="libraryPopover" class="library-popover hidden" role="menu" aria-label="切换资料库">
-          <div class="library-popover-title">切换资料库</div>
-          <div id="libraryList" class="library-list"><span class="muted">正在读取资料库列表…</span></div>
+        <div id="libraryPopover" class="library-popover hidden" role="dialog" aria-label="切换资源库">
+          <div class="library-popover-title">切换资源库</div>
+          <div id="libraryList" class="library-list"><span class="muted">正在读取资源库列表…</span></div>
           <div id="shellAppSection" class="library-app-section hidden">
             <div id="shellAppTitle" class="library-popover-title">Eagle MultiView App</div>
             <button type="button" class="library-row" data-shell-action="check-for-updates"><span class="library-row-name">检查更新…</span></button>
@@ -40,7 +40,7 @@
       <section class="toolbar">
         <div class="search-box">
           <img class="search-icon" src="eagle-assets/ic_search.svg" alt="">
-          <input id="searchInput" type="search" placeholder="搜索名称、标签、备注、正向提示词…">
+          <input id="searchInput" type="search" aria-label="搜索" placeholder="搜索名称、标签、备注、正向提示词…">
           <kbd>⌘F</kbd>
         </div>
         <div class="filter-control">
@@ -56,28 +56,84 @@
                 <option value="url">仅来源</option>
               </select>
             </label>
-            <label>文件格式
-              <input id="extFilter" list="extensionSuggestions" placeholder="例如 png、pdf、mov" autocomplete="off">
-            </label>
-            <label>评分
-              <select id="ratingFilter" title="评分">
-                <option value="">全部评分</option>
-                <option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option>
-                <option value="2">2 星</option><option value="1">1 星</option><option value="0">未评分</option>
-              </select>
-            </label>
-            <label>形状
-              <select id="shapeFilter" title="图片形状">
-                <option value="">全部形状</option>
-                <option value="square">正方形</option>
-                <option value="landscape">横向</option>
-                <option value="portrait">纵向</option>
-                <option value="panoramic-landscape">全景横向</option>
-                <option value="panoramic-portrait">全景纵向</option>
-              </select>
-            </label>
-            <label>颜色
+            <div class="field-group filter-section" role="group" aria-labelledby="filterTagLabel">
+              <div class="filter-section-head"><label id="filterTagLabel" for="filterTagInput">标签</label><div class="filter-logic" data-filter-logic="tagLogic" role="radiogroup" aria-label="标签逻辑"></div></div>
+              <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选：右键标签切换为排除，输入 -标签 直接排除">
+                <div id="filterTagChips" class="tag-chips"></div>
+                <input id="filterTagInput" placeholder="筛选标签…" autocomplete="off">
+              </div>
+              <label class="filter-check"><input id="noTagsFilter" type="checkbox">未标签</label>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="folderFilterLabel">
+              <div class="filter-section-head"><span id="folderFilterLabel">文件夹</span><div class="filter-logic" data-filter-logic="folderLogic" role="radiogroup" aria-label="文件夹逻辑"></div></div>
+              <input id="folderFilterSearch" type="search" placeholder="搜索文件夹…" autocomplete="off" aria-label="搜索文件夹">
+              <div id="folderFilterList" class="filter-check-list" aria-label="文件夹"></div>
+              <small class="filter-hint">单击选择 · 右键排除</small>
+            </div>
+            <div class="field-group" role="group" aria-labelledby="colorFilterLabel"><span id="colorFilterLabel">颜色</span>
               <div id="colorFilter" class="color-filter" title="按素材主色筛选"></div>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="shapeFilterLabel">
+              <span id="shapeFilterLabel">形状</span>
+              <div id="shapeFilterList" class="filter-check-list" aria-label="形状"></div>
+              <div id="shapeCustomFilter" class="filter-range hidden">
+                <input id="shapeWidthFilter" type="number" min="1" step="any" inputmode="decimal" placeholder="W" autocomplete="off" aria-label="自定比例的宽">
+                <span class="filter-range-dash" aria-hidden="true">:</span>
+                <input id="shapeHeightFilter" type="number" min="1" step="any" inputmode="decimal" placeholder="H" autocomplete="off" aria-label="自定比例的高">
+              </div>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="ratingFilterLabel">
+              <span id="ratingFilterLabel">评分</span>
+              <div id="ratingFilterList" class="filter-check-list" aria-label="评分"></div>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="extFilterLabel">
+              <span id="extFilterLabel">格式</span>
+              <input id="extFilterSearch" type="search" placeholder="搜索格式…" autocomplete="off" aria-label="搜索格式">
+              <div id="extFilterList" class="filter-check-list" aria-label="格式"></div>
+              <small class="filter-hint">单击选择 · 右键排除</small>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="addedFilterLabel">
+              <span id="addedFilterLabel">添加日期</span>
+              <div class="filter-presets" data-date-presets="added" aria-label="添加日期快捷区间"></div>
+              <div class="filter-range">
+                <input id="addedFromFilter" type="date" autocomplete="off" aria-label="添加日期起">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="addedToFilter" type="date" autocomplete="off" aria-label="添加日期止">
+              </div>
+              <details class="filter-months" data-date-months="added"><summary>按月份</summary><div class="filter-check-list" data-month-list="added"></div></details>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="modifiedFilterLabel">
+              <span id="modifiedFilterLabel">修改日期</span>
+              <div class="filter-presets" data-date-presets="modified" aria-label="修改日期快捷区间"></div>
+              <div class="filter-range">
+                <input id="modifiedFromFilter" type="date" autocomplete="off" aria-label="修改日期起">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="modifiedToFilter" type="date" autocomplete="off" aria-label="修改日期止">
+              </div>
+              <details class="filter-months" data-date-months="modified"><summary>按月份</summary><div class="filter-check-list" data-month-list="modified"></div></details>
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="resolutionFilterLabel">
+              <span id="resolutionFilterLabel">尺寸</span>
+              <div class="filter-range filter-range-labeled">
+                <span class="filter-range-label">宽</span>
+                <input id="widthMinFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最小" autocomplete="off" aria-label="最小宽度">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="widthMaxFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最大" autocomplete="off" aria-label="最大宽度">
+              </div>
+              <div class="filter-range filter-range-labeled">
+                <span class="filter-range-label">高</span>
+                <input id="heightMinFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最小" autocomplete="off" aria-label="最小高度">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="heightMaxFilter" type="number" min="0" step="1" inputmode="numeric" placeholder="最大" autocomplete="off" aria-label="最大高度">
+              </div>
+            </div>
+            <label>时长
+              <div class="filter-range filter-range-unit">
+                <input id="durationMinFilter" type="number" min="0" step="any" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最短时长">
+                <span class="filter-range-dash" aria-hidden="true">–</span>
+                <input id="durationMaxFilter" type="number" min="0" step="any" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最长时长">
+                <select id="durationUnitFilter" aria-label="时长单位"><option value="s">秒</option><option value="m">分</option><option value="h">时</option></select>
+              </div>
             </label>
             <label>文件大小（MB）
               <div class="filter-range">
@@ -86,35 +142,34 @@
                 <input id="sizeMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大文件大小（MB）">
               </div>
             </label>
-            <label>分辨率（百万像素）
-              <div class="filter-range">
-                <input id="pixelsMinFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最小" autocomplete="off" aria-label="最小百万像素">
-                <span class="filter-range-dash" aria-hidden="true">–</span>
-                <input id="pixelsMaxFilter" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最大" autocomplete="off" aria-label="最大百万像素">
+            <div class="field-group filter-section" role="group" aria-labelledby="commentsFilterLabel">
+              <span id="commentsFilterLabel">标注</span>
+              <div class="filter-presets" id="commentsFilter">
+                <button type="button" class="filter-preset" data-comments-state="has" aria-pressed="false">有标注</button>
+                <button type="button" class="filter-preset" data-comments-state="none" aria-pressed="false">没有标注</button>
               </div>
-            </label>
-            <label>添加日期
-              <div class="filter-range">
-                <input id="addedFromFilter" type="date" autocomplete="off" aria-label="添加日期起">
-                <span class="filter-range-dash" aria-hidden="true">–</span>
-                <input id="addedToFilter" type="date" autocomplete="off" aria-label="添加日期止">
+              <input id="commentsTextFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="标注关键字">
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="annotationFilterLabel">
+              <span id="annotationFilterLabel">注释</span>
+              <div class="filter-presets">
+                <button type="button" class="filter-preset" data-text-state="annotation:has" aria-pressed="false">有注释</button>
+                <button type="button" class="filter-preset" data-text-state="annotation:none" aria-pressed="false">没有注释</button>
               </div>
-            </label>
-            <label>备注包含
-              <input id="annotationFilter" placeholder="筛选备注" autocomplete="off">
-            </label>
-            <label>来源包含
-              <input id="urlFilter" placeholder="筛选来源 URL" autocomplete="off">
-            </label>
-            <label>标签
-              <div id="filterTagEditor" class="tag-editor tag-filter-editor" title="标签筛选">
-                <div id="filterTagChips" class="tag-chips"></div>
-                <input id="filterTagInput" placeholder="筛选标签…" autocomplete="off">
+              <input id="annotationFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="注释关键字">
+            </div>
+            <div class="field-group filter-section" role="group" aria-labelledby="urlFilterLabel">
+              <span id="urlFilterLabel">链接</span>
+              <div class="filter-presets">
+                <button type="button" class="filter-preset" data-text-state="url:has" aria-pressed="false">有链接</button>
+                <button type="button" class="filter-preset" data-text-state="url:none" aria-pressed="false">没有链接</button>
               </div>
-            </label>
+              <input id="urlFilter" placeholder="包含关键字（使用,隔开）" autocomplete="off" aria-label="链接关键字">
+            </div>
             <button id="toggleTagColorsButton" type="button" class="tag-colors-toggle">管理标签颜色</button>
             <div id="tagColorManager" class="tag-color-manager hidden"></div>
             <button id="saveSmartFolderButton" class="filter-save-smart" type="button">保存为智能文件夹</button>
+            <button id="lockFiltersButton" class="filter-lock hidden" type="button" aria-pressed="false" title="锁定后，切换文件夹时保留搜索与筛选"><img src="eagle-assets/ic-filter-lock.svg" alt="">锁定筛选</button>
             <button id="clearFiltersButton" class="filter-clear hidden" title="清除搜索与筛选">清除筛选</button>
           </div>
         </div>
@@ -125,7 +180,7 @@
               <button id="paneLayoutButton" class="icon-button pane-layout-button" title="选择分栏布局" aria-label="选择分栏布局" aria-expanded="false">
                 <span class="pane-split-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span>
               </button>
-              <div id="paneLayoutPopover" class="pane-layout-popover hidden" role="menu" aria-label="分栏布局">
+              <div id="paneLayoutPopover" class="pane-layout-popover hidden" role="dialog" aria-label="分栏布局">
                 <div class="pane-layout-options">
                   <button type="button" class="pane-layout-option" data-layout="single" title="单栏（⌘1）" aria-label="单栏"><span class="layout-icon layout-icon-single"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/></svg></span></button>
                   <button type="button" class="pane-layout-option" data-layout="vertical2" title="左右两栏（⌘2）" aria-label="左右两栏"><span class="layout-icon layout-icon-vertical2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.4"/><path d="M12 2v20"/></svg></span></button>
@@ -187,47 +242,80 @@
         <p>选择一个素材查看详情</p>
         <small>多个窗口可以停留在不同文件夹和搜索结果中</small>
       </div>
+      <div id="categoryInspector" class="category-inspector hidden">
+        <section class="inspector-section">
+          <div class="inspector-field">
+            <input id="categoryName" aria-label="名称" placeholder="名称" autocomplete="off">
+          </div>
+          <div class="inspector-field">
+            <textarea id="categoryDescription" aria-label="描述" placeholder="描述" rows="1"></textarea>
+          </div>
+        </section>
+        <section class="inspector-section">
+          <h3>基本信息</h3>
+          <div id="categoryMeta" class="item-meta"></div>
+        </section>
+        <small id="categoryHint" class="category-hint"></small>
+      </div>
       <div id="inspectorContent" class="inspector-content hidden">
         <div id="previewBox" class="preview-box"></div>
         <div id="itemPalette" class="item-palette hidden" aria-label="主色调" title="主色调（点击复制色值）"></div>
         <div id="staleBanner" class="stale-banner hidden">此素材已在另一个窗口更新；保存时会检查冲突。</div>
+        <!-- Eagle's order: 名称 → 注释 → 链接, then 标签 → 文件夹 → 标注 → 基本信息. -->
         <section class="inspector-section">
           <div class="inspector-field">
             <input id="itemName" aria-label="名称" placeholder="名称" autocomplete="off">
           </div>
           <div class="inspector-field">
-            <div id="itemTagEditor" class="tag-editor">
-              <div id="itemTagChips" class="tag-chips"></div>
-              <input id="itemTagInput" aria-label="标签" placeholder="添加标签" autocomplete="off">
-            </div>
-          </div>
-          <div class="inspector-field">
-            <select id="itemRating" aria-label="评分">
-              <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
-              <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
-            </select>
-          </div>
-        </section>
-        <section class="inspector-section">
-          <div class="inspector-field">
-            <textarea id="itemAnnotation" aria-label="备注" placeholder="添加注释" rows="1"></textarea>
+            <textarea id="itemAnnotation" aria-label="注释" placeholder="添加注释" rows="1"></textarea>
           </div>
           <div class="inspector-field url-field">
-            <input id="itemURL" aria-label="来源" placeholder="http://" autocomplete="off">
+            <input id="itemURL" aria-label="链接" placeholder="http://" autocomplete="off">
             <div class="url-actions">
               <button id="openURLButton" type="button" class="small-action" title="在浏览器中打开来源网址" disabled>打开</button>
               <button id="copyURLButton" type="button" class="small-action" title="复制来源网址" disabled>复制</button>
             </div>
           </div>
         </section>
-        <section id="itemCommentsSection" class="inspector-section comments-section">
-          <div class="comments-heading"><h3>评论与标注</h3><button id="addCommentButton" type="button" class="small-action" title="添加评论">添加</button></div>
+        <!-- Eagle's 标签 / 文件夹 / 标注 / 基本信息 blocks: each folds under its
+             heading, and dragging a heading reorders them (both inspectors). -->
+        <div class="inspector-sections" data-inspector-sections>
+        <section class="inspector-section" data-inspector-section="tags" aria-labelledby="itemTagsLabel">
+          <h3 id="itemTagsLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="tags" aria-expanded="true">标签<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div id="itemTagEditor" class="tag-editor">
+            <div id="itemTagChips" class="tag-chips"></div>
+            <input id="itemTagInput" aria-labelledby="itemTagsLabel" placeholder="添加标签" autocomplete="off">
+          </div>
+          </div>
+        </section>
+        <section class="inspector-section" data-inspector-section="folders" aria-labelledby="itemFoldersLabel">
+          <h3 id="itemFoldersLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="folders" aria-expanded="true">文件夹<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div id="itemFolderChips" class="folder-chips"></div>
+          </div>
+        </section>
+        <section id="itemCommentsSection" class="inspector-section comments-section" data-inspector-section="annotations">
+          <div class="comments-heading"><h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="annotations" aria-expanded="true">评论与标注<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3><button id="addCommentButton" type="button" class="small-action" title="添加评论">添加</button></div>
+          <div class="inspector-section-body">
           <div id="itemComments" class="item-comments"><span class="muted">正在读取…</span></div>
+          </div>
         </section>
-        <section class="inspector-section">
-          <h3>文件信息</h3>
+        <section class="inspector-section" data-inspector-section="information">
+          <h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="information" aria-expanded="true">基本信息<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div class="inspector-rating-row"><em>评分</em><div id="itemStars" class="inspector-stars" role="group" aria-label="评分"></div></div>
+          <!-- The stars write this select so saving, drafts and conflict
+               recovery keep reading one rating control. -->
+          <select id="itemRating" aria-label="评分" hidden tabindex="-1">
+            <option value="0">未评分</option><option value="1">★</option><option value="2">★★</option>
+            <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+          </select>
           <div id="itemMeta" class="item-meta"></div>
+          <div class="inspector-export"><button id="itemExportButton" type="button" class="secondary-button inspector-export-button" aria-haspopup="menu">导出</button></div>
+          </div>
         </section>
+        </div>
         <section id="generationMetadataSection" class="inspector-section generation-metadata-section hidden">
           <div class="generation-metadata-heading">
             <h3>生成元数据</h3>
@@ -239,36 +327,51 @@
         <div class="inspector-actions">
           <button id="pinButton" class="secondary-button" title="素材置顶只在普通文件夹中生效">置顶</button>
           <button id="openDefaultButton" class="secondary-button" title="快捷键：⇧Enter">默认应用打开</button>
-          <button id="finderButton" class="secondary-button">在 Finder 中显示</button>
-          <button id="customThumbnailButton" class="secondary-button" title="通过 Eagle API 设置自定义缩略图">自定义缩略图</button>
+          <button id="finderButton" class="secondary-button">在访达中打开</button>
+          <button id="customThumbnailButton" class="secondary-button" title="选择图片作为缩略图">自定义缩略图</button>
         </div>
-        <button id="trashButton" class="danger-link">移入废纸篓</button>
+        <button id="trashButton" class="danger-link">丢到回收站</button>
       </div>
+      <!-- Eagle keeps one inspector for any selection size: the multi-select
+           panel mirrors the single one, editing every selected item at once. -->
       <div id="multiSelection" class="multi-selection hidden">
-        <h2><span id="multiCount">0</span> 个素材</h2>
-        <p>将所选素材拖到左侧文件夹即可批量归类。</p>
-        <label id="sharedTagsSection" class="shared-tags-section hidden">共同标签
-          <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
-        </label>
-        <label>批量设置评分
-          <select id="batchRating">
-            <option value="">选择评分…</option>
-            <option value="0">未评分</option>
-            <option value="1">★</option>
-            <option value="2">★★</option>
-            <option value="3">★★★</option>
-            <option value="4">★★★★</option>
-            <option value="5">★★★★★</option>
-          </select>
-        </label>
-        <label>批量添加标签
-          <div id="batchTagEditor" class="tag-editor">
-            <div id="batchTagChips" class="tag-chips"></div>
-            <input id="batchTagInput" placeholder="输入标签后按 Return" autocomplete="off">
+        <div id="multiPreview" class="multi-preview" aria-hidden="true"></div>
+        <p id="multiCountLine" class="multi-count">已选 <span id="multiCount">0</span> 个文件</p>
+        <section class="inspector-section">
+          <div class="inspector-field">
+            <textarea id="batchAnnotation" aria-label="注释（应用到所选素材）" placeholder="添加注释" rows="1"></textarea>
           </div>
-        </label>
-        <button id="batchTagButton" class="primary-button">添加标签</button>
-        <button id="batchTrashButton" class="danger-button">移入废纸篓</button>
+          <div class="inspector-field">
+            <input id="batchURL" aria-label="链接（应用到所选素材）" placeholder="http://" autocomplete="off">
+          </div>
+        </section>
+        <div class="inspector-sections" data-inspector-sections>
+        <section id="sharedTagsSection" class="inspector-section shared-tags-section" data-inspector-section="tags" aria-labelledby="sharedTagsLabel">
+          <h3 id="sharedTagsLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="tags" aria-expanded="true">标签<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div id="batchTagEditor" class="tag-editor">
+            <div id="sharedTagChips" class="tag-chips shared-tag-chips"></div>
+            <div id="batchTagChips" class="tag-chips"></div>
+            <input id="batchTagInput" aria-labelledby="sharedTagsLabel" placeholder="添加标签" autocomplete="off">
+          </div>
+          </div>
+        </section>
+        <section class="inspector-section" data-inspector-section="folders" aria-labelledby="batchFoldersLabel">
+          <h3 id="batchFoldersLabel" class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="folders" aria-expanded="true">文件夹<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div id="batchFolderChips" class="folder-chips"></div>
+          </div>
+        </section>
+        <section class="inspector-section" data-inspector-section="information">
+          <h3 class="inspector-section-label"><button type="button" class="inspector-section-toggle" data-section-toggle="information" aria-expanded="true">基本信息<svg class="inspector-section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"></path></svg></button></h3>
+          <div class="inspector-section-body">
+          <div class="inspector-rating-row"><em>评分</em><div id="batchStars" class="inspector-stars" role="group" aria-label="评分（应用到所选素材）"></div></div>
+          <div id="batchMeta" class="item-meta"></div>
+          <div class="inspector-export"><button id="batchExportButton" type="button" class="secondary-button inspector-export-button" aria-haspopup="menu">导出</button></div>
+          </div>
+        </section>
+        </div>
+        <button id="batchTrashButton" class="danger-button">丢到回收站</button>
         <button id="clearSelectionButton" class="secondary-button" title="取消当前多选（Esc）">取消选择</button>
       </div>
     </aside>
@@ -290,7 +393,7 @@
     <span id="connectionDot" class="connection-dot"></span>
     <span id="connectionText">正在连接 Eagle…</span>
     <span class="status-spacer"></span>
-    <span id="scrollStatus">已载入 0 / 0</span>
+    <span id="scrollStatus">0 个项目</span>
     <span class="status-divider">·</span>
     <span id="syncText">等待同步</span>
   </footer>
@@ -313,13 +416,14 @@
     <div id="modalCaption" class="modal-caption"></div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <div id="previewSyncNotice" class="toast preview-sync-notice hidden" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="素材操作菜单"></div>
   <div id="trashDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="trashDialogTitle">
     <div class="trash-dialog-card">
       <h2 id="trashDialogTitle">删除素材</h2>
       <p id="trashDialogMessage"></p>
+      <label id="trashDialogCheck" class="trash-dialog-check hidden"><input id="trashDialogCheckbox" type="checkbox" checked><span>把文件夹内项目丢到回收站</span></label>
       <div class="trash-dialog-actions">
         <button id="trashRemoveButton" class="secondary-button">从当前文件夹移除</button>
         <button id="trashDeleteButton" class="danger-button">删除素材</button>
@@ -344,6 +448,7 @@
       <label class="folder-dialog-field"><span id="folderDialogFieldLabel">名称</span>
         <input id="folderNameInput" type="text" maxlength="240" autocomplete="off" placeholder="未命名文件夹">
       </label>
+      <div id="folderDialogPalette" class="folder-dialog-palette"></div>
       <div class="trash-dialog-actions">
         <button id="folderDialogCreateButton" type="submit" class="primary-button">创建</button>
         <button id="folderDialogCancelButton" type="button" class="secondary-button">取消</button>
@@ -353,8 +458,9 @@
   <div id="webAccessDialog" class="trash-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="webAccessTitle">
     <div class="trash-dialog-card web-access-card">
       <h2 id="webAccessTitle">Web 访问</h2>
-      <p class="web-access-intro">在手机或平板的浏览器中打开当前资料库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
-      <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（本机所有网络接口）</label>
+      <p class="web-access-intro">在手机或平板的浏览器中打开当前资源库。访问密钥保护整库读写权限，建议只在可信局域网或 Tailscale 网络中开启。</p>
+      <p class="web-access-risk" role="note">连接使用明文 HTTP，未加密：同一网络中的其他设备可能看到传输的素材和访问密钥。建议只在自家 Wi‑Fi 等可信网络下使用，并保持访问密钥开启。</p>
+      <label class="web-access-toggle"><input id="webAccessEnabled" type="checkbox"> 启用 Web 访问（同一网络的设备可连接）</label>
       <label class="folder-dialog-field web-access-port-field"><span>端口</span>
         <input id="webAccessPort" type="number" min="1024" max="65535" placeholder="41600">
       </label>
@@ -364,7 +470,7 @@
         <button id="webAccessCopyKey" type="button" class="small-action" title="复制访问密钥">复制</button>
         <button id="webAccessResetKey" type="button" class="small-action" title="生成新密钥并踢掉所有已登录的网页端">重置</button>
       </div>
-      <label class="web-access-toggle web-access-nokey"><input id="webAccessNoKey" type="checkbox"> 免密访问（同一网络的任何设备都能读写资料库，仅建议在 Tailscale 等可信网络开启）</label>
+      <label class="web-access-toggle web-access-nokey"><input id="webAccessNoKey" type="checkbox"> 免密访问（同一网络的任何设备都能读写资源库，仅建议在 Tailscale 等可信网络开启）</label>
       <div id="webAccessAddresses" class="web-access-addresses"></div>
       <div id="webAccessStatus" class="web-access-status muted"></div>
       <div class="trash-dialog-actions">
@@ -374,19 +480,16 @@
     </div>
   </div>
   <datalist id="tagSuggestions"></datalist>
-  <datalist id="extensionSuggestions">
-    <option value="jpg"></option><option value="jpeg"></option><option value="png"></option><option value="webp"></option>
-    <option value="gif"></option><option value="svg"></option><option value="heic"></option><option value="tif"></option><option value="tiff"></option>
-    <option value="psd"></option><option value="pdf"></option><option value="txt"></option><option value="mp4"></option><option value="mov"></option>
-    <option value="webm"></option><option value="mp3"></option><option value="wav"></option><option value="aiff"></option>
-  </datalist>
   <script src="folder-navigation.js"></script>
   <script src="eagle-logical-path.js"></script>
   <script src="pane-layout-popover-position.js"></script>
+  <script src="context-menu-position.js"></script>
   <script src="drag-drop.js"></script>
   <script src="marquee.js"></script>
   <script src="grid-gestures.js"></script>
   <script src="query-spec.js"></script>
+  <script src="card-display.js"></script>
+  <script src="waterfall-layout.js"></script>
   <script src="pane-state.js"></script>
   <script src="sort-memory.js"></script>
   <script src="smart-folder.js"></script>
@@ -397,10 +500,12 @@
   <script src="keyboard-platform.js"></script>
   <script src="feature-ui.js"></script>
   <script src="manual-order-ui.js"></script>
+  <script src="eagle-order.js"></script>
   <script src="thumbnail-ui.js"></script>
   <script src="site-import-ui.js"></script>
   <script src="novelai-metadata.js"></script>
   <script src="stealth-metadata.js"></script>
+  <script src="batch-rename.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

@@ -17,6 +17,9 @@ internal data class AppRelease(
     }
 }
 
+/** A verified update APK waiting for the "install unknown apps" grant, as kept in preferences. */
+internal data class PendingInstall(val path: String, val sha256: String, val version: String, val savedAt: Long)
+
 /**
  * The GitHub release feed shared with the Mac app: the newest non-draft release, its
  * `*-android.apk` asset, and `SHA256SUMS.txt` as the integrity anchor for the download.
@@ -84,6 +87,19 @@ internal object AppUpdateRules {
         .associate { it.groupValues[2].trim().substringAfterLast('/') to it.groupValues[1].lowercase() }
 
     fun isDue(lastCheckAt: Long, now: Long): Boolean = now - lastCheckAt >= CHECK_INTERVAL_MS
+
+    /** Whether a persisted pending install may still be resumed (see AppUpdateController.resume). */
+    fun pendingInstallUsable(
+        pending: PendingInstall,
+        currentVersion: String,
+        now: Long,
+        ttlMs: Long,
+        updateDirectory: String,
+    ): Boolean =
+        pending.sha256.matches(Regex("[0-9a-fA-F]{64}")) &&
+            pending.path.startsWith("$updateDirectory/") &&
+            now - pending.savedAt in 0..ttlMs &&
+            compareVersions(pending.version, currentVersion) > 0
 
     /** Release notes are Markdown; the native dialog shows them as plain lines. */
     fun plainNotes(markdown: String): String = markdown.lineSequence()

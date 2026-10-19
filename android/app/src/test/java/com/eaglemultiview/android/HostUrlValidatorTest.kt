@@ -93,13 +93,35 @@ class TrustedNavigationPolicyTest {
     fun `keeps same origin pages and login inside the webview`() {
         assertEquals(
             NavigationTarget.TrustedPage,
-            TrustedNavigationPolicy.classify(endpoint, "https://example.test/library/folder"),
+            TrustedNavigationPolicy.classify(endpoint, "https://example.test/"),
+        )
+        assertEquals(
+            NavigationTarget.TrustedPage,
+            TrustedNavigationPolicy.classify(endpoint, "https://example.test/index.html"),
         )
         assertEquals(
             NavigationTarget.TrustedLogin,
             TrustedNavigationPolicy.classify(endpoint, "https://example.test/login"),
         )
         assertTrue(endpoint.contains("https://example.test/?view=all"))
+    }
+
+    @Test
+    fun `other host files load but are not the trusted app page`() {
+        // W-01: an imported HTML or SVG original served from /media must not get the Back
+        // contract or the shell bridge.
+        for (path in listOf("/media/original/abc", "/media/thumb/abc", "/export?id=1", "/renderer.js", "/library/folder")) {
+            assertEquals(
+                path,
+                NavigationTarget.SameOriginResource,
+                TrustedNavigationPolicy.classify(endpoint, "https://example.test$path"),
+            )
+        }
+        assertFalse(endpoint.contains("https://example.test/media/original/abc"))
+        assertTrue(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/media/original/abc"))
+        assertTrue(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/export?id=1"))
+        assertFalse(TrustedNavigationPolicy.isHostFile(endpoint, "https://example.test/login"))
+        assertFalse(TrustedNavigationPolicy.isHostFile(endpoint, "https://other.example.test/export"))
     }
 
     @Test
@@ -113,5 +135,23 @@ class TrustedNavigationPolicyTest {
             TrustedNavigationPolicy.classify(endpoint, "javascript:alert(1)"),
         )
         assertFalse(endpoint.contains("http://example.test/"))
+    }
+}
+
+class LocalNetworkHostTest {
+    private fun host(raw: String) = (HostUrlValidator.validate(raw) as HostInputResult.Valid).endpoint
+
+    @Test
+    fun `private addresses and LAN names count as local network hosts`() {
+        for (raw in listOf("192.168.1.5:41600", "10.0.0.2:41600", "172.20.1.1:41600", "169.254.3.4", "mac-mini:41600", "mac.local:41600", "nas.lan", "[fd12::1]:41600")) {
+            assertTrue(raw, LocalNetworkHost.matches(host(raw)))
+        }
+    }
+
+    @Test
+    fun `public and tunnelled hosts are not`() {
+        for (raw in listOf("172.32.0.1", "8.8.8.8", "100.101.102.103:41600", "mac.tailnet.ts.net:41600", "example.com")) {
+            assertFalse(raw, LocalNetworkHost.matches(host(raw)))
+        }
     }
 }

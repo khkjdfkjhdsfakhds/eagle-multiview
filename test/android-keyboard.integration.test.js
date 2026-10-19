@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('Android uses Ctrl for ⌘-only shortcuts and wide touch tablets keep multi-pane; macOS keeps ⌘', { timeout: 45000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/android-keyboard-probe.cjs')], { env, timeout: 40000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/android-keyboard-probe.cjs')], { env, timeout: 40000 });
   const line = stdout.split('\n').find(row => row.startsWith('EAGLEMV_ANDROID_KEYBOARD '));
   assert.ok(line, stdout);
   const { android, phone, apple } = JSON.parse(line.slice('EAGLEMV_ANDROID_KEYBOARD '.length));
@@ -26,19 +26,18 @@ test('Android uses Ctrl for ⌘-only shortcuts and wide touch tablets keep multi
   assert.deepEqual(android.back.sort, [true, 'handled', 'sort-popover', false]);
   assert.equal(android.back.historyUnchanged, true);
   assert.deepEqual(android.esc, { selected: [true, 0], idlePrevented: false });
-  assert.deepEqual(android.tabletBack, ['handled', 'selection', 0], 'wide tablets clear a selection before back can exit');
+  assert.deepEqual(android.tabletBack, ['handled', 'selection', 0], 'with no history left, back clears a selection before it can exit');
   assert.deepEqual(android.folderBack, ['handled', 'selection', null], 'a selected folder card counts as a selection');
   assert.deepEqual(android.fieldEsc, { prevented: true, left: true, nextPrevented: false }, 'Esc in a field leaves it instead of becoming Back');
   assert.deepEqual(android.touchDrag, { touch: [true, false], pen: [true, false], mouse: true }, 'touch and pen long-presses never start an HTML5 drag; mouse drags still do');
 
-  // Phone width: back leaves the selection strip first, a preview closes
-  // before its selection, and only then does history move.
+  // Phone width: with history behind it, back with a selection goes straight
+  // back (no extra press to clear it); a preview still closes first.
   assert.deepEqual([phone.compact, phone.strip], [true, true]);
-  assert.deepEqual(phone.first, ['handled', 'selection']);
-  assert.deepEqual(phone.afterFirst, { selected: 0, strip: false, history: true });
+  assert.deepEqual(phone.first, ['handled', 'history']);
+  assert.deepEqual(phone.afterFirst, { selected: 0, strip: false });
   assert.deepEqual(phone.preview, ['preview', true]);
-  assert.deepEqual(phone.second, ['handled', 'selection']);
-  assert.equal(phone.third, 'history');
+  assert.deepEqual(phone.second, ['handled', 'history', 0]);
 
   // macOS is unchanged: Ctrl does not stand in for ⌘ and hints keep glyphs.
   assert.equal(apple.apple, true);

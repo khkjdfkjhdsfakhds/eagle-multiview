@@ -10,7 +10,7 @@ let results;
 async function probe() {
   if (!results) results = (async () => {
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-    const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), ...cases.map(name => `--scenario=${name}`)], { env, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+    const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), ...cases.map(name => `--scenario=${name}`)], { env, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
     const parsed = Object.fromEntries(stdout.split('\n').filter(line => line.startsWith('INTERACTION_AUDIT ')).map(line => { const value = JSON.parse(line.slice(18)); assert.ok(!value.error, `${value.name}: ${value.error}`); return [value.name, value.result]; }));
     for (const name of cases) assert.ok(parsed[name], `missing ${name}`);
     return parsed;

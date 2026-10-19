@@ -7,7 +7,7 @@ let resultPromise;
 function probe() {
   resultPromise ||= (async () => {
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-    const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/tag-color-sync-probe.cjs')], { env, timeout: 25000 });
+    const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/tag-color-sync-probe.cjs')], { env, timeout: 25000 });
     const line = stdout.split('\n').find(row => row.startsWith('TAG_COLOR_SYNC '));
     assert.ok(line, stdout);
     return JSON.parse(line.slice('TAG_COLOR_SYNC '.length));

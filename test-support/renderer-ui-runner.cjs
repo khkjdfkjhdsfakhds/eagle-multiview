@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-ui-test-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-ui-test-');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
 

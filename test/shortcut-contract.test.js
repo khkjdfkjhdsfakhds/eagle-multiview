@@ -24,19 +24,19 @@ test('macOS File menu exposes exactly one default new-window command', () => {
   assert.ok(editMenuStart > fileMenuStart, 'File menu is followed by the Edit menu');
 
   const fileMenu = main.slice(fileMenuStart, editMenuStart);
-  assert.equal((fileMenu.match(/label: '新窗口'/g) ?? []).length, 1);
+  assert.equal((fileMenu.match(/label: '新建窗口'/g) ?? []).length, 1);
   assert.doesNotMatch(fileMenu, /新建资料库窗口/);
-  assert.match(fileMenu, /label: '新窗口',\s*accelerator: 'CmdOrCtrl\+Alt\+N',\s*click: \(\) => windowRouter\.openDefault\(\)\.catch/);
+  assert.match(fileMenu, /label: '新建窗口',\s*accelerator: 'CmdOrCtrl\+Alt\+N',\s*click: \(\) => windowRouter\.openDefault\(\)\.catch/);
   assert.equal((main.match(/accelerator: 'CmdOrCtrl\+Alt\+N'/g) ?? []).length, 1);
 });
 
 test('new-item shortcuts follow Eagle folder creation without reviving the old command-N conflict', () => {
   assert.match(main, /label: '新建文件夹', accelerator: 'Alt\+N'/);
   assert.match(main, /label: '新建 TXT', accelerator: 'Alt\+Shift\+N'/);
-  assert.match(main, /label: '新窗口',[\s\S]{0,80}accelerator: 'CmdOrCtrl\+Alt\+N'/);
+  assert.match(main, /label: '新建窗口',[\s\S]{0,80}accelerator: 'CmdOrCtrl\+Alt\+N'/);
   assert.doesNotMatch(main, /label: '新建文件夹', accelerator: 'CmdOrCtrl\+N'/);
   assert.doesNotMatch(main, /label: '新建 TXT', accelerator: 'CmdOrCtrl\+Shift\+N'/);
-  assert.doesNotMatch(main, /新窗口', accelerator: 'CmdOrCtrl\+N'/);
+  assert.doesNotMatch(main, /新建窗口', accelerator: 'CmdOrCtrl\+N'/);
   assert.match(html, /id="newButton"[^>]+title="新建文件夹或文件（⌥N 新建文件夹）"/);
   assert.doesNotMatch(html, /id="newWindowButton"/);
   const keydownStart = renderer.indexOf("document.addEventListener('keydown'", renderer.indexOf('function bindEvents()'));

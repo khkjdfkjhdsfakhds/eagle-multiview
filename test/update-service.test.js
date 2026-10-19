@@ -65,6 +65,8 @@ function controller(t, workDir, overrides = {}) {
     feedURL: FEED,
     arch: 'arm64',
     canWrite: async () => true,
+    // A test that forgets its own fetch must fail, not reach GitHub (T-16).
+    fetch: async url => { throw new Error(`unmocked network request: ${url}`); },
     ...overrides
   });
 }
@@ -309,4 +311,46 @@ test('the swap script keeps the current app when the staged copy is missing', { 
   const result = spawnSync('/bin/bash', [script, '999999', target, path.join(work, 'nope.app'), work, '0'], { encoding: 'utf8', timeout: 20000 });
   assert.equal(result.status, 1);
   assert.equal(execFileSync(path.join(target, 'Contents', 'MacOS', 'Eagle MultiView'), { encoding: 'utf8' }).trim(), 'old');
+});
+
+test('a second 下载并安装 during the pre-download checks starts nothing (F-10)', async t => {
+  const workDir = await tempDir(t, 'eaglemv-update-');
+  const calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const updates = controller(t, workDir, {
+    fetch: fakeFetch({ [FEED]: releaseJSON(), [SUMS_URL]: `${'0'.repeat(64)}  Eagle-MultiView-1.9.0-arm64.dmg\n`, [DMG_URL]: Buffer.from('dmg!!!') }, calls),
+    canWrite: async () => { if (hold) await gate; return true; },
+    logFault: () => {}
+  });
+  let hold = false;
+  await updates.check({ manual: true });
+  hold = true;
+  const first = updates.downloadAndPrepare();
+  const second = await updates.downloadAndPrepare();
+  assert.equal(second.phase, 'available', 'the second request returns the current state');
+  release();
+  await first;
+  assert.equal(calls.filter(url => url === SUMS_URL).length, 1, 'the checksum was fetched once');
+});
+
+test('取消 during a manual check stops the request without an error (F-09)', async t => {
+  const workDir = await tempDir(t, 'eaglemv-update-');
+  const faults = [];
+  let seenSignal = null;
+  const updates = controller(t, workDir, { logFault: (...args) => faults.push(args), now: () => 9000, fetch: fakeFetch({ [FEED]: options => {
+    seenSignal = options.signal;
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+  } }) });
+  const pending = updates.check({ manual: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updates.state.phase, 'checking');
+  updates.cancelCheck();
+  assert.equal(seenSignal.aborted, true, 'the request itself is aborted');
+  assert.equal((await pending).phase, 'idle');
+  assert.equal(faults.length, 0, 'a cancel is not logged as a failure');
+  await assert.rejects(fs.readFile(path.join(workDir, 'update.json')), { code: 'ENOENT' }, 'a canceled check is not recorded as done');
+  // The next check starts afresh.
+  updates.fetch = fakeFetch({ [FEED]: releaseJSON({ version: '1.8.1' }) });
+  assert.equal((await updates.check({ manual: true })).phase, 'latest');
 });

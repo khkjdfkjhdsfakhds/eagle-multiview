@@ -35,11 +35,13 @@ test('operations that leave items on screen keep the selection', () => {
   // survives; only failures are singled out, mirroring mutateSelectionSet's
   // keepSelection (which tag *removal* already used — the two were
   // inconsistent). Trash and move still clear, because their items leave;
-  // undoing a delete likewise keeps only the items that failed to come back.
-  const keep = renderer.match(/pane\.selected = new Set\(outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: ids\.filter\(id => pane\.items\.some\(item => item\.id === id\)\)\);/g) || [];
-  assert.strictEqual(keep.length, 2, '评分与批量加标签各一处');
-  const clears = renderer.match(/pane\.selected = new Set\(outcome\.failed\);/g) || [];
-  assert.strictEqual(clears.length, 3, '只剩废纸篓、移动与撤销删除三处仍然清空');
+  // undoing a delete selects the items that came back, as Eagle's 撤销 does.
+  // (B2-01: each only applies while the selection is still the one the
+  // operation started from — see batch-selection.integration.test.js.)
+  const keep = renderer.match(/(?:const next = |settleBatchSelection\(pane, selectionBefore, )outcome\.failed\.length\n\s+\? outcome\.failed\n\s+: idsStillSelectable\(pane, ids\)\)?;/g) || [];
+  assert.strictEqual(keep.length, 3, '评分、批量加标签与批量改注释/链接各一处');
+  const clears = renderer.match(/settleBatchSelection\(pane, selectionBefore, outcome\.failed\)/g) || [];
+  assert.strictEqual(clears.length, 2, '只剩废纸篓与移动两处仍然清空');
 });
 
 test('preview view options: transparent backing and grayscale', () => {

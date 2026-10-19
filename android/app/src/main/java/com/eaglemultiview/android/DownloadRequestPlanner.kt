@@ -42,9 +42,7 @@ object DownloadRequestPlanner {
     ): DownloadPlan {
         val scheme = url?.substringBefore(':', "")?.lowercase(Locale.US)
         if (scheme !in setOf("http", "https")) return DownloadPlan.Rejected(DownloadRejection.UNSUPPORTED_URL)
-        if (endpoint == null ||
-            TrustedNavigationPolicy.classify(endpoint, url) != NavigationTarget.TrustedPage
-        ) {
+        if (endpoint == null || !TrustedNavigationPolicy.isHostFile(endpoint, url)) {
             return DownloadPlan.Rejected(DownloadRejection.UNTRUSTED_ORIGIN)
         }
         val normalizedMime = mimeType

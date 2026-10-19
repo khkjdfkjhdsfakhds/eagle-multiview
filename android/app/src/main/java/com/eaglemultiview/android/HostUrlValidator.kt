@@ -109,20 +109,70 @@ object HostUrlValidator {
         (validate(rawValue) as? HostInputResult.Valid)?.endpoint?.startUrl
 }
 
+/**
+ * Addresses only reachable inside the local network. When Wi-Fi has no internet, Android moves
+ * the default network to mobile data and these stop answering (A-10); VPN-style names such as
+ * Tailscale's `.ts.net` still route over mobile data, so they are not included.
+ */
+object LocalNetworkHost {
+    private val localSuffixes = listOf(".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain")
+
+    fun matches(endpoint: HostEndpoint): Boolean {
+        val host = try {
+            URI(endpoint.origin).host?.lowercase(Locale.US)
+        } catch (_: URISyntaxException) {
+            null
+        } ?: return false
+        val octets = host.split('.').map { it.toIntOrNull() }
+        if (octets.size == 4 && octets.all { it != null && it in 0..255 }) {
+            val (a, b) = octets.map { it!! }
+            return a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254)
+        }
+        if (host.startsWith("[")) return host.startsWith("[fe80:") || host.startsWith("[fd") || host.startsWith("[fc")
+        return !host.contains('.') || localSuffixes.any { host.endsWith(it) }
+    }
+}
+
 enum class NavigationTarget(val isTrusted: Boolean) {
     TrustedPage(true),
     TrustedLogin(true),
+    /**
+     * Another file on the host (`/media/…`, `/export`, scripts): it may load (downloads and media
+     * need that) but never gets the page's Back contract or shell bridge, since an imported HTML
+     * or SVG original could otherwise drive both.
+     */
+    SameOriginResource(false),
     ExternalWeb(false),
     Blocked(false),
 }
 
 /** Keeps only same-origin MultiView pages in the privileged WebView. */
 object TrustedNavigationPolicy {
+    /** The MultiView app page; the host serves it at both paths. */
+    private val appPagePaths = setOf("/", "/index.html")
+
     fun classify(endpoint: HostEndpoint, rawUrl: String?): NavigationTarget {
         val uri = parseWebUri(rawUrl) ?: return NavigationTarget.Blocked
         val origin = originOf(uri) ?: return NavigationTarget.Blocked
         if (origin != endpoint.origin) return NavigationTarget.ExternalWeb
-        return if (uri.path == "/login") NavigationTarget.TrustedLogin else NavigationTarget.TrustedPage
+        val path = uri.path.takeUnless { it.isNullOrEmpty() } ?: "/"
+        return when {
+            path == "/login" -> NavigationTarget.TrustedLogin
+            path in appPagePaths || path == startPath(endpoint) -> NavigationTarget.TrustedPage
+            else -> NavigationTarget.SameOriginResource
+        }
+    }
+
+    /** A same-origin file other than the login page: what the host may serve to the download manager. */
+    fun isHostFile(endpoint: HostEndpoint, rawUrl: String?): Boolean =
+        classify(endpoint, rawUrl).let {
+            it == NavigationTarget.TrustedPage || it == NavigationTarget.SameOriginResource
+        }
+
+    private fun startPath(endpoint: HostEndpoint): String? = try {
+        URI(endpoint.startUrl).path
+    } catch (_: URISyntaxException) {
+        null
     }
 
     private fun parseWebUri(rawUrl: String?): URI? {

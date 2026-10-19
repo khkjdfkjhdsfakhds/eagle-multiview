@@ -76,3 +76,9 @@ test('Markdown uses a visually blank unique payload required by reliable Eagle i
   assert.equal(Buffer.byteLength(payload), 68);
   assert.notEqual(payload, newFileContent('md', () => Buffer.alloc(8, 0)));
 });
+
+test('S-13: names are limited by bytes, so 100 Chinese characters are refused with a Chinese message', () => {
+  const { validateNewItemName } = require('../lib/new-file-service');
+  assert.throws(() => validateNewItemName('文'.repeat(100)), /名称太长/);
+  assert.equal(validateNewItemName('文'.repeat(80)), '文'.repeat(80));
+});

@@ -9,7 +9,7 @@ const { assertCleanElectronStderr } = require('../test-support/electron-stderr.c
 const execFileAsync = promisify(execFile);
 
 async function runPathBarUI(platform) {
-  const electron = require('electron');
+  const electron = require('../test-support/electron-binary.cjs');
   const runner = require.resolve('../test-support/path-bar-ui-runner.cjs');
   const env = { ...process.env, EAGLEMV_UI_PLATFORM: platform };
   delete env.ELECTRON_RUN_AS_NODE;

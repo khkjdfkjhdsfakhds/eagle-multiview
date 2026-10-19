@@ -6,7 +6,11 @@ internal const val WEB_BACK_REQUEST_JAVASCRIPT = "window.EagleMVBack.request()"
 
 enum class BackPageAvailability {
     HOST_ENTRY,
+    /** The native connecting or failure screen: no page underneath to go back in. */
+    CONNECTION_SCREEN,
     TRUSTED_PAGE,
+    /** A same-origin file shown in place of the app page (see NavigationTarget.SameOriginResource). */
+    HOST_RESOURCE,
     UNAVAILABLE,
 }
 
@@ -30,6 +34,8 @@ enum class BackStayReason {
 sealed interface BackCommand {
     data class EvaluateJavascript(val requestId: Long) : BackCommand
     data object FinishActivity : BackCommand
+    /** Return from a host file to the app page; the file never gets the page's Back contract. */
+    data object LeaveHostResource : BackCommand
     data class Stay(val reason: BackStayReason) : BackCommand
 }
 
@@ -49,7 +55,9 @@ class BackRequestCoordinator {
         if (pendingRequestId != null) return BackCommand.Stay(BackStayReason.BUSY)
 
         return when (availability) {
-            BackPageAvailability.HOST_ENTRY -> {
+            BackPageAvailability.HOST_ENTRY,
+            BackPageAvailability.CONNECTION_SCREEN,
+            -> {
                 finishIssued = true
                 BackCommand.FinishActivity
             }
@@ -58,6 +66,7 @@ class BackRequestCoordinator {
                 pendingRequestId = requestId
                 BackCommand.EvaluateJavascript(requestId)
             }
+            BackPageAvailability.HOST_RESOURCE -> BackCommand.LeaveHostResource
             BackPageAvailability.UNAVAILABLE -> BackCommand.Stay(BackStayReason.UNAVAILABLE)
         }
     }
@@ -101,7 +110,8 @@ class BackRequestCoordinator {
 object WebBackResultParser {
     private val allowedActions = mapOf(
         WebBackStatus.HANDLED to setOf("transient", "preview", "history"),
-        WebBackStatus.BLOCKED to setOf("preview", "history", "request"),
+        // "transient": a busy dialog or an unsaved edit kept the overlay open.
+        WebBackStatus.BLOCKED to setOf("transient", "preview", "history", "request"),
         WebBackStatus.EXIT to setOf("host"),
     )
 

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-path-bar-ui-test-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-path-bar-ui-test-');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));
 
@@ -165,8 +165,19 @@ async function run() {
     pathInput.dispatchEvent(new Event('input', { bubbles: true }));
     pathInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await until(() => paneSnapshot(panes()[0]).current === 'Beta');
-    assert(firstPaneState.query.search === 'keep-search', '路径导航丢失当前分栏搜索状态');
+    // Eagle clears the search when the view changes unless it is locked (R2-04).
+    assert(firstPaneState.query.search === '', '路径导航没有像 Eagle 一样清空搜索');
     assert(firstPaneState.history.length > historyBeforePathNavigation, '路径导航没有记录历史');
+    firstPaneState.query.search = 'keep-search';
+    firstPaneState.filterLock = true;
+    pathInput = beginPathEdit(panes()[0]);
+    pathInput.value = 'Alpha / Beta / Gamma';
+    pathInput.dispatchEvent(new Event('input', { bubbles: true }));
+    pathInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await until(() => paneSnapshot(panes()[0]).current === 'Gamma');
+    assert(firstPaneState.query.search === 'keep-search', '锁定筛选后路径导航丢失搜索');
+    firstPaneState.filterLock = false;
+    firstPaneState.query.search = '';
 
     go(firstPaneId, { kind: 'folder', id: 'delta-folder' });
     await until(() => paneSnapshot(panes()[0]).current === 'Delta');
@@ -201,9 +212,9 @@ async function run() {
     assert(firstPaneState.currentView.id === 'other-shared-folder', '重复名称路径没有按完整 Eagle 路径解析');
 
     go(firstPaneId, { kind: 'all' });
-    await until(() => paneSnapshot(panes()[0]).current === '全部素材');
+    await until(() => paneSnapshot(panes()[0]).current === '全部');
     const virtual = paneSnapshot(panes()[0]);
-    assert(JSON.stringify(virtual.labels) === JSON.stringify(['路径测试资料库', '全部素材']), '虚拟视图路径错误: ' + JSON.stringify(virtual));
+    assert(JSON.stringify(virtual.labels) === JSON.stringify(['路径测试资料库', '全部']), '虚拟视图路径错误: ' + JSON.stringify(virtual));
     assert(virtual.currentVisible && virtual.noAbsolutePath, '虚拟视图当前节点不可见或泄露绝对路径');
     go(firstPaneId, { kind: 'smart', id: 'smart-folder' });
     await until(() => paneSnapshot(panes()[0]).current === '精选智能视图');

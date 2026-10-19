@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const { pathToFileURL } = require('node:url');
 const { loadMain } = require('../test-support/main-data-harness.cjs');
 const { folderCoverItemId } = require('../lib/eagle-native-sync');
+const { startCopyImportModeScript, stopCopyImportModeScript, startKeepingCopiesScript } = require('../lib/eagle-duplicate-choice');
 
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -47,7 +48,7 @@ async function setupFixture({ heldBackIds = [] } = {}) {
     coverId: 'one', iconColor: 'blue', tags: ['folder-tag'],
     // The source's cached cover is the newest image of the folder, exactly what
     // Eagle derived the last time it rebuilt its image bindings.
-    children: [{ id: 'source-child', name: 'Child', description: 'child description', iconColor: 'blue',
+    children: [{ id: 'source-child', name: 'Child', description: 'child description', iconColor: 'blue', tags: ['child-tag'],
       covers: [coverMarkup('two', 'two.txt')], children: [] }]
   }, { id: 'same-name-sibling', name: 'Source', children: [] }];
   const folderMappings = { source: folders[0], 'source-child': folders[0].children[0] };
@@ -95,7 +96,13 @@ async function setupFixture({ heldBackIds = [] } = {}) {
     if (id === 'copy-1' && updateCounts[id] === 1) itemMappings[id].url = '';
     return itemMappings[id];
   };
-  main.client.updateFolderProperties = async (id, patch) => Object.assign(folderMappings[id], patch);
+  const folderUpdates = [];
+  // Like Eagle, an update that leaves out iconColor clears the folder's colour.
+  main.client.updateFolderProperties = async (id, patch) => {
+    folderUpdates.push({ id, patch: plain(patch) });
+    if (!('iconColor' in patch)) delete folderMappings[id].iconColor;
+    return Object.assign(folderMappings[id], patch);
+  };
   let folderCount = 0;
   const folderCreates = [], folderMoves = [];
   main.client.createFolder = async (name, parent, options) => {
@@ -183,7 +190,7 @@ async function setupFixture({ heldBackIds = [] } = {}) {
   };
   main.hub.connect = async () => {};
   const copy = () => main.copyFolderTree({ sourceId: 'source', libraryPath, decisionTimeoutMs: 250, itemWaitMs: 250 });
-  return { root, libraryPath, libraryKey, orderKey, main, folders, folderMappings, itemMappings, scope, queued, imports, folderCreates, folderMoves, updateCounts, originalIsDuplicateImage, copy };
+  return { root, libraryPath, libraryKey, orderKey, main, folders, folderMappings, itemMappings, scope, queued, imports, folderCreates, folderMoves, folderUpdates, updateCounts, originalIsDuplicateImage, copy };
 }
 
 test('copying a folder tree clones hierarchy, native order, pins, cover and metadata', async t => {
@@ -216,6 +223,12 @@ test('copying a folder tree clones hierarchy, native order, pins, cover and meta
   assert.equal(copiedRoot.coverId, 'copy-1');
   assert.equal(copiedRoot.iconColor, 'blue');
   assert.deepEqual(plain(copiedRoot.tags), ['folder-tag']);
+  // Eagle's folder update moves a folder to the root unless its parent is
+  // given and clears its colour unless iconColor is given, so a copy's tags
+  // are written together with both.
+  assert.deepEqual(fixture.folderUpdates.find(entry => entry.id === 'copy-child')?.patch, { tags: ['child-tag'], parent: 'copy-folder', iconColor: 'blue' });
+  assert.deepEqual(fixture.folderUpdates.find(entry => entry.id === 'copy-folder')?.patch, { tags: ['folder-tag'], iconColor: 'blue' });
+  assert.equal(folderMappings['copy-child'].iconColor, 'blue');
   assert.equal(folderMappings['copy-child'].orderBy, undefined);
   // Eagle's cached cover markup has to follow the source onto the copies: the
   // child folder shows its newest image, not the image the import landed last.
@@ -260,4 +273,46 @@ test('a copy whose duplicate decision never lands is restored instead of failing
   assert.equal(fixture.scope.__eaglemvCopyImportMode, undefined);
   const orders = JSON.parse(await fs.readFile(path.join(fixture.root, 'user-data', 'state', 'manual-order.json'))).libraries[fixture.orderKey];
   assert.deepEqual(orders['["folder:copy-child","items"]'].ids, ['copy-2']);
+});
+
+test('a finished copy leaves a concurrent copy’s Eagle patches in place (E-07)', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const { scope, libraryPath } = fixture;
+  // Another copy into its own folder is still running when this one finishes.
+  const other = { $bodyScope: scope, document: { querySelector: () => null }, angular: { element: () => ({ isolateScope: () => null }) },
+    setInterval: () => 7, clearInterval: () => {} };
+  vm.runInNewContext(startCopyImportModeScript({ libraryPath, runId: 'other-run', folderIds: ['other-copy'] }), other);
+  vm.runInNewContext(startKeepingCopiesScript({ libraryPath, runId: 'other-run', folderIds: ['other-copy'] }), other);
+  const result = await fixture.copy();
+  assert.equal(result.copiedItems, 3);
+  assert.equal(scope.isDuplicateImage({ name: 'one.txt', folders: ['other-copy'] }), false, 'the other copy still bypasses the duplicate queue');
+  assert.ok(scope.isDuplicateImage({ name: 'one.txt', folders: ['copy-folder'] }), 'this copy’s folders go back to Eagle’s check');
+  assert.deepEqual(Object.keys(scope.__eaglemvCopyKeeper.runs), ['other-run']);
+  assert.notEqual(scope.__eaglemvCopyKeeper.timer, null, 'the keeper keeps running for the other copy');
+  vm.runInNewContext(stopCopyImportModeScript({ libraryPath, runId: 'other-run' }), other);
+  assert.equal(scope.isDuplicateImage, fixture.originalIsDuplicateImage);
+});
+
+// F-03: the confirmation counts what a copy would take without writing.
+test('planning a folder copy counts folders and items and writes nothing', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const plan = await fixture.main.planFolderCopy({ sourceId: 'source', libraryPath: fixture.libraryPath });
+  assert.deepEqual(plain(plan), { ok: true, folderCount: 2, itemCount: 3 });
+  assert.deepEqual(fixture.folderCreates, []);
+  assert.deepEqual(fixture.imports, []);
+  await assert.rejects(fixture.main.planFolderCopy({ sourceId: 'source', parentId: 'source-child', libraryPath: fixture.libraryPath }), /不能复制到自身/);
+});
+
+test('a copy dropped on an insertion line lands next to that sibling', async t => {
+  const fixture = await setupFixture();
+  t.after(() => fs.rm(fixture.root, { recursive: true, force: true }));
+  const result = await fixture.main.copyFolderTree({ sourceId: 'source', libraryPath: fixture.libraryPath,
+    decisionTimeoutMs: 250, itemWaitMs: 250, anchorId: 'same-name-sibling', position: 'before' });
+  assert.equal(result.placed, true);
+  assert.deepEqual(fixture.folders.map(folder => folder.id), ['source', 'copy-folder', 'same-name-sibling']);
+  const plainCopy = await setupFixture();
+  t.after(() => fs.rm(plainCopy.root, { recursive: true, force: true }));
+  assert.equal((await plainCopy.copy()).placed, null, 'without a placement the copy keeps Eagle’s default position');
 });

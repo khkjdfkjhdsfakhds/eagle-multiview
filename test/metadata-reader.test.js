@@ -186,3 +186,84 @@ test('DA-20: LoRA zero and negative weights survive every supported metadata for
   }) }]), 'png');
   assert.deepEqual(invoke.loras.map(lora => lora.weight), expected);
 });
+
+test('E-02: a PNG decompression bomb and huge parameters cannot stall the reader', () => {
+  const zlib = require('node:zlib');
+  const { readPngChunks, parseA1111 } = require('../lib/metadata-reader');
+  const chunk = (type, data) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(data.length, 0);
+    header.write(type, 4, 'ascii');
+    return Buffer.concat([header, data, Buffer.alloc(4)]);
+  };
+  const bomb = Buffer.concat([Buffer.from('bomb\0\0'), zlib.deflateSync(Buffer.alloc(64 * 1024 * 1024, 0x41))]);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('zTXt', bomb),
+    chunk('tEXt', Buffer.concat([Buffer.from('huge\0'), Buffer.alloc(2 * 1024 * 1024, 0x42)])),
+    chunk('tEXt', Buffer.from('parameters\0a cat\nSteps: 20, Sampler: Euler')),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
+  let started = Date.now();
+  const chunks = readPngChunks(png);
+  assert.ok(Date.now() - started < 1000, 'bounded inflate');
+  assert.equal(chunks.bomb, undefined);
+  assert.equal(chunks.huge, undefined);
+  assert.equal(chunks.parameters, 'a cat\nSteps: 20, Sampler: Euler');
+
+  const long = `a cat\nSteps: 20, ${'x, '.repeat(60000)}Sampler: Euler, Model hash: abc`;
+  started = Date.now();
+  const parsed = parseA1111(long);
+  assert.ok(Date.now() - started < 1000, `linear parameter split took ${Date.now() - started}ms`);
+  assert.equal(parsed.params.Steps.startsWith('20'), true);
+  assert.equal(parsed.params.Sampler, 'Euler');
+  assert.equal(parsed.params['Model hash'], 'abc');
+});
+
+test('E-03: a hung image decoder is killed instead of holding an index worker forever', async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { decodeToPam } = require('../lib/stealth-metadata-reader');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-decoder-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const decoder = path.join(directory, 'magick');
+  fs.writeFileSync(decoder, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+  // The image is piped to the decoder, so it has to exist.
+  const image = path.join(directory, 'a[1].png');
+  fs.writeFileSync(image, Buffer.alloc(16));
+  const started = Date.now();
+  await assert.rejects(decodeToPam(decoder, 'png', image, { timeoutMs: 200 }), /timed out/);
+  assert.ok(Date.now() - started < 5000);
+});
+
+// E-02 余项: a PNG is read chunk by chunk without loading its image data.
+test('readMetadata reads PNG text chunks before and after the image data without loading it', async t => {
+  const fsSync = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { readMetadata, readPngTextChunks } = require('../lib/metadata-reader');
+  const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-png-stream-'));
+  t.after(() => fsSync.rmSync(dir, { recursive: true, force: true }));
+  const signature = Buffer.from('89504e470d0a1a0a', 'hex');
+  const ihdr = pngChunk('IHDR', Buffer.alloc(13));
+  const idat = pngChunk('IDAT', Buffer.alloc(8 * 1024 * 1024, 7));
+  const parameters = pngChunk('tEXt', Buffer.from('parameters\0after idat\nNegative prompt: late\nSteps: 9, Seed: 5'));
+  const file = path.join(dir, 'late.png');
+  fsSync.writeFileSync(file, Buffer.concat([signature, ihdr, idat, parameters, pngChunk('IEND', Buffer.alloc(0))]));
+  const metadata = await readMetadata(file, 'png');
+  assert.equal(metadata.positive, 'after idat');
+  assert.equal(metadata.negative, 'late');
+  const slices = await readPngTextChunks(file);
+  assert.ok(slices.buffer.length < 4096, 'the image data is skipped, not read');
+  // The plain-text fallback still searches the head of the file.
+  const custom = pngChunk('daTa', Buffer.from('head text\nSteps: 3, Sampler: Euler'));
+  const fallbackFile = path.join(dir, 'fallback.png');
+  fsSync.writeFileSync(fallbackFile, Buffer.concat([signature, ihdr, custom, idat, pngChunk('IEND', Buffer.alloc(0))]));
+  assert.equal((await readMetadata(fallbackFile, 'png'))?.params.Steps, '3');
+  // A non-PNG still goes through the whole-file path.
+  const jpgFile = path.join(dir, 'plain.jpg');
+  fsSync.writeFileSync(jpgFile, Buffer.from('not an image'));
+  assert.equal(await readPngTextChunks(jpgFile), null);
+  assert.equal(await readMetadata(jpgFile, 'jpg'), null);
+});

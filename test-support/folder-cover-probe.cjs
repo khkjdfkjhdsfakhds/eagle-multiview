@@ -6,7 +6,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { loadMain } = require('./main-data-harness.cjs');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-cover-ui-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-cover-ui-');
 app.setPath('userData', path.join(profile, 'profile'));
 app.on('window-all-closed', () => {});
 app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
@@ -24,7 +24,7 @@ main.client.getItems = async ids => Promise.all(ids.map(id => main.client.getIte
 main.client.appInfo = async () => ({version:'ui-test'});
 main.client.libraryInfo = async () => main.hub.library;
 const nativeScope = {libraryPath, folderMappings:Object.fromEntries(main.hub.library.folders.map(f=>[f.id,f])), itemMappings:{sample:{id:'sample'}},
-  saveFolder(){}, resetFolderCover(f){f.covers=[];}, calculateImageBinding(){}};
+  saveFolder(){}, resetFolderCover(f){f.covers=[];}, updateSidebarList(){}, calculateImageBinding(){}};
 main.client.request = async (url, {body}) => {
   assert.equal(url, '/api/script/inject');
   assert.equal(vm.runInNewContext(body.script, {$bodyScope:nativeScope}), true);

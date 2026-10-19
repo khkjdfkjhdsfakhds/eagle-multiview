@@ -15,7 +15,7 @@ const { createSaveHandler } = require('../eagle-plugin/text-save-service/save-ha
 const archive = '/Applications/Eagle.app/Contents/Resources/app.asar';
 
 test('local official SDK: client queue → authenticated HTTP → plugin → original replaceFile on synthetic files', { skip: !fs.existsSync(archive) }, async t => {
-  const asar = require('../node_modules/.pnpm/@electron+asar@3.4.1/node_modules/@electron/asar');
+  const asar = require('../test-support/asar-module.cjs');
   const source = asar.extractFile(archive, 'app/js/plugin/model/item.js').toString('utf8');
   console.log('Official Item SDK SHA-256:', crypto.createHash('sha256').update(source).digest('hex'));
   const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'eaglemv-official-sdk-')));

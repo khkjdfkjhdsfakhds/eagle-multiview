@@ -6,7 +6,7 @@ const path = require('node:path');
 const root = process.env.EAGLEMV_LAYOUT_SOURCE_ROOT || path.resolve(__dirname, '..');
 const { TextDraftStore } = require(path.join(root, 'lib/text-draft-store'));
 const { createWebServer } = require(path.join(root, 'lib/web-server'));
-const data = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-txt-layout-'));
+const data = require('./temp-userdata.cjs').tempUserData('eaglemv-txt-layout-');
 app.setPath('userData', data);
 app.on('window-all-closed', () => {});
 const library = { path: '/mock/txt-layout.library', name: 'TXT layout fixture', folders: [], smartFolders: [] };

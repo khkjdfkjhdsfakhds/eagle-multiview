@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const {ManualOrderStore}=require('../lib/manual-order-store');
-const root=fs.mkdtempSync(path.join(os.tmpdir(),'mv-manual-ui-'));
+const root = require('./temp-userdata.cjs').tempUserData('mv-manual-ui-');
 app.setPath('userData',root);
 app.on('window-all-closed',()=>{});
 let store=new ManualOrderStore(path.join(root,'state','manual-order.json'));

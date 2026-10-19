@@ -57,13 +57,24 @@
     return { history: entries, historyIndex: entries.length - 1 };
   }
 
-  function folderMoveDelta(sourceFolderId, targetFolderId) {
-    const source = sourceFolderId ? String(sourceFolderId) : '';
+  // The source may be one folder or the whole scope a view draws from (a
+  // folder plus its descendants while searching): moving leaves all of them.
+  function folderMoveDelta(sourceFolderIds, targetFolderId) {
+    const sources = (Array.isArray(sourceFolderIds) ? sourceFolderIds : [sourceFolderIds])
+      .filter(Boolean).map(String);
     const target = targetFolderId ? String(targetFolderId) : '';
     return {
       add: target ? [target] : [],
-      remove: source && source !== target ? [source] : []
+      remove: [...new Set(sources)].filter(source => source !== target)
     };
+  }
+
+  // Removing from a scope is only an alternative to deleting when the item
+  // stays filed somewhere outside it.
+  function folderScopeRemovable(itemFolders, scopeFolderIds) {
+    const scope = new Set((scopeFolderIds || []).map(String));
+    const folders = (Array.isArray(itemFolders) ? itemFolders : []).map(String);
+    return folders.some(id => scope.has(id)) && folders.some(id => !scope.has(id));
   }
 
   function flattenFolders(nodes, trail = []) {
@@ -119,5 +130,5 @@
     return list;
   }
 
-  return { findFolder, findFolderPath, overlayFolder, normalizeView, parentView, recordViewNavigation, folderMoveDelta, flattenFolders, searchFolders, itemFolderLocations };
+  return { findFolder, findFolderPath, overlayFolder, normalizeView, parentView, recordViewNavigation, folderMoveDelta, folderScopeRemovable, flattenFolders, searchFolders, itemFolderLocations };
 });

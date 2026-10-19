@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 
 test('Command+1 through Command+4 choose the matching column count without stealing editor keys', { timeout: 20000 }, async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const { stdout } = await promisify(execFile)(require('electron'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=paneCountShortcuts'], { env, timeout: 18000 });
+  const { stdout } = await promisify(execFile)(require('../test-support/electron-binary.cjs'), ['--disable-logging', require.resolve('../test-support/interaction-regression-probe.cjs'), '--scenario=paneCountShortcuts'], { env, timeout: 18000 });
   const line = stdout.split('\n').find(row => row.startsWith('INTERACTION_AUDIT '));
   assert.ok(line, stdout);
   const result = JSON.parse(line.slice(18));

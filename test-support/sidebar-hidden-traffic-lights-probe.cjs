@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-sidebar-hidden-'));
+const userData = require('./temp-userdata.cjs').tempUserData('eaglemv-sidebar-hidden-');
 const appRoot = process.env.EAGLEMV_APP_ROOT || path.join(__dirname, '..');
 app.setPath('userData', userData);
 app.setPath('cache', path.join(userData, 'cache'));

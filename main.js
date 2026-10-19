@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage, ShareMenu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, clipboard, nativeImage, ShareMenu, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -8,19 +8,25 @@ const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const { EagleClient } = require('./lib/eagle-client');
+const querySpec = require('./src/query-spec');
+const paneState = require('./src/pane-state');
+const eagleOrder = require('./src/eagle-order');
 const { buildIdentity } = require('./lib/app-identity');
 const { ThumbnailOperations } = require('./lib/thumbnail-operations');
+const { fileInDirectory } = require('./lib/item-paths');
 const { createSiteImportService } = require('./lib/site-import');
 const { SiteImportSessions } = require('./lib/site-import-session');
-const { DataHub } = require('./lib/data-hub');
+const { DataHub, folderExtendTags } = require('./lib/data-hub');
 const { PinStore } = require('./lib/pin-store');
 const { FolderCoverStore } = require('./lib/folder-cover-store');
-const { ManualOrderStore } = require('./lib/manual-order-store');
+const { ManualOrderStore, orderKey } = require('./lib/manual-order-store');
 const { SupplementalItemStore } = require('./lib/supplemental-item-store');
 const { readText, saveText } = require('./lib/text-file-service');
 const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
 const { TextDraftStore } = require('./lib/text-draft-store');
 const { createImportService, prepareImportPaths, waitForImportedItems } = require('./lib/import-service');
+const { importFolderTrees, scanFolderTree } = require('./lib/folder-import');
+const { commentRestoreScript, locateSmartFolder, smartFolderRestoreScript } = require('./lib/eagle-restore');
 const { moveCreatedFolderToFront, setFolderSiblingOrder } = require('./lib/eagle-folder-order');
 const {
   keepImportedCopiesScript,
@@ -33,12 +39,12 @@ const {
 const { executeNativeSync, cloneNativeStateScript, refreshFolderCoversScript, folderCoverItemId, itemNativeStateMatches, folderNativeStateMatches, moveRelative } = require('./lib/eagle-native-sync');
 const { clipboardFilePaths, finalizeMacImageClipboard, writeClipboardFilePaths } = require('./lib/clipboard-files');
 const { normalizeClipboardURL, clipboardURLKind } = require('./lib/clipboard-url');
-const { readMetadata } = require('./lib/metadata-reader');
+const { createMetadataWorkerReader } = require('./lib/metadata-worker');
 const { readStealthMetadata } = require('./lib/stealth-metadata-reader');
 const { MetadataSearchIndex } = require('./lib/metadata-search-index');
 const { mimeForPath } = require('./lib/media-mime');
 const { findPreviewImagePath } = require('./lib/preview-image');
-const { DuplicateIndex, findDuplicateImports, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
+const { DuplicateIndex, findDuplicateImports, mapWithConcurrency, pairImportedIdsWithFolders } = require('./lib/duplicate-service');
 const { createErrorLog } = require('./lib/error-log');
 const { createWebServer, generateAccessKey } = require('./lib/web-server');
 const { qrToSVG } = require('./lib/qr-code');
@@ -47,6 +53,8 @@ const { exportFiles } = require('./lib/export-service');
 const { resolveEagleWindowState } = require('./lib/window-location');
 const { createWindowRouter } = require('./lib/window-router');
 const { UpdateController, appBundlePath } = require('./lib/update-service');
+const { installPermissionPolicy } = require('./lib/permission-policy');
+const { TagTally } = require('./lib/tag-tally');
 const {
   normalizeNewFileType,
   normalizeEagleFolderName,
@@ -67,6 +75,10 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const client = new EagleClient();
+// Parsing runs in worker threads, off the main process (E-02).
+const readMetadata = createMetadataWorkerReader({
+  onUnavailable: error => logFault('metadata', '无法启动元数据读取线程，改在主进程读取', error)
+});
 const metadataSearchIndex = new MetadataSearchIndex({
   directory: path.join(app.getPath('userData'), 'state', 'metadata-search'),
   readMetadata,
@@ -75,12 +87,15 @@ const metadataSearchIndex = new MetadataSearchIndex({
   concurrency: 4
 });
 const hub = new DataHub(client, { metadataSearchIndex });
+const tagTally = new TagTally(client);
+let tagTallyTimer = null;
 const windowRouter = createWindowRouter({
   createWindow,
   resolveEagleWindowState: () => resolveEagleWindowState(client)
 });
 const windows = new Set();
 const thumbnailCache = new Map();
+const THUMBNAIL_CACHE_LIMIT = 20000;
 const convertedDragIconCache = new Map();
 const metadataCache = new Map();
 const duplicateIndex = new DuplicateIndex();
@@ -90,7 +105,7 @@ function scheduleDuplicateIndexWarm(libraryPath, delayMs = 1200) {
   if (duplicateIndexWarmTimer) clearTimeout(duplicateIndexWarmTimer);
   duplicateIndexWarmTimer = setTimeout(() => {
     duplicateIndexWarmTimer = null;
-    duplicateIndex.warm(libraryPath).catch(() => {});
+    duplicateIndex.refresh(libraryPath).catch(() => {});
   }, delayMs);
   duplicateIndexWarmTimer.unref?.();
 }
@@ -141,7 +156,11 @@ async function foregroundMultiViewView() {
       || (Number(b === recent) - Number(a === recent)));
   for (const window of candidates) {
     try {
-      const current = await window.webContents.executeJavaScript('window.__eagleMVCurrentView || null', true);
+      // A hung window must not hold the plugin's request open (B4-08).
+      const current = await Promise.race([
+        window.webContents.executeJavaScript('window.__eagleMVCurrentView || null', true),
+        new Promise(resolve => setTimeout(() => resolve(null), 1000).unref?.())
+      ]);
       if (!current?.view) continue;
       return { window, libraryPath: current.libraryPath || null, view: current.view };
     } catch {}
@@ -189,11 +208,20 @@ async function loadTagColors() {
   if (tagColorState) return tagColorState;
   if (!tagColorLoading) tagColorLoading = (async () => {
     let state = { version: 1, libraries: {} };
+    const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
     try {
-      const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
       const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
       if (parsed?.version === 1 && parsed.libraries && typeof parsed.libraries === 'object') state = parsed;
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // First run: no colours yet.
+      } else if (error instanceof SyntaxError) {
+        // A damaged file must not disable tag colours for good; keep it aside
+        // for inspection and start over.
+        logFault('main', '标签颜色文件已损坏，已另存并重新开始', error);
+        await fsp.rename(file, `${file}.corrupt-${Date.now()}`).catch(() => {});
+      } else throw error;
+    }
     tagColorState = state;
     return state;
   })().finally(() => { tagColorLoading = null; });
@@ -207,13 +235,22 @@ async function getTagColors(libraryPath) {
   return structuredClone(state.libraries[path.resolve(libraryPath)] || {});
 }
 
+const TAG_COLOR_LIMIT = 5000;
+
 async function setTagColor(libraryPath, tag, color) {
+  tag = typeof tag === 'string' ? tag.trim() : '';
+  if (!tag || tag.length > 255 || ['__proto__', 'constructor', 'prototype'].includes(tag)) throw new Error('标签名称无效');
+  if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('颜色需为六位十六进制，例如 #0072ef');
   const operation = tagColorQueue.then(async () => {
     const state = structuredClone(await loadTagColors());
     const key = path.resolve(libraryPath);
     state.libraries[key] ||= {};
-    if (color) state.libraries[key][tag] = color;
-    else delete state.libraries[key][tag];
+    const colors = state.libraries[key];
+    if (color && !Object.prototype.hasOwnProperty.call(colors, tag) && Object.keys(colors).length >= TAG_COLOR_LIMIT) {
+      throw new Error(`每个资源库最多保存 ${TAG_COLOR_LIMIT} 个标签颜色`);
+    }
+    if (color) colors[tag] = color;
+    else delete colors[tag];
     const file = path.join(app.getPath('userData'), 'state', 'tag-colors.json');
     await fsp.mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.tmp`;
@@ -235,23 +272,24 @@ const importPaths = createImportService({
   itemCache: hub.itemCache
 });
 const creationQueues = new Map();
+let copyRunSequence = 0;
 
 // Eagle answers duplicates only after the whole upload queue drains, so a
 // per-batch polling window misses late dialogs in a large copy. The keeper
 // stays resident for the entire run and answers every duplicate that targets a
 // folder this run created.
-async function startDuplicateKeeper({ libraryPath, folderIds = [], ids = [], ttlMs = 900000 }) {
+async function startDuplicateKeeper({ libraryPath, runId, folderIds = [], ids = [], ttlMs = 900000 }) {
   await hub.ensureLibraryPath(libraryPath);
   await client.request('/api/script/inject', { method: 'POST', body: {
-    script: startKeepingCopiesScript({ libraryPath, folderIds, ids, ttlMs })
+    script: startKeepingCopiesScript({ libraryPath, runId, folderIds, ids, ttlMs })
   } });
 }
 
-async function stopDuplicateKeeper(libraryPath) {
+async function stopDuplicateKeeper(libraryPath, runId) {
   if (!libraryPath) return;
   try {
     await client.request('/api/script/inject', { method: 'POST', body: {
-      script: stopKeepingCopiesScript({ libraryPath })
+      script: stopKeepingCopiesScript({ libraryPath, runId })
     } });
   } catch {}
 }
@@ -259,22 +297,23 @@ async function stopDuplicateKeeper(libraryPath) {
 // A folder copy must not depend on when Eagle decides its duplicates: files
 // aimed at the folders this copy just created are added directly, and anything
 // Eagle still holds back is restored into its visible list before we verify.
-async function startCopyImportHandling({ libraryPath, folderIds = [] }) {
+// Each copy passes its own runId so concurrent copies never clear each other.
+async function startCopyImportHandling({ libraryPath, runId, folderIds = [] }) {
   await hub.ensureLibraryPath(libraryPath);
   await client.request('/api/script/inject', { method: 'POST', body: {
-    script: startCopyImportModeScript({ libraryPath, folderIds })
+    script: startCopyImportModeScript({ libraryPath, runId, folderIds })
   } });
-  await startDuplicateKeeper({ libraryPath, folderIds });
+  await startDuplicateKeeper({ libraryPath, runId, folderIds });
 }
 
-async function stopCopyImportHandling(libraryPath) {
+async function stopCopyImportHandling(libraryPath, runId) {
   if (!libraryPath) return;
   try {
     await client.request('/api/script/inject', { method: 'POST', body: {
-      script: stopCopyImportModeScript({ libraryPath })
+      script: stopCopyImportModeScript({ libraryPath, runId })
     } });
   } catch {}
-  await stopDuplicateKeeper(libraryPath);
+  await stopDuplicateKeeper(libraryPath, runId);
 }
 
 function enqueueCreation(key, operation) {
@@ -325,12 +364,14 @@ function siblingFolders(folders, parentId) {
   return findFolder(folders, parentId)?.children || [];
 }
 
-async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin = null, decisionTimeoutMs = 12000, itemWaitMs = null }) {
+// Reads what a folder copy would take: the subtree and every item filed in
+// it, in each folder's Eagle order. Shared by the copy and its confirmation.
+async function collectFolderCopySource({ sourceId, parentId = null, libraryPath }) {
   await hub.ensureLibraryPath(libraryPath);
   const folders = await client.folderTree();
   const source = findFolder(folders, sourceId);
-  if (!source) throw new Error('来源文件夹已不存在，请刷新后重新拖动');
-  if (parentId && !findFolder(folders, parentId)) throw new Error('目标文件夹已不存在，请刷新后重新拖动');
+  if (!source) throw new Error('来源文件夹已不存在，请刷新后重新选择');
+  if (parentId && !findFolder(folders, parentId)) throw new Error('目标文件夹已不存在，请刷新后重新选择');
   const sourceIds = new Set();
   const walk = (folder, parent) => {
     sourceIds.add(folder.id);
@@ -338,8 +379,6 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   };
   const tree = walk(source, null);
   if (sourceIds.has(parentId)) throw new Error('不能复制到自身或其子文件夹');
-  const sourceFolders = new Map();
-  (function collect(node) { sourceFolders.set(node.folder.id, node.folder); node.children.forEach(collect); })(tree);
   const memberships = new Map();
   const folderItemOrder = new Map();
   for (const folderId of sourceIds) {
@@ -359,10 +398,24 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     }
     folderItemOrder.set(folderId, orderedIds);
   }
+  return { tree, sourceIds, memberships, folderItemOrder };
+}
+
+// Read-only numbers for the copy confirmation (F-03): nothing is written.
+async function planFolderCopy({ sourceId, parentId = null, libraryPath }) {
+  const { sourceIds, memberships } = await collectFolderCopySource({ sourceId, parentId, libraryPath });
+  return { ok: true, folderCount: sourceIds.size, itemCount: memberships.size };
+}
+
+async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin = null, decisionTimeoutMs = 12000, itemWaitMs = null, anchorId = null, position = null }) {
+  const { tree, sourceIds, memberships, folderItemOrder } = await collectFolderCopySource({ sourceId, parentId, libraryPath });
+  const sourceFolders = new Map();
+  (function collect(node) { sourceFolders.set(node.folder.id, node.folder); node.children.forEach(collect); })(tree);
   const originals = await resolveItemFiles([...memberships.keys()]);
   const missing = originals.filter(entry => !entry.filePath);
   if (missing.length) throw new Error(`${missing.length} 个素材原文件无法读取，未开始复制文件夹`);
   const created = new Map();
+  const createdParents = new Map();
   const copiedItemsBySourceId = new Map();
   const copiedItemPatches = [];
   let copiedItems = 0;
@@ -382,6 +435,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     const id = result?.id || result?.folder?.id;
     if (!id) throw new Error(`复制文件夹“${name}”后未获得新文件夹 ID`);
     created.set(node.folder.id, id);
+    createdParents.set(id, targetParent);
     if (node.folder.iconColor) await client.moveFolder(id, { parent: targetParent, iconColor: node.folder.iconColor });
     for (const child of node.children) await create(child);
   };
@@ -401,6 +455,21 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     for (const child of node.children) await orderChildren(child);
   };
   await orderChildren(tree);
+  // A drop on a sibling's insertion line asks for the copy next to it.
+  let placed = null;
+  if (anchorId && ['before', 'after'].includes(position)) {
+    placed = false;
+    await hub.ensureLibraryPath(libraryPath);
+    const siblingIds = siblingFolders(await client.folderTree(), parentId).map(folder => folder.id);
+    const copyId = created.get(sourceId);
+    if (siblingIds.includes(anchorId) && siblingIds.includes(copyId)) {
+      const ids = siblingIds.filter(id => id !== copyId);
+      ids.splice(ids.indexOf(anchorId) + (position === 'after' ? 1 : 0), 0, copyId);
+      placed = await setFolderSiblingOrder({
+        client, ensureLibraryPath: value => hub.ensureLibraryPath(value), libraryPath, parent: parentId, ids
+      });
+    }
+  }
   const originalsById = new Map(originals.map(original => [original.id, original]));
   const finalizeLocalCopies = async () => {
     const folderMap = Object.fromEntries(created);
@@ -430,10 +499,19 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
   // Folder tags are the one property the folder API can write directly.
   const copyFolderTags = async () => {
     for (const [sourceId, targetId] of created) {
-      const tags = sourceFolders.get(sourceId)?.tags;
+      const source = sourceFolders.get(sourceId);
+      const tags = source?.tags;
       if (!Array.isArray(tags) || !tags.length) continue;
       await hub.ensureLibraryPath(libraryPath);
-      await client.updateFolderProperties(targetId, { tags: structuredClone(tags) });
+      // Eagle's folder update moves a folder to the root unless its parent is
+      // repeated and clears its colour unless iconColor is, which would pull a
+      // tagged subfolder copy out of the tree and drop its colour.
+      const parent = createdParents.get(targetId);
+      await client.updateFolderProperties(targetId, {
+        tags: structuredClone(tags),
+        ...(parent ? { parent } : {}),
+        ...(source.iconColor ? { iconColor: source.iconColor } : {})
+      });
     }
   };
   // Eagle's own import pipeline can still write an item's metadata shortly
@@ -551,7 +629,7 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
     await finalizeLocalCopies();
     await hub.ensureLibraryPath(libraryPath);
     await hub.connect({ notify: true, origin });
-    return { ok: true, id: created.get(source.id), folderCount: created.size, copiedItems: 0,
+    return { ok: true, id: created.get(sourceId), folderCount: created.size, copiedItems: 0, placed,
       folderMap: Object.fromEntries(created), itemMap: {} };
   }
   // Group by the first source folder that owns each item. Eagle's import API
@@ -569,8 +647,18 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       groups.get(target).push(original);
     }
   }
-  await startCopyImportHandling({ libraryPath, folderIds: [...created.values()] });
+  const copyRunId = `copy-${process.pid}-${++copyRunSequence}`;
+  let copyRenewTimer = null;
   try {
+  // Inside the try: if the duplicate keeper fails to start, finally still
+  // restores Eagle's import mode instead of leaving it for the 15-min TTL (B4-09).
+  await startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] });
+  // The Eagle-side patches expire after 15 minutes; a long copy renews them
+  // (same run id, so the run is replaced, not stacked) until it ends (E-08).
+  copyRenewTimer = setInterval(() => {
+    startCopyImportHandling({ libraryPath, runId: copyRunId, folderIds: [...created.values()] }).catch(() => {});
+  }, 10 * 60 * 1000);
+  copyRenewTimer.unref?.();
   for (const group of groups.values()) {
     await hub.ensureLibraryPath(libraryPath);
     const imported = await importPaths({
@@ -617,6 +705,10 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       const stillMissing = importedIds.filter(id => !ready.some(item => item.id === id));
       throw new Error(`素材“${stillMissing[0] || importedIds[0]}”尚未确认保留两份`);
     }
+    // One write of the supplemental list per group instead of one per item,
+    // which rewrote the whole file N times (S-14).
+    const supplementalIds = [];
+    try {
     for (let index = 0; index < group.length; index += 1) {
       const original = group[index];
       const id = importedIds[index];
@@ -632,17 +724,21 @@ async function copyFolderTree({ sourceId, parentId = null, libraryPath, origin =
       const targets = memberships.get(original.id).map(folderId => created.get(folderId));
       copiedItems++;
       if (targets.length > 1) await hub.mutateSet({ id, field: 'folders', add: targets.slice(1), libraryPath, origin });
-      await getSupplementalItemStore().add(libraryPath, [id]);
+      supplementalIds.push(id);
+    }
+    } finally {
+      if (supplementalIds.length) await getSupplementalItemStore().add(libraryPath, supplementalIds);
     }
   }
   await cloneCopiedState();
   await finalizeLocalCopies();
   await hub.ensureLibraryPath(libraryPath);
   await hub.connect({ notify: true, origin });
-  return { ok: true, id: created.get(source.id), folderCount: created.size, copiedItems,
+  return { ok: true, id: created.get(sourceId), folderCount: created.size, copiedItems, placed,
     folderMap: Object.fromEntries(created), itemMap: Object.fromEntries(copiedItemsBySourceId) };
   } finally {
-    await stopCopyImportHandling(libraryPath);
+    clearInterval(copyRenewTimer);
+    await stopCopyImportHandling(libraryPath, copyRunId);
   }
   } catch (error) {
     if (copyStarted) {
@@ -675,10 +771,11 @@ async function hydrateSupplementalItems(libraryPath, { notify = false, attempt =
   const current = () => hub.itemReadIsCurrent(read) && hub.library?.path && path.resolve(hub.library.path) === expectedPath;
   if (!current()) return [];
   const ids = await getSupplementalItemStore().get(libraryPath);
-  const loaded = await Promise.all(ids.map(async id => {
+  // Bounded: a long list must not open thousands of requests at once (S-14).
+  const loaded = await mapWithConcurrency(ids, 8, async id => {
     try { return { id, item: await client.getItem(id) }; }
     catch (error) { return { id, error }; }
-  }));
+  });
   if (!current()) return [];
   await hub.ensureLibraryPath(libraryPath);
   if (!current()) return [];
@@ -720,7 +817,10 @@ function broadcast(channel, payload) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
   // Web clients are additional "windows": every hub broadcast fans out to the
-  // /events WebSocket so browsers stay in the same live-sync loop.
+  // /events WebSocket so browsers stay in the same live-sync loop. Native drag
+  // sessions are desktop-only; browsers track their own HTML5 drags, and their
+  // tokens would collide with these.
+  if (channel === 'item:drag-state') return;
   webServer?.broadcast(channel, payload);
 }
 
@@ -758,6 +858,17 @@ async function saveWebAccessState(state) {
   const temporary = `${file}.${process.pid}.tmp`;
   await fsp.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   await fsp.rename(temporary, file);
+}
+
+// Eagle's own pdf.js viewer inside its app.asar (Electron's fs reads into
+// asar archives). Looked up per request so an Eagle update or move is seen;
+// null when no installed Eagle has it, and web clients then fall back.
+function eagleViewerRootForWeb() {
+  for (const appPath of ['/Applications/Eagle.app', path.join(os.homedir(), 'Applications', 'Eagle.app')]) {
+    const root = path.join(appPath, 'Contents', 'Resources', 'app.asar', 'app');
+    if (fs.existsSync(path.join(root, 'pdf-viewer', 'web', 'viewer.html'))) return root;
+  }
+  return null;
 }
 
 async function resolveMediaPathForWeb(kind, id) {
@@ -815,9 +926,10 @@ async function applyWebAccess() {
     srcDir: path.join(__dirname, 'src'),
     invoke: invokeWebRPC,
     resolveMediaPath: resolveMediaPathForWeb,
+    eagleViewerRoot: eagleViewerRootForWeb,
     accessKey: state.key,
     requireKey: state.requireKey !== false,
-    uploadImport: importPaths,
+    uploadImport: importWithDuplicateDecision,
     ensureLibraryPath: libraryPath => hub.ensureLibraryPath(libraryPath),
     uploadDir: path.join(app.getPath('userData'), 'temp', 'web-uploads'),
     onClientGone: id => hub.removeWatcher(id),
@@ -868,7 +980,7 @@ async function alignCreatedLocalOrder(libraryPath, parent, id, siblings, kind = 
       ids: [id], knownIds: [...new Set([...order.ids, ...siblings.map(folder => folder.id), id])],
       anchorId, position: 'before' });
     if (result.ok) {
-      broadcast('manual-order:changed', { libraryPath, scope, kind, orders: result.orders });
+      broadcast('manual-order:changed', { libraryPath, scope, kind, orders: { [key]: result.order } });
       return;
     }
   }
@@ -877,8 +989,15 @@ async function alignCreatedLocalOrder(libraryPath, parent, id, siblings, kind = 
 
 hub.on('status', payload => broadcast('hub:status', payload));
 hub.on('library-changed', payload => {
-  duplicateIndex.invalidate();
-  duplicateIndex.warm(payload.library?.path).catch(() => {});
+  // Only a library switch rereads every item; other changes refresh the
+  // duplicate index incrementally (E-04).
+  if (payload.libraryChanged) {
+    duplicateIndex.invalidate();
+    duplicateIndex.warm(payload.library?.path).catch(() => {});
+  } else {
+    duplicateIndex.markStale(payload.library?.path);
+    scheduleDuplicateIndexWarm(payload.library?.path, 250);
+  }
   trashScans.invalidateAll({ abort: payload.libraryChanged });
   if (payload.libraryChanged) {
     thumbnailCache.clear();
@@ -893,14 +1012,25 @@ hub.on('items-changed', payload => {
   // operation.  Rebuilding the index synchronously before every import made
   // the whole images directory an avoidable foreground cost.
   if (payload.source === 'eagle' && payload.libraryPath) {
-    duplicateIndex.invalidate(payload.libraryPath);
+    duplicateIndex.markStale(payload.libraryPath);
     scheduleDuplicateIndexWarm(payload.libraryPath, 250);
   }
-  trashScans.invalidateAll({ abort: true });
+  // Item changes let a running scan finish for the readers already waiting
+  // on it (later readers start afresh); aborting on every change kept a busy
+  // large library from ever finishing (E-20). Only a library switch aborts.
+  trashScans.invalidateAll();
   broadcast('hub:items-changed', payload);
 });
+// Item tag edits reach every window's 标签管理 and suggestions: Eagle's own
+// tag list does not pick up a new name until it rebinds (V-01).
+hub.on('item-tags-touched', ({ names, libraryPath }) => {
+  if (!libraryPath) return;
+  tagTally.note(libraryPath, names);
+  clearTimeout(tagTallyTimer);
+  tagTallyTimer = setTimeout(() => broadcast('tag-data:changed', { libraryPath, reason: 'item-tags' }), 300);
+});
 hub.on('query-invalidated', payload => {
-  trashScans.invalidateAll({ abort: true });
+  trashScans.invalidateAll();
   broadcast('hub:query-invalidated', payload);
 });
 hub.on('supplemental-indexed', payload => {
@@ -931,15 +1061,52 @@ function createWindow(initialState = null) {
   const webContentsId = window.webContents.id;
   window.__allowClose = false;
   window.__closePromptPending = false;
+  window.__rendererGone = false;
   window.__initialState = initialState;
   window.on('close', event => {
-    if (window.__allowClose || window.webContents.isDestroyed()) return;
+    if (window.__allowClose || window.__rendererGone || window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
     event.preventDefault();
     if (window.__closePromptPending) return;
     window.__closePromptPending = true;
     window.webContents.send('command:request-close');
+    armCloseWatchdog(window);
+  });
+  // A renderer that crashed, hung or never finished starting cannot answer a
+  // close request; it must not keep the window (and ⌘Q) hostage.
+  window.webContents.on('render-process-gone', () => {
+    window.__rendererGone = true;
+    const pending = window.__closePromptPending;
+    clearCloseWatchdog(window);
+    window.__closePromptPending = false;
+    if (pending && !window.isDestroyed()) forceCloseWindow(window);
+  });
+  window.webContents.on('did-start-loading', () => {
+    window.__rendererGone = false;
+    window.__closePromptPending = false;
+    clearCloseWatchdog(window);
+  });
+  // Once the renderer approved the close, a beforeunload guard must not
+  // silently cancel it and leave every later close stuck behind it.
+  window.webContents.on('will-prevent-unload', event => {
+    if (window.__allowClose) {
+      event.preventDefault();
+      return;
+    }
+    // A reload (⌘⇧R) blocked by unsaved edits used to do nothing at all (H-13).
+    // Closing asks through the renderer first and arrives with __allowClose.
+    if (window.isDestroyed() || window.__closePromptPending) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'warning',
+      buttons: ['重新载入', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      message: '还有未保存的修改，仍要重新载入窗口吗？',
+      detail: '检查器和 TXT 的草稿已在本机备份，重新载入后会提示恢复；正在保存的修改可能尚未写入 Eagle。'
+    });
+    if (choice === 0) event.preventDefault();
   });
   window.on('closed', () => {
+    clearCloseWatchdog(window);
     windows.delete(window);
     hub.removeWatcher(webContentsId);
   });
@@ -952,31 +1119,194 @@ function createWindow(initialState = null) {
     // -3 (ERR_ABORTED) fires on ordinary in-app navigation cancellations.
     if (isMainFrame && code !== -3) logFault(`renderer#${webContentsId}`, `窗口页面加载失败（${code} ${description}）：${url}`);
   });
+  // The bridge stays injected across navigations, so the window must never
+  // leave the app page (a link inside a PDF preview, a dropped URL).
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isMainPageURL(url)) event.preventDefault();
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
   window.loadFile(path.join(__dirname, 'src', 'index.html'));
   return window;
 }
 
+const CLOSE_REPLY_TIMEOUT_MS = 5000;
+
+function clearCloseWatchdog(window) {
+  clearTimeout(window.__closeWatchdog);
+  window.__closeWatchdog = null;
+}
+
+function forceCloseWindow(window) {
+  window.__allowClose = true;
+  window.destroy();
+  if (quitting) setImmediate(() => app.quit());
+}
+
+function cancelPendingQuit() {
+  quitting = false;
+  updater?.quitCancelled();
+}
+
+function armCloseWatchdog(window) {
+  clearCloseWatchdog(window);
+  window.__closeWatchdog = setTimeout(async () => {
+    window.__closeWatchdog = null;
+    if (window.isDestroyed() || !window.__closePromptPending) return;
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'warning',
+      buttons: ['强制关闭', '继续等待'],
+      defaultId: 1,
+      cancelId: 1,
+      message: '窗口没有响应',
+      detail: '强制关闭会丢弃这个窗口里尚未保存的修改。'
+    });
+    if (window.isDestroyed()) return;
+    if (response === 0) {
+      forceCloseWindow(window);
+      return;
+    }
+    window.__closePromptPending = false;
+    cancelPendingQuit();
+  }, CLOSE_REPLY_TIMEOUT_MS);
+}
+
+// Read in the focused page before a menu command runs. A MultiView window
+// answers with eagleMVMenuFocus(); any other page (the update window) gets
+// Eagle's own field test and keeps plain text copy and select-all.
+const MENU_FOCUS_PROBE = `(() => {
+  if (typeof eagleMVMenuFocus === 'function') return eagleMVMenuFocus();
+  const element = document.activeElement;
+  const editable = Boolean(element && (element.matches('input, textarea, select, iframe, webview') || element.isContentEditable));
+  return { editable, nativeCopy: true, nativeSelectAll: true };
+})()`;
+
+async function menuFocus(window) {
+  if (!window || window.isDestroyed()) return null;
+  try {
+    return await window.webContents.executeJavaScript(MENU_FOCUS_PROBE, true);
+  } catch {
+    return null;
+  }
+}
+
+// Eagle wraps every menu shortcut so that one typed into a text field does
+// nothing (app.bundle.js shouldIgnoreShortcut); a click on the item still
+// runs it, and a failed check runs it too. Items marked editAware decide for
+// themselves: copy, select-all and undo act on the field when it has focus.
+function ignoreShortcutsWhileTyping(template) {
+  const wrap = item => {
+    const editAware = item.editAware;
+    delete item.editAware;
+    if (item.accelerator && typeof item.click === 'function' && !editAware) {
+      const click = item.click;
+      item.click = async (menuItem, window, event) => {
+        if (event?.triggeredByAccelerator && window) {
+          const focus = await menuFocus(window);
+          if (focus?.editable) return;
+        }
+        return click(menuItem, window, event);
+      };
+    }
+    if (Array.isArray(item.submenu)) item.submenu.forEach(wrap);
+  };
+  template.forEach(wrap);
+  return template;
+}
+
+// Copy and select-all follow the focus the way ⌘C and ⌘A do in the page:
+// in a field (or over selected text) they edit text, otherwise they copy the
+// selected files and select every item in the view (P3-02).
+async function runEditCommand(window, kind) {
+  if (!window || window.isDestroyed()) return;
+  const focus = await menuFocus(window);
+  const native = !focus || (kind === 'copy' ? focus.nativeCopy : focus.nativeSelectAll);
+  if (native) {
+    if (kind === 'copy') window.webContents.copy();
+    else window.webContents.selectAll();
+    return;
+  }
+  window.webContents.send('command:menu', { command: kind === 'copy' ? 'copy-items' : 'select-all' });
+}
+
+// The menu bar is shared by every window; the layout ticks show the focused
+// window's active pane, as reported by its renderer.
+const MENU_VIEW_MODES = [['waterfall', '瀑布流'], ['justified', '自适应'], ['grid', '网格'], ['list', '列表']];
+const MENU_PANE_LAYOUTS = [
+  ['single', '单栏', 'CmdOrCtrl+1'], ['vertical2', '左右两栏', 'CmdOrCtrl+2'], ['horizontal2', '上下两栏'],
+  ['grid4', '四格'], ['leftStack', '左大右上下'], ['rightStack', '左上下右大'], ['topStack', '上大下左右'],
+  ['bottomStack', '上左右下大'], ['horizontal3', '三行'], ['vertical3', '三栏', 'CmdOrCtrl+3'],
+  ['vertical4', '四栏', 'CmdOrCtrl+4'], ['horizontal4', '四行']
+];
+const menuStates = new WeakMap();
+const RELEASES_PAGE = 'https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases';
+
+function applyMenuState(window) {
+  const menu = Menu.getApplicationMenu();
+  if (!menu || !window || window.isDestroyed()) return;
+  const current = menuStates.get(window.webContents);
+  if (!current) return;
+  const check = id => {
+    const item = menu.getMenuItemById(id);
+    if (item) item.checked = true;
+  };
+  check(`view-mode-${current.viewMode}`);
+  check(`pane-layout-${current.paneLayout}`);
+}
+
+function setupMenuState() {
+  onRPC('menu:state', (event, report) => {
+    const viewMode = MENU_VIEW_MODES.some(([mode]) => mode === report?.viewMode) ? report.viewMode : null;
+    const paneLayout = MENU_PANE_LAYOUTS.some(([layout]) => layout === report?.paneLayout) ? report.paneLayout : null;
+    menuStates.set(event.sender, { viewMode, paneLayout });
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window?.isFocused()) applyMenuState(window);
+  });
+  app.on('browser-window-focus', (_event, window) => applyMenuState(window));
+}
+
 function setupMenu() {
+  const send = (command, payload = {}) => (_item, window) => window?.webContents.send('command:menu', { command, ...payload });
+  const openView = kind => (_item, window) => window?.webContents.send('command:open-view', { kind });
   const template = [
     {
       label: identity.name,
       submenu: [
-        { role: 'about' },
+        { role: 'about', label: `关于 ${identity.name}` },
         {
-          label: '检查更新…',
+          label: '检查更新',
           enabled: !identity.profile,
           click: () => checkForUpdates({ manual: true })
         },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
+        {
+          label: 'Web 访问…',
+          click: (_item, window) => window?.webContents.send('command:web-access')
+        },
         { type: 'separator' },
-        { role: 'quit' }
+        { role: 'services', label: '服务' },
+        { type: 'separator' },
+        { role: 'hide', label: `隐藏 ${identity.name}` },
+        { role: 'hideOthers', label: '隐藏其它' },
+        { type: 'separator' },
+        { role: 'quit', label: '退出' }
+      ]
+    },
+    {
+      label: '资源库',
+      submenu: [
+        { label: '切换资源库', accelerator: 'CmdOrCtrl+L', click: send('switch-library') },
+        { type: 'separator' },
+        { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' }
       ]
     },
     {
       label: '文件',
       submenu: [
+        { label: '新建…', accelerator: 'CmdOrCtrl+N', click: send('new-menu') },
+        { type: 'separator' },
         { label: '新建文件夹', accelerator: 'Alt+N', click: (_item, window) => window?.webContents.send('command:create-folder') },
         { label: '新建 TXT', accelerator: 'Alt+Shift+N', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'txt' }) },
         {
@@ -988,44 +1318,166 @@ function setupMenu() {
             { label: 'SVG', click: (_item, window) => window?.webContents.send('command:create-document', { type: 'svg' }) }
           ]
         },
-        { label: '新建智能文件夹…', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
+        { label: '新建智能文件夹…', accelerator: 'CmdOrCtrl+Shift+Alt+N', click: (_item, window) => window?.webContents.send('command:create-smart-folder') },
         { type: 'separator' },
         {
-          label: '新窗口',
+          label: '新建窗口',
           accelerator: 'CmdOrCtrl+Alt+N',
           click: () => windowRouter.openDefault().catch(error => logFault('window', '无法新建窗口', error))
         },
-        { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
-        { label: 'ArtStation 站点导入…', click: (_item, window) => window?.webContents.send('command:site-import') },
         { type: 'separator' },
-        { role: 'close', label: '关闭窗口' }
+        { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
+        { label: '导入本地文件夹…', click: send('import-folders') },
+        {
+          label: '导入其它',
+          submenu: [
+            { label: 'ArtStation', accelerator: 'CmdOrCtrl+Shift+Alt+S', click: (_item, window) => window?.webContents.send('command:site-import') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '导出到计算机', accelerator: 'CmdOrCtrl+E', click: send('export') }
       ]
     },
     {
       label: '编辑',
       submenu: [
-        { label: '撤销', accelerator: 'CmdOrCtrl+Z', click: (_item, window) => window?.webContents.send('command:undo-delete') },
-        { role: 'redo', label: '重做' },
-        { type: 'separator' },
         { label: '重命名', accelerator: 'CmdOrCtrl+R', click: (_item, window) => window?.webContents.send('command:rename') },
         { type: 'separator' },
+        { role: 'redo', label: '重做' },
+        { label: '撤销', accelerator: 'CmdOrCtrl+Z', editAware: true, click: (_item, window) => window?.webContents.send('command:undo-delete') },
         { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
+        { label: '复制', accelerator: 'CmdOrCtrl+C', editAware: true, click: (_item, window) => runEditCommand(window, 'copy') },
         { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' }
+        { label: '复制文件路径', accelerator: 'CmdOrCtrl+Alt+C', click: send('copy-path') },
+        { label: '复制名称', click: send('copy-name') },
+        { type: 'separator' },
+        { label: '创建副本', accelerator: 'CmdOrCtrl+D', click: send('duplicate') },
+        { type: 'separator' },
+        { label: '刷新缩略图', accelerator: 'CmdOrCtrl+Alt+R', click: send('thumbnail', { operation: 'refresh' }) },
+        { label: '自定义缩略图（选择文件）', accelerator: 'CmdOrCtrl+Alt+T', click: send('thumbnail', { operation: 'file' }) },
+        { label: '自定义缩略图（从剪贴板）', accelerator: 'CmdOrCtrl+Shift+Alt+T', click: send('thumbnail', { operation: 'clipboard' }) },
+        { label: '全选', accelerator: 'CmdOrCtrl+A', editAware: true, click: (_item, window) => runEditCommand(window, 'selectAll') },
+        { type: 'separator' },
+        {
+          label: '编辑文件夹',
+          submenu: [
+            { label: '移动文件夹', click: send('move-current-folder') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '从文件夹中移除', accelerator: 'CmdOrCtrl+Shift+Backspace', click: send('remove-from-folder') },
+        { label: '丢到回收站', accelerator: 'CmdOrCtrl+Backspace', click: send('trash') }
+      ]
+    },
+    {
+      label: '查找',
+      submenu: [
+        { label: '搜索…', accelerator: 'CmdOrCtrl+F', click: send('search') },
+        { label: '在“全部”搜索…', accelerator: 'CmdOrCtrl+Alt+F', click: send('search-all') },
+        { type: 'separator' },
+        {
+          label: '筛选器',
+          submenu: [
+            { label: '打开筛选器', accelerator: 'CmdOrCtrl+Shift+F', click: send('toggle-filter') },
+            { label: '重置筛选器', accelerator: 'CmdOrCtrl+Shift+Alt+F', click: send('reset-filter') }
+          ]
+        },
+        { type: 'separator' },
+        { label: '添加至文件夹…', accelerator: 'CmdOrCtrl+Shift+J', click: send('folder-picker', { action: 'add-folder' }) }
+      ]
+    },
+    {
+      label: '整理',
+      submenu: [
+        { label: '添加标签', accelerator: 'CmdOrCtrl+T', click: send('add-tag') },
+        { type: 'separator' },
+        { label: '添加文件夹', click: send('folder-picker', { action: 'add-folder' }) },
+        { label: '添加至上次使用的文件夹…', click: send('last-folder') },
+        { label: '移动到文件夹…', click: send('folder-picker', { action: 'move-folder' }) },
+        { type: 'separator' },
+        { label: '移除评分 (0)', click: send('rating', { rating: 0 }) },
+        ...[1, 2, 3, 4, 5].map(rating => ({ label: `${'★'.repeat(rating)} (${rating})`, click: send('rating', { rating }) })),
+        { type: 'separator' },
+        { label: '复制标签', accelerator: 'CmdOrCtrl+Shift+C', click: send('copy-tags') },
+        { label: '粘贴标签', accelerator: 'CmdOrCtrl+Shift+V', click: send('paste-tags') },
+        { label: '清除标签', click: send('clear-tags') },
+        { type: 'separator' },
+        { label: '置顶 / 取消置顶', click: send('toggle-pin') }
       ]
     },
     {
       label: '显示',
       submenu: [
-        { role: 'reload', label: '重新载入窗口', accelerator: 'CmdOrCtrl+Shift+R' },
-        { role: 'togglefullscreen', label: '全屏' },
+        { label: '全部', click: openView('all') },
+        { label: '未分类', click: openView('unfiled') },
+        { label: '未标签', click: openView('untagged') },
+        { label: '最近使用', click: openView('recent') },
+        { label: '随机模式', click: openView('random') },
+        { label: '标签管理', click: openView('tags') },
+        { label: '回收站', click: openView('trash') },
         { type: 'separator' },
+        ...MENU_VIEW_MODES.map(([mode, label]) => ({
+          id: `view-mode-${mode}`,
+          label,
+          type: 'radio',
+          click: (_item, window) => {
+            window?.webContents.send('command:menu', { command: 'view-mode', mode });
+            applyMenuState(window);
+          }
+        })),
         {
-          label: 'Web 访问…',
-          click: (_item, window) => window?.webContents.send('command:web-access')
+          label: '分栏布局',
+          submenu: MENU_PANE_LAYOUTS.map(([layout, label, accelerator]) => ({
+            id: `pane-layout-${layout}`,
+            label,
+            type: 'radio',
+            ...(accelerator ? { accelerator } : {}),
+            click: (_item, window) => {
+              window?.webContents.send('command:menu', { command: 'pane-layout', layout });
+              applyMenuState(window);
+            }
+          }))
         },
         { type: 'separator' },
+        { label: '滚动到开头', click: send('scroll', { key: 'Home' }) },
+        { label: '滚动到结尾', click: send('scroll', { key: 'End' }) },
+        { label: '向上滚动一屏', click: send('scroll', { key: 'PageUp' }) },
+        { label: '向下滚动一屏', click: send('scroll', { key: 'PageDown' }) },
+        { type: 'separator' },
+        { label: '放大', accelerator: 'CmdOrCtrl+=', click: send('zoom', { step: 1 }) },
+        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: send('zoom', { step: -1 }) },
+        { label: '原始大小', accelerator: 'CmdOrCtrl+0', click: send('zoom', { step: 0 }) },
+        { label: '黑白预览', accelerator: 'CmdOrCtrl+Alt+G', click: send('grayscale') },
+        { type: 'separator' },
+        { label: '在新窗口打开', accelerator: 'CmdOrCtrl+O', click: send('open-window') },
+        { label: '在默认应用打开', click: send('open-default') },
+        { label: '使用其他应用程序打开', click: send('open-other') },
+        { label: '在访达中打开', accelerator: 'CmdOrCtrl+Enter', click: send('finder') },
+        { label: '在浏览器打开链接', click: send('open-url') },
+        { type: 'separator' },
+        { label: '左栏', accelerator: 'CmdOrCtrl+Shift+L', click: send('toggle-panel', { panel: 'sidebar' }) },
+        { label: '右栏', accelerator: 'CmdOrCtrl+Shift+I', click: send('toggle-panel', { panel: 'inspector' }) },
+        { label: '左栏 / 右栏', click: send('toggle-panel', { panel: 'both' }) },
+        { label: '显示/隐藏名称', accelerator: 'CmdOrCtrl+Alt+4', click: send('card-display', { key: 'name' }) },
+        { label: '显示/隐藏尺寸', accelerator: 'CmdOrCtrl+Alt+5', click: send('card-display', { key: 'meta' }) },
+        { label: '显示/隐藏标注', accelerator: 'CmdOrCtrl+Alt+6', click: send('card-display', { key: 'annotation' }) },
+        { label: '显示子文件夹内容', accelerator: 'CmdOrCtrl+Alt+7', click: send('card-display', { key: 'subfolderContent' }) }
+      ]
+    },
+    {
+      label: '窗口',
+      role: 'window',
+      submenu: [
+        { role: 'togglefullscreen', label: '切换全屏' },
+        { role: 'minimize', label: '最小化' },
+        { role: 'close', label: '关闭窗口' }
+      ]
+    },
+    {
+      label: '帮助',
+      role: 'help',
+      submenu: [
+        { label: '查看更新日志', click: () => shell.openExternal(RELEASES_PAGE) },
         {
           label: '打开错误日志文件夹',
           click: async () => {
@@ -1034,10 +1486,10 @@ function setupMenu() {
           }
         }
       ]
-    },
-    { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }
+    }
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(ignoreShortcutsWhileTyping(template)));
+  for (const window of BrowserWindow.getAllWindows()) if (window.isFocused()) applyMenuState(window);
 }
 
 let updater = null;
@@ -1107,6 +1559,13 @@ function showUpdateWindow() {
     if (updateWindow === window) updateWindow = null;
     const controller = getUpdater();
     if (['latest', 'error'].includes(controller.state.phase)) controller.setState({ phase: 'idle' });
+    // Closing a ready update (Esc, the close box) is 稍后: install on quit
+    // instead of throwing the download away. Closing an offer is 稍后提醒:
+    // back to idle so the next scheduled check can remind again (F-09).
+    else if (controller.state.phase === 'ready') controller.requestInstall({ relaunch: false });
+    else if (controller.state.phase === 'available') controller.setState({ phase: 'idle' });
+    // Closing the window of a manual check is its 取消.
+    else if (controller.state.phase === 'checking') controller.cancelCheck();
   });
   window.loadFile(path.join(__dirname, 'src', 'update.html'));
   return window;
@@ -1152,6 +1611,7 @@ function setupUpdateIPC() {
         return state;
       }
       case 'cancel': controller.cancelDownload(); return null;
+      case 'cancel-check': controller.cancelCheck(); closeUpdateWindow(); return null;
       case 'skip': await controller.skip(); closeUpdateWindow(); return null;
       case 'later':
         controller.requestInstall({ relaunch: false });
@@ -1209,9 +1669,16 @@ async function resolveMediaURL(kind, id) {
   }
   if (kind === 'thumb') {
     let filePath = thumbnailCache.get(id);
-    if (!filePath) {
+    if (filePath) {
+      // Least-recently-used order: a hit moves to the back (B4-11).
+      thumbnailCache.delete(id);
+      thumbnailCache.set(id, filePath);
+    } else {
       filePath = await client.thumbnailPath(id);
-      if (filePath) thumbnailCache.set(id, filePath);
+      if (filePath) {
+        thumbnailCache.set(id, filePath);
+        if (thumbnailCache.size > THUMBNAIL_CACHE_LIMIT) thumbnailCache.delete(thumbnailCache.keys().next().value);
+      }
     }
     return filePath && fs.existsSync(filePath) ? pathToFileURL(filePath).toString() : null;
   }
@@ -1238,11 +1705,29 @@ async function itemFilePath(id) {
   const item = hub.itemCache.get(id) || await client.getItem(id);
   const fileURL = await client.fileURLForItem(item, library.path);
   if (!hub.itemReadIsCurrent(read)) {
-    const error = new Error('Eagle 已切换资料库，请重新选择素材');
+    const error = new Error('Eagle 已切换资源库，请重新选择素材');
     error.code = 'LIBRARY_CHANGED';
     throw error;
   }
   return { item, filePath: fileURL ? fileURLToPath(fileURL) : null };
+}
+
+// Whether an item id still exists in the library, from the duplicate index
+// when its snapshot is current. Returns null otherwise, and local order and
+// pin records are then left as they are rather than trimmed from stale data.
+const liveItemIdSets = new WeakMap();
+function liveItemCheck(libraryPath) {
+  const records = duplicateIndex.peek(libraryPath);
+  if (!records) {
+    scheduleDuplicateIndexWarm(libraryPath);
+    return null;
+  }
+  let ids = liveItemIdSets.get(records);
+  if (!ids) {
+    ids = new Set(records.map(record => record.metadata?.id).filter(Boolean));
+    liveItemIdSets.set(records, ids);
+  }
+  return id => ids.has(id);
 }
 
 async function settleWithConcurrency(values, worker, concurrency = 8) {
@@ -1282,6 +1767,185 @@ async function liveDuplicateImports(duplicates, libraryPath) {
   return duplicates.filter(duplicate => live.has(duplicate.id));
 }
 
+// The duplicate check and decision shared by desktop imports and Web uploads
+// (H-08): without a choice, duplicates come back for the user to decide.
+// Eagle gives files imported into a folder that folder's auto tags
+// (uploadFiles, newFileFromTemplate); its path and bookmark APIs do not.
+// The hub's folder tree is the one classify edits use too.
+function folderAutoTags(folderId) {
+  return folderId ? folderExtendTags(hub.library?.folders, folderId) : [];
+}
+
+async function importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice = null, origin = 0, waitTimeoutMs = 0, ignoreDirectories = false }) {
+  await hub.ensureLibraryPath(libraryPath);
+  const prepared = await prepareImportPaths(filePaths, { ignoreDirectories });
+  const { ignoredDirectories } = prepared;
+  filePaths = prepared.paths;
+  // The index is invalidated by Eagle-originated hub changes.  Keeping a
+  // warm snapshot here avoids rescanning every metadata.json file before
+  // each import while preserving exact duplicate checks after external
+  // Eagle activity.
+  const duplicates = await liveDuplicateImports(
+    await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex, includeDeleted: true }),
+    libraryPath
+  );
+  if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected, ignoredDirectories };
+  if (duplicateChoice === 'cancel') return { canceled: true };
+  const duplicateByPath = new Map();
+  for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
+  const useExisting = duplicateChoice === 'use-existing';
+  const existing = useExisting ? [...duplicateByPath.values()] : [];
+  const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
+  const imported = importPathsToUse.length
+    ? await importPaths({ paths: importPathsToUse, folderId, libraryPath, tags: folderAutoTags(folderId), ...(waitTimeoutMs ? { waitTimeoutMs } : {}) })
+    : { count: 0, ready: 0, ids: [], rejected: [] };
+  if (duplicateChoice === 'keep-both' && duplicates.length && imported.ids.length) {
+    try {
+      await hub.ensureLibraryPath(libraryPath);
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: keepImportedCopiesScript({ libraryPath, ids: imported.ids })
+      } });
+      const ready = await waitForImportedItems(client, imported.ids, 12000, 200, () => hub.ensureLibraryPath(libraryPath));
+      imported.ready = ready.length;
+      if (ready.length < imported.ids.length) imported.nativeDecisionPending = true;
+    } catch (error) {
+      imported.nativeDecisionPending = true;
+      imported.rejected.push({ code: 'DUPLICATE_DECISION_PENDING', message: error.message });
+    }
+  }
+  if (imported.count) {
+    // Imported metadata can appear on disk slightly after the API accepts
+    // the request. Refresh in the background so the next import sees the
+    // new records without adding this work to the current foreground path.
+    duplicateIndex.markStale(libraryPath);
+    scheduleDuplicateIndexWarm(libraryPath);
+  }
+  let existingIds = [];
+  let duplicateFailed = 0;
+  if (useExisting && existing.length) {
+    const assignments = await settleWithConcurrency(existing, async duplicate => {
+      await hub.ensureLibraryPath(libraryPath);
+      const item = await client.getItem(duplicate.id).catch(error => {
+        if (isMissingItemError(error)) return null;
+        throw error;
+      });
+      if (!item?.id || item.isDeleted) throw Object.assign(new Error('重复素材已被删除'), { code: 'DUPLICATE_DELETED' });
+      await hub.ensureLibraryPath(libraryPath);
+      if (!folderId) return item;
+      return hub.mutateSet({
+        id: duplicate.id,
+        field: 'folders',
+        add: [folderId],
+        // Eagle's 使用已有 adds the folder's auto tags when the item joins it.
+        autoTags: 'joined',
+        libraryPath,
+        origin
+      });
+    }, 4);
+    existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
+    // Trashed between the duplicate prompt and this step: Eagle no longer
+    // treats it as a duplicate, so import the file like a new one.
+    const revived = existing.filter((_, index) => assignments[index].error?.code === 'DUPLICATE_DELETED').map(duplicate => duplicate.path);
+    if (revived.length) {
+      const extra = await importPaths({ paths: revived, folderId, libraryPath, tags: folderAutoTags(folderId) });
+      imported.count += extra.count;
+      imported.ready += extra.ready;
+      imported.ids = [...imported.ids, ...extra.ids];
+      imported.rejected = [...imported.rejected, ...extra.rejected];
+      if (extra.count) {
+        duplicateIndex.markStale(libraryPath);
+        scheduleDuplicateIndexWarm(libraryPath);
+      }
+    }
+    duplicateFailed = assignments.length - existingIds.length - revived.length;
+  }
+  const result = {
+    ...imported,
+    rejected: [...prepared.rejected, ...imported.rejected],
+    count: imported.count + existingIds.length,
+    ready: imported.ready + existingIds.length,
+    ids: [...imported.ids, ...existingIds],
+    duplicateCount: existingIds.length,
+    duplicateFailed,
+    ignoredDirectories
+  };
+  return { canceled: false, ...result };
+}
+
+// 导入本地文件夹 (P4-01) runs in two steps: the scan says how big each folder
+// is so the window can ask Eagle's questions, then the run creates and
+// imports what was accepted. The scanned trees stay here, keyed by a token,
+// so the run only touches folders the user picked or dropped.
+const folderImportPlans = new Map();
+const FOLDER_IMPORT_PLAN_TTL_MS = 10 * 60 * 1000;
+
+async function planFolderImport({ paths: candidates = [], libraryPath }) {
+  await hub.ensureLibraryPath(libraryPath);
+  const roots = [];
+  const rejected = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const dir = path.resolve(String(candidate || ''));
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    let stat;
+    try { stat = await fsp.stat(dir); } catch (error) { rejected.push({ path: dir, message: error.message }); continue; }
+    // Eagle's sidebar drop and folder dialog only take folders.
+    if (!stat.isDirectory()) continue;
+    if (/\.(library|pxvlibrary)$/i.test(dir) || dir.split(path.sep).some(segment => /\.library$/i.test(segment))) {
+      rejected.push({ path: dir, message: '不能导入 Eagle 资源库本身或其中的文件夹' });
+      continue;
+    }
+    roots.push(await scanFolderTree(dir));
+  }
+  for (const [token, plan] of folderImportPlans) if (Date.now() - plan.createdAt > FOLDER_IMPORT_PLAN_TTL_MS) folderImportPlans.delete(token);
+  const token = `folder-import-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  if (roots.length) folderImportPlans.set(token, { libraryPath, roots, createdAt: Date.now() });
+  return {
+    token: roots.length ? token : null,
+    roots: roots.map(root => ({ name: root.tree.name, dir: root.tree.dir, depth: root.depth, fileCount: root.fileCount, folderCount: root.folderCount, tooLarge: root.tooLarge, needsConfirm: root.needsConfirm })),
+    rejected: [...rejected, ...roots.flatMap(root => root.skipped)]
+  };
+}
+
+async function runFolderImport({ token, accept = [], parentId = null, libraryPath, duplicateChoice = null, origin = 0 }) {
+  const plan = folderImportPlans.get(token);
+  if (!plan || plan.libraryPath !== libraryPath) throw new Error('导入已过期，请重新选择文件夹');
+  await hub.ensureLibraryPath(libraryPath);
+  const roots = plan.roots.filter((root, index) => accept.includes(index) && !root.tooLarge);
+  if (!roots.length || duplicateChoice === 'cancel') { folderImportPlans.delete(token); return { canceled: true }; }
+  if (parentId && !findFolder(await client.folderTree(), parentId)) throw new Error('目标文件夹已不存在，请刷新后重试');
+  const files = roots.flatMap(root => { const all = []; (function walk(node) { all.push(...node.files); node.folders.forEach(walk); })(root.tree); return all; });
+  if (!duplicateChoice) {
+    const duplicates = await liveDuplicateImports(
+      await findDuplicateImports({ paths: files, libraryPath, index: duplicateIndex, includeDeleted: true }), libraryPath);
+    if (duplicates.length) return { canceled: false, needsDuplicateDecision: true, duplicates, total: files.length };
+  }
+  folderImportPlans.delete(token);
+  let published = false;
+  const result = await importFolderTrees({
+    trees: roots.map(root => root.tree),
+    parentId,
+    ensureCurrent: () => hub.ensureLibraryPath(libraryPath),
+    createFolder: async (name, parent) => {
+      const created = await client.createFolder(name, parent);
+      return created?.id || created?.folder?.id || null;
+    },
+    readFolders: () => client.folderTree(),
+    setOrder: (parent, ids) => setFolderSiblingOrder({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), libraryPath, parent, ids }),
+    importInto: async (paths, folderId) => {
+      // Show the new folders before their files arrive, as Eagle does.
+      if (!published) { published = true; await hub.connect({ notify: true, origin }); }
+      // No duplicate of the library was found when the user was asked;
+      // a later match is a file repeated inside the picked folders, kept.
+      return importWithDuplicateDecision({ paths, folderId, libraryPath, duplicateChoice: duplicateChoice || 'keep-both', origin });
+    }
+  });
+  await hub.connect({ notify: true, origin }).catch(() => {});
+  broadcast('hub:query-invalidated', { reason: 'folder-import', libraryPath, origin });
+  return { canceled: false, ...result };
+}
+
 async function resolveItemFiles(ids) {
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   const results = await settleWithConcurrency(uniqueIds, itemFilePath, 8);
@@ -1295,8 +1959,8 @@ function cachedItemFilePath(id) {
   const libraryPath = hub.library?.path;
   if (!item || !libraryPath) return null;
   const itemFolder = path.join(libraryPath, 'images', `${item.id}.info`);
-  const expected = path.join(itemFolder, `${item.name}.${item.ext}`);
-  if (fs.existsSync(expected)) return expected;
+  const expected = fileInDirectory(itemFolder, `${item.name}.${item.ext}`);
+  if (expected && fs.existsSync(expected)) return expected;
   try {
     const extension = `.${String(item.ext || '').toLowerCase()}`;
     const match = fs.readdirSync(itemFolder).find(name => name.toLowerCase().endsWith(extension) && !name.includes('_thumbnail'));
@@ -1390,10 +2054,48 @@ function filterTrashItems(items, query = {}) {
     const words = keyword.split(/\s+/).filter(Boolean);
     filtered = filtered.filter(item => words.every(word => `${item.name || ''} ${(item.tags || []).join(' ')} ${item.annotation || ''}`.toLocaleLowerCase('zh-CN').includes(word)));
   }
-  if (query.tags?.length) filtered = filtered.filter(item => query.tags.every(tag => (item.tags || []).includes(tag)));
-  if (query.ext) filtered = filtered.filter(item => String(item.ext || '').toLowerCase() === String(query.ext).toLowerCase());
-  if (Number.isInteger(query.rating)) filtered = filtered.filter(item => Number(item.star || 0) === query.rating);
-  return filtered;
+  // Every panel filter applies here too, through the same table as the
+  // other views; the keyword search above and the folder context do not.
+  const filters = { ...querySpec.createQuery(query), search: '', folderId: null, smartFolderId: null };
+  return filtered.filter(item => querySpec.matchesConstraints({ ...item, isDeleted: false }, filters));
+}
+
+// One web address into Eagle: an image is downloaded, anything else becomes
+// a bookmark. `image` marks an address taken from a dragged <img>: like Eagle,
+// it is downloaded unless the server says it is a page, even when HEAD fails
+// (hotlink-protected images often refuse it).
+async function importURLItem({ url: value, folderId, libraryPath, image = false, reason = 'clipboard-url' }) {
+  const url = normalizeClipboardURL(value);
+  if (!url) throw new Error('只能添加 http 或 https 网址');
+  await hub.ensureLibraryPath(libraryPath);
+  // Ask for the type with a time limit; a server that refuses HEAD gets a GET
+  // whose body is dropped, and a missing page is not added at all (E-16).
+  let contentType = '';
+  try {
+    let response = await net.fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+    if (response.status === 405 || response.status === 501) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        response = await net.fetch(url, { method: 'GET', signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    }
+    if (!response.ok) throw new Error(`网址返回 ${response.status}`);
+    contentType = response.headers.get('content-type') || '';
+  } catch (error) {
+    if (!image) throw new Error(`无法读取网址：${error.name === 'TimeoutError' ? '超时' : error.message}`);
+  }
+  const kind = image && !/html/i.test(contentType) ? 'image' : clipboardURLKind(contentType);
+  const result = kind === 'image'
+    ? await client.addSiteAsset({ url, name: path.basename(new URL(url).pathname) || undefined, website: url }, folderId)
+    // An image address goes through Eagle's own URL import, which adds the
+    // folder's auto tags itself; the bookmark API does not.
+    : await client.addBookmark({ url, tags: folderAutoTags(folderId) }, folderId);
+  broadcast('hub:query-invalidated', { reason, libraryPath });
+  return { count: 1, ready: 0, ids: result?.id ? [result.id] : [], rejected: [], source: 'url', url, kind };
 }
 
 async function importClipboard({ folderId, libraryPath, clipboardText = '' }, importWithDecision) {
@@ -1404,20 +2106,7 @@ async function importClipboard({ folderId, libraryPath, clipboardText = '' }, im
   if (image.isEmpty()) {
     const url = normalizeClipboardURL(clipboardText || clipboard.readText());
     if (!url) return { count: 0, ready: 0, rejected: [], source: 'empty' };
-    await hub.ensureLibraryPath(libraryPath);
-    let contentType = '';
-    try {
-      const response = await net.fetch(url, { method: 'HEAD' });
-      contentType = response.headers.get('content-type') || '';
-    } catch (error) {
-      throw new Error(`无法读取网址：${error.message}`);
-    }
-    const kind = clipboardURLKind(contentType);
-    const result = kind === 'image'
-      ? await client.addSiteAsset({ url, name: path.basename(new URL(url).pathname) || undefined, website: url }, folderId)
-      : await client.addBookmark({ url }, folderId);
-    broadcast('hub:query-invalidated', { reason: 'clipboard-url', libraryPath });
-    return { count: 1, ready: 0, ids: result?.id ? [result.id] : [], rejected: [], source: 'url', url, kind };
+    return importURLItem({ url, folderId, libraryPath });
   }
   const temporaryDir = path.join(app.getPath('temp'), 'Eagle MultiView Paste');
   await fsp.mkdir(temporaryDir, { recursive: true });
@@ -1428,6 +2117,40 @@ async function importClipboard({ folderId, libraryPath, clipboardText = '' }, im
     const result = await importWithDecision({ paths: [temporaryPath], folderId, libraryPath });
     setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), result.needsDuplicateDecision ? 24 * 60 * 60 * 1000 : result.ready ? 15000 : 5 * 60 * 1000).unref?.();
     return { ...result, source: 'image' };
+  } catch (error) {
+    setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), 5 * 60 * 1000);
+    throw error;
+  }
+}
+
+// A picture dragged out of a web page as a data: address (D-08). Eagle's
+// drop hands it to uploadUrl, which decodes the base64 into a file; here it
+// becomes a temporary file imported like a pasted image, so the duplicate
+// check and the folder's auto tags apply.
+const DATA_URL_IMAGE_TYPES = { png: 'png', jpeg: 'jpg', jpg: 'jpg', gif: 'gif', webp: 'webp', bmp: 'bmp', 'svg+xml': 'svg', avif: 'avif', 'x-icon': 'ico', 'vnd.microsoft.icon': 'ico' };
+const DATA_URL_MAX_BYTES = 64 * 1024 * 1024;
+function decodeImageDataURL(value) {
+  const match = /^data:image\/([a-z0-9.+-]+)((?:;[^,;]*)*?)(;base64)?,(.*)$/is.exec(String(value || ''));
+  const ext = match && DATA_URL_IMAGE_TYPES[match[1].toLowerCase()];
+  if (!ext) throw new Error('只能添加网页里的图片');
+  const body = match[4];
+  if (body.length > DATA_URL_MAX_BYTES * 1.4) throw new Error('图片过大，请先存到本地再拖入');
+  const bytes = match[3] ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8');
+  if (!bytes.length) throw new Error('图片内容为空');
+  return { ext, bytes };
+}
+
+async function importDataURLItem({ url, folderId, libraryPath }, importWithDecision) {
+  const { ext, bytes } = decodeImageDataURL(url);
+  const temporaryDir = path.join(app.getPath('temp'), 'Eagle MultiView Paste');
+  await fsp.mkdir(temporaryDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const temporaryPath = path.join(temporaryDir, `网页图片-${stamp}.${ext}`);
+  await fsp.writeFile(temporaryPath, bytes);
+  try {
+    const result = await importWithDecision({ paths: [temporaryPath], folderId, libraryPath });
+    setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), result.needsDuplicateDecision ? 24 * 60 * 60 * 1000 : result.ready ? 15000 : 5 * 60 * 1000).unref?.();
+    return { ...result, source: 'data-url' };
   } catch (error) {
     setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), 5 * 60 * 1000);
     throw error;
@@ -1467,23 +2190,56 @@ async function installProtocol() {
 // the entry points via its capabilities table, and the web RPC rejects them.
 const HOST_ONLY_CHANNELS = new Set([
   'item:thumbnail-file', 'item:thumbnail-clipboard',
-  'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard',
+  'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard', 'items:import-url',
+  'items:import-folders:plan', 'items:import-folders:run',
   'item:show-in-finder', 'item:open-default', 'items:export', 'items:open-other',
   'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
   'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
   'window:focus', 'window:is-fullscreen', 'window:confirm-close', 'window:cancel-close',
-  'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key'
+  'window:defer-close',
+  'item:file-url', 'web-access:get', 'web-access:set', 'web-access:reset-key', 'menu:state'
 ]);
 const rpcRegistry = new Map();
 
+const MAIN_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
+
+function isMainPageURL(value) {
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.href === MAIN_PAGE_URL;
+  } catch {
+    return false;
+  }
+}
+
+// Only the app page's own top frame may use the bridge; anything that got
+// navigated into a window (or a subframe) is refused.
+function isTrustedSender(event) {
+  try {
+    const frame = event.senderFrame;
+    return Boolean(frame && !frame.parent && isMainPageURL(frame.url));
+  } catch {
+    // A frame that was disposed mid-call can no longer be trusted.
+    return false;
+  }
+}
+
 function handleRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  ipcMain.handle(channel, handler);
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝来自非应用页面的请求');
+    return handler(event, ...args);
+  });
 }
 
 function onRPC(channel, handler) {
   rpcRegistry.set(channel, handler);
-  ipcMain.on(channel, handler);
+  ipcMain.on(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) return;
+    return handler(event, ...args);
+  });
 }
 
 async function invokeWebRPC(method, args, sender) {
@@ -1545,7 +2301,7 @@ function setupIPC() {
     const invalidate = () => {
       if (EagleClient.normalizeLibraryPath(hub.library?.path) !== EagleClient.normalizeLibraryPath(payload.libraryPath)) return;
       for (const outcome of result.outcomes) thumbnailCache.delete(outcome.id);
-      broadcast('hub:query-invalidated', { reason: 'thumbnail', libraryPath: payload.libraryPath, thumbnailRevision: Date.now() });
+      broadcast('hub:query-invalidated', { reason: 'thumbnail', libraryPath: payload.libraryPath, thumbnailRevision: Date.now(), thumbnailIds: result.outcomes.map(outcome => outcome.id) });
     };
     invalidate();
     if (result.counts.accepted || result.counts.unknown) {
@@ -1614,7 +2370,7 @@ function setupIPC() {
   });
   handleRPC('library:switch', async (_event, payload = {}) => {
     const libraryPath = EagleClient.normalizeLibraryPath(payload.libraryPath);
-    if (!libraryPath) throw new Error('缺少资料库路径');
+    if (!libraryPath) throw new Error('缺少资源库路径');
     if (EagleClient.normalizeLibraryPath(hub.library?.path) === libraryPath) return { switched: false, library: hub.library };
     await client.switchLibrary(libraryPath);
     if (!await client.waitForLibrary(libraryPath)) {
@@ -1627,6 +2383,22 @@ function setupIPC() {
     return { switched: true, library: result.library };
   });
   handleRPC('hub:query', (_event, query) => hub.query(query));
+  handleRPC('hub:view-stats', (_event, query) => hub.viewStats(query));
+  handleRPC('hub:view-facets', (_event, query) => hub.viewFacets(query));
+  handleRPC('hub:view-ids', async (_event, { libraryPath, trash = false, ...query } = {}) => {
+    if (trash) return filterTrashItems(await readTrashItems(libraryPath), query).map(item => item.id);
+    return hub.viewIds(query);
+  });
+  handleRPC('hub:selection-summary', async (_event, { ids, libraryPath, trash = false } = {}) => {
+    const list = Array.isArray(ids) ? ids : [];
+    // item/get leaves trashed items out, so the trash reads its own scan.
+    if (trash) {
+      const wanted = new Set(list);
+      return paneState.selectionSummary((await readTrashItems(libraryPath)).filter(item => wanted.has(item.id)));
+    }
+    await hub.ensureLibraryPath(libraryPath);
+    return client.selectionSummary(list);
+  });
   handleRPC('hub:locate-item', (_event, { query, id } = {}) => hub.locateItem(query || {}, id));
   handleRPC('hub:recent-folders', () => client.listRecentFolders());
   handleRPC('hub:trash-items', async (_event, { libraryPath, ...query }) => {
@@ -1670,14 +2442,43 @@ function setupIPC() {
   });
   handleRPC('item:update-comment', (event, payload) =>
     refreshItemAfterCommentMutation(event, payload, (id) => client.updateComment(id, payload.commentId, payload.patch || {}), 'comment-update'));
-  handleRPC('item:remove-comment', (event, payload) =>
-    refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove'));
+  // The removed comment is kept for Eagle's 撤销 (P3-05, 4 s + 5 s).
+  const removedComments = new Map();
+  handleRPC('item:remove-comment', async (event, payload) => {
+    await hub.ensureLibraryPath(payload?.libraryPath);
+    const before = await client.getComments(payload?.id).catch(() => []);
+    const index = before.findIndex(comment => comment?.id === payload?.commentId);
+    await refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove');
+    for (const [token, entry] of removedComments) if (Date.now() - entry.at > 60000) removedComments.delete(token);
+    if (index < 0) return { ok: true, undoToken: null };
+    const undoToken = `comment-undo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    removedComments.set(undoToken, { libraryPath: payload.libraryPath, id: payload.id, comment: before[index], index, at: Date.now() });
+    return { ok: true, undoToken };
+  });
+  handleRPC('item:restore-comment', async (event, { libraryPath, undoToken } = {}) => {
+    const entry = removedComments.get(undoToken);
+    if (!entry || entry.libraryPath !== libraryPath) throw new Error('撤销已失效，标注仍是删除状态');
+    removedComments.delete(undoToken);
+    return refreshItemAfterCommentMutation(event, { id: entry.id, libraryPath }, async id => {
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: commentRestoreScript({ libraryPath, id, comment: entry.comment, index: entry.index })
+      } });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await hub.ensureLibraryPath(libraryPath);
+        if ((await client.getComments(id)).some(comment => comment?.id === entry.comment.id)) return { ok: true };
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error('Eagle 没有恢复这条标注');
+    }, 'comment-restore');
+  });
   handleRPC('item:set-custom-thumbnail', async (event, payload) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const { id, libraryPath } = payload || {};
     if (!id) throw new Error('缺少素材 ID');
-    let filePath = payload.filePath;
-    if (!filePath) {
+    // The file always comes from the host's own picker; the renderer never
+    // names a path for Eagle to read.
+    let filePath = null;
+    {
       const chooser = await dialog.showOpenDialog(parent, {
         title: '选择自定义缩略图',
         buttonLabel: '使用缩略图',
@@ -1698,8 +2499,12 @@ function setupIPC() {
     hub.publishItemMutation(item, { libraryPath, origin: event.sender.id, reason: 'custom-thumbnail' });
     return { canceled: false, result, item };
   });
-  handleRPC('hub:tags', () => client.listTags());
+  handleRPC('hub:tags', async () => {
+    const libraryPath = hub.library?.path || null;
+    return tagTally.merge(libraryPath, await client.listTags());
+  });
   handleRPC('hub:tag-groups', () => client.listTagGroups());
+  handleRPC('hub:starred-tags', () => client.listStarredTags());
   const refreshLibraryAfterMutation = async (event, libraryPath, operation, reason) => {
     hub.beginSnapshotWrite();
     try {
@@ -1714,10 +2519,38 @@ function setupIPC() {
     refreshLibraryAfterMutation(event, libraryPath, () => client.createSmartFolder(payload), 'smart-folder-create'));
   handleRPC('smart-folder:update', (event, { libraryPath, id, patch }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.updateSmartFolder(id, patch), 'smart-folder-update'));
-  handleRPC('smart-folder:remove', (event, { libraryPath, id }) =>
-    refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
+  // The removed smart folder is kept for 12 s, as long as Eagle's notice
+  // can undo it (P3-05); smart-folder:restore puts it back.
+  const removedSmartFolders = new Map();
+  handleRPC('smart-folder:remove', async (event, { libraryPath, id }) => {
+    await hub.ensureLibraryPath(libraryPath);
+    const location = locateSmartFolder(await client.listSmartFolders().catch(() => []), id);
+    await refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove');
+    for (const [token, entry] of removedSmartFolders) if (Date.now() - entry.at > 60000) removedSmartFolders.delete(token);
+    if (!location) return { ok: true, undoToken: null };
+    const undoToken = `smart-undo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    removedSmartFolders.set(undoToken, { libraryPath, ...location, at: Date.now() });
+    return { ok: true, undoToken };
+  });
+  handleRPC('smart-folder:restore', async (event, { libraryPath, undoToken }) => {
+    const entry = removedSmartFolders.get(undoToken);
+    if (!entry || entry.libraryPath !== libraryPath) throw new Error('撤销已失效，智能文件夹仍是删除状态');
+    removedSmartFolders.delete(undoToken);
+    return refreshLibraryAfterMutation(event, libraryPath, async () => {
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: smartFolderRestoreScript({ libraryPath, folder: entry.folder, parentId: entry.parentId, index: entry.index })
+      } });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await hub.ensureLibraryPath(libraryPath);
+        if (locateSmartFolder(await client.listSmartFolders(), entry.folder.id)) return { ok: true, id: entry.folder.id };
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error('Eagle 没有恢复这个智能文件夹');
+    }, 'smart-folder-restore');
+  });
   handleRPC('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
   handleRPC('tag-colors:set', async (event, { libraryPath, tag, color }) => {
+    await hub.ensureLibraryPath(libraryPath);
     const colors = await setTagColor(libraryPath, tag, color);
     broadcast('tag-data:changed', { libraryPath, origin: event.sender.id, reason: 'tag-color', colors });
     return colors;
@@ -1746,28 +2579,40 @@ function setupIPC() {
   handleRPC('hub:mutate', (event, mutation) => hub.mutate({ ...mutation, origin: event.sender.id }));
   handleRPC('hub:mutate-set', (event, mutation) => hub.mutateSet({ ...mutation, origin: event.sender.id }));
   handleRPC('folder:mutate', (event, mutation) => hub.mutateFolder({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:update-properties', (event, mutation) => hub.updateFolderProperties({ ...mutation, origin: event.sender.id }));
+  // The confirmed Eagle tree now owns these sibling lists. Remove older local
+  // overlays so every window displays the confirmed placement.
+  const resetFolderOrderOverlays = async (libraryPath, parentIds, message) => {
+    manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
+    for (const parentId of new Set(parentIds)) {
+      const scope = parentId === null ? 'root' : `folder:${parentId}`;
+      const orders = await manualOrderStore.get(libraryPath);
+      const order = orders[JSON.stringify([scope, 'folders'])];
+      if (!order?.ids.length) continue;
+      const reset = await manualOrderStore.move({ libraryPath, scope, kind: 'folders', reset: true, revision: order.revision });
+      if (!reset.ok) throw new Error(message);
+      broadcast('manual-order:changed', { libraryPath, scope, kind: 'folders', orders: { [orderKey(scope, 'folders')]: reset.order } });
+    }
+  };
   handleRPC('folder:move', async (event, mutation) => {
     const result = await hub.moveFolder({ ...mutation, origin: event.sender.id });
     if (result.ok && !result.noop) {
-      // The confirmed Eagle tree now owns both affected sibling lists. Remove
-      // older local overlays so every window displays the confirmed placement.
-      manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
-      for (const parentId of new Set([mutation.baseParentId, mutation.parentId])) {
-        const scope = parentId === null ? 'root' : `folder:${parentId}`;
-        const orders = await manualOrderStore.get(mutation.libraryPath);
-        const order = orders[JSON.stringify([scope, 'folders'])];
-        if (!order?.ids.length) continue;
-        const reset = await manualOrderStore.move({ libraryPath: mutation.libraryPath, scope, kind: 'folders', reset: true, revision: order.revision });
-        if (!reset.ok) throw new Error('文件夹已移动，但其他窗口正在排序；请刷新核对，不要重复移动');
-        broadcast('manual-order:changed', { libraryPath: mutation.libraryPath, scope, kind: 'folders', orders: reset.orders });
-      }
+      await resetFolderOrderOverlays(mutation.libraryPath, [mutation.baseParentId, mutation.parentId],
+        '文件夹已移动，但其他窗口正在排序；请刷新核对，不要重复移动');
     }
     return result;
   });
+  handleRPC('folder:remove', (event, mutation) => hub.removeFolder({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:restore-removed', (event, data) => hub.restoreRemovedFolder({ ...data, origin: event.sender.id }));
+  handleRPC('folder:copy-plan', (_event, request) => planFolderCopy(request));
   handleRPC('folder:copy', async (event, mutation) => {
     const result = await enqueueCreation(`folder-copy:${path.resolve(mutation.libraryPath)}:${mutation.sourceId}:${mutation.parentId || 'root'}`,
       () => copyFolderTree({ ...mutation, origin: event.sender.id }));
     broadcast('hub:query-invalidated', { reason: 'folder-copy', libraryPath: mutation.libraryPath, origin: event.sender.id });
+    if (result?.placed) {
+      await resetFolderOrderOverlays(mutation.libraryPath, [mutation.parentId ?? null],
+        '文件夹已复制，但其他窗口正在排序；请刷新核对，不要重复复制');
+    }
     return result;
   });
   onRPC('folder:used', (event, payload = {}) => {
@@ -1798,9 +2643,16 @@ function setupIPC() {
   handleRPC('window:is-fullscreen', event => {
     return Boolean(BrowserWindow.fromWebContents(event.sender)?.isFullScreen());
   });
+  // The renderer answered a close request and is finishing saves or asking
+  // the user; the request stays pending and the quit stays armed.
+  onRPC('window:defer-close', event => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window && !window.isDestroyed()) clearCloseWatchdog(window);
+  });
   onRPC('window:confirm-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window || window.isDestroyed()) return;
+    clearCloseWatchdog(window);
     window.__closePromptPending = false;
     window.__allowClose = true;
     window.close();
@@ -1808,9 +2660,11 @@ function setupIPC() {
   });
   onRPC('window:cancel-close', event => {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (window && !window.isDestroyed()) window.__closePromptPending = false;
-    quitting = false;
-    updater?.quitCancelled();
+    if (window && !window.isDestroyed()) {
+      clearCloseWatchdog(window);
+      window.__closePromptPending = false;
+    }
+    cancelPendingQuit();
   });
   handleRPC('folder:create', (event, { name = '未命名文件夹', parent, libraryPath }) => {
     const requestedName = normalizeEagleFolderName(name);
@@ -1870,12 +2724,13 @@ function setupIPC() {
           paths: [temporary.filePath],
           folderId,
           libraryPath,
+          tags: folderAutoTags(folderId),
           waitTimeoutMs: 4000
         });
         if (!imported.count || !imported.ids?.length) {
           throw new Error(imported.rejected?.[0]?.message || 'Eagle 没有返回新文件的素材 ID');
         }
-        duplicateIndex.invalidate(libraryPath);
+        duplicateIndex.markStale(libraryPath);
         const id = imported.ids[0];
         importedId = id;
         const ready = await waitForImportedFile(id, libraryPath);
@@ -1914,7 +2769,7 @@ function setupIPC() {
             error.cleanup = { status: 'completed', id: importedId, libraryPath };
           } catch (cleanupError) {
             error.cleanup = { status: 'pending', id: importedId, libraryPath, message: cleanupError.message };
-            error.message += `；原资料库可能仍有新建素材 ${importedId}，本次未清理，请回到原库核对后处理`;
+            error.message += `；原资源库可能仍有新建素材 ${importedId}，本次未清理，请回到原库核对后处理`;
           }
           broadcast('hub:query-invalidated', { reason: 'document-create-rollback', libraryPath, id: importedId });
         }
@@ -1924,7 +2779,7 @@ function setupIPC() {
       }
     });
   });
-  handleRPC('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null }) => {
+  handleRPC('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null, ignoreDirectories = false }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     let filePaths = paths;
     if (!filePaths?.length) {
@@ -1936,103 +2791,39 @@ function setupIPC() {
       if (result.canceled || !result.filePaths.length) return { canceled: true };
       filePaths = result.filePaths;
     }
+    // Pull focus back from Eagle afterwards only when this window had it when
+    // the import began and the import finished (B4-10).
+    const wasFrontmost = Boolean(parent?.isFocused?.());
+    let finished = false;
     try {
-      await hub.ensureLibraryPath(libraryPath);
-      const prepared = await prepareImportPaths(filePaths);
-      filePaths = prepared.paths;
-      // The index is invalidated by Eagle-originated hub changes.  Keeping a
-      // warm snapshot here avoids rescanning every metadata.json file before
-      // each import while preserving exact duplicate checks after external
-      // Eagle activity.
-      const duplicates = await liveDuplicateImports(
-        await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex, includeDeleted: true }),
-        libraryPath
-      );
-      if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected };
-      if (duplicateChoice === 'cancel') return { canceled: true };
-      const duplicateByPath = new Map();
-      for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
-      const useExisting = duplicateChoice === 'use-existing';
-      const existing = useExisting ? [...duplicateByPath.values()] : [];
-      const importPathsToUse = useExisting ? filePaths.filter(candidate => !duplicateByPath.has(path.resolve(candidate))) : filePaths;
-      const imported = importPathsToUse.length
-        ? await importPaths({ paths: importPathsToUse, folderId, libraryPath })
-        : { count: 0, ready: 0, ids: [], rejected: [] };
-      if (duplicateChoice === 'keep-both' && duplicates.length && imported.ids.length) {
-        try {
-          await hub.ensureLibraryPath(libraryPath);
-          await client.request('/api/script/inject', { method: 'POST', body: {
-            script: keepImportedCopiesScript({ libraryPath, ids: imported.ids })
-          } });
-          const ready = await waitForImportedItems(client, imported.ids, 12000, 200, () => hub.ensureLibraryPath(libraryPath));
-          imported.ready = ready.length;
-          if (ready.length < imported.ids.length) imported.nativeDecisionPending = true;
-        } catch (error) {
-          imported.nativeDecisionPending = true;
-          imported.rejected.push({ code: 'DUPLICATE_DECISION_PENDING', message: error.message });
-        }
-      }
-      if (imported.count) {
-        // Imported metadata can appear on disk slightly after the API accepts
-        // the request. Refresh in the background so the next import sees the
-        // new records without adding this work to the current foreground path.
-        duplicateIndex.invalidate(libraryPath);
-        scheduleDuplicateIndexWarm(libraryPath);
-      }
-      let existingIds = [];
-      let duplicateFailed = 0;
-      if (useExisting && existing.length) {
-        const assignments = await settleWithConcurrency(existing, async duplicate => {
-          await hub.ensureLibraryPath(libraryPath);
-          const item = await client.getItem(duplicate.id).catch(error => {
-            if (isMissingItemError(error)) return null;
-            throw error;
-          });
-          if (!item?.id || item.isDeleted) throw Object.assign(new Error('重复素材已被删除'), { code: 'DUPLICATE_DELETED' });
-          await hub.ensureLibraryPath(libraryPath);
-          if (!folderId) return item;
-          return hub.mutateSet({
-            id: duplicate.id,
-            field: 'folders',
-            add: [folderId],
-            libraryPath,
-            origin: event.sender.id
-          });
-        }, 4);
-        existingIds = assignments.flatMap((result, index) => result.ok ? [existing[index].id] : []);
-        // Trashed between the duplicate prompt and this step: Eagle no longer
-        // treats it as a duplicate, so import the file like a new one.
-        const revived = existing.filter((_, index) => assignments[index].error?.code === 'DUPLICATE_DELETED').map(duplicate => duplicate.path);
-        if (revived.length) {
-          const extra = await importPaths({ paths: revived, folderId, libraryPath });
-          imported.count += extra.count;
-          imported.ready += extra.ready;
-          imported.ids = [...imported.ids, ...extra.ids];
-          imported.rejected = [...imported.rejected, ...extra.rejected];
-          if (extra.count) {
-            duplicateIndex.invalidate(libraryPath);
-            scheduleDuplicateIndexWarm(libraryPath);
-          }
-        }
-        duplicateFailed = assignments.length - existingIds.length - revived.length;
-      }
-      const result = {
-        ...imported,
-        rejected: [...prepared.rejected, ...imported.rejected],
-        count: imported.count + existingIds.length,
-        ready: imported.ready + existingIds.length,
-        ids: [...imported.ids, ...existingIds],
-        duplicateCount: existingIds.length,
-        duplicateFailed
-      };
-      return { canceled: false, ...result };
+      const result = await importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice, origin: event.sender.id, ignoreDirectories: Boolean(ignoreDirectories) });
+      finished = !result.canceled && !result.needsDuplicateDecision;
+      return result;
     } finally {
       // Restoring twice used to hide Eagle's unresolved dialog immediately.
       // Keep-both returns focus only after the renderer confirms completion.
-      if (duplicateChoice !== 'keep-both') focusBrowserWindow(parent);
+      if (duplicateChoice !== 'keep-both' && wasFrontmost && finished) focusBrowserWindow(parent);
     }
   });
+  handleRPC('items:import-folders:plan', async (event, { paths, libraryPath } = {}) => {
+    let folderPaths = paths;
+    if (!folderPaths?.length) {
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: '导入本地文件夹',
+        properties: ['openDirectory', 'multiSelections']
+      });
+      if (result.canceled || !result.filePaths.length) return { canceled: true };
+      folderPaths = result.filePaths;
+    }
+    return planFolderImport({ paths: folderPaths, libraryPath });
+  });
+  handleRPC('items:import-folders:run', (event, data = {}) => runFolderImport({ ...data, origin: event.sender.id }));
   handleRPC('items:import-clipboard', (event, data) => importClipboard(data, payload => rpcRegistry.get('items:import')(event, payload)));
+  handleRPC('items:import-url', (event, { url, image, folderId, libraryPath } = {}) => (
+    /^data:/i.test(String(url || ''))
+      ? importDataURLItem({ url, folderId, libraryPath }, payload => rpcRegistry.get('items:import')(event, payload))
+      : importURLItem({ url, image: Boolean(image), folderId, libraryPath, reason: 'drop-url' })
+  ));
   handleRPC('item:show-in-finder', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
     if (!filePath) return false;
@@ -2069,12 +2860,12 @@ function setupIPC() {
   });
   handleRPC('items:export', async (event, { ids, libraryPath }) => {
     const exportLibraryPath = EagleClient.normalizeLibraryPath(libraryPath);
-    if (!exportLibraryPath) throw new Error('缺少导出素材所属的资料库');
+    if (!exportLibraryPath) throw new Error('缺少导出素材所属的资源库');
     const read = hub.captureItemRead();
     const ensureExportLibrary = async () => {
       await hub.ensureLibraryPath(exportLibraryPath);
       if (!hub.itemReadIsCurrent(read) || EagleClient.normalizeLibraryPath(hub.library?.path) !== exportLibraryPath) {
-        const error = new Error('Eagle 已切换资料库，本次导出已取消，请重新选择素材');
+        const error = new Error('Eagle 已切换资源库，本次导出已取消，请重新选择素材');
         error.code = 'LIBRARY_CHANGED';
         throw error;
       }
@@ -2237,7 +3028,13 @@ function setupIPC() {
       active: true,
       token,
       ids: uniqueIds,
+      // The exact paths handed to startDrag let drop targets tell this
+      // session's files apart from files dragged in from Finder.
+      files,
       sourceFolderId: payload.sourceFolderId || null,
+      sourceFolderIds: Array.isArray(payload.sourceFolderIds)
+        ? payload.sourceFolderIds.filter(id => typeof id === 'string' && id).slice(0, 10000)
+        : null,
       sourcePaneId: payload.sourcePaneId || null,
       sourceWindowId: payload.sourceWindowId || null,
       orderContext: payload.orderContext || null,
@@ -2302,47 +3099,59 @@ function setupIPC() {
   handleRPC('manual-order:move', async (_event, payload) => {
     await hub.ensureLibraryPath(payload.libraryPath);
     manualOrderStore ||= new ManualOrderStore(path.join(app.getPath('userData'), 'state', 'manual-order.json'));
-    let input = null, verify = null, persistIds = [];
+    let input = null, verify = null;
     const folderId = payload.scope.startsWith('folder:') ? payload.scope.slice(7) : null;
-    const nativeSupported = payload.kind === 'folders' ? payload.scope === 'root' || folderId : Boolean(folderId);
-    if (payload.syncToEagle && !payload.reset && nativeSupported) {
-      if (payload.kind === 'folders') {
-        const siblings = siblingFolders(await client.folderTree(), folderId);
-        const before = siblings.map(folder => folder.id);
-        const ids = moveRelative(before, payload.ids, payload.anchorId, payload.position);
-        input = { kind: 'folders', libraryPath: payload.libraryPath, folderId, before, ids };
-        payload = { ...payload, knownIds: ids, rebase: true };
-        verify = async () => JSON.stringify(siblingFolders(await client.folderTree(), folderId).map(folder => folder.id)) === JSON.stringify(ids);
-      } else {
-        const ids = moveRelative([...new Set(payload.knownIds)], payload.ids, payload.anchorId, payload.position);
-        if (ids.length > 3000) throw new Error('请在 3000 个素材以内的视图调整顺序');
-        const readItems = async () => {
-          const items = [];
-          for (let offset = 0; offset < ids.length; offset += 500) items.push(...await client.getItems(ids.slice(offset, offset + 500)));
-          return items;
-        };
-        const items = await readItems();
-        const stamp = Date.now();
-        const entries = ids.map((id, index) => {
-          const item = items.find(item => item.id === id);
-          if (!item || item.isDeleted || !item.folders?.includes(folderId)) throw new Error('排序素材已变化，请刷新后重试');
-          return { id, before: item.order?.[folderId] ?? null, value: String(stamp - index) };
-        });
-        input = { kind: 'items', libraryPath: payload.libraryPath, folderId, entries };
-        persistIds = ids;
-        verify = async () => {
-          const current = await readItems();
-          return entries.every(entry => current.find(item => item.id === entry.id)?.order?.[folderId] === entry.value);
-        };
-      }
+    // Folder items reorder through eagle-order:move, which writes only the
+    // moved items (E-11); this path keeps folder-tree order in Eagle and every
+    // other view's order locally.
+    if (payload.syncToEagle && !payload.reset && payload.kind === 'folders' && (payload.scope === 'root' || folderId)) {
+      const siblings = siblingFolders(await client.folderTree(), folderId);
+      const before = siblings.map(folder => folder.id);
+      const ids = moveRelative(before, payload.ids, payload.anchorId, payload.position);
+      input = { kind: 'folders', libraryPath: payload.libraryPath, folderId, before, ids };
+      payload = { ...payload, knownIds: ids, rebase: true };
+      verify = async () => JSON.stringify(siblingFolders(await client.folderTree(), folderId).map(folder => folder.id)) === JSON.stringify(ids);
     }
     const result = await manualOrderStore.move(payload, async () => {
-      if (input) await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), input, verify, persistIds });
-    });
+      if (input) await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), input, verify });
+    }, { isLive: payload.kind === 'items' ? liveItemCheck(payload.libraryPath) : null });
     result.syncedToEagle = Boolean(result.ok && input);
     if (result.syncedToEagle) await hub.connect({ notify: true });
-    if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:result.orders,scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
+    // Other windows merge orders key by key, so only the changed one is sent.
+    if (result.ok) broadcast('manual-order:changed', {libraryPath:payload.libraryPath, orders:{ [orderKey(payload.scope, payload.kind)]: result.order },scope:payload.scope,kind:payload.kind,startSort:payload.startSort});
     return result;
+  });
+  // Eagle's own drag reorder (onDropBoxItem): only the moved items get a new
+  // manual value, between their new neighbours in the order the folder
+  // shows; the folder switches to manual order unless it already is (E-11).
+  handleRPC('eagle-order:move', async (event, { libraryPath, folderId, ids, anchorId, position, displayedIds, increase = true }) => {
+    await hub.ensureLibraryPath(libraryPath);
+    if (!folderId || !Array.isArray(ids) || !Array.isArray(displayedIds)) throw new Error('排序目标已失效，请刷新后重试');
+    const { block, aboveId, belowId } = eagleOrder.blockNeighbours([...new Set(displayedIds)], [...new Set(ids)], anchorId, position);
+    const readIds = [...block, aboveId, belowId].filter(Boolean);
+    const items = await client.getItems(readIds);
+    const byId = new Map(items.map(item => [item.id, item]));
+    for (const id of readIds) {
+      const item = byId.get(id);
+      if (!item || item.isDeleted || !item.folders?.includes(folderId)) throw new Error('排序素材已变化，请刷新后重试');
+    }
+    const values = eagleOrder.insertionValues({
+      above: aboveId ? eagleOrder.nativeValue(byId.get(aboveId), folderId) : null,
+      below: belowId ? eagleOrder.nativeValue(byId.get(belowId), folderId) : null,
+      count: block.length,
+      increase: increase !== false
+    });
+    const entries = block.map((id, index) => ({ id, before: byId.get(id).order?.[folderId] ?? null, value: values[index] }));
+    await executeNativeSync({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value),
+      input: { kind: 'items', libraryPath, folderId, entries }, persistIds: block,
+      verify: async () => {
+        const current = await client.getItems(block);
+        return entries.every(entry => current.find(item => item.id === entry.id)?.order?.[folderId] === entry.value);
+      } });
+    const moved = await client.getItems(block);
+    for (const item of moved) hub.publishItemMutation(item, { libraryPath, origin: event.sender?.id, reason: 'eagle-order' });
+    await hub.connect({ notify: true });
+    return { ok: true, items: moved };
   });
   handleRPC('pins:set', async (event, { libraryPath, folderId, ids, pinned, syncToEagle = false, eaglePins = {} }) => {
     await hub.ensureLibraryPath(libraryPath);
@@ -2366,7 +3175,7 @@ function setupIPC() {
         } });
       for (const item of await client.getItems(uniqueIds)) hub.publishItemMutation(item, { libraryPath, origin: event.sender?.id, reason: 'pins-sync' });
     }
-    const pins = await getPinStore().set(libraryPath, folderId, ids, pinned, { synced: syncToEagle });
+    const pins = await getPinStore().set(libraryPath, folderId, ids, pinned, { synced: syncToEagle, isLive: liveItemCheck(libraryPath) });
     broadcast('pins:changed', { libraryPath, pins });
     return pins;
   });
@@ -2438,6 +3247,7 @@ if (!gotLock) {
       logFault('update', '无法启动更新安装', error);
     }
     clearTimeout(supplementalHydrationRetry);
+    readMetadata.close();
     webServer?.stop().catch(() => {});
   });
   app.on('second-instance', () => {
@@ -2449,6 +3259,11 @@ if (!gotLock) {
       source: 'main',
       message: `Eagle MultiView ${app.getVersion()} 启动（Electron ${process.versions.electron}）`
     });
+    installPermissionPolicy(session.defaultSession);
+    // Custom-thumbnail images left behind by a quit inside the 60 s cleanup
+    // window (B4-11); nothing can be using them this early.
+    fsp.rm(path.join(app.getPath('userData'), 'temp', 'thumbnails'), { recursive: true, force: true }).catch(() => {});
+    setupMenuState();
     setupMenu();
     setupIPC();
     setupUpdateIPC();
@@ -2460,7 +3275,9 @@ if (!gotLock) {
     startUpdateSchedule().catch(error => logFault('update', '更新检查初始化失败', error));
   });
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // The update window alone is not a main window: clicking the Dock icon
+    // still opens one (B4-06).
+    if (![...windows].some(window => window && !window.isDestroyed())) {
       createWindow(null);
     }
   });

@@ -107,7 +107,7 @@ test('DA-21 independent: symlink aliases cannot turn export into a direct librar
   await fs.mkdir(library); await fs.symlink(library, alias); await fs.writeFile(source, 'fixture');
   const adapter = { ...fs, existsSync: syncFs.existsSync };
   for (const destinationRoot of [alias, path.join(alias, 'not-created')]) {
-    await assert.rejects(exportFiles({ filePaths: [source], destinationRoot, libraryPath: library, fs: adapter }), /资料库内部/);
+    await assert.rejects(exportFiles({ filePaths: [source], destinationRoot, libraryPath: library, fs: adapter }), /资源库内部/);
   }
   assert.deepEqual(await fs.readdir(library), [], 'a rejected export must not create even an empty folder in the library');
   const outside = path.join(root, 'outside'), outsideAlias = path.join(root, 'outside-alias');

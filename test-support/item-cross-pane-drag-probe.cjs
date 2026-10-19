@@ -7,7 +7,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-item-cross-pane-')));
+app.setPath('userData', require('./temp-userdata.cjs').tempUserData('eaglemv-item-cross-pane-'));
 (async () => {
   await app.whenReady();
   const win = new BrowserWindow({ show: false, width: 1400, height: 900, webPreferences: {
@@ -68,7 +68,8 @@ app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-item-cros
     result = dragOnto('a-2', card(paneA.id, 'a-3'));
     assert(result.accepted && result.dropEffect === 'move', 'same-folder reorder refused');
     await until(() => window.__uiTestCalls.filter(call => call.kind === 'manual-order').length === orders + 1, 'same-folder reorder submitted');
-    await wait(60);
+    // Any re-filing would be part of the drop's own operation (T-09).
+    await until(() => !state.operationTracker.active().length, 'reorder finished');
     assert(mutations.length === before, 'same-folder reorder also changed folders');
     assert(!document.querySelector('[data-manual-drop]'), 'insertion marker stuck');
   })()`);

@@ -81,7 +81,7 @@ test('refuses non-TXT and paths outside the current Eagle library', async t => {
   await assert.rejects(() => readText({ ...data, item: { ...data.item, ext: 'md' } }), /仅支持编辑 TXT/);
   const outside = path.join(data.root, 'outside.txt');
   await fs.writeFile(outside, 'no', 'utf8');
-  await assert.rejects(() => readText({ ...data, filePath: outside }), /不在当前 Eagle 资料库/);
+  await assert.rejects(() => readText({ ...data, filePath: outside }), /不在当前 Eagle 资源库/);
 });
 
 test('refuses binary or oversized files', async t => {
@@ -112,7 +112,7 @@ test('preserves an existing UTF-8 BOM and never stages or backs up inside a libr
   await saveText({ ...data, base: initial.fingerprint, content: 'second' });
   assert.deepEqual(await fs.readFile(data.filePath), Buffer.from('\uFEFFsecond', 'utf8'));
   const current = await readText(data);
-  await assert.rejects(saveText({ ...data, base: current.fingerprint, content: 'third', backupRoot: path.join(data.libraryPath, 'bad-backups') }), /备份.*资料库/);
+  await assert.rejects(saveText({ ...data, base: current.fingerprint, content: 'third', backupRoot: path.join(data.libraryPath, 'bad-backups') }), /备份.*资源库/);
   assert.equal((await readText(data)).content, 'second');
 });
 

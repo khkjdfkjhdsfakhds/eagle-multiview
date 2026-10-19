@@ -59,11 +59,68 @@ internal class AppUpdateController(
 
     /** Called from onResume: continue an install the user had to permit in system settings. */
     fun resume() {
-        val apk = pendingApk ?: return
+        val apk = pendingApk
+        if (apk == null) {
+            resumePersistedInstall()
+            return
+        }
         if (canInstallPackages()) {
             pendingApk = null
+            clearPersistedInstall()
             launchInstaller(apk)
         }
+    }
+
+    /**
+     * A-05: granting "install unknown apps" can restart the process, which dropped [pendingApk]
+     * and with it the update. The verified APK stays in the cache, so its path, hash and version
+     * are kept until the install starts; on the next resume it is hashed again and installed only
+     * if it is unchanged, still newer, and the grant arrived within [PENDING_INSTALL_TTL_MS].
+     */
+    private fun resumePersistedInstall() {
+        val path = prefs.getString(KEY_PENDING_PATH, null) ?: return
+        val pending = PendingInstall(
+            path = path,
+            sha256 = prefs.getString(KEY_PENDING_SHA256, null).orEmpty(),
+            version = prefs.getString(KEY_PENDING_VERSION, null).orEmpty(),
+            savedAt = prefs.getLong(KEY_PENDING_AT, 0),
+        )
+        val directory = File(activity.cacheDir, UPDATE_DIR)
+        if (!canInstallPackages() || !AppUpdateRules.pendingInstallUsable(
+                pending,
+                currentVersion,
+                System.currentTimeMillis(),
+                PENDING_INSTALL_TTL_MS,
+                directory.canonicalPath,
+            )
+        ) {
+            clearPersistedInstall()
+            return
+        }
+        clearPersistedInstall()
+        val apk = File(pending.path)
+        executor.execute {
+            val unchanged = runCatching { sha256(apk).equals(pending.sha256, ignoreCase = true) }.getOrDefault(false)
+            post { if (unchanged) launchInstaller(apk) else apk.delete() }
+        }
+    }
+
+    private fun persistPendingInstall(apk: File, sha256: String, version: String) {
+        prefs.edit()
+            .putString(KEY_PENDING_PATH, apk.canonicalPath)
+            .putString(KEY_PENDING_SHA256, sha256)
+            .putString(KEY_PENDING_VERSION, version)
+            .putLong(KEY_PENDING_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun clearPersistedInstall() {
+        prefs.edit()
+            .remove(KEY_PENDING_PATH)
+            .remove(KEY_PENDING_SHA256)
+            .remove(KEY_PENDING_VERSION)
+            .remove(KEY_PENDING_AT)
+            .apply()
     }
 
     fun shutdown() {
@@ -200,13 +257,13 @@ internal class AppUpdateController(
                     }
                 }
                 if (!actual.equals(expected, ignoreCase = true)) throw IOException(activity.getString(R.string.update_checksum_mismatch))
-                target
+                target to actual
             }
             post {
                 downloading = false
-                outcome.onSuccess { file ->
+                outcome.onSuccess { (file, sha256) ->
                     dismissDialog()
-                    install(file)
+                    install(file, sha256, release.version)
                 }.onFailure { error ->
                     target.delete()
                     if (downloadCancelled) {
@@ -238,12 +295,13 @@ internal class AppUpdateController(
     private fun canInstallPackages() =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity.packageManager.canRequestPackageInstalls()
 
-    private fun install(apk: File) {
+    private fun install(apk: File, sha256: String, version: String) {
         if (canInstallPackages()) {
             launchInstaller(apk)
             return
         }
         pendingApk = apk
+        persistPendingInstall(apk, sha256, version)
         show(
             AlertDialog.Builder(activity)
                 .setTitle(R.string.update_permission_title)
@@ -257,7 +315,10 @@ internal class AppUpdateController(
                         Toast.makeText(activity, R.string.update_permission_unavailable, Toast.LENGTH_LONG).show()
                     }
                 }
-                .setNegativeButton(R.string.cancel) { _, _ -> pendingApk = null },
+                .setNegativeButton(R.string.cancel) { _, _ ->
+                    pendingApk = null
+                    clearPersistedInstall()
+                },
         )
     }
 
@@ -320,6 +381,19 @@ internal class AppUpdateController(
         }
     }
 
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun downloadFile(asset: ReleaseAsset, target: File, onProgress: (Long, Long) -> Unit): String {
         val connection = open(asset.url)
         try {
@@ -364,6 +438,11 @@ internal class AppUpdateController(
         const val KEY_AUTO_CHECK = "auto_check"
         const val KEY_LAST_CHECK = "last_check_at"
         const val KEY_SKIP_VERSION = "skip_version"
+        const val KEY_PENDING_PATH = "pending_install_path"
+        const val KEY_PENDING_SHA256 = "pending_install_sha256"
+        const val KEY_PENDING_VERSION = "pending_install_version"
+        const val KEY_PENDING_AT = "pending_install_at"
+        const val PENDING_INSTALL_TTL_MS = 60 * 60 * 1000L
         const val UPDATE_DIR = "updates"
         const val APK_MIME = "application/vnd.android.package-archive"
         const val CONNECT_TIMEOUT_MS = 15_000

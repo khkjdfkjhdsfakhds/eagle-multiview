@@ -53,6 +53,7 @@ test('DA-14/16/UW-07: first tag-color readers and concurrent color writes persis
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, JSON.stringify({ version: 1, libraries: { '/A.library': { existing: '#000000' } } }));
   const main = loadMain(root), events = [];
+  main.client.libraryInfo = async () => ({ path: '/A.library' });
   main.addFakeWindow({ isDestroyed: () => false, webContents: { send: (channel, payload) => events.push({ channel, payload }) } });
   const [first, second] = await Promise.all([main.getTagColors('/A.library'), main.getTagColors('/A.library')]);
   assert.deepEqual(second, first); assert.equal(second.existing, '#000000');
@@ -94,6 +95,7 @@ test('DA-08: mutation readback switching libraries runs the normal cache and wat
 
 test('DA-16: rejected tag writes do not advance memory or broadcast and the next save can recover', async t => {
   const root = await fixture(t), main = loadMain(root), events = [];
+  main.client.libraryInfo = async () => ({ path: '/A.library' });
   await main.getTagColors('/A.library');
   main.addFakeWindow({ isDestroyed: () => false, webContents: { send: (channel, payload) => events.push({ channel, payload }) } });
   await fs.writeFile(path.join(root, 'state'), 'temporary obstacle');
@@ -168,4 +170,22 @@ test('DA-10: use-existing imports the file when the duplicate is trashed after t
   main.hub.mutateSet = async () => { throw new Error('trashed duplicate must not be re-filed'); };
   const result = await main.rpcRegistry.get('items:import')({ sender: { id: 1 } }, { paths: [input], libraryPath, folderId: 'F', duplicateChoice: 'use-existing' });
   assert.equal(imports.length, 1); assert.equal(result.count, 1); assert.equal(result.duplicateFailed, 0); assert.deepEqual(Array.from(result.ids), ['NEW']);
+});
+
+test('B4-05: tag colours validate the library, tag and colour, and survive a damaged file', async t => {
+  const root = await fixture(t), file = path.join(root, 'state', 'tag-colors.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, '{ damaged');
+  const main = loadMain(root);
+  main.client.libraryInfo = async () => ({ path: '/A.library' });
+  assert.deepEqual({ ...await main.getTagColors('/A.library') }, {}, 'a damaged file starts over instead of throwing forever');
+  const handler = main.rpcRegistry.get('tag-colors:set');
+  const set = payload => handler({ sender: { id: 1 } }, { libraryPath: '/A.library', ...payload });
+  await assert.rejects(set({ tag: 'A', color: 'red;background:url(x)' }), /六位十六进制/);
+  await assert.rejects(set({ tag: '__proto__', color: '#111111' }), /标签名称无效/);
+  await assert.rejects(set({ tag: 'x'.repeat(256), color: '#111111' }), /标签名称无效/);
+  await assert.rejects(handler({ sender: { id: 1 } }, { libraryPath: '/Other.library', tag: 'A', color: '#111111' }), /已切换资源库/);
+  assert.equal((await set({ tag: ' A ', color: '#111111' })).A, '#111111');
+  const names = (await fs.readdir(path.dirname(file))).filter(name => name.startsWith('tag-colors.json.corrupt-'));
+  assert.equal(names.length, 1, 'the damaged file is kept aside');
 });

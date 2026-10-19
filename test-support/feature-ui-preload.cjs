@@ -38,6 +38,10 @@ window.eagleMV.moveFolder = async payload => {
   if (featureState.mode === 'pending') await new Promise(resolve => { window.__featureRelease = resolve; });
   return { ok: true, parentId: payload.parentId };
 };
+window.eagleMV.copyFolderPlan = async payload => {
+  window.__uiTestCalls.push({ kind: 'copy-plan', payload });
+  return { ok: true, folderCount: 2, itemCount: 3 };
+};
 window.eagleMV.copyFolder = async payload => {
   window.__uiTestCalls.push({ kind: 'copy-folder', payload });
   return { ok: true, id: 'copied-folder', folderCount: 2, itemAssignments: 3, failed: 0 };

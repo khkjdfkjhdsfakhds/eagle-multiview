@@ -70,7 +70,9 @@
   let transportGeneration = 0;
   let disposed = false;
   const activeUploadControllers = new Set();
-  const uploadTimeoutMs = 120000;
+  // Idle, not total: a large video on slow Wi-Fi keeps going as long as
+  // bytes move, and only a stalled upload is abandoned.
+  const uploadIdleTimeoutMs = 120000;
 
   function isCurrentTransport(generation) {
     return !disposed && generation === transportGeneration;
@@ -106,12 +108,28 @@
         clientId = message.payload?.clientId || 0;
         resolveHello(clientId);
         retryDelay = 1000;
+        // Each socket gets a new id; the renderer keys "my own change" on it,
+        // so hand over the new one (H-09). identity() alone settles only once.
+        if (clientId) emit('web:client-id', { clientId });
         if (sessionEverConnected) {
           // Reconnected after a drop: re-sync connection state and make every
           // pane refetch, mirroring what a desktop window sees after a hiccup.
           invoke('hub:connect')
-            .then(() => {
+            .then(result => {
               emit('hub:status', { connected: true });
+              // Events broadcast while the socket was down are lost: replay
+              // the host's current snapshot (another library, a changed
+              // folder tree, or a restarted host) before refetching panes.
+              if (result?.library) {
+                emit('hub:library-changed', {
+                  library: result.library,
+                  source: 'multiview',
+                  origin: null,
+                  revision: result.revision,
+                  hubInstance: result.hubInstance,
+                  reason: 'web-reconnected'
+                });
+              }
               emit('hub:query-invalidated', { reason: 'web-reconnected' });
             })
             .catch(() => {});
@@ -209,6 +227,14 @@
         current.close();
       } catch {}
     }
+  });
+  // A page restored from the back/forward cache keeps this script's state,
+  // including the disposal above: start the connection again (H-12).
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted || !disposed) return;
+    disposed = false;
+    retryDelay = 1000;
+    connectEvents();
   });
   connectEvents();
 
@@ -318,57 +344,139 @@
     } finally { thumbnailJobs.delete(data.requestId); }
   }
 
+  // XHR rather than fetch: only XHR reports upload progress, which drives the
+  // idle timeout and the progress shown while importing.
+  function postUpload(url, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let idleTimer = null;
+      let settled = false;
+      let reason = 'network';
+      const handle = { abort: () => { reason = 'disposed'; xhr.abort(); } };
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(idleTimer);
+        activeUploadControllers.delete(handle);
+        callback(value);
+      };
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { reason = 'timeout'; xhr.abort(); }, uploadIdleTimeoutMs);
+      };
+      const fail = () => settle(reject, Object.assign(new Error(reason), { reason }));
+      activeUploadControllers.add(handle);
+      xhr.open('POST', url);
+      xhr.setRequestHeader('x-eaglemv-client', String(clientId));
+      if (xhr.upload) {
+        xhr.upload.onprogress = event => {
+          armIdle();
+          onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
+        };
+      }
+      xhr.onload = () => {
+        let body = null;
+        try { body = JSON.parse(xhr.responseText); } catch {}
+        settle(resolve, { status: xhr.status, body });
+      };
+      xhr.onerror = fail;
+      xhr.onabort = fail;
+      xhr.ontimeout = fail;
+      armIdle();
+      xhr.send(file);
+    });
+  }
+
+  const stagedUploadBatches = new Map();
+  let stagedUploadSequence = 0;
+
   async function uploadBrowserFiles(files, { folderId, libraryPath } = {}) {
-    const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [] };
-    for (const file of files) {
-      if (disposed) break;
-      const controller = new AbortController();
-      let timeoutTimer = null;
-      let timedOut = false;
-      activeUploadControllers.add(controller);
+    const outcome = { canceled: false, count: 0, ready: 0, ids: [], rejected: [], unknown: [], notSubmitted: [] };
+    const batch = ++stagedUploadSequence;
+    const staged = [];
+    const duplicates = [];
+    const fileName = file => file?.name || '未命名文件';
+    // Files after a stop are listed, never silently dropped.
+    const stopAt = index => { outcome.notSubmitted.push(...files.slice(index).map(fileName)); };
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      if (disposed) { stopAt(index); break; }
+      const query = new URLSearchParams({ name: fileName(file) });
+      if (folderId) query.set('folderId', folderId);
+      if (libraryPath) query.set('libraryPath', libraryPath);
+      emit('upload:progress', { index, total: files.length, name: fileName(file), loaded: 0, size: file.size || 0 });
       try {
-        const query = new URLSearchParams({ name: file.name || '未命名文件' });
-        if (folderId) query.set('folderId', folderId);
-        if (libraryPath) query.set('libraryPath', libraryPath);
-        timeoutTimer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, uploadTimeoutMs);
-        const response = await fetch(`/upload?${query}`, {
-          method: 'POST',
-          headers: { 'x-eaglemv-client': String(clientId) },
-          body: file,
-          signal: controller.signal
+        const { status, body } = await postUpload(`/upload?${query}`, file, (loaded, size) => {
+          emit('upload:progress', { index, total: files.length, name: fileName(file), loaded, size });
         });
-        if (response.status === 401) {
+        if (status === 401) {
           location.replace('/login');
-          outcome.rejected.push({ path: file.name, message: '登录已过期' });
+          outcome.rejected.push({ path: fileName(file), message: '登录已过期' });
+          stopAt(index + 1);
           break;
         }
-        const body = await response.json();
-        if (body?.ok) {
+        if (body?.ok && body.result?.needsDuplicateDecision) {
+          // Matches an existing item: the host keeps the file until the
+          // duplicate choice for the whole batch is made (H-08).
+          staged.push({ uploadToken: body.result.uploadToken, batch });
+          duplicates.push(...(body.result.duplicates || []));
+        } else if (body?.ok) {
           outcome.count += body.result.count || 0;
           outcome.ready += body.result.ready || 0;
           outcome.ids.push(...(body.result.ids || []));
           outcome.rejected.push(...(body.result.rejected || []));
         } else {
-          outcome.rejected.push({ path: file.name, message: body?.message || '上传失败' });
+          outcome.rejected.push({ path: fileName(file), message: body?.message || '上传失败' });
         }
       } catch (error) {
-        const transportError = error?.name === 'TypeError';
-        const message = timedOut
+        // The host may already have the file: report it as unverified and
+        // never replay it or the rest of the batch automatically.
+        const message = error?.reason === 'timeout'
           ? '上传超时，结果可能不确定'
-          : (disposed ? '页面已关闭，结果可能不确定' : '连接中断，结果可能不确定');
-        outcome.rejected.push({ path: file.name, message: error?.name === 'AbortError' || transportError || timedOut || disposed
-          ? message
-          : (error?.message || message) });
-        if (timedOut || disposed || error?.name === 'AbortError' || transportError) break;
-      } finally {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        activeUploadControllers.delete(controller);
+          : (disposed || error?.reason === 'disposed' ? '页面已关闭，结果可能不确定' : '连接中断，结果可能不确定');
+        outcome.unknown.push(fileName(file));
+        outcome.error = { message };
+        stopAt(index + 1);
+        break;
       }
     }
-    return outcome;
+    emit('upload:progress', null);
+    if (!staged.length) return outcome;
+    stagedUploadBatches.set(batch, outcome);
+    return { ...outcome, needsDuplicateDecision: true, stagedUploads: true, total: files.length, duplicates, paths: staged };
+  }
+
+  // Sends the duplicate choice for staged uploads and folds in what the
+  // batch already imported, so the result covers every file. Rejections from
+  // the first pass were already returned with the decision request.
+  async function resolveStagedUploads(staged, duplicateChoice) {
+    const batch = staged[0]?.batch;
+    const prior = stagedUploadBatches.get(batch) || { count: 0, ready: 0, ids: [], unknown: [], notSubmitted: [] };
+    stagedUploadBatches.delete(batch);
+    let resolved;
+    try {
+      const response = await fetch('/upload/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-eaglemv-client': String(clientId) },
+        body: JSON.stringify({ tokens: staged.map(entry => entry.uploadToken), choice: duplicateChoice })
+      });
+      if (response.status === 401) location.replace('/login');
+      const body = await response.json().catch(() => null);
+      resolved = body?.ok ? body.result : { count: 0, ready: 0, ids: [], rejected: staged.map(() => ({ path: '', message: body?.message || '重复处理失败' })) };
+    } catch {
+      resolved = { count: 0, ready: 0, ids: [], rejected: [], unknown: staged.map(() => '重复文件'), error: { message: '连接中断，重复文件的处理结果可能不确定' } };
+    }
+    const count = (prior.count || 0) + (resolved.count || 0);
+    return {
+      ...resolved,
+      canceled: !count && duplicateChoice === 'cancel',
+      count,
+      ready: (prior.ready || 0) + (resolved.ready || 0),
+      ids: [...(prior.ids || []), ...(resolved.ids || [])],
+      unknown: [...(prior.unknown || []), ...(resolved.unknown || [])],
+      notSubmitted: prior.notSubmitted || [],
+      error: prior.error || resolved.error
+    };
   }
 
   // The Android shell tags its WebView user agent. It has one window and no
@@ -407,6 +515,10 @@
     switchLibrary: data => invoke('library:switch', [data]),
     identity: () => helloPromise,
     query: query => invoke('hub:query', [query]),
+    viewStats: query => invoke('hub:view-stats', [query]),
+    viewFacets: query => invoke('hub:view-facets', [query]),
+    viewIds: query => invoke('hub:view-ids', [query]),
+    selectionSummary: data => invoke('hub:selection-summary', [data]),
     locateItem: data => invoke('hub:locate-item', [data]),
     getRecentFolders: () => invoke('hub:recent-folders'),
     getTrashItems: data => invoke('hub:trash-items', [data]),
@@ -415,6 +527,7 @@
     addComment: data => invoke('item:add-comment', [data]),
     updateComment: data => invoke('item:update-comment', [data]),
     removeComment: data => invoke('item:remove-comment', [data]),
+    restoreComment: data => invoke('item:restore-comment', [data]),
     setCustomThumbnail: data => thumbnailOperation({ ...data, ids: data.ids || [data.id], operation: 'file' }),
     thumbnailOperation: data => thumbnailOperation(data),
     cancelThumbnailOperation: data => {
@@ -424,9 +537,11 @@
     },
     getTags: () => invoke('hub:tags'),
     getTagGroups: () => invoke('hub:tag-groups'),
+    getStarredTags: () => invoke('hub:starred-tags'),
     createSmartFolder: data => invoke('smart-folder:create', [data]),
     updateSmartFolder: data => invoke('smart-folder:update', [data]),
     removeSmartFolder: data => invoke('smart-folder:remove', [data]),
+    restoreSmartFolder: data => invoke('smart-folder:restore', [data]),
     mutate: mutation => invoke('hub:mutate', [mutation]),
     mutateSet: mutation => invoke('hub:mutate-set', [mutation]),
     watchItems: ids => invoke('hub:watch-items', [ids]),
@@ -458,21 +573,27 @@
     isFullScreen: async () => Boolean(document.fullscreenElement),
     confirmClose: () => {},
     cancelClose: () => {},
+    deferClose: () => {},
     createFolder: data => invoke('folder:create', [data]),
     createDocument: data => invoke('document:create', [data]),
     mutateFolder: data => invoke('folder:mutate', [data]),
+    updateFolderProperties: data => invoke('folder:update-properties', [data]),
     startSiteImport: data => invoke('site:start', [data]),
     nextSiteImport: data => invoke('site:next', [data]),
     retrySiteImport: data => invoke('site:retry', [data]),
     cancelSiteImport: data => invoke('site:cancel', [data]),
     importSiteSelection: data => invoke('site:import', [data]),
     moveFolder: data => invoke('folder:move', [data]),
+    removeFolder: data => invoke('folder:remove', [data]),
+    restoreRemovedFolder: data => invoke('folder:restore-removed', [data]),
     copyFolder: data => invoke('folder:copy', [data]),
+    copyFolderPlan: data => invoke('folder:copy-plan', [data]),
     markFolderUsed: data => send('folder:used', [data]),
     importItems: async (data = {}) => {
       // Dropped/pasted browser File objects arrive via `paths`; without them
       // a picker opens, then everything streams through POST /upload into the
       // host's shared import pipeline.
+      if (data.duplicateChoice && Array.isArray(data.paths) && data.paths[0]?.uploadToken) return resolveStagedUploads(data.paths, data.duplicateChoice);
       let files = Array.isArray(data.paths) && data.paths.length && typeof data.paths[0] !== 'string'
         ? data.paths
         : null;
@@ -480,7 +601,13 @@
       if (!files.length) return { canceled: true };
       return uploadBrowserFiles(files, data);
     },
+    onUploadProgress: callback => on('upload:progress', callback),
+    // 导入本地文件夹 reads folders on the host's disk; a browser has none
+    // to give, so the menu row and the sidebar drop stay desktop-only.
+    planFolderImport: null,
+    runFolderImport: null,
     importClipboard: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
+    importURL: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     pathForFile: () => null,
     showInFinder: async () => false,
     filePath: id => invoke('item:file-path', [id]),
@@ -551,6 +678,7 @@
         token,
         ids: [...new Set(payload.ids || [])],
         sourceFolderId: payload.sourceFolderId || null,
+        sourceFolderIds: Array.isArray(payload.sourceFolderIds) ? payload.sourceFolderIds : null,
         sourcePaneId: payload.sourcePaneId || null,
         sourceWindowId: payload.sourceWindowId || null,
         libraryPath: payload.libraryPath || null
@@ -565,6 +693,7 @@
     onFolderCoversChanged: callback => on('folder-covers:changed', callback),
     getManualOrders: data => invoke('manual-order:get', [data]),
     moveManualOrder: data => invoke('manual-order:move', [data]),
+    moveEagleOrder: data => invoke('eagle-order:move', [data]),
     setPins: data => invoke('pins:set', [data]),
     readText: data => invoke('text:read', [data]),
     saveText: data => invoke('text:save', [data]),
@@ -573,6 +702,7 @@
     listTextDrafts: data => invoke('text-draft:list', [data]),
     removeTextDraft: data => invoke('text-draft:remove', [data]),
     onStatus: callback => on('hub:status', callback),
+    onIdentityChanged: callback => on('web:client-id', payload => callback(payload.clientId)),
     onLibraryChanged: callback => on('hub:library-changed', callback),
     onItemsChanged: callback => on('hub:items-changed', callback),
     onQueryInvalidated: callback => on('hub:query-invalidated', callback),
@@ -622,6 +752,8 @@
     onCreateSmartFolderRequest: callback => on('command:create-smart-folder', callback),
     onNewWindowRequest: callback => on('command:new-window', callback),
     onOpenView: () => () => {},
+    onMenuCommand: () => () => {},
+    reportMenuState: () => {},
     onPinsChanged: callback => on('pins:changed', callback),
     onManualOrdersChanged: callback => on('manual-order:changed', callback),
     onTagDataChanged: callback => on('tag-data:changed', callback),

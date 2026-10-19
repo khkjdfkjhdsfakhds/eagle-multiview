@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'eaglemv-webp-stealth-'));
+const profile = require('./temp-userdata.cjs').tempUserData('eaglemv-webp-stealth-');
 app.setPath('userData', profile);
 protocol.registerSchemesAsPrivileged([
   { scheme: 'eaglemv', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }
@@ -13,7 +13,7 @@ app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
 (async () => {
   await app.whenReady();
   const extension = process.env.EAGLEMV_STEALTH_EXT === 'png' ? 'png' : 'webp';
-  let fixture;
+  let fixture, rgbFixture;
   const sample = process.env.EAGLEMV_WEBP_SAMPLE
     ? 'data:image/webp;base64,' + fs.readFileSync(process.env.EAGLEMV_WEBP_SAMPLE).toString('base64') : null;
   const sampleCases = process.env.EAGLEMV_METADATA_SAMPLES
@@ -25,7 +25,7 @@ app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
       const index = Number(caseMatch[1]);
       return new Response(sampleBytes[index], { headers: { 'Content-Type': 'image/' + sampleCases[index].ext, 'Access-Control-Allow-Origin': '*' } });
     }
-    const url = request.url.includes('sample') && sample ? sample : fixture;
+    const url = request.url.includes('sample') && sample ? sample : request.url.includes('sd-rgb') ? rgbFixture : fixture;
     return new Response(Buffer.from(url.split(',')[1], 'base64'), { headers: {
       'Content-Type': 'image/' + extension, 'Access-Control-Allow-Origin': '*'
     } });
@@ -54,6 +54,23 @@ app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
     ctx.putImageData(pixels, 0, 0);
     const url = canvas.toDataURL('image/${extension}', 0.9);
     return url;
+  })()`);
+  // SD WebUI/Forge RGB mode, lossless formats only: 200 columns tall so the
+  // payload spans several of the columns the renderer copies out.
+  const sdText = 'sd castle\nNegative prompt: sd blurry\nSteps: 20, Sampler: Euler a, Seed: 7';
+  const sdLength = Buffer.alloc(4); sdLength.writeUInt32BE(Buffer.byteLength(sdText) * 8);
+  const sdEncoded = Buffer.concat([Buffer.from('stealth_rgbinfo'), sdLength, Buffer.from(sdText)]);
+  rgbFixture = await win.webContents.executeJavaScript(`(() => {
+    const bytes = ${JSON.stringify([...sdEncoded])}, width = 300, height = 20;
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d'); const pixels = ctx.createImageData(width, height);
+    pixels.data.fill(255);
+    bytes.forEach((byte, index) => { for (let bit = 0; bit < 8; bit++) {
+      const n = index * 8 + bit, pixel = Math.floor(n / 3), x = Math.floor(pixel / height), y = pixel % height;
+      pixels.data[(y * width + x) * 4 + n % 3] = 254 | ((byte >> (7 - bit)) & 1);
+    } });
+    ctx.putImageData(pixels, 0, 0);
+    return canvas.toDataURL('image/png');
   })()`);
   const result = await win.webContents.executeJavaScript(`(async () => {
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -87,19 +104,44 @@ app.on('will-quit', () => fs.rmSync(profile, { recursive: true, force: true }));
         characterBlocks: panel.querySelectorAll('[data-metadata-copy="character"]').length };
     }
     // A late decode must not overwrite the newly selected image's metadata.
-    const readImage = EagleMVStealthMetadata.readImage;
+    const inspectImage = EagleMVStealthMetadata.inspectImage;
     let release, pendingSignal;
-    EagleMVStealthMetadata.readImage = (_url, options) => { pendingSignal = options.signal; return new Promise(resolve => { release = resolve; }); };
+    EagleMVStealthMetadata.inspectImage = (_url, options) => { pendingSignal = options.signal; return new Promise(resolve => { release = resolve; }); };
     item.modificationTime = 3;
-    const pending = loadGenerationMetadata(item); await wait(0);
+    const pending = loadGenerationMetadata(item);
+    for (let n = 0; n < 100 && !pendingSignal; n++) await wait(10);
+    assert(pendingSignal, 'Stealth decode never started');
     const next = { id: 'next', ext: 'jpg' }; state.selected = new Set([next.id]);
     window.eagleMV.readMetadata = async () => ({ metadata: { format: 'NovelAI', positive: 'next prompt' } });
     await loadGenerationMetadata(next);
     assert(pendingSignal.aborted, 'Previous decode was not cancelled');
-    release(JSON.stringify(${JSON.stringify(bundle)})); await pending;
+    release({ text: JSON.stringify(${JSON.stringify(bundle)}) }); await pending;
     assert(section.dataset.positive === 'next prompt', 'Previous WebP overwrote the new selection');
-    EagleMVStealthMetadata.readImage = readImage;
+    // Quick arrow-key browsing never decodes the images it skips past.
+    let decodes = 0;
+    EagleMVStealthMetadata.inspectImage = async () => { decodes++; return { text: null }; };
     window.eagleMV.readMetadata = async () => ({ metadata: null });
+    const skipped = { id: 'skipped', ext: '${extension}', size: 7 };
+    state.selected = new Set([skipped.id]);
+    const skipping = loadGenerationMetadata(skipped);
+    state.selected = new Set([item.id]); item.modificationTime = 4;
+    await Promise.all([skipping, loadGenerationMetadata(item)]);
+    assert(decodes === 1, 'A skipped image was decoded: ' + decodes);
+    // An image without a payload is checked once, not on every reselection.
+    await loadGenerationMetadata(item);
+    assert(decodes === 1, 'A payload-free image was decoded again');
+    EagleMVStealthMetadata.inspectImage = inspectImage;
+    if ('${extension}' === 'png') {
+      window.eagleMV.mediaURL = () => 'eaglemv://original/sd-rgb';
+      const sdItem = { id: 'sd-rgb', ext: 'png', size: 11 };
+      state.selected = new Set([sdItem.id]);
+      await loadGenerationMetadata(sdItem);
+      assert(!section.classList.contains('hidden') && section.dataset.positive === 'sd castle' && section.dataset.negative === 'sd blurry', 'SD RGB-mode stealth metadata missing: ' + section.dataset.positive);
+      assert(document.querySelector('#generationMetadataFormat').textContent.includes('FORGE'), 'SD stealth format label missing');
+      window.eagleMV.mediaURL = (kind, id) => 'eaglemv://' + kind + '/' + id;
+    }
+    window.eagleMV.readMetadata = async () => ({ metadata: null });
+    state.selected = new Set([next.id]);
     await loadGenerationMetadata(next);
     assert(section.classList.contains('hidden') && !panel.childElementCount, 'Image without metadata retained previous prompts');
     const cases = ${JSON.stringify(sampleCases.map(({ ext, expected }) => ({ ext, expected })))};
