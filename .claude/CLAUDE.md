@@ -6,6 +6,8 @@
 
 Eagle MultiView 是以 Eagle HTTP API 为数据与修改边界、面向 macOS Eagle 用户的完整多窗口客户端（另有网页端与 Android 外壳，见 `android/`）。目标是在不修改 Eagle 资料库结构的前提下，让同一资料库可同时打开多个窗口，并在浏览、整理、预览、导入、编辑、快捷操作和同步上完整看齐 Eagle 原版。技术栈：Electron、原生 Node.js、Eagle HTTP API。
 
+开工前先读 `docs/handoff/README.md`：当前状态、待验收项、未决事项和已定规则。完成一项工作后更新它（不要追加流水账；长篇过程记录放 `docs/handoff/archive/`）。
+
 ## 数据安全边界（任何环境都适用）
 
 - 不得删除、重命名、移动或重写 Eagle 资料库中的图片、文件夹、元数据或索引文件；修改元数据只能通过 Eagle API，并保留跨窗口冲突检查。
@@ -44,12 +46,17 @@ npm test                      # 单个文件：npm test -- test/xxx.test.js
 - `window.eagleMV` 是 contextBridge 冻结对象，页面里不能打桩。
 - 改了被 `lib/` require 的 `src/` 模块（如 `src/query-spec.js`、`src/pane-state.js`）后，开发版必须重启主进程才生效。
 - 模块顶层 `let` 若在模块初始化期调用的函数之后声明，会因暂时性死区导致启动白屏，源码断言测试查不出。
-- Eagle API 限制：`/api/v2/item/get` 忽略 orderBy 和所有范围参数（大小、分辨率、日期），这些筛选走客户端扫描管线；没有删除文件夹、文件夹重排/改父级等端点。item 对象在 star=0 或备注为空时省略该字段；`btime` 可用。
+- Eagle API 限制：`/api/v2/item/get` 忽略 orderBy 和所有范围参数（大小、分辨率、日期），这些筛选走客户端扫描管线；`folders` 传多个值是“同时属于”，不是“任一”。没有删除文件夹、文件夹重排/改父级、标签群组排序等端点（删除文件夹经 `/api/script/inject` 调 Eagle 自己的删除流程）。`v2/folder/update` 不带 `parent` 会把文件夹移到根、不带 `iconColor` 会清掉颜色。`v2/item/get?id` 不返回回收站素材（退回 v1 `/api/item/info`）。item 对象在 star=0 或备注为空时省略该字段；`btime` 可用。
 - 排序记忆（`src/sort-memory.js`）每库有条目上限，子树排序用 `cascade:folder:<id>` 标记，不要改回逐个写入子孙文件夹。
+- 文件夹的“Eagle 顺序”按该文件夹在 Eagle 里的 `orderBy`/`sortIncrease`（`src/eagle-order.js`，主进程与渲染端共用）；拖动排序只给被移动项写中点值（RPC `eagle-order:move`）。
+- 分栏 `.content-pane` 是尺寸容器，fixed 子元素也会被裁剪；要逃出分栏用 `popover="manual"` + `showPopover()`。
+- worker_threads 在打包后的 asar 里可用（生成信息解析在 worker 里跑）。
 
 ## Eagle 体验对齐
 
 - 以“操作体验完整看齐 Eagle 原版”为基准：从入口、悬停/拖动、目标反馈、执行、取消、异常、跨窗口同步到界面刷新的完整工作流都要收尾。
+- 用户要的是“和原版一样”，不是“在原版基础上改善”；改行为前先确认原版做法（本机可解包 Eagle 的 `app.asar` 读 `app/app.bundle.js`、`i18n/zh_CN.js`）。已定、不要再改的行为见 `docs/handoff/README.md`“规则摘要”。
+- 一次做一项：做完、测试、提交、更新交接，再做下一项；不要在一个会话里连做多个中等改动。
 - 云端无法观察 Eagle 原版行为；对操作语义、修饰键、文案、菜单层级不确定时，不得宣称已对齐，在报告里列为“待本机核对”。
 - 可见文本、按钮在窄窗口下不重叠、不溢出；强调色用 Eagle 风格蓝色，避免大面积蓝紫背景。
 
@@ -62,4 +69,4 @@ npm test                      # 单个文件：npm test -- test/xxx.test.js
 
 ## 交付报告
 
-最终报告区分：源码改动、自动测试（含环境失败说明）、未完成的验证（构建、签名、安装、GUI、多窗口、Android）。同时给出一段“交接摘要”（改了什么、为什么、已知风险、本机需要验证的具体操作），方便本机会话写入本机交接记录。
+最终报告区分：源码改动、自动测试（含环境失败说明）、未完成的验证（构建、签名、安装、GUI、多窗口、Android）。同时更新 `docs/handoff/README.md`（待验收项写清本机要做的具体操作、已知风险），方便本机会话接手。

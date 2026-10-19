@@ -1,5 +1,7 @@
 # 第 6 组原版对标调研（2026-10-15）
 
+> 已归档（2026-10-20）：只作历史记录，不再更新。当前状态与待办见 [../README.md](../README.md)。
+
 依据：解包 Eagle 4.0.0 的 `app.asar`，读渲染端源码（`app/index.html`、`app/js/directives/*.html`、`app/js/default-preferences.js`、`app/js/lib/api/filter.js`、`app/app.bundle.js`、`app/js/api-v2-playground-config.js`、`i18n/zh_CN.js`）。主进程是字节码读不了，菜单结构从 i18n 键和默认快捷键表推断。本文只写结论和建议，不改代码；每节末尾的“建议”供用户挑选范围。
 
 ## 先说结论

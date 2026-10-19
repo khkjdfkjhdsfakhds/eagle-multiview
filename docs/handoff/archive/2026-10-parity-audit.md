@@ -1,5 +1,7 @@
 # 交接：MultiView 整体审查（对标 Eagle 原版）
 
+> 已归档（2026-10-20）：只作历史记录，不再更新。当前状态与待办见 [../README.md](../README.md)。
+
 > 2026-10-14 整理，基线 `main` = v1.8.3。供 Claude Code 云会话接手。先读 `.claude/CLAUDE.md`（项目规则与云端限制）。
 
 ## 任务

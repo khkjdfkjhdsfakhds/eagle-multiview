@@ -2,6 +2,56 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
+## Unreleased
+
+Planned as 1.8.4: a full review against Eagle 4.0 and the fixes and parity work that came out of it.
+
+### Menus, shortcuts and undo
+
+- The menu bar follows Eagle 4.0's menus (应用、资源库、文件、编辑、查找、整理、显示、窗口、帮助) and wording. Existing MultiView shortcuts are unchanged; Eagle's ⌘ shortcuts that MultiView did not use were added (⌘N, ⌘E, ⌘L, ⌘T, ⌘⌥F, ⌘⇧F, ⌘⌥R, ⌘⌥4–7 and more). "Web 访问…" moved to the app menu.
+- Menu shortcuts are ignored while typing in a field, as in Eagle; Copy and Select All work on the text in a field and on items otherwise. Menu commands wait while a dialog is open.
+- Undo works like Eagle's: the notice for the latest undoable action carries "撤销", and the link or ⌘Z undoes it until about 5 seconds after the notice goes. It covers deleting items, removing from or adding/moving to folders, renaming folders and smart folders, batch rename, deleting folders, smart folders and annotations, and clearing tags. In a text field ⌘Z undoes typing.
+- ⌘A selects the whole view, past the 3,000 items loaded on screen; Shift-click and Shift-arrows extend from the last click; Enter and Space activate a focused button; Esc closes popovers.
+
+### Folders
+
+- Delete folders from the sidebar or a folder card (menu or ⌘⌫) through Eagle's own delete, with Eagle's "also delete contents" choice.
+- Select several folders in the sidebar (⌘-click, Shift-click) to view their items together, or to move, colour, rename or delete them at once.
+- Import local folders with their structure: drop folders on the sidebar's blank area or use 文件 › 导入本地文件夹…. Folders dropped on an existing folder import only their files, as in Eagle.
+- A folder's "Eagle 顺序" now follows the sort set for it in Eagle, and dragging items writes only the moved items into Eagle's manual order.
+- Filing items into a folder, or importing into it, adds the folder's auto tags.
+- Set a folder's colour from its menu; colour dots read Eagle's colour field. The inspector shows the open folder (name, description, size) when nothing is selected.
+- Eagle's 显示 switches for card name, details and annotation count, and "show subfolder content".
+- Copying a folder asks first, is in the folder menu, keeps tagged copies in place and in colour, and carries the sorts MultiView remembers. The move-folder dialog no longer offers the current parent.
+
+### Inspector, tags and filters
+
+- The inspector follows Eagle: a folders block, five-star rating, Eagle's field order and date fields, one multi-select layout (batch annotation and link, common folders, total size), foldable and reorderable blocks, an 导出 button, and the next item selected when the current one leaves the view.
+- Comments and tag colours are asked in the app (the old `prompt()` did nothing on the desktop); tag colours come from Eagle's palette.
+- The tag manager is rebuilt after Eagle's: groups with colours and descriptions, initial-letter sections, a context menu, drag into groups, batch rename (⌘R), a list layout, and new tags showing up at once. Group order is kept in MultiView only (Eagle's API cannot reorder groups).
+- New 整理 › 清除标签 and batch rename for items.
+- The filter panel has Eagle's conditions: folders, modified date, duration, annotation and link (with or without), shape, rating, size, any/all/same and exclude, date presets. Search and filters clear on navigation unless locked, as in Eagle.
+- Saving a search as a smart folder keeps the folder's subtree; "new smart folder" with nothing filtered opens the filter panel.
+
+### Preview, layout and import
+
+- Touch: tap the left or right third of the preview to page (the ‹ › buttons are gone), or drag to slide the next picture in, photo-album style. ⌘C copies the previewed item.
+- 瀑布流 fills row by row into the shortest column; the list layout has a column header that sorts and chooses columns.
+- Menus, popovers, the tag manager and dialogs stay usable in small windows and narrow panes; Eagle's wording, colours and hit areas across the app.
+- Pictures and links dragged from a browser import, including inline `data:` images. Finder drops after an interrupted drag no longer turn into moves; each pane shows its own drop target.
+
+### Web and Android
+
+- Web: rebinding hosts and cross-site writes are refused; library media is served with `nosniff`; clients resync after a host restart or a back/forward-cache restore; long uploads stay alive with progress; downloads can resume; a duplicate upload is asked about on the device that sent it; PDFs open in Eagle's own viewer; the Web 访问 window explains that plain HTTP is not encrypted.
+- Android: Back with an unsaved edit asks after the step instead of timing out; Back on the connection or failure screen leaves the app; only the app's own pages get the shell bridge; an update waiting for the install permission survives a restart; a renderer reclaimed by the system reloads; the connection screen scrolls; theme, font and display changes no longer reload the page; the WebView pauses in the background; a hint appears when a LAN address fails on mobile data. Release APKs are signed with the same key as before and are no longer debuggable.
+
+### Reliability and security
+
+- Windows close and the app quits even with a dead renderer or a pending save; reloading a window with unsaved edits asks first.
+- Main windows stay on the app page, IPC senders are checked, page permission requests other than full screen and clipboard writes are refused, and Electron fuses disable `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` and `--inspect` and enforce the asar integrity check.
+- Generation metadata is read in worker threads with size and time limits (PNG text chunks only, ImageMagick fed on stdin); the duplicate index and thumbnails refresh only what changed; large trash scans finish.
+- TXT drafts are saved on a throttle with a bounded store; local order and pin records of deleted items are trimmed; the test suite no longer shows Electron in the Dock.
+
 ## 1.8.3 - 2026-10-13
 
 ### Android app
