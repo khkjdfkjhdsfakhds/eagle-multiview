@@ -938,3 +938,24 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 **验收（2026-10-19）**：用户在测试版 `1.8.3-review.20261019.3` 按 A（归类 4 步）、B（导入 4 步）验收，全部通过。
 
 **下一步**：第三十节剩余 B3-10（外部改动后重判视图归属）、E-19/E-10 防护；之后按第二十九节做菜单栏、安卓、合并发版。
+
+## 三十三、接手：B3-10 与 E-19/E-10（2026-10-19）
+
+### 当前状态
+
+- 分支 `claude/kind-lamport-48izv4`，HEAD 为本节提交，**未推送、未合 main**；全量 `npm test` 969/969；正式安装 `/Applications` 1.8.3 未动。
+- 本轮已完成并经用户验收：第三十节原版核对报告、B2-12、形状阈值、P1-02+E-11（第三十一节）、P1-10① 自动标签含导入（第三十二节）。
+- 测试版 `dist/branchtest/mac-arm64/Eagle MultiView Test.app`（`1.8.3-review.20261019.3`，Review 身份、Web 端口 41601）在后台运行；重建前先 `osascript -e 'tell application id "local.eagle.multiview.branchtest" to quit'`，构建命令见第二十三节（换版本号）。只读 CDP 检查可用 `open -g -a <测试版> --args --remote-debugging-port=9333`。
+- Eagle 4.0.0 解包方法见第十一节；渲染端主代码 `app/app.bundle.js`，API 处理器 `app/js/plugin/index.js`。
+
+### 待做（按顺序）
+
+1. **B3-10**（小～中）：原版自己的编辑后调用 `hiddenByCurrentFilter`（`app.bundle.js` 约 49654 行）把不再符合当前视图/筛选的素材立即移出（如在“未标签”里给图打标签、在文件夹里把图移出）。MultiView 的 `onItemsChanged`（`src/renderer.js` 约 11500 行）只原地替换，不重判。做法：收到改动（含本窗口、其他窗口、Eagle 端）后，用 `query-spec` 对每栏的视图+筛选重判，不符合就移出并修正计数；搜索/智能文件夹等无法本地判定的视图排一次刷新。先确认原版对“外部（API）改动”是否也移出——`item.save` 处理器本身不调用 `hiddenByCurrentFilter`，只 `updateItemListView` + 必要时 `calculateImageBinding`，需要读清楚后者是否会重筛当前视图。
+2. **E-19**（小）：`lib/eagle-duplicate-choice.js` 自动应答前，检查 Eagle `duplicate-modal` 的 `save` 源码含预期分支（`usingExist == 'true'` 分支改写已有素材，`else` 分支 `addToDuplicateMapping`），不符合就不应答、退回原版弹窗；`isDuplicateImage` 补丁同理做能力检测。
+3. **E-10**（小）：`lib/eagle-native-sync.js` 的 `nativeSyncScript` 开头对 `saveFolder`、`calculateImageBinding`、`resetFolderCover`、`updateSidebarList` 做 typeof 检查，缺失就整体返回 false，避免先改内存再报错。
+
+之后按第二十九节：菜单栏 → 安卓 → 合并发 1.8.4。
+
+### 规则（不变）
+
+每批 `node --check` 三件 + 全量 `npm test`、本地提交、在本文件追加一节；不推送、不合 main；不覆盖 `/Applications`，GUI 用测试版；写资料库的验证先问用户；改行为前先读原版代码确认（用户要的是看齐原版）。回复用中文、精简。
