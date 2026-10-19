@@ -2,9 +2,9 @@
 
 All notable public changes to Eagle MultiView are recorded here.
 
-## Unreleased
+## 1.8.4 - 2026-10-20
 
-Planned as 1.8.4: a full review against Eagle 4.0 and the fixes and parity work that came out of it.
+A full review against Eagle 4.0 and the fixes and parity work that came out of it.
 
 ### Menus, shortcuts and undo
 

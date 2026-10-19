@@ -4,13 +4,13 @@
 
 Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多分栏工作区**和**内置局域网 Web 访问**。电脑端与网页端共享浏览、搜索、筛选、预览、整理和编辑流程，各视图独立导航，素材修改通过主机同步。
 
-[下载 macOS / Android 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.3 更新说明](docs/release-notes-v1.8.3.md)
+[下载 macOS / Android 版](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/latest) · [手机与网页连接指南](#手机平板和网页端核心功能) · [1.8.4 更新说明](docs/release-notes-v1.8.4.md)
 
 ![Eagle MultiView 1.8.0 多分栏工作区](docs/screenshots/desktop-multipane.jpg)
 
 > Eagle MultiView 不是 Eagle 官方产品。使用时需要先启动 Eagle 并打开资料库；常规操作通过本机 Eagle HTTP API，TXT 正文保存通过配套的 Eagle 官方 Plugin API 后台服务。
 
-当前版本：**[1.8.3](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.3)**，可直接下载 [macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.3/Eagle-MultiView-1.8.3-arm64.dmg)或 [Android App](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.3/Eagle-MultiView-1.8.3-android.apk)。从 1.8.2 起，两端都能在 App 内检查并安装更新。桌面安装包仅提供 **macOS Apple silicon**，不再构建和维护 Windows 桌面版；Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机和平板可直接用浏览器，也可安装 Android App。
+当前版本：**[1.8.4](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.4)**，可直接下载 [macOS 安装包](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.4/Eagle-MultiView-1.8.4-arm64.dmg)或 [Android App](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/download/v1.8.4/Eagle-MultiView-1.8.4-android.apk)。从 1.8.2 起，两端都能在 App 内检查并安装更新。桌面安装包仅提供 **macOS Apple silicon**，不再构建和维护 Windows 桌面版；Windows 电脑仍可作为普通浏览器访问 Mac 主机。手机和平板可直接用浏览器，也可安装 Android App。
 
 ## 手机、平板和网页端：核心功能
 
@@ -19,7 +19,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 ### 如何连接
 
 1. 在 Mac 上启动 Eagle，打开目标资料库，再启动 Eagle MultiView。
-2. 在 MultiView 菜单选择 **显示 → Web 访问…**，启用服务并点“应用”。默认端口为 `41600`。
+2. 在 MultiView 菜单选择 **Eagle MultiView → Web 访问…**，启用服务并点“应用”。默认端口为 `41600`。
 3. 让手机或另一台电脑与 Mac 连接同一局域网，扫描窗口中的地址二维码，或在浏览器输入窗口提供的局域网地址。
 4. 输入桌面窗口显示的访问密钥，即可进入资料库。二维码用于打开地址；启用密钥验证时仍需登录。
 5. 保持 Eagle、MultiView 和 Mac 运行；主机睡眠、退出或网络断开时，远端连接会中断。
@@ -64,7 +64,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 
 以后的版本可在 App 内更新：连接页底部有“检查更新”，App 每天也会自动检查一次；连上主机后，点左上角资料库名称打开菜单，也能“检查更新…”或“更换主机…”（返回连接页）；下载的安装包会先用 Release 中的 `SHA256SUMS.txt` 校验，再交给系统安装程序（第一次需要允许 Eagle MultiView 安装应用）。
 
-当前 APK 使用开发（debug）签名，适合个人侧载使用；以后改为正式签名时，需要先卸载旧版再安装。源码和外壳约定见 [android/README.md](android/README.md)。
+APK 适合个人侧载使用：1.8.4 起为不可调试的 release 构建，签名证书与之前各版相同，可直接覆盖安装并保留数据。源码和外壳约定见 [android/README.md](android/README.md)。
 
 ## 适合做什么
 
@@ -76,8 +76,10 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 - **多种视图模式**：支持自适应网格、瀑布流 (Waterfall) 与详细列表 (List) 视图，每个分栏独立记忆视图模式；列表视图清晰展示标签、评分与添加日期。
 - **Eagle 风格侧栏与资料库切换**：包含最近使用、随机模式、回收站、快速访问、智能文件夹和真实文件夹树；支持侧栏直接切换 Eagle 资料库。
 - **层级文件夹与路径导航**：文件夹树层级清晰，支持顶部路径面包屑导航、文件夹卡片、双击进入和 `/` 展开/收起定位。
+- **文件夹管理**：经 Eagle 自己的删除流程删除文件夹（可选同时删除内容）；侧栏 ⌘ / ⇧ 多选文件夹，合并显示并批量移动、设颜色、重命名、删除；按目录结构导入本地文件夹（拖到侧栏空白处或“文件 → 导入本地文件夹…”）。
 - **跨栏定位与统一刷新**：素材、文件夹和当前路径可通过右键在其他窗格显示；工具栏可一次刷新所有分栏。各分栏保留自己的路径、搜索、选择与滚动位置。
-- **高级筛选与色彩搜索**：支持主色调色彩筛选（可直接在检查器色板中 Option-点击筛选）、文件大小、分辨率尺寸、添加日期范围筛选与单字段精准搜索。
+- **高级筛选与色彩搜索**：支持主色调色彩筛选（可直接在检查器色板中 Option-点击筛选）、文件大小、分辨率尺寸、添加日期范围筛选与单字段精准搜索；筛选条件按 Eagle 补齐文件夹、修改日期、时长、标注、链接、形状、评分，支持任一/全部/排除与日期预设。
+- **标签管理与批量重命名**：按 Eagle 重做的标签管理（群组颜色与描述、首字母分段、拖入群组、批量重命名、列表布局）；素材批量重命名与“清除标签”。
 - **素材整理与高效交互**：
   - 框选橡皮筋工具（空白处拖拽框选素材，支持边缘自动滚动）；
   - 直接拖拽素材移动归类（自动移出原文件夹），按住 `Option` 拖拽则为复制到目标文件夹；
@@ -117,16 +119,21 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 
 当前版本使用临时本机签名，尚未经过 Apple 公证。macOS 首次拦截时，请在 Finder 中右键 Eagle MultiView 并选择“打开”；不需要关闭 Gatekeeper 或修改系统安全策略。
 
-**更新**：从 1.8.2 起，菜单“Eagle MultiView → 检查更新…”可随时检查，App 每天也会自动检查一次（更新窗口里可关闭）。发现新版本时可以跳过、稍后提醒或“下载并安装”：安装包在 App 内下载并用 `SHA256SUMS.txt` 校验，再核对 App 标识、版本和签名，然后自动替换“应用程序”中的 Eagle MultiView 并重新打开；选“稍后”则在下次退出时安装。有未保存的 TXT 时会先照常提示。
+**更新**：从 1.8.2 起，菜单“Eagle MultiView → 检查更新”可随时检查，App 每天也会自动检查一次（更新窗口里可关闭）。发现新版本时可以跳过、稍后提醒或“下载并安装”：安装包在 App 内下载并用 `SHA256SUMS.txt` 校验，再核对 App 标识、版本和签名，然后自动替换“应用程序”中的 Eagle MultiView 并重新打开；选“稍后”则在下次退出时安装。有未保存的 TXT 时会先照常提示。
 
 ## 基本操作
 
 | 操作 | 快捷键 |
 | --- | --- |
 | 新建 MultiView 窗口 | `Command-Option-N` |
+| 新建…（文件、文件夹、智能文件夹等） | `Command-N` |
 | 新建文件夹 | `Option-N` |
 | 新建 TXT | `Option-Shift-N` |
-| 聚焦搜索 | `Command-F` |
+| 聚焦搜索 / 在“全部”搜索 | `Command-F` / `Command-Option-F` |
+| 打开筛选器 / 重置筛选器 | `Command-Shift-F` / `Command-Shift-Option-F` |
+| 切换资源库 | `Command-L` |
+| 导出到计算机 | `Command-E` |
+| 添加标签 | `Command-T` |
 | 导入文件 | `Command-Shift-O` |
 | 预览 / 关闭预览 | `Space` |
 | 进入文件夹 / 预览素材 | `Return` |
@@ -138,6 +145,9 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 | 展开或收起当前文件夹树 | `/` |
 | 显示或隐藏侧栏 | `Command-Shift-L` |
 | 显示或隐藏检查器 | `Command-Shift-I` |
+| 显示或隐藏卡片名称 / 尺寸 / 标注，显示子文件夹内容 | `Command-Option-4` ~ `Command-Option-7` |
+| 刷新缩略图 | `Command-Option-R` |
+| 黑白预览 | `Command-Option-G` |
 | 保存 TXT | `Command-S` |
 | 缩略图放大 / 缩小 / 重置 | `Command-+` / `Command--` / `Command-0` |
 | 切换分栏全屏预览同步 | `Shift-S` |
@@ -152,7 +162,7 @@ Eagle MultiView 是 Eagle 的非官方客户端，提供 **macOS 多窗口 / 多
 | 添加至文件夹… / 添加至上次使用的文件夹 | `Command-Shift-J` / `Shift-D` |
 | 在访达中打开 | `Command-Return` |
 | 丢到回收站 / 从当前文件夹移除 | `Command-Delete` / `Command-Shift-Delete` |
-| 撤销丢到回收站（输入框内为文字撤销） | `Command-Z` |
+| 撤销最近一次操作（提示条上的“撤销”，约 5 秒内有效；输入框内为文字撤销） | `Command-Z` |
 | 预览中：原始大小 / 适合窗口，缩放 | `Command-0`，`Command-+` / `Command--` |
 | 关闭弹层、预览，清除选择 | `Esc` |
 
@@ -214,6 +224,6 @@ App 内更新读取 GitHub 上最新的正式 Release（不含 Draft 和 Prerele
 
 ## English summary
 
-Eagle MultiView is an unofficial Eagle client for **Apple silicon macOS and local-network browsers**. Keep independent windows and up to four panes on your Mac, then browse, search, preview, organize, upload and download assets from a phone, tablet or another computer. Enable **View → Web Access** on the Mac, open its LAN address on the other device and sign in with the access key. Eagle and MultiView must remain running on the host. No cloud account or full-library copy is required. The built-in server uses HTTP and is intended for trusted local networks.
+Eagle MultiView is an unofficial Eagle client for **Apple silicon macOS and local-network browsers**. Keep independent windows and up to four panes on your Mac, then browse, search, preview, organize, upload and download assets from a phone, tablet or another computer. Enable **Eagle MultiView → Web Access** on the Mac, open its LAN address on the other device and sign in with the access key. Eagle and MultiView must remain running on the host. No cloud account or full-library copy is required. The built-in server uses HTTP and is intended for trusted local networks.
 
-Version 1.8.3 puts "Check for updates" and "Change host" in the Android app's library menu. Version 1.8.2 added in-app updates on macOS and Android: a once-a-day or on-demand check against the latest GitHub release, a SHA-256-verified download, then an in-place replace and relaunch on the Mac or the system installer on Android. Version 1.8.1 added an Android app for phones and tablets: it opens the same Web Access service with system Back and edge gestures that follow the page's own close/back order, Ctrl-based hardware-keyboard shortcuts (⌘ on macOS), desktop-like Esc, the system file picker for imports and system downloads. The APK is debug-signed for sideloading. Ctrl/⌘+Z now undoes moves to Trash on every client. Version 1.8.0 added folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving and WebP/NovelAI character metadata. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued.
+Version 1.8.4 follows a full review against Eagle 4.0: Eagle's menu bar and ⌘ shortcuts, Eagle-style single undo (⌘Z or the notice's link), deleting and multi-selecting folders, importing local folders with their structure, a rebuilt tag manager, batch rename, Eagle's filter conditions, and reliability and security fixes; Android APKs are now non-debuggable release builds signed with the same key. Version 1.8.3 puts "Check for updates" and "Change host" in the Android app's library menu. Version 1.8.2 added in-app updates on macOS and Android: a once-a-day or on-demand check against the latest GitHub release, a SHA-256-verified download, then an in-place replace and relaunch on the Mac or the system installer on Android. Version 1.8.1 added an Android app for phones and tablets: it opens the same Web Access service with system Back and edge gestures that follow the page's own close/back order, Ctrl-based hardware-keyboard shortcuts (⌘ on macOS), desktop-like Esc, the system file picker for imports and system downloads. The APK is signed for sideloading. Ctrl/⌘+Z now undoes moves to Trash on every client. Version 1.8.0 added folder moves, local manual ordering, thumbnail tools, selective ArtStation imports, safer TXT background saving and WebP/NovelAI character metadata. TXT writes use the bundled Eagle Plugin API service; metadata changes use Eagle's HTTP API. Windows desktop builds are discontinued.
