@@ -6,10 +6,10 @@
 
 ## 当前状态（2026-10-20）
 
-- 版本 **1.8.4**：`main` 已合并 10 月的全部修复与对标工作（提交 `0b923fc`，版本提交 `9806790`），只在维护者本机安装试用，**尚未发布 GitHub Release**；最新公开 Release 仍是 1.8.3。
+- 版本 **1.8.4**：`main` 已合并 10 月的全部修复与对标工作，2026-10-20 公开发布 [GitHub Release v1.8.4](https://github.com/khkjdfkjhdsfakhds/eagle-multiview/releases/tag/v1.8.4)（DMG + release APK + `SHA256SUMS.txt`，标签指向文档提交 `03a3417`）。
 - 自动测试：全量 `npm test` 1032/1032；安卓 JVM 单测 71/71。
 - 构建：arm64 目录构建、ad-hoc 签名，Electron fuses 已收紧（RunAsNode、`NODE_OPTIONS`、`--inspect` 关闭；asar 完整性校验与只从 asar 加载开启）。
-- 变更摘要见 [CHANGELOG.md](../../CHANGELOG.md) 的 “Unreleased”。
+- 变更摘要见 [CHANGELOG.md](../../CHANGELOG.md) 的 1.8.4 与 [release notes](../release-notes-v1.8.4.md)。
 
 ## 待用户验收
 
@@ -39,7 +39,7 @@
 
 ## 未决 / 之后
 
-1. **公开发布 1.8.4**（需用户明确同意）：README 当前版本与下载链接、英文摘要、`使用说明.txt`、`docs/release-notes-v1.8.4.md`，CHANGELOG 的 “Unreleased” 改为 1.8.4。README 和使用说明里按 1.8.3 写的内容要一起改：“Web 访问…”改在应用菜单（不再是“显示”菜单）、“检查更新”菜单项去掉省略号、快捷键表的 ⌘Z 一行（改为单一撤销）和新增的 ⌘ 快捷键、主要功能补上删除文件夹/文件夹多选/按目录结构导入/批量重命名/标签管理/筛选条件；安卓用 `assembleRelease` 的 APK（与历次 Release 同一签名证书）；DMG + APK + `SHA256SUMS.txt`，标签 `v1.8.4`。发布约定见 README“发布记录”。
+1. Android App 自 1.8.2 起可在 App 内更新到 1.8.4（release APK 与历次同一证书，versionCode 5）；手机尚未更新。
 2. W-02：手机上传约 1 GB 视频的真机验证（会写资料库，未获同意，未做；代码已修）。
 3. 文件名含 `%d` 等 ImageMagick 格式符时元数据读取失败（老问题，未修）。
 4. 验收用的测试文件夹在用户验收完后由用户自己在 Eagle 里删除。
