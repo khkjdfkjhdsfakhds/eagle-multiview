@@ -80,9 +80,11 @@ test('reads queue behind busy workers and a crash fails only its own read', asyn
 
 test('a worker that cannot start falls back to reading in process', async () => {
   const { FakeWorker, made } = fakeWorkers();
-  const read = createMetadataWorkerReader({ size: 1, WorkerClass: FakeWorker, readInProcess: async file => `in-process ${file}` });
+  const reported = [];
+  const read = createMetadataWorkerReader({ size: 1, WorkerClass: FakeWorker, readInProcess: async file => `in-process ${file}`, onUnavailable: error => reported.push(error.message) });
   const first = read('/a.png', 'png');
   made[0].emit('error', new Error('Cannot find module'));
+  assert.deepEqual(reported, ['Cannot find module'], 'reported once');
   assert.equal(await first, 'in-process /a.png');
   assert.equal(await read('/b.png', 'png'), 'in-process /b.png');
   assert.equal(made.length, 1, 'no further workers are tried');

@@ -74,7 +74,9 @@ protocol.registerSchemesAsPrivileged([
 
 const client = new EagleClient();
 // Parsing runs in worker threads, off the main process (E-02).
-const readMetadata = createMetadataWorkerReader();
+const readMetadata = createMetadataWorkerReader({
+  onUnavailable: error => logFault('metadata', '无法启动元数据读取线程，改在主进程读取', error)
+});
 const metadataSearchIndex = new MetadataSearchIndex({
   directory: path.join(app.getPath('userData'), 'state', 'metadata-search'),
   readMetadata,
