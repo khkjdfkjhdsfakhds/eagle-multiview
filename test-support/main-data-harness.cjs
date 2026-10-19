@@ -14,7 +14,7 @@ function loadMain(root, { dialog = {}, clipboard = {}, BrowserWindow = { fromWeb
   const realRequire = createRequire(path.join(ROOT, 'main.js'));
   const context = { require: name => name === 'electron' ? electron : realRequire(name), module: { exports: {} }, __dirname: ROOT,
     process: { on() {}, platform: 'darwin', pid: process.pid, env: {} }, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, structuredClone, URL, Buffer, AbortController };
-  const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, copyFolderTree, planFolderCopy, resolveMediaURL, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
+  const expose = '\nmodule.exports = { setupIPC, rpcRegistry, hub, client, decodeImageDataURL, copyFolderTree, planFolderCopy, resolveMediaURL, setTagColor, getTagColors, hydrateSupplementalItems, getSupplementalItemStore, ' +
     'setWebServer: value => { webServer = value; }, setWaitForImportedFile: value => { waitForImportedFile = value; }, ' +
     'addFakeWindow: value => windows.add(value), getQuitting: () => quitting, createWindow, ' +
     'setUpdater: value => { updater = value; }, setQuitting: value => { quitting = value; }, isTrustedSender, isMainPageURL, MAIN_PAGE_URL };';

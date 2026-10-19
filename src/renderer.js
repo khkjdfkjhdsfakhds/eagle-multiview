@@ -9278,12 +9278,12 @@ function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.act
   // A browser image or link imports its address, like Eagle (D-08).
   const link = dragHasType(dataTransfer, 'Files') ? null : droppedURL(dataTransfer);
   clearDragUI();
-  if (link && /^https?:/i.test(link.url)) {
+  if (link && (/^https?:/i.test(link.url) || /^data:image\//i.test(link.url))) {
     scheduleDropTask(() => importFiles(null, 'url', { folderId, libraryPath, paneId, url: link.url, image: link.image }));
     return true;
   }
   toast(link?.url.startsWith('blob:') ? '这张图片是浏览器的临时地址，无法直接添加；请先存到本地再拖入'
-    : link?.url.startsWith('data:') ? '暂不支持直接拖入网页内嵌图片；请先存到本地再拖入'
+    : link?.url.startsWith('data:') ? '只能添加网页里的图片'
     : dragHasType(dataTransfer, 'Files') ? '无法读取拖入的项目（例如“照片”App 中的照片）；请先导出到 Finder 再拖入'
     : '只能拖入文件、网页图片或网址', 4600);
   return false;

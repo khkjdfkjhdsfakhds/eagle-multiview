@@ -2039,6 +2039,40 @@ async function importClipboard({ folderId, libraryPath, clipboardText = '' }, im
   }
 }
 
+// A picture dragged out of a web page as a data: address (D-08). Eagle's
+// drop hands it to uploadUrl, which decodes the base64 into a file; here it
+// becomes a temporary file imported like a pasted image, so the duplicate
+// check and the folder's auto tags apply.
+const DATA_URL_IMAGE_TYPES = { png: 'png', jpeg: 'jpg', jpg: 'jpg', gif: 'gif', webp: 'webp', bmp: 'bmp', 'svg+xml': 'svg', avif: 'avif', 'x-icon': 'ico', 'vnd.microsoft.icon': 'ico' };
+const DATA_URL_MAX_BYTES = 64 * 1024 * 1024;
+function decodeImageDataURL(value) {
+  const match = /^data:image\/([a-z0-9.+-]+)((?:;[^,;]*)*?)(;base64)?,(.*)$/is.exec(String(value || ''));
+  const ext = match && DATA_URL_IMAGE_TYPES[match[1].toLowerCase()];
+  if (!ext) throw new Error('只能添加网页里的图片');
+  const body = match[4];
+  if (body.length > DATA_URL_MAX_BYTES * 1.4) throw new Error('图片过大，请先存到本地再拖入');
+  const bytes = match[3] ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8');
+  if (!bytes.length) throw new Error('图片内容为空');
+  return { ext, bytes };
+}
+
+async function importDataURLItem({ url, folderId, libraryPath }, importWithDecision) {
+  const { ext, bytes } = decodeImageDataURL(url);
+  const temporaryDir = path.join(app.getPath('temp'), 'Eagle MultiView Paste');
+  await fsp.mkdir(temporaryDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const temporaryPath = path.join(temporaryDir, `网页图片-${stamp}.${ext}`);
+  await fsp.writeFile(temporaryPath, bytes);
+  try {
+    const result = await importWithDecision({ paths: [temporaryPath], folderId, libraryPath });
+    setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), result.needsDuplicateDecision ? 24 * 60 * 60 * 1000 : result.ready ? 15000 : 5 * 60 * 1000).unref?.();
+    return { ...result, source: 'data-url' };
+  } catch (error) {
+    setTimeout(() => fsp.unlink(temporaryPath).catch(() => {}), 5 * 60 * 1000);
+    throw error;
+  }
+}
+
 async function installProtocol() {
   protocol.handle('eaglemv', async request => {
     try {
@@ -2631,8 +2665,10 @@ function setupIPC() {
     }
   });
   handleRPC('items:import-clipboard', (event, data) => importClipboard(data, payload => rpcRegistry.get('items:import')(event, payload)));
-  handleRPC('items:import-url', (_event, { url, image, folderId, libraryPath } = {}) => (
-    importURLItem({ url, image: Boolean(image), folderId, libraryPath, reason: 'drop-url' })
+  handleRPC('items:import-url', (event, { url, image, folderId, libraryPath } = {}) => (
+    /^data:/i.test(String(url || ''))
+      ? importDataURLItem({ url, folderId, libraryPath }, payload => rpcRegistry.get('items:import')(event, payload))
+      : importURLItem({ url, image: Boolean(image), folderId, libraryPath, reason: 'drop-url' })
   ));
   handleRPC('item:show-in-finder', async (_event, id) => {
     const { filePath } = await itemFilePath(id);
