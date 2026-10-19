@@ -19,7 +19,7 @@ test('several items: 重命名 N 个项目... and ⌘R open Eagle\'s batch renam
   assert.deepEqual(result.defaultRows, ['素材 1 > 新名字 - 1', '素材 2 > 新名字 - 2', '素材 3 > 新名字 - 3']);
   assert.deepEqual(result.rows, ['素材 1 > 图01', '素材 2 > 图02', '素材 3 > 图03'], 'a slash is dropped from a file name');
   assert.deepEqual(result.writes, ['item-1=图01', 'item-2=图02', 'item-3=图03']);
-  assert.equal(result.toast, '3 个项目已重命名。');
+  assert.equal(result.toast, '3 个项目已重命名。撤销', 'Eagle\'s notice with its 撤销 link (P3-05)');
   assert.equal(result.lastName, '图/%NN');
   assert.equal(result.commandRPattern, '图/%NN', 'the last name used comes back');
   assert.equal(result.closed, true);

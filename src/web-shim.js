@@ -527,6 +527,7 @@
     addComment: data => invoke('item:add-comment', [data]),
     updateComment: data => invoke('item:update-comment', [data]),
     removeComment: data => invoke('item:remove-comment', [data]),
+    restoreComment: data => invoke('item:restore-comment', [data]),
     setCustomThumbnail: data => thumbnailOperation({ ...data, ids: data.ids || [data.id], operation: 'file' }),
     thumbnailOperation: data => thumbnailOperation(data),
     cancelThumbnailOperation: data => {
@@ -540,6 +541,7 @@
     createSmartFolder: data => invoke('smart-folder:create', [data]),
     updateSmartFolder: data => invoke('smart-folder:update', [data]),
     removeSmartFolder: data => invoke('smart-folder:remove', [data]),
+    restoreSmartFolder: data => invoke('smart-folder:restore', [data]),
     mutate: mutation => invoke('hub:mutate', [mutation]),
     mutateSet: mutation => invoke('hub:mutate-set', [mutation]),
     watchItems: ids => invoke('hub:watch-items', [ids]),
@@ -583,6 +585,7 @@
     importSiteSelection: data => invoke('site:import', [data]),
     moveFolder: data => invoke('folder:move', [data]),
     removeFolder: data => invoke('folder:remove', [data]),
+    restoreRemovedFolder: data => invoke('folder:restore-removed', [data]),
     copyFolder: data => invoke('folder:copy', [data]),
     copyFolderPlan: data => invoke('folder:copy-plan', [data]),
     markFolderUsed: data => send('folder:used', [data]),

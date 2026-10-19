@@ -17,29 +17,53 @@ async function run() {
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (let i = 0; i < 150 && !(window.state?.connected && window.__undoMenu); i += 1) await wait(20);
     if (!window.__undoMenu) throw new Error('undo menu handler never registered');
-    const toasts = [];
-    const showToast = window.toast;
-    window.toast = (message, ...rest) => { toasts.push(String(message)); return showToast(message, ...rest); };
+    const calls = [];
+    const offer = (name, duration = 4000) => toast(name, duration, { undo: () => { calls.push(name); } });
     const input = document.querySelector('#searchInput');
     input.focus();
     document.execCommand('insertText', false, 'abc');
     const typed = input.value;
+    offer('typing');
     window.__undoMenu();
     await wait(50);
     const afterUndo = input.value;
     input.blur();
+    // Behind a dialog nothing runs and the undo stays.
     document.querySelector('#folderDialog').classList.remove('hidden');
     window.__undoMenu();
     await wait(50);
-    const behindDialog = toasts.slice();
+    const behindDialog = calls.slice();
     document.querySelector('#folderDialog').classList.add('hidden');
     document.body.focus();
     await wait(50);
-    const focusTag = document.activeElement?.id || document.activeElement?.tagName;
-    const openDialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(d => !d.classList.contains('hidden')).map(d => d.id);
     window.__undoMenu();
     await wait(50);
-    return { focusTag, openDialogs, typed, afterUndo, behindDialog, plain: toasts.slice(behindDialog.length) };
+    const afterPlain = calls.slice();
+    // Eagle has one undo: a second ⌘Z does nothing.
+    window.__undoMenu();
+    await wait(50);
+    const afterSecond = calls.slice();
+    // A later notice without 撤销 takes the undo's place.
+    offer('replaced');
+    toast('其他提示');
+    window.__undoMenu();
+    await wait(50);
+    const afterReplaced = calls.slice();
+    // The 撤销 link runs it and closes the notice.
+    offer('link');
+    const link = document.querySelector('#toast .toast-undo');
+    const linkText = link?.textContent;
+    const clickable = getComputedStyle(document.querySelector('#toast')).pointerEvents;
+    link?.click();
+    await wait(50);
+    const afterLink = calls.slice();
+    const hiddenAfterLink = document.querySelector('#toast').classList.contains('hidden');
+    // 5 s after the notice has gone, it no longer undoes.
+    offer('expired', 10);
+    undoSlot.expiresAt = Date.now() - 1;
+    window.__undoMenu();
+    await wait(50);
+    return { typed, afterUndo, behindDialog, afterPlain, afterSecond, afterReplaced, linkText, clickable, afterLink, hiddenAfterLink, final: calls.slice() };
   })()`);
   console.log(`EAGLEMV_UNDO_ROUTING ${JSON.stringify(result)}`);
 }

@@ -39,10 +39,22 @@ function eagleRenderer(adapter, { shape = true } = {}) {
       if (count >= amount) window.swal({ customClass: 'alert-box', allowEnterKey: false, html: 'bulk' }).then(callback);
       else callback();
     },
-    $evalAsync() {}
+    $evalAsync() {},
+    $root: { undo() {}, closeAll() { scope.closed = (scope.closed || 0) + 1; } }
   };
   function removeFolder(folder, params) {
     scope.removals.push({ id: folder.id, params: { ...params } });
+    // Eagle's notice keeps a restore of the tree and the items (10 ms later).
+    const savedTree = JSON.parse(JSON.stringify(adapter.tree));
+    const savedItems = JSON.parse(JSON.stringify(adapter.items));
+    setTimeout(() => {
+      scope.$root.undo = function restore() {
+        scope.restored = (scope.restored || 0) + 1;
+        adapter.tree.splice(0, adapter.tree.length, ...savedTree);
+        adapter.items.splice(0, adapter.items.length, ...savedItems);
+        index(adapter.tree, undefined);
+      };
+    }, 10);
     const location = locate(adapter.tree, folder.id);
     location.siblings.splice(location.siblings.indexOf(folder), 1);
     const ids = new Set();
@@ -243,4 +255,34 @@ test('after a sidebar delete Eagle opens the next sibling, else the previous, el
   assert.deepEqual(next('only'), { kind: 'folder', id: 'Q' });
   assert.deepEqual(next('P'), { kind: 'folder', id: 'Q' });
   assert.deepEqual(make([{ id: 'solo', children: [] }])('solo'), { kind: 'all' });
+});
+
+// P3-05: the 撤销 of “X”已删除。 runs Eagle's own restore.
+test('撤销 runs the restore Eagle keeps for the deletion: tree and items come back', async () => {
+  const { adapter, hub } = await fixture();
+  const before = { tree: await adapter.folderTree(), items: JSON.parse(JSON.stringify(adapter.items)) };
+  const removed = await hub.removeFolder({ id: 'A', baseName: '旧素材', isDeleteImages: true, libraryPath: LIBRARY });
+  assert.ok(removed.undoToken);
+  await wait(150);
+  const changed = [];
+  hub.on('library-changed', event => changed.push(event));
+  assert.deepEqual(await hub.restoreRemovedFolder({ id: 'A', undoToken: removed.undoToken, libraryPath: LIBRARY }), { ok: true });
+  assert.equal(adapter.renderer.scope.restored, 1);
+  assert.equal(adapter.renderer.scope.closed, 1, 'Eagle\'s notice closes as its own 撤销 does');
+  assert.deepEqual(await adapter.folderTree(), before.tree);
+  assert.deepEqual(adapter.items, before.items);
+  assert.ok(changed.at(-1).library.folders.some(folder => folder.id === 'A'));
+  assert.equal(adapter.renderer.window.__eaglemvFolderUndo, null, 'the kept restore is used up');
+  await hub.restoreRemovedFolder({ id: 'A', undoToken: removed.undoToken, libraryPath: LIBRARY });
+  assert.equal(adapter.renderer.scope.restored, 1, 'a restore runs once');
+});
+
+test('once Eagle has a newer notice, 撤销 changes nothing and says the undo has expired', async () => {
+  const { adapter, hub } = await fixture();
+  const removed = await hub.removeFolder({ id: 'E', baseName: '空', libraryPath: LIBRARY });
+  await wait(150);
+  adapter.renderer.scope.$root.undo = function newerNotice() {};
+  await assert.rejects(hub.restoreRemovedFolder({ id: 'E', undoToken: removed.undoToken, libraryPath: LIBRARY }), { code: 'FOLDER_RESTORE_EXPIRED' });
+  assert.equal(adapter.renderer.scope.restored, undefined);
+  assert.ok(!(await adapter.folderTree()).some(folder => folder.id === 'E'));
 });

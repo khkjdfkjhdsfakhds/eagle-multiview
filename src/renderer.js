@@ -313,10 +313,6 @@ const state = {
   restoreScroll: null
 };
 
-// Eagle has no client-side undo history for metadata mutations. Keep a small
-// in-memory record of the latest trash operation so Control+Z can safely send
-// the inverse API patch while this window remains open.
-const trashUndoStack = [];
 let trashMutationInFlight = 0;
 // Per pane: the rating whose writes are still in flight (setSelectionRating).
 const ratingQueues = new Map();
@@ -329,7 +325,8 @@ let libraryExtrasToken = 0;
 let libraryExtrasRun = null;
 
 // 编辑 → 撤销 (⌘Z) is one menu item for two jobs: text undo while a field
-// has focus, otherwise undoing the last delete. An open dialog swallows it so
+// has focus, otherwise the 撤销 of the last notice (Eagle's $scope.undo,
+// which does nothing when there is none). An open dialog swallows it so
 // nothing changes behind the dialog.
 function routeUndoCommand() {
   if (isEditableElement()) {
@@ -339,20 +336,17 @@ function routeUndoCommand() {
   const dialogOpen = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
     .some(dialog => !dialog.classList.contains('hidden'));
   if (dialogOpen) return;
-  undoLastTrash();
+  runUndo();
 }
 
-async function undoLastTrash() {
-  if (trashMutationInFlight) { toast('删除操作尚未完成，请稍后再试', 2600); return; }
-  const entry = trashUndoStack.at(-1);
-  if (!entry?.ids?.length) { toast('没有可撤销的删除操作', 2200); return; }
-  const paneId = paneById(entry.paneId) ? entry.paneId : state.activePaneId;
+// Eagle's undo of a delete: the items leave the trash and are selected.
+async function restoreTrashed({ ids, libraryPath, paneId: wantedPaneId, viewKey }) {
+  if (trashMutationInFlight) throw new Error('删除操作尚未完成，请稍后再试');
+  const paneId = paneById(wantedPaneId) ? wantedPaneId : state.activePaneId;
   const pane = paneById(paneId);
-  const libraryPath = state.library?.path;
-  if (!pane || !libraryPath || libraryPath !== entry.libraryPath) { toast('撤销失败：资源库已切换', 3500); return; }
+  if (!pane || state.library?.path !== libraryPath) throw new Error('资源库已切换');
   const operationToken = beginForegroundOperation('正在撤销删除…', { key: `trash-undo:${paneId}` });
   if (!operationToken) return;
-  const selectionBefore = new Set(pane.selected);
   trashMutationInFlight += 1;
   let released = false;
   const release = () => {
@@ -363,21 +357,23 @@ async function undoLastTrash() {
   };
   setSyncStatus('正在撤销删除…');
   try {
-    const outcome = await runItemBatch(entry.ids, async id => {
-      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
-      const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: item, libraryPath });
+    const outcome = await runItemBatch(ids, async id => {
+      const result = await window.eagleMV.mutate({ id, patch: { isDeleted: false }, base: { isDeleted: true }, libraryPath });
       if (result?.conflict) throw new Error('素材已在其他窗口发生变化，请刷新后重试');
       return result;
     }, 'Eagle 撤销请求超时');
     if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成撤销');
-    entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
-    if (!entry.ids.length) trashUndoStack.pop();
-    settleBatchSelection(pane, selectionBefore, outcome.failed);
     release();
     await refresh({ reset: true, preserveScroll: true, paneId });
-    toast(outcome.failed.length ? `已撤销 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败` : `已撤销删除 ${outcome.succeeded.length} 个素材`, outcome.failed.length ? 4200 : 2400);
-  } catch (error) {
-    toast(`撤销删除失败：${error.message}`, 4000);
+    if (descriptorKey(pane.currentView) === viewKey) {
+      const shown = new Set(pane.items.map(item => item.id));
+      pane.selected = new Set(outcome.succeeded.filter(id => shown.has(id)));
+      if (state.activePaneId === paneId) {
+        updateCardSelectionStyles();
+        renderInspector();
+      }
+    }
+    if (outcome.failed.length) toast(`${outcome.failed.length} 个素材未恢复${batchFailureReason(outcome)}`, 4200);
   } finally {
     setSyncStatus('所有窗口已同步');
     release();
@@ -1452,12 +1448,39 @@ async function refreshAllPanes(options = {}) {
   await Promise.all([...state.panes].map(pane => refresh({ ...options, paneId: pane.id })));
 }
 
-function toast(message, duration = 2400) {
+// Eagle 4.0 keeps one undo (P3-05, $rootScope.notify): the notice of the
+// last undoable action carries 撤销, and the link or ⌘Z runs it until the
+// notice has been gone for 5 s. Any later notice takes its place, with or
+// without an undo of its own.
+const UNDO_GRACE_MS = 5000;
+let undoSlot = null;
+
+function toast(message, duration = 2400, { undo = null } = {}) {
   const element = $('#toast');
   element.textContent = message;
+  undoSlot = undo ? { restore: undo, expiresAt: Date.now() + duration + UNDO_GRACE_MS } : null;
+  element.classList.toggle('has-undo', Boolean(undo));
+  if (undo) {
+    const slot = undoSlot;
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'toast-undo';
+    link.textContent = '撤销';
+    link.addEventListener('click', () => runUndo(slot));
+    element.append(link);
+  }
   element.classList.remove('hidden');
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => element.classList.add('hidden'), duration);
+}
+
+function runUndo(slot = undoSlot) {
+  if (!slot || slot !== undoSlot || Date.now() > slot.expiresAt) return false;
+  undoSlot = null;
+  clearTimeout(state.toastTimer);
+  $('#toast').classList.add('hidden');
+  Promise.resolve().then(() => slot.restore()).catch(error => toast(`撤销失败：${error.message}`, 4000));
+  return true;
 }
 
 function scheduleVisibleItemWatch() {
@@ -2669,9 +2692,18 @@ async function renameSmartFolder(id) {
   if (!folder) return;
   const name = await requestNameDialog({ title: '重命名智能文件夹', initialValue: folder.name || '', submitLabel: '重命名' });
   if (!name?.trim() || name.trim() === folder.name) return;
+  const previousName = folder.name;
+  const nextName = name.trim();
   await runForegroundOperation('正在重命名智能文件夹…', { key: `smart-update:${libraryPath}:${id}` }, async () => {
-    await window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: name.trim() } });
-    toast('智能文件夹已重命名');
+    await window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: nextName } });
+    // Eagle's changeSmartFolderName notice and 撤销 (P3-05).
+    toast(`“${previousName}”已重命名为“${nextName}”。`, 4000, { undo: async () => {
+      const current = findFolder(state.library?.smartFolders, id);
+      if (!current || state.library?.path !== libraryPath) throw new Error('智能文件夹已不在当前资源库');
+      if (current.name !== nextName) throw new Error(`智能文件夹已在别处改名为“${current.name}”`);
+      await runForegroundOperation('正在撤销…', { key: `smart-update:${libraryPath}:${id}` }, () =>
+        window.eagleMV.updateSmartFolder({ libraryPath, id, patch: { name: previousName } }));
+    } });
   });
 }
 
@@ -2681,9 +2713,20 @@ async function removeSmartFolder(id) {
   if (!folder) return;
   const childCount = (folder.children || []).length;
   if (!confirm(`移除智能文件夹“${folder.name}”？${childCount ? `\n\n它的 ${childCount} 个子智能文件夹也会一并移除。` : ''}\n\n素材和普通文件夹不会被删除。`)) return;
+  const paneId = state.activePaneId;
   await runForegroundOperation('正在移除智能文件夹…', { key: `smart-remove:${libraryPath}:${id}` }, async () => {
-    await window.eagleMV.removeSmartFolder({ libraryPath, id });
-    toast('智能文件夹已移除');
+    const result = await window.eagleMV.removeSmartFolder({ libraryPath, id });
+    // Eagle's notice (5 s) and 撤销: the same smart folder comes back where
+    // it was and opens (P3-05).
+    const undo = result?.undoToken && window.eagleMV.restoreSmartFolder ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销…', { key: `smart-remove:${libraryPath}:${id}` }, () =>
+        window.eagleMV.restoreSmartFolder({ libraryPath, undoToken: result.undoToken }));
+      const deadline = Date.now() + 3000;
+      while (!findFolder(state.library?.smartFolders, id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
+      if (findFolder(state.library?.smartFolders, id) && paneById(paneId)) withActivePane(paneId, () => navigate({ kind: 'smart', id, name: folder.name }));
+    } : null;
+    toast(`“${folder.name}”已删除。`, 5000, undo ? { undo } : {});
   });
 }
 
@@ -5217,9 +5260,16 @@ async function removeComment(commentId) {
   const operationToken = beginForegroundOperation('正在删除评论…', { key: `comment:${libraryPath}:${id}` });
   if (!operationToken) return;
   try {
-    await window.eagleMV.removeComment({ id, libraryPath, commentId });
+    const result = await window.eagleMV.removeComment({ id, libraryPath, commentId });
     if (commentContextMatches({ paneId, id, libraryPath })) await loadComments(item, { paneId, libraryPath });
-    toast('评论已删除');
+    // Eagle: "标注已删除。" with 撤销, which puts the comment back (P3-05).
+    const undo = result?.undoToken && window.eagleMV.restoreComment ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销…', { key: `comment:${libraryPath}:${id}` }, () =>
+        window.eagleMV.restoreComment({ libraryPath, undoToken: result.undoToken }));
+      if (commentContextMatches({ paneId, id, libraryPath })) await loadComments(item, { paneId, libraryPath });
+    } : null;
+    toast('标注已删除。', 4000, undo ? { undo } : {});
   } catch (error) {
     toast(`删除评论失败：${error.message}`, 4000);
   } finally {
@@ -5946,24 +5996,17 @@ async function applyTrash(ids, deleted, paneId = state.activePaneId) {
       return result;
     }, `Eagle ${action}请求超时`);
     if (!outcome.succeeded.length) throw outcome.firstError || new Error(`没有素材完成${action}`);
-    if (deleted) {
-      trashUndoStack.push({ ids: outcome.succeeded, libraryPath, paneId, viewKey: descriptorKey(pane.currentView) });
-      if (trashUndoStack.length > 20) trashUndoStack.shift();
-    } else {
-      for (const entry of trashUndoStack) entry.ids = entry.ids.filter(id => !outcome.succeeded.includes(id));
-      for (let index = trashUndoStack.length - 1; index >= 0; index -= 1) {
-        if (!trashUndoStack[index].ids.length) trashUndoStack.splice(index, 1);
-      }
-    }
+    const restore = deleted ? { ids: outcome.succeeded, libraryPath, paneId, viewKey: descriptorKey(pane.currentView) } : null;
     const ownsSelection = settleBatchSelection(pane, selectionBefore, outcome.failed);
     if (ownsSelection && state.activePaneId === paneId) renderInspector();
     release();
     await refresh({ reset: true, preserveScroll: true, paneId });
     if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
-    const done = deleted ? `${outcome.succeeded.length} 个素材已丢到回收站` : `已恢复 ${outcome.succeeded.length} 个素材`;
+    // Eagle: "N 个项目已删除。" with 撤销 for 4 s.
+    const done = deleted ? `${outcome.succeeded.length} 个项目已删除。` : `已恢复 ${outcome.succeeded.length} 个素材`;
     toast(outcome.failed.length
       ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
-      : done, outcome.failed.length ? 4400 : 2400);
+      : done, outcome.failed.length ? 4400 : deleted ? 4000 : 2400, restore ? { undo: () => restoreTrashed(restore) } : {});
   } catch (error) {
     toast(`${action}失败：${error.message}`, 4000);
   } finally {
@@ -5983,7 +6026,9 @@ async function setTrash(ids, deleted) {
   if (choice === 'delete') return applyTrash(ids, true, paneId);
 }
 
-async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null, selectNext = false } = {}) {
+// undo: { message: count => text, duration } gives the notice Eagle's 撤销,
+// which puts back what each item had before (P3-05).
+async function mutateSelectionSet(ids, field, delta, message, paneId = state.activePaneId, { keepSelection = false, successMessage = null, selectNext = false, undo = null } = {}) {
   if (!ids?.length || !state.connected) return false;
   const pane = paneById(paneId);
   if (!pane) return false;
@@ -6016,9 +6061,11 @@ async function mutateSelectionSet(ids, field, delta, message, paneId = state.act
       });
     }
     if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
+    const edits = undo ? inverseItemEdits(outcome.values) : [];
+    const done = undo ? undo.message(outcome.succeeded.length) : (successMessage || '操作已同步到所有窗口');
     toast(outcome.failed.length
-      ? `已完成 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
-      : (successMessage || '操作已同步到所有窗口'), outcome.failed.length ? 4200 : 2400);
+      ? `${undo ? done : `已完成 ${outcome.succeeded.length} 个素材`} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : done, outcome.failed.length ? 4200 : undo?.duration || 2400, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     return true;
   } catch (error) {
     toast(`操作失败：${error.message}`, 4000);
@@ -6037,7 +6084,8 @@ async function addSelectionToFolder(payload) {
   const paneId = payload?.paneId || state.activePaneId;
   const completed = await mutateSelectionSet(payload.ids, 'folders', { add: [folderId], autoTags: 'joined' }, '正在加入文件夹…', paneId, {
     keepSelection: Boolean(payload?.keepSelection),
-    selectNext: paneById(paneId)?.currentView.kind === 'unfiled'
+    selectNext: paneById(paneId)?.currentView.kind === 'unfiled',
+    undo: { message: count => `${count} 个项目已添加至“${libraryFolder(folderId)?.name || '目标文件夹'}”.`, duration: 4000 }
   });
   if (completed && state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
   return completed;
@@ -6078,9 +6126,11 @@ async function moveSelectionToFolder(payload) {
     operationToken = null;
     await refresh({ reset: true, preserveScroll: true, paneId });
     if (ownsSelection && !outcome.failed.length) selectSuccessor(pane, successor, ids);
+    const edits = inverseItemEdits(outcome.values);
+    const done = `${outcome.succeeded.length} 个项目已移动至“${libraryFolder(folderId)?.name || '目标文件夹'}”.`;
     toast(outcome.failed.length
-      ? `已移动 ${outcome.succeeded.length} 个素材 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
-      : '已移动到目标文件夹', outcome.failed.length ? 4200 : 2400);
+      ? `${done} · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}`
+      : done, outcome.failed.length ? 4200 : 4000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
   } catch (error) {
@@ -6098,7 +6148,10 @@ function removeSelectionFromFolder(payload) {
   const folderId = payload?.folderId || (pane?.currentView.kind === 'folder' ? pane.currentView.id : null);
   if (!folderId) return false;
   const onScreen = pane?.currentView.kind === 'folder' && pane.currentView.id === folderId;
-  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId, { selectNext: onScreen });
+  return mutateSelectionSet(payload.ids, 'folders', { remove: paneFolderScope(pane, folderId) }, '正在从文件夹移除…', paneId, {
+    selectNext: onScreen,
+    undo: { message: count => `${count} 个项目已从“${libraryFolder(folderId)?.name || '文件夹'}”移除。`, duration: 5000 }
+  });
 }
 
 function addTagToSelection(payload) {
@@ -8401,6 +8454,7 @@ function contextMenuMarkup(data) {
     contextMenuRow({ icon: 'tag', label: '添加标签', submenu: contextTagPicker('add-tag', '搜索或输入标签…') }),
     contextMenuRow({ icon: 'copy', label: '复制标签', shortcut: '⌘ ⇧ C', action: 'copy-tags' }),
     contextMenuRow({ icon: 'tag', label: '粘贴标签', shortcut: '⌘ ⇧ V', action: 'paste-tags', disabled: !state.copiedTags.length }),
+    contextMenuRow({ icon: 'remove', label: '清除标签', action: 'clear-tags' }),
     contextMenuRow({ icon: 'more', label: '设置评分', submenu: ratingEntries }),
     contextMenuRow({ icon: 'tag', label: '标签颜色', submenu: contextTagPicker('tag-color') })
   ].join('');
@@ -8662,6 +8716,7 @@ async function executeContextAction(action, payload) {
   if (action === 'copy-path') return copyItemPath(firstId);
   if (action === 'copy-tags') return copyTagsFromItems(ids);
   if (action === 'paste-tags') return pasteTagsToItems(ids);
+  if (action === 'clear-tags') return clearTagsOnItems(ids);
   if (action === 'add-folder') return addSelectionToFolder({ ids, folderId: payload.folderId, keepSelection: Boolean(data.keepSelection) });
   if (action === 'move-folder') return moveSelectionToFolder({ ids, folderId: payload.folderId });
   if (action === 'remove-folder') return removeSelectionFromFolder({ ids, folderId: state.currentView.id });
@@ -8786,6 +8841,9 @@ function runMenuCommand(payload = {}) {
       return;
     case 'paste-tags':
       if (!previewOpen && selectedIds.length) pasteTagsToItems(selectedIds);
+      return;
+    case 'clear-tags':
+      if (!previewOpen && selectedIds.length) clearTagsOnItems(selectedIds);
       return;
     case 'toggle-pin': {
       if (previewOpen || !selectedIds.length) return;
@@ -9263,9 +9321,11 @@ async function openItemBatchRename(ids) {
         endForegroundOperation(operationToken);
         operationToken = null;
         await refresh({ reset: true, preserveScroll: true, paneId });
+        // Eagle keeps this notice 10 s; its 撤销 gives every item its name back.
+        const edits = outcome.succeeded.map(id => ({ id, patch: { name: next.get(id).before }, base: { name: next.get(id).after } }));
         toast(outcome.failed.length
           ? `${outcome.succeeded.length} 个项目已重命名。 · ${outcome.failed.length} 个未重命名${batchFailureReason(outcome)}`
-          : `${outcome.succeeded.length} 个项目已重命名。`, outcome.failed.length ? 4200 : 2400);
+          : `${outcome.succeeded.length} 个项目已重命名。`, 10000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
       } catch (error) {
         toast(`重命名失败：${error.message}`, 4000);
       } finally {
@@ -9424,7 +9484,20 @@ async function removeFolderById(folderId, { selectNext = false, paneId = state.a
       }
     }
     if (!state.selected.size) renderInspector();
-    toast(`“${folder.name || '未命名文件夹'}”已删除。`);
+    // Eagle keeps this notice 7 s; its 撤销 is Eagle's own restore, which
+    // MultiView runs, then opens the folder again as Eagle does (P3-05).
+    const undo = result.undoToken && window.eagleMV.restoreRemovedFolder ? async () => {
+      if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+      await runForegroundOperation('正在撤销删除…', { key: `remove-folder:${libraryPath}:${folder.id}` }, () =>
+        window.eagleMV.restoreRemovedFolder({ id: folder.id, undoToken: result.undoToken, libraryPath }));
+      const deadline = Date.now() + 3000;
+      while (!findFolder(state.library?.folders, folder.id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
+      if (findFolder(state.library?.folders, folder.id) && paneById(paneId)) {
+        revealFolderPath(folder.id);
+        withActivePane(paneId, () => navigate({ kind: 'folder', id: folder.id }, { skipDiscard: true }));
+      }
+    } : null;
+    toast(`“${folder.name || '未命名文件夹'}”已删除。`, 7000, undo ? { undo } : {});
     return true;
   } catch (error) {
     toast(`删除文件夹失败：${error.message}`, 6000);
@@ -9464,12 +9537,14 @@ async function renameFolderTo(folder, nextName, { baseName = folder.name } = {})
       baseName,
       libraryPath
     });
+    let replacedName = baseName;
     if (result?.conflict) {
       const overwrite = confirm(`这个文件夹已在 Eagle 或另一个窗口中重命名为“${result.current?.name || '未命名'}”。\n\n按“确定”覆盖为当前名称；按“取消”载入最新名称。`);
       if (!overwrite) {
         scheduleRefresh();
         return false;
       }
+      replacedName = result.current?.name || folder.name;
       result = await window.eagleMV.mutateFolder({
         id: folder.id,
         name: nextName,
@@ -9496,7 +9571,27 @@ async function renameFolderTo(folder, nextName, { baseName = folder.name } = {})
     renderFolderTree();
     renderGrid({ preserveScroll: true });
     if (!state.selected.size) renderInspector();
-    toast('文件夹已重命名');
+    // Eagle: "“A”已重命名为“B”。" with 撤销 (P3-05); the undo renames back
+    // unless the name changed again meanwhile.
+    const previousName = replacedName;
+    toast(`“${previousName}”已重命名为“${nextName}”。`, 4000, { undo: async () => {
+      const current = libraryFolder(folder.id);
+      if (!current || state.library?.path !== libraryPath) throw new Error('文件夹已不在当前资源库');
+      const undone = await window.eagleMV.mutateFolder({ id: folder.id, name: previousName, baseName: nextName, libraryPath });
+      if (undone?.conflict) throw new Error(`文件夹已在别处改名为“${undone.current?.name || '未命名'}”`);
+      if (!undone?.ok) throw new Error('重命名未完成');
+      if (state.library?.folders) state.library.folders = overlayFolder(state.library.folders, folder.id, { name: previousName });
+      for (const pane of state.panes) {
+        if (pane.currentView.kind === 'folder' && pane.currentView.id === folder.id) pane.viewTitle = previousName;
+      }
+      if (state.currentView.kind === 'folder' && state.currentView.id === folder.id) {
+        state.viewTitle = previousName;
+        $('#viewTitle').textContent = previousName;
+      }
+      renderLocation();
+      renderFolderTree();
+      renderGrid({ preserveScroll: true });
+    } });
     return true;
   } finally {
     setSyncStatus('所有窗口已同步');
@@ -9794,6 +9889,45 @@ function pasteTagsToItems(ids = selectedActionIds()) {
   return addTagToSelection({ ids, tag: state.copiedTags });
 }
 
+// 整理 › 标签 › 清除标签 (Eagle's clearAllTags): every tag of the selected
+// items goes; the notice "已清除标签" carries 撤销 (P3-05).
+async function clearTagsOnItems(ids = selectedActionIds(), paneId = state.activePaneId) {
+  const uniqueIds = [...new Set(ids || [])].filter(Boolean);
+  const pane = paneById(paneId);
+  if (!uniqueIds.length || !pane || !state.connected || !confirmBulkEdit(uniqueIds.length)) return false;
+  const libraryPath = state.library?.path;
+  let operationToken = beginForegroundOperation('正在清除标签…', { key: `clear-tags:${paneId}` });
+  if (!operationToken) return false;
+  const selectionBefore = new Set(pane.selected);
+  setSyncStatus('正在清除标签…');
+  try {
+    const outcome = await runItemBatch(uniqueIds, async id => {
+      const item = pane.itemMap?.get(id) || await window.eagleMV.getItem(id);
+      if (!item?.tags?.length) return { unchanged: true };
+      const result = await window.eagleMV.mutate({ id, patch: { tags: [] }, base: { tags: item.tags }, libraryPath });
+      if (result?.conflict) throw new Error('素材已在其他窗口发生变化');
+      if (!result?.ok) throw new Error('清除标签未完成');
+      return { previous: { tags: item.tags }, item: result.item || { tags: [] } };
+    }, 'Eagle 清除标签请求超时');
+    if (!outcome.succeeded.length) throw outcome.firstError || new Error('没有素材完成修改');
+    settleBatchSelection(pane, selectionBefore, outcome.failed.length ? outcome.failed : idsStillSelectable(pane, uniqueIds));
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refresh({ reset: true, preserveScroll: true, paneId });
+    if (state.activePaneId === paneId) withActivePane(paneId, () => { updateCardSelectionStyles(); renderInspector(); });
+    const edits = inverseItemEdits(outcome.values);
+    toast(outcome.failed.length ? `已清除标签 · ${outcome.failed.length} 个失败并保持选中${batchFailureReason(outcome)}` : '已清除标签',
+      outcome.failed.length ? 4200 : 4000, edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
+    return true;
+  } catch (error) {
+    toast(`清除标签失败：${error.message}`, 4000);
+    return false;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
 async function duplicateSelection(ids = selectedActionIds(), paneId = state.activePaneId) {
   const uniqueIds = [...new Set(ids || [])].filter(Boolean);
   if (!uniqueIds.length) return false;
@@ -10065,15 +10199,53 @@ async function runItemBatch(ids, worker, timeoutMessage) {
   ));
   const succeeded = [];
   const failed = [];
+  const values = new Map();
   let firstError = null;
   results.forEach((result, index) => {
-    if (result?.ok) succeeded.push(uniqueIds[index]);
-    else {
+    if (result?.ok) {
+      succeeded.push(uniqueIds[index]);
+      values.set(uniqueIds[index], result.value);
+    } else {
       failed.push(uniqueIds[index]);
       firstError ||= result?.error || new Error('操作失败');
     }
   });
-  return { succeeded, failed, firstError };
+  return { succeeded, failed, firstError, values };
+}
+
+// The inverse of item writes whose results carry `previous` (mutateSet):
+// each item gets back what the write replaced, checked against what the
+// write left, so an item changed again since is left alone.
+function inverseItemEdits(values) {
+  return [...values].flatMap(([id, value]) => value?.previous && value.item
+    ? [{ id, patch: value.previous, base: Object.fromEntries(Object.keys(value.previous).map(key => [key, value.item[key] ?? []])) }]
+    : []);
+}
+
+async function restoreItemEdits(edits, libraryPath) {
+  if (!edits.length) return;
+  if (state.library?.path !== libraryPath) throw new Error('资源库已切换');
+  let operationToken = beginForegroundOperation('正在撤销…', { key: `undo:${libraryPath}` });
+  if (!operationToken) throw new Error('有操作正在进行，请稍后再试');
+  setSyncStatus('正在撤销…');
+  try {
+    const byId = new Map(edits.map(edit => [edit.id, edit]));
+    const outcome = await runItemBatch([...byId.keys()], async id => {
+      const { patch, base } = byId.get(id);
+      const result = await window.eagleMV.mutate({ id, patch, base, libraryPath });
+      if (result?.conflict) throw new Error('素材已在 Eagle 或另一个窗口中修改');
+      if (!result?.ok) throw new Error('撤销未完成');
+      return result;
+    }, 'Eagle 撤销请求超时');
+    endForegroundOperation(operationToken);
+    operationToken = null;
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+    if (outcome.failed.length) toast(`${outcome.failed.length} 个素材未撤销${batchFailureReason(outcome)}`, 4200);
+    return outcome;
+  } finally {
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
 }
 
 async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', libraryPath = state.library?.path, { move = false, sourceFolderId = null, sourceFolderIds = null, sourcePaneId = null } = {}) {
@@ -10137,7 +10309,16 @@ async function addItemsToFolder(ids, folderId, folderName = '目标文件夹', l
       }
     }
 
-    toast(`${moving ? '已移动到' : '已加入'}“${folderName || '目标文件夹'}”${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+    // Eagle's classifySelected notice, with 撤销 (P3-05).
+    const values = new Map();
+    results.forEach((result, index) => { if (result?.ok) values.set(uniqueIds[index], result.value); });
+    const edits = inverseItemEdits(values);
+    const target = folderId ? `“${folderName || '目标文件夹'}”` : '';
+    const done = folderId
+      ? `${succeeded} 个项目已${moving ? '移动' : '添加'}至${target}.`
+      : `${succeeded} 个项目已从“${libraryFolder(sourceFolderId)?.name || '文件夹'}”移除。`;
+    toast(`${done}${failed.length ? ` · ${failed.length} 个失败` : ''}`, folderId ? 4000 : 5000,
+      edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (failed.length) console.warn('Some dragged items could not be assigned:', failed.map(result => result.error?.message));
     if (state.library?.path === libraryPath) markFolderUsed(folderId, libraryPath);
     return true;
@@ -10227,7 +10408,14 @@ async function handlePaneItemDrop(context) {
       }
     }
 
-    toast(`${move ? '已移动' : '已复制'} ${succeeded} 个素材到当前栏${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+    // A drop between panes files like Eagle's classifySelected: its notice
+    // and 撤销 (P3-05).
+    const values = new Map();
+    results.forEach((result, index) => { if (result?.ok) values.set(ids[index], result.value); });
+    const edits = inverseItemEdits(values);
+    const movedOut = move && sourceFolderId;
+    toast(`${succeeded} 个项目已${movedOut ? '移动' : '添加'}至“${libraryFolder(targetFolderId)?.name || '目标文件夹'}”.${failed.length ? ` · ${failed.length} 个失败` : ''}`, 4000,
+      edits.length ? { undo: () => restoreItemEdits(edits, libraryPath) } : {});
     if (state.library?.path === libraryPath) markFolderUsed(targetFolderId, libraryPath);
     endForegroundOperation(operationToken);
     operationToken = null;
@@ -12344,7 +12532,7 @@ function bindEvents() {
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
       event.preventDefault();
-      undoLastTrash();
+      runUndo();
       return;
     }
     if (!editable && !previewOpen && primaryKey && !event.shiftKey && !event.altKey && deleteKey && selectedIds.length) {

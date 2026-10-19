@@ -2761,6 +2761,18 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
   color: #e8edf4;
   backdrop-filter: blur(12px);
 }
+/* A notice with Eagle's 撤销 link takes clicks (P3-05). */
+.toast.has-undo { pointer-events: auto; }
+.toast-undo {
+  margin-left: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text, #4d9cff);
+  font: inherit;
+  cursor: pointer;
+}
+.toast-undo:hover, .toast-undo:focus-visible { text-decoration: underline; }
 .pane-sync-shortcut { margin-left: auto; color: var(--muted); font: inherit; }
 .preview-sync-notice {
   z-index: 90;

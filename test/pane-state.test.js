@@ -490,12 +490,11 @@ test('bulk folder, rating, and trash operations use bounded batches with partial
   assert.ok(source.includes('settleBatchSelection(pane, selectionBefore, outcome.failed)'));
 });
 
-test('trash deletion records an inverse operation and Control+Z restores it through the conflict-safe mutation path', () => {
+test('trash deletion offers Eagle\'s 撤销 and Control+Z restores it through the conflict-safe mutation path', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
-  assert.ok(source.includes('const trashUndoStack = [];'));
-  assert.ok(source.includes('trashUndoStack.push({ ids: outcome.succeeded'));
-  assert.ok(source.includes('async function undoLastTrash()'));
-  assert.ok(source.includes("patch: { isDeleted: false }"));
+  assert.ok(source.includes("{ undo: () => restoreTrashed(restore) }"));
+  assert.ok(source.includes('async function restoreTrashed('));
+  assert.ok(source.includes("patch: { isDeleted: false }, base: { isDeleted: true }"));
   assert.ok(source.includes("event.key.toLowerCase() === 'z'"));
   assert.ok(source.includes("onUndoDelete?.(() => routeUndoCommand())"));
 });

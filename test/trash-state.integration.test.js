@@ -13,5 +13,5 @@ test('trashing deleted items or restoring live ones writes nothing and adds no u
   const result = JSON.parse(line.slice('EAGLEMV_TRASH_STATE '.length));
   assert.deepEqual(result.noop, { calls: 0, undo: 0 });
   assert.deepEqual(result.mixed, ['live'], 'only the live item is moved to the trash');
-  assert.deepEqual(result.undo, [['live']]);
+  assert.deepEqual(result.undo, ['1 个项目已删除。撤销'], 'only the item that really went to the trash is offered for 撤销');
 });

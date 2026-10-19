@@ -19,9 +19,9 @@ async function run() {
     if (state.items.length !== 2) throw new Error('fixture items not loaded');
     await applyTrash(['gone'], true);
     await applyTrash(['live'], false);
-    const noop = { calls: window.__trashCalls.length, undo: trashUndoStack.length };
+    const noop = { calls: window.__trashCalls.length, undo: undoSlot ? 1 : 0 };
     await applyTrash(['gone', 'live'], true);
-    return { noop, mixed: window.__trashCalls.map(call => call.id), undo: trashUndoStack.map(entry => entry.ids) };
+    return { noop, mixed: window.__trashCalls.map(call => call.id), undo: undoSlot ? [document.querySelector('#toast').textContent] : [] };
   })()`);
   console.log(`EAGLEMV_TRASH_STATE ${JSON.stringify(result)}`);
 }

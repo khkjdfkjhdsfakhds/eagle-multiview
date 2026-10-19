@@ -26,6 +26,7 @@ const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
 const { TextDraftStore } = require('./lib/text-draft-store');
 const { createImportService, prepareImportPaths, waitForImportedItems } = require('./lib/import-service');
 const { importFolderTrees, scanFolderTree } = require('./lib/folder-import');
+const { commentRestoreScript, locateSmartFolder, smartFolderRestoreScript } = require('./lib/eagle-restore');
 const { moveCreatedFolderToFront, setFolderSiblingOrder } = require('./lib/eagle-folder-order');
 const {
   keepImportedCopiesScript,
@@ -1399,6 +1400,7 @@ function setupMenu() {
         { type: 'separator' },
         { label: '复制标签', accelerator: 'CmdOrCtrl+Shift+C', click: send('copy-tags') },
         { label: '粘贴标签', accelerator: 'CmdOrCtrl+Shift+V', click: send('paste-tags') },
+        { label: '清除标签', click: send('clear-tags') },
         { type: 'separator' },
         { label: '置顶 / 取消置顶', click: send('toggle-pin') }
       ]
@@ -2440,8 +2442,35 @@ function setupIPC() {
   });
   handleRPC('item:update-comment', (event, payload) =>
     refreshItemAfterCommentMutation(event, payload, (id) => client.updateComment(id, payload.commentId, payload.patch || {}), 'comment-update'));
-  handleRPC('item:remove-comment', (event, payload) =>
-    refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove'));
+  // The removed comment is kept for Eagle's 撤销 (P3-05, 4 s + 5 s).
+  const removedComments = new Map();
+  handleRPC('item:remove-comment', async (event, payload) => {
+    await hub.ensureLibraryPath(payload?.libraryPath);
+    const before = await client.getComments(payload?.id).catch(() => []);
+    const index = before.findIndex(comment => comment?.id === payload?.commentId);
+    await refreshItemAfterCommentMutation(event, payload, (id) => client.removeComment(id, payload.commentId), 'comment-remove');
+    for (const [token, entry] of removedComments) if (Date.now() - entry.at > 60000) removedComments.delete(token);
+    if (index < 0) return { ok: true, undoToken: null };
+    const undoToken = `comment-undo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    removedComments.set(undoToken, { libraryPath: payload.libraryPath, id: payload.id, comment: before[index], index, at: Date.now() });
+    return { ok: true, undoToken };
+  });
+  handleRPC('item:restore-comment', async (event, { libraryPath, undoToken } = {}) => {
+    const entry = removedComments.get(undoToken);
+    if (!entry || entry.libraryPath !== libraryPath) throw new Error('撤销已失效，标注仍是删除状态');
+    removedComments.delete(undoToken);
+    return refreshItemAfterCommentMutation(event, { id: entry.id, libraryPath }, async id => {
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: commentRestoreScript({ libraryPath, id, comment: entry.comment, index: entry.index })
+      } });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await hub.ensureLibraryPath(libraryPath);
+        if ((await client.getComments(id)).some(comment => comment?.id === entry.comment.id)) return { ok: true };
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error('Eagle 没有恢复这条标注');
+    }, 'comment-restore');
+  });
   handleRPC('item:set-custom-thumbnail', async (event, payload) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const { id, libraryPath } = payload || {};
@@ -2490,8 +2519,35 @@ function setupIPC() {
     refreshLibraryAfterMutation(event, libraryPath, () => client.createSmartFolder(payload), 'smart-folder-create'));
   handleRPC('smart-folder:update', (event, { libraryPath, id, patch }) =>
     refreshLibraryAfterMutation(event, libraryPath, () => client.updateSmartFolder(id, patch), 'smart-folder-update'));
-  handleRPC('smart-folder:remove', (event, { libraryPath, id }) =>
-    refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove'));
+  // The removed smart folder is kept for 12 s, as long as Eagle's notice
+  // can undo it (P3-05); smart-folder:restore puts it back.
+  const removedSmartFolders = new Map();
+  handleRPC('smart-folder:remove', async (event, { libraryPath, id }) => {
+    await hub.ensureLibraryPath(libraryPath);
+    const location = locateSmartFolder(await client.listSmartFolders().catch(() => []), id);
+    await refreshLibraryAfterMutation(event, libraryPath, () => client.removeSmartFolder(id), 'smart-folder-remove');
+    for (const [token, entry] of removedSmartFolders) if (Date.now() - entry.at > 60000) removedSmartFolders.delete(token);
+    if (!location) return { ok: true, undoToken: null };
+    const undoToken = `smart-undo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    removedSmartFolders.set(undoToken, { libraryPath, ...location, at: Date.now() });
+    return { ok: true, undoToken };
+  });
+  handleRPC('smart-folder:restore', async (event, { libraryPath, undoToken }) => {
+    const entry = removedSmartFolders.get(undoToken);
+    if (!entry || entry.libraryPath !== libraryPath) throw new Error('撤销已失效，智能文件夹仍是删除状态');
+    removedSmartFolders.delete(undoToken);
+    return refreshLibraryAfterMutation(event, libraryPath, async () => {
+      await client.request('/api/script/inject', { method: 'POST', body: {
+        script: smartFolderRestoreScript({ libraryPath, folder: entry.folder, parentId: entry.parentId, index: entry.index })
+      } });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await hub.ensureLibraryPath(libraryPath);
+        if (locateSmartFolder(await client.listSmartFolders(), entry.folder.id)) return { ok: true, id: entry.folder.id };
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error('Eagle 没有恢复这个智能文件夹');
+    }, 'smart-folder-restore');
+  });
   handleRPC('tag-colors:get', (_event, { libraryPath }) => getTagColors(libraryPath));
   handleRPC('tag-colors:set', async (event, { libraryPath, tag, color }) => {
     await hub.ensureLibraryPath(libraryPath);
@@ -2547,6 +2603,7 @@ function setupIPC() {
     return result;
   });
   handleRPC('folder:remove', (event, mutation) => hub.removeFolder({ ...mutation, origin: event.sender.id }));
+  handleRPC('folder:restore-removed', (event, data) => hub.restoreRemovedFolder({ ...data, origin: event.sender.id }));
   handleRPC('folder:copy-plan', (_event, request) => planFolderCopy(request));
   handleRPC('folder:copy', async (event, mutation) => {
     const result = await enqueueCreation(`folder-copy:${path.resolve(mutation.libraryPath)}:${mutation.sourceId}:${mutation.parentId || 'root'}`,
