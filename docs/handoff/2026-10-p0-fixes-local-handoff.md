@@ -1308,3 +1308,12 @@ Eagle HTTP API 没有删除文件夹的接口。改为用 Eagle 未公开的 `/a
    - P4-01：Finder 拖一个带两层子文件夹的测试目录到侧栏空白处→根部出现同名结构、文件各在其位、打开新文件夹；拖到某文件夹行→只导入散文件并提示忽略；菜单“导入本地文件夹…”多选两个目录。
    - 多选：⌘ 点两个测试文件夹→合并显示；⇧ 连选；右键移动/颜色/批量重命名/删除。
 3. 验收后：更新本节结论、`PROJECT_CONTEXT`，再议合并发 1.8.4（需用户同意）。
+
+### 测试版构建与 B5-01 验证结果（2026-10-20，本机）
+
+- 测试版 `1.8.3-review.20261020.8`：从 `884f5ea` 构建（第二十三节命令换版本号），`dist/branchtest`，已退出旧版 `.7`。正式安装 1.8.3 未动。
+- 签名：ad-hoc + hardened runtime（与之前测试版相同），`codesign --verify --deep --strict` 通过；Info.plist 有 `ElectronAsarIntegrity`（`Resources/app.asar` SHA256）。
+- fuses（`@electron/fuses` 1.8.0 CLI 读出）：RunAsNode、EnableNodeOptionsEnvironmentVariable、EnableNodeCliInspectArguments **Disabled**；EnableEmbeddedAsarIntegrityValidation、OnlyLoadAppFromAsar **Enabled**。另有一条 `undefined is Enabled` 是 Electron 43 新增、该版本 fuses 库不认识的 fuse（未在配置里设置，保持默认）。
+- `ELECTRON_RUN_AS_NODE=1` 带 `-e console.log(...)` 后台启动：无输出、进程作为 GUI 应用常驻 → 不再当 Node 运行。
+- 启动：`open -g -a <App> --args --remote-debugging-port=9333` 正常启动，CDP 可用，渲染端 `state.connected` 为 true、已载入资料库；`importFolders`、`runUndo`、`toggleFolderInSelection` 存在；System Events 只读读到菜单“文件 › 导入本地文件夹…”“整理 › 清除标签”。全程只读，未写资料库。测试版保持后台运行（41601，调试端口 9333）。
+- 未验：自动更新流程里的 `codesign --verify`（测试版是 Review 身份，不检查更新；要等正式构建验证）；P3-05/P4-01/多选/F-06/H-11 的 GUI 验收（第 2 项，待用户）。
