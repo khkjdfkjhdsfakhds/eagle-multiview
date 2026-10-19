@@ -168,3 +168,9 @@ test('name sort is natural like Eagle: 图2 before 图10, case ignored (S-08)', 
   const sorted = names.map(name => ({ name })).sort((a, b) => compareBySort('name', 'asc', a, b)).map(item => item.name);
   assert.deepEqual(sorted, ['图1', '图2', '图10', 'A', 'b']);
 });
+
+test('the list header 标签 sort compares the first tag, A→Z (Eagle sortRawData TAGS)', () => {
+  const items = [{ id: 'b', tags: ['b', 'a'] }, { id: 'none' }, { id: 'a', tags: ['a'] }];
+  assert.deepEqual([...items].sort((x, y) => compareBySort('tags', 'auto', x, y)).map(item => item.id), ['none', 'a', 'b']);
+  assert.equal(defaultSortDir('tags'), 'asc');
+});

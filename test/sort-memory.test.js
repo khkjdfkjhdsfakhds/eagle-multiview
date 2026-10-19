@@ -84,9 +84,9 @@ test('the view chokepoint restores memory and sort changes persist through one h
   const commitStart = renderer.indexOf('function commitSortChange()');
   const commitFn = renderer.slice(commitStart, renderer.indexOf('\n}', commitStart));
   assert.ok(commitFn.includes('sortMemory.remember(state.library?.path, descriptorKey(state.currentView), state.sort, state.sortDir, Date.now(), state.library?.folders)'));
-  // The sort select, the direction toggle, and the toggle's reshuffle branch
-  // when the sort is 随机 — every path that changes the order.
-  assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 3,
+  // The sort select, the direction toggle, the toggle's reshuffle branch
+  // when the sort is 随机, and the list header — every path that changes the order.
+  assert.equal((renderer.match(/commitSortChange\(\);/g) || []).length, 4,
     'every sort change goes through the helper');
 });
 

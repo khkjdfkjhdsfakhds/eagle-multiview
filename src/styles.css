@@ -1901,35 +1901,49 @@ body.hide-card-annotation .annotation-badge { display: none; }
   display: block;
   width: var(--thumb);
 }
-/* 列表：小缩略图 + 名称 + 元信息按行排列。 */
+/* 列表：Eagle 的列表布局——缩略图、名称，再按列头显示 标签/尺寸/评分/扩展名/
+   文件大小/添加日期；列头与每行用同一组固定列宽，名称与标签分剩余宽度。 */
 .asset-grid.list {
   display: flex;
   flex-direction: column;
+  /* One column line: wrapped, the line took the widest row's content width. */
+  flex-wrap: nowrap;
   /* Rows span the pane: the inherited flex-start shrank each row to its own
-     content, so the fr columns started at a different x on every row. */
+     content, so the columns started at a different x on every row. */
   align-items: stretch;
   gap: 2px;
-  /* The trailing size column is fixed for the same reason. */
-  --list-meta-width: 132px;
 }
-.asset-grid.list .item-card {
+.asset-grid.list .item-card,
+.list-header {
   /* The justified flex-basis would become the row height in this column
      flex container, blowing the rows apart. */
   flex: none;
-  display: grid;
-  /* The list triage rows follow --thumb so Cmd/Ctrl +/- resizes them too; the
-     thumbnail is a quarter of the grid thumb (168px -> 42px at the default). */
-  grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1.6fr) minmax(0, 1fr) 62px 84px var(--list-meta-width);
+  display: flex;
   align-items: center;
   column-gap: 10px;
   padding: 4px 8px;
 }
-.asset-grid.list .card-list-tags {
+.asset-grid.list .thumb-wrap,
+.list-head-thumb { flex: none; width: calc(var(--thumb) * 0.25); }
+.asset-grid.list .card-name,
+.list-head-cell.list-col-name { flex: 1 1 0; min-width: 0; }
+.list-col,
+.list-head-cell:not(.list-col-name) {
+  flex: none;
   min-width: 0;
-  display: flex;
-  gap: 4px;
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
+.list-col { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* Eagle's widths: 标签 shares the slack with the name, the rest are fixed. */
+.list-col-tags { flex: .7 1 0 !important; }
+.list-col-resolution { width: 90px; }
+.list-col-rating { width: 80px; }
+.list-col-ext { width: 60px; text-align: center; justify-content: center; }
+.list-col-size { width: 64px; text-align: right; justify-content: flex-end; }
+.list-col-added { width: 110px; text-align: center; justify-content: center; }
+.asset-grid.list .list-col-tags { display: flex; gap: 4px; }
 .card-list-tag {
   flex: none;
   max-width: 96px;
@@ -1942,27 +1956,67 @@ body.hide-card-annotation .annotation-badge { display: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.asset-grid.list .card-list-rating { color: #ffce69; font-size: 10px; letter-spacing: .5px; white-space: nowrap; }
-.asset-grid.list .card-list-date { color: var(--muted-2); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* A squeezed pane sheds the softer columns before the name and the size. */
+.list-col-rating { color: rgba(247, 248, 248, .16); font-size: 10px; letter-spacing: .5px; }
+.list-stars-lit { color: #ffce69; }
+.list-header {
+  position: sticky;
+  z-index: 3;
+  top: -7px;
+  height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  /* The rows' 1px card border, so the columns start at the same x. */
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  background: color-mix(in srgb, var(--content) 88%, transparent);
+  backdrop-filter: blur(20px);
+  margin-bottom: 2px;
+}
+.list-head-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.list-head-cell:hover,
+.list-head-cell.active { color: var(--muted); }
+.list-head-cell.active:hover { color: var(--text); }
+.list-head-cell > span { overflow: hidden; text-overflow: ellipsis; }
+.list-head-arrow { flex: none; width: 11px; height: 12px; opacity: .5; }
+.list-head-cell.active:hover .list-head-arrow { opacity: 1; }
+.list-head-arrow.up { transform: rotate(180deg); }
+body.list-hide-tags .list-col-tags,
+body.list-hide-resolution .list-col-resolution,
+body.list-hide-rating .list-col-rating,
+body.list-hide-ext .list-col-ext,
+body.list-hide-size .list-col-size,
+body.list-hide-added .list-col-added { display: none !important; }
+/* A squeezed pane sheds the softer columns before the name and the size,
+   header and rows alike, instead of scrolling sideways. */
 @container (max-width: 620px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) minmax(0, 1fr) 62px var(--list-meta-width); }
-  .asset-grid.list .card-list-date { display: none; }
+  .list-col-added { display: none !important; }
 }
 @container (max-width: 500px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) 62px var(--list-meta-width); }
-  .asset-grid.list .card-list-tags { display: none; }
+  .list-col-tags { display: none !important; }
+  .list-col-ext { display: none !important; }
 }
 @container (max-width: 400px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr) var(--list-meta-width); }
-  .asset-grid.list .card-list-rating { display: none; }
+  .list-col-rating { display: none !important; }
+  .list-col-resolution { display: none !important; }
 }
-/* A four-way vertical split leaves ~185px per pane, where even the dimensions
-   column cannot shrink and pushed the row past its scroller. The name is what
-   a list at that width is for. */
+/* A four-way vertical split leaves ~185px per pane. The name is what a list
+   at that width is for. */
 @container (max-width: 300px) {
-  .asset-grid.list .item-card { grid-template-columns: calc(var(--thumb) * 0.25) minmax(0, 1fr); }
-  .asset-grid.list .card-meta { display: none; }
+  .list-col-size { display: none !important; }
 }
 .asset-grid.list .item-card:hover { transform: none; }
 .asset-grid.list .thumb-wrap {
@@ -1975,7 +2029,6 @@ body.hide-card-annotation .annotation-badge { display: none; }
 }
 .asset-grid.list .thumb-wrap img { object-fit: cover; }
 .asset-grid.list .card-name { margin: 0; font-size: 12px; }
-.asset-grid.list .card-meta { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; font-variant-numeric: tabular-nums; }
 .asset-grid.list .annotation-badge,
 .asset-grid.list .format-badge,
 .asset-grid.list .pin-badge { display: none; }

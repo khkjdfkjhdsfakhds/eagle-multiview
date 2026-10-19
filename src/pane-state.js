@@ -292,9 +292,11 @@
     size: (a, b) => (a?.size || 0) - (b?.size || 0),
     resolution: (a, b) => ((a?.width || 0) * (a?.height || 0)) - ((b?.width || 0) * (b?.height || 0)),
     rating: (a, b) => (Number(a?.star) || 0) - (Number(b?.star) || 0),
-    type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en')
+    type: (a, b) => String(a?.ext || '').toLowerCase().localeCompare(String(b?.ext || '').toLowerCase(), 'en'),
+    // Eagle's list-header 标签 sort compares the first tag only.
+    tags: (a, b) => nameCollator.compare(String(a?.tags?.[0] ?? ''), String(b?.tags?.[0] ?? ''))
   };
-  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', created: 'desc', size: 'desc', resolution: 'desc', rating: 'desc' };
+  const defaultSortDirections = { name: 'asc', type: 'asc', added: 'desc', newest: 'desc', created: 'desc', size: 'desc', resolution: 'desc', rating: 'desc', tags: 'asc' };
 
   // Eagle's 随机 sort. A shuffle has to be stable: the grid re-renders on every
   // lazy page and re-sorts each time, so drawing fresh randomness per compare

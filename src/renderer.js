@@ -146,6 +146,8 @@ const SUBFOLDERS_COLLAPSED_KEY = 'eaglemv.subfoldersCollapsed';
 let subfoldersCollapsed = false;
 try { subfoldersCollapsed = localStorage.getItem(SUBFOLDERS_COLLAPSED_KEY) === 'true'; } catch {}
 window.addEventListener('storage', event => {
+  // The list columns are one setting for every pane and window, like Eagle's.
+  if (event.key === 'eaglemv.listColumns' && typeof state !== 'undefined') applyListColumnClasses();
   if (event.key !== SUBFOLDERS_COLLAPSED_KEY) return;
   subfoldersCollapsed = event.newValue === 'true';
   if (typeof state !== 'undefined' && Array.isArray(state.panes)) renderSubfolderSections();
@@ -880,6 +882,7 @@ function paneMarkup(id, index) {
               <option value="resolution">分辨率</option>
               <option value="rating">评分</option>
               <option value="type">文件类型</option>
+              <option value="tags">标签</option>
               <option value="random">随机</option>
             </select>
             <div id="sortPopover" class="sort-popover hidden" popover="manual" role="menu" aria-label="排序选项">
@@ -1808,6 +1811,7 @@ const sortOptionLabels = {
   resolution: '分辨率',
   rating: '评分',
   type: '文件类型',
+  tags: '标签',
   random: '随机'
 };
 
@@ -3676,7 +3680,9 @@ function renderGrid({ preserveScroll = true } = {}) {
   const headingHTML = items.length && folders.length
     ? `<div class="grid-section-heading"><span>文件</span><span>${state.estimatedTotal ? '≥ ' : ''}${state.total.toLocaleString()}</span></div>`
     : '';
-  const gridPrefixHTML = folderSection + headingHTML;
+  // The list's column header leads the files, and changes with the sort.
+  const listHeaderHTML = items.length && state.viewMode === 'list' ? listHeaderMarkup() : '';
+  const gridPrefixHTML = folderSection + headingHTML + listHeaderHTML;
   const itemGrid = $('#itemGrid');
   // Fast path for lazy-load pages: when the already-rendered cards are an
   // exact prefix of the new list and everything before the asset grid is
@@ -3697,7 +3703,7 @@ function renderGrid({ preserveScroll = true } = {}) {
     scheduleVisibleItemWatch();
     return;
   }
-  const itemSection = items.length ? `${headingHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
+  const itemSection = items.length ? `${headingHTML}${listHeaderHTML}<div class="asset-grid${viewModeClass}">${items.map(itemCardMarkup).join('')}</div>` : '';
   itemGrid.innerHTML = `${folderSection}${itemSection}`;
   itemGrid._gridPrefix = gridPrefixHTML;
   // Placed before the scroll position is restored: the cards give the grid
@@ -3809,6 +3815,7 @@ function setCardDisplay(patch) {
 
 function bindCardDisplayControls() {
   applyCardDisplayClasses();
+  applyListColumnClasses();
   document.addEventListener('change', event => {
     const toggle = event.target.closest?.('[data-card-display]');
     if (toggle) { setCardDisplay({ [toggle.dataset.cardDisplay]: toggle.checked }); return; }
@@ -3855,22 +3862,103 @@ function itemCardMarkup(item) {
         ${annotations ? `<span class="annotation-badge" title="${annotations} 个标注">${annotations}</span>` : ''}
       </div>
       <div class="card-name" title="${escapeHTML(item.name)}${ext ? `.${escapeHTML(ext)}` : ''}">${escapeHTML(item.name)}${ext ? `<span class="card-ext">.${escapeHTML(ext)}</span>` : ''}</div>
-      ${list ? listRowColumns(item) : ''}
-      <div class="card-meta">${list ? `${item.width || 0}×${item.height || 0} · ${formatBytes(item.size)}` : escapeHTML(cardDisplayAPI.metaText(item, cardDisplay.metaType, { formatBytes, formatDateTime, itemDates }))}</div>
+      ${list ? listRowColumns(item) : `<div class="card-meta">${escapeHTML(cardDisplayAPI.metaText(item, cardDisplay.metaType, { formatBytes, formatDateTime, itemDates }))}</div>`}
     </article>`;
 }
 
-// The list is for triage, so it earns the columns a grid cannot show: tags,
-// rating and the date the item entered the library. Rendered only in list
-// mode — the other layouts would carry three dead nodes per card, and the grid
-// holds thousands.
+// Eagle's list layout (index.html #list-layout-header): after the thumbnail
+// and name come 标签, 尺寸, 评分, 扩展名, 文件大小 and 添加日期. Right-click
+// on the header picks which show — 尺寸, 扩展名, 文件大小 and 添加日期 by
+// default — and clicking one sorts by it. Rendered only in list mode: the
+// other layouts would carry dead nodes per card, and the grid holds thousands.
+const LIST_COLUMNS = [
+  { key: 'tags', label: '标签', sort: 'tags', show: false },
+  { key: 'resolution', label: '尺寸', sort: 'resolution', show: true },
+  { key: 'rating', label: '评分', sort: 'rating', show: false },
+  { key: 'ext', label: '扩展名', sort: 'type', show: true },
+  { key: 'size', label: '文件大小', sort: 'size', show: true },
+  { key: 'added', label: '添加日期', sort: 'added', show: true }
+];
+// A header click on a new column starts from Eagle's increasing order:
+// A→Z, smallest first, newest first for the date (sortRawData).
+const LIST_HEADER_SORT_DIRS = { name: 'asc', tags: 'asc', resolution: 'asc', rating: 'asc', type: 'asc', size: 'asc', added: 'desc' };
+const LIST_COLUMNS_STORAGE_KEY = 'eaglemv.listColumns';
+
+function listColumnSettings() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(LIST_COLUMNS_STORAGE_KEY) || '{}') || {}; } catch {}
+  return Object.fromEntries(LIST_COLUMNS.map(column => [column.key, typeof stored[column.key] === 'boolean' ? stored[column.key] : column.show]));
+}
+
+function applyListColumnClasses() {
+  const settings = listColumnSettings();
+  for (const column of LIST_COLUMNS) document.body.classList.toggle(`list-hide-${column.key}`, !settings[column.key]);
+}
+
+function toggleListColumn(key) {
+  if (!LIST_COLUMNS.some(column => column.key === key)) return false;
+  const settings = listColumnSettings();
+  settings[key] = !settings[key];
+  try { localStorage.setItem(LIST_COLUMNS_STORAGE_KEY, JSON.stringify(settings)); } catch {}
+  applyListColumnClasses();
+  return settings[key];
+}
+
+function listColumnsMenuMarkup() {
+  const settings = listColumnSettings();
+  return LIST_COLUMNS.map(column => contextMenuRow({
+    label: column.label, checked: settings[column.key], action: 'toggle-list-column', payload: { key: column.key }, keepOpen: true
+  })).join('');
+}
+
+function listRatingHTML(rating) {
+  return `<span class="list-stars-lit">${'★'.repeat(rating)}</span>${'★'.repeat(5 - rating)}`;
+}
+
 function listRowColumns(item) {
   const tags = (item.tags || []).map(String).filter(Boolean);
   const rating = Math.max(0, Math.min(5, Number(item.star) || 0));
   const { added } = itemDates(item);
-  return `<div class="card-list-tags" title="${escapeHTML(tags.join('、'))}">${tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('')}</div>
-      <div class="card-list-rating"${rating ? ` title="${rating} 星"` : ''}>${rating ? '★'.repeat(rating) : ''}</div>
-      <div class="card-list-date" title="添加日期">${added ? new Date(added).toLocaleDateString('zh-CN') : ''}</div>`;
+  const ext = String(item.ext || '').trim().toLowerCase().replace(/^\./, '');
+  return `<div class="list-col list-col-tags" title="${escapeHTML(tags.join('、'))}">${tags.length ? tags.map(tag => `<span class="card-list-tag">${escapeHTML(tag)}</span>`).join('') : '-'}</div>
+      <div class="list-col list-col-resolution">${Number(item.width) || 0} x ${Number(item.height) || 0}</div>
+      <div class="list-col list-col-rating"${rating ? ` title="${rating} 星"` : ''}>${listRatingHTML(rating)}</div>
+      <div class="list-col list-col-ext">${escapeHTML(ext)}</div>
+      <div class="list-col list-col-size">${formatBytes(item.size)}</div>
+      <div class="list-col list-col-added" title="添加日期">${added ? escapeHTML(formatListDate(added)) : ''}</div>`;
+}
+
+function formatListDate(value) {
+  const date = new Date(value);
+  const pad = number => String(number).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function listHeaderMarkup() {
+  const direction = effectiveSortDir(state.sort, state.sortDir);
+  const cell = (key, label, sort) => {
+    const active = state.sort === sort;
+    const reversed = active && direction !== LIST_HEADER_SORT_DIRS[sort];
+    return `<button type="button" class="list-head-cell list-col-${key}${active ? ' active' : ''}" data-list-sort="${sort}" title="按${label}排序"><span>${label}</span>${active ? `<img class="list-head-arrow${reversed ? ' up' : ''}" src="eagle-assets/ic-list-arrow-down.svg" alt="">` : ''}</button>`;
+  };
+  return `<div class="list-header" role="row">
+    <span class="list-head-thumb" aria-hidden="true"></span>${cell('name', '名称', 'name')}${LIST_COLUMNS.map(column => cell(column.key, column.label, column.sort)).join('')}
+  </div>`;
+}
+
+// Eagle's changeListOrderBy: the sorted column flips its direction, another
+// column sorts in its increasing order.
+function applyListHeaderSort(sort, paneId = state.activePaneId) {
+  if (!activatePane(paneId) || !(sort in LIST_HEADER_SORT_DIRS)) return false;
+  if (state.sort === sort) return applySortDirection(effectiveSortDir(state.sort, state.sortDir) === 'asc' ? 'desc' : 'asc');
+  state.sort = sort;
+  state.sortDir = LIST_HEADER_SORT_DIRS[sort];
+  if (sortCascadeEnabled && state.currentView?.kind === 'folder') {
+    sortMemory.rememberCascade(state.library?.path, state.currentView.id, state.library?.folders, state.sort, state.sortDir, Date.now());
+  }
+  commitSortChange();
+  if (viewHasClientOrder() && state.hasMore) refresh({ reset: false, preserveScroll: true, paneId });
+  return true;
 }
 
 function hydrateGridCards(cards) {
@@ -7466,8 +7554,9 @@ function folderColorMenuRows(folderId) {
   return ['<div class="context-menu-separator"></div>', `<div class="context-menu-colors" role="group" aria-label="文件夹颜色">${swatches}</div>`];
 }
 
-function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null }) {
-  const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"` : '';
+function contextMenuRow({ icon = 'more', label, shortcut = '', action = '', payload = {}, submenu = null, disabled = false, danger = false, checked = null, keepOpen = false }) {
+  // keepOpen: a check row that toggles in place, like Eagle's keepOpen items.
+  const attributes = action ? ` data-context-action="${escapeHTML(action)}" data-context-payload="${escapeHTML(JSON.stringify(payload))}"${keepOpen ? ' data-keep-open="true"' : ''}` : '';
   const className = `context-menu-row${submenu ? ' has-submenu' : ''}${disabled ? ' disabled' : ''}${danger ? ' danger' : ''}${checked ? ' checked' : ''}`;
   const child = submenu ? `<span class="context-menu-arrow">›</span><div class="context-submenu">${submenu}</div>` : '';
   // A choice row (checked true/false) leads with a check mark, like a native menu.
@@ -7807,6 +7896,7 @@ function contextMenuMarkup(data) {
   if (data.kind === 'tag-manager-group') return tagManagerGroupMenuMarkup(data);
   if (data.kind === 'tag-manager-sort') return tagManagerSortMenuMarkup(data);
   if (data.kind === 'new-window-menu') return newWindowMenuMarkup();
+  if (data.kind === 'list-columns') return listColumnsMenuMarkup();
   if (data.kind === 'shortcut-folder-picker') {
     return `<div class="context-shortcut-picker">${contextFolderPicker(data.pickerAction || 'add-folder')}</div>`;
   }
@@ -7978,6 +8068,7 @@ async function navigateToCurrentEaglePath() {
 
 function contextMenuAriaLabel(kind) {
   if (kind === 'new-window-menu') return '新窗口位置';
+  if (kind === 'list-columns') return '列表显示的列';
   if (kind === 'new-menu') return '新建项目';
   return '素材操作菜单';
 }
@@ -8096,6 +8187,7 @@ async function executeContextAction(action, payload) {
   if (action === 'import') return importFiles();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
   if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
+  if (action === 'toggle-list-column') return toggleListColumn(payload.key);
   if (action === 'set-sort-dir') {
     const paneId = payload.paneId || data.paneId;
     if (paneId && !activatePane(paneId)) return false;
@@ -10021,6 +10113,11 @@ function bindPaneEvents(paneId) {
       setSubfoldersCollapsed(!subfoldersCollapsed);
       return;
     }
+    const listSort = event.target.closest('[data-list-sort]');
+    if (listSort) {
+      applyListHeaderSort(listSort.dataset.listSort, paneId);
+      return;
+    }
     const tagAction = event.target.closest('[data-tag-action]');
     if (tagAction) {
       executeTagManagerAction(tagAction.dataset.tagAction, {
@@ -10116,6 +10213,12 @@ function bindPaneEvents(paneId) {
       event.preventDefault();
       event.stopPropagation();
       openTagManagerMenu(event, paneId);
+      return;
+    }
+    if (event.target.closest('.list-header')) {
+      event.preventDefault();
+      event.stopPropagation();
+      showContextMenu(event, { kind: 'list-columns', ids: [], paneId });
       return;
     }
     const folderCard = event.target.closest('.folder-card');
@@ -11050,6 +11153,15 @@ function bindEvents() {
     let payload = {};
     try { payload = JSON.parse(row.dataset.contextPayload || '{}'); } catch {}
     const execution = executeContextAction(row.dataset.contextAction, payload);
+    if (row.dataset.keepOpen === 'true') {
+      execution.then(checked => {
+        if (typeof checked !== 'boolean') return;
+        row.classList.toggle('checked', checked);
+        row.setAttribute('aria-checked', String(checked));
+        row.querySelector('.context-menu-leading').innerHTML = checked ? '<span class="context-menu-check" aria-hidden="true">✓</span>' : '';
+      }).catch(error => toast(`操作失败：${error.message}`, 4000));
+      return;
+    }
     hideContextMenu();
     execution.catch(error => toast(`操作失败：${error.message}`, 4000));
   });

@@ -44,7 +44,7 @@ test('waterfall places cards by script and list restyles rows without overlays',
   assert.doesNotMatch(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*columns:/);
   assert.match(cssSource, /\.asset-grid\.waterfall\s*\{[^}]*position: relative/);
   assert.match(cssSource, /\.asset-grid\.waterfall \.item-card\s*\{[^}]*position: absolute/);
-  assert.match(cssSource, /\.asset-grid\.list \.item-card\s*\{[^}]*grid-template-columns/);
+  assert.match(cssSource, /\.asset-grid\.list \.item-card,\s*\n\.list-header \{[^}]*display: flex/);
   assert.match(cssSource, /\.asset-grid\.list \.annotation-badge,\s*\n\.asset-grid\.list \.format-badge,\s*\n\.asset-grid\.list \.pin-badge \{ display: none; \}/);
   // The justified filler pseudo-element belongs to that one mode: every layout
   // now carries its own class, including the default.
@@ -64,21 +64,20 @@ test('the grid layout uses equal square cells', () => {
 });
 
 test('the list layout earns extra columns, and only there', () => {
-  assert.ok(rendererSource.includes("const list = state.viewMode === 'list';") && rendererSource.includes("${list ? listRowColumns(item) : ''}"),
-    'a grid of thousands must not carry three dead nodes per card');
+  assert.ok(rendererSource.includes("const list = state.viewMode === 'list';") && rendererSource.includes('${list ? listRowColumns(item) :'),
+    'a grid of thousands must not carry dead nodes per card');
   assert.ok(rendererSource.includes('function listRowColumns(item)'));
-  assert.ok(rendererSource.includes('class="card-list-tags"'));
-  assert.ok(rendererSource.includes('class="card-list-rating"'));
-  assert.ok(rendererSource.includes('class="card-list-date"'));
-  assert.match(cssSource, /\.asset-grid\.list \.item-card \{[^}]*grid-template-columns: calc\(var\(--thumb\) \* 0\.25\) minmax\(0, 1\.6fr\) minmax\(0, 1fr\) 62px 84px var\(--list-meta-width\)/);
+  // Eagle's columns, header and rows alike (P7-14).
+  for (const key of ['tags', 'resolution', 'rating', 'ext', 'size', 'added']) {
+    assert.ok(rendererSource.includes(`list-col list-col-${key}`), key);
+  }
+  assert.ok(rendererSource.includes('function listHeaderMarkup()'));
   // Rows stretch to the pane so the columns line up (P7-14).
   assert.match(cssSource, /\.asset-grid\.list \{[^}]*align-items: stretch/);
-  // Narrow panes shed the soft columns in order rather than overflowing; the
-  // last step drops the dimensions too, which a 185px four-way split needs.
-  for (const [width, dropped] of [[620, '.card-list-date'], [500, '.card-list-tags'], [400, '.card-list-rating'], [300, '.card-meta']]) {
+  // Narrow panes shed the soft columns in order rather than overflowing.
+  for (const [width, dropped] of [[620, '.list-col-added'], [500, '.list-col-tags'], [400, '.list-col-rating'], [300, '.list-col-size']]) {
     const block = cssSource.slice(cssSource.indexOf(`@container (max-width: ${width}px) {`));
     assert.ok(block.startsWith(`@container (max-width: ${width}px) {`), `${width}px breakpoint exists`);
-    assert.ok(block.slice(0, 320).includes(`${dropped} { display: none; }`) || block.slice(0, 320).includes(`${dropped} {\n    display: none;`)
-      || block.slice(0, 320).includes(`.asset-grid.list ${dropped} { display: none; }`), `${width}px drops ${dropped}`);
+    assert.ok(block.slice(0, 200).includes(`${dropped} { display: none !important; }`), `${width}px drops ${dropped}`);
   }
 });
