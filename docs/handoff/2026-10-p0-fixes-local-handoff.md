@@ -1076,3 +1076,22 @@ P1 剩余：W-03/A-04（需用户定安全方案，涉及 Android 构建）与�
 **验收结果（2026-10-19）**：用户验收通过（7 步）。“与任务清单不同的地方”3 条用户未提出修改，保持现状。
 
 **下一步**：安卓（第二十九节第 3 条）→ 合并发 1.8.4（需用户明确同意）。
+
+## 三十七、接手：安卓（2026-10-19）
+
+### 当前状态
+
+- 分支 `claude/kind-lamport-48izv4`，HEAD 为本节提交，**未推送、未合 main**；全量 `npm test` 980/980；正式安装 `/Applications` 1.8.3 未动。
+- 菜单栏（第三十六节）用户已验收通过。第三十四节（B3-10、E-19、E-10）验收仍待用户自己做。
+- 测试版 `dist/branchtest/mac-arm64/Eagle MultiView Test.app`（`1.8.3-review.20261020.1`，Review 身份、Web 端口 41601）在后台运行；重建前先 `osascript -e 'tell application id "local.eagle.multiview.branchtest" to quit'`，构建命令见第二十三节（换版本号）。
+- 安卓真机：Xiaomi Pad 7S Pro 12.5（Android 16），USB 连接，`adb` 在 `/opt/homebrew/bin/adb`，已装 `com.eaglemultiview.android` 1.8.3。**装 debug APK 会覆盖它，装前先问用户。** 现在真机是否还连着要先 `adb devices` 确认。
+
+### 待做：安卓（第二十九节第 3 条）
+
+A-01、A-03、A-05～A-10、T-17、W-05（App 内 PDF 预览）、W-02（上传约 1GB 视频）、W-01 Android 端 CSP。逐条先读审查文档 `2026-10-parity-audit.md` 的对应条目，确认现状再改；需要用户在平板上操作的，列清楚步骤。网页端改动可以用现有 APK 连测试版 41601 验；改了 `android/` 才需要新 APK。
+
+之后：合并发 1.8.4（合并、推送、版本号、标签、Release 均需用户明确同意）。
+
+### 规则（不变）
+
+每批 `node --check` 三件 + 全量 `npm test`、本地提交、在本文件追加一节；不推送、不合 main；不覆盖 `/Applications`，GUI 用测试版；写资料库的验证先问用户；改行为前先确认原版做法（用户要的是看齐原版，不是改善）。回复用中文、精简。
