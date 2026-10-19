@@ -26,6 +26,15 @@ test('folder reorder preserves nodes and rejects an intervening native drag',()=
  assert.equal(vm.runInNewContext(nativeSyncScript(input),{$bodyScope:s}),false);
  assert.deepEqual(moveRelative(['a','b','c','d'],['c'],'a','before'),['c','a','b','d']);
 });
+test('native sync changes nothing when an Eagle internal it needs is missing (E-10)',()=>{
+ for (const name of ['saveFolder','calculateImageBinding','resetFolderCover','updateSidebarList']) {
+  const s=scope();s[name]=undefined;
+  const before=JSON.stringify(s);
+  const input={kind:'items',libraryPath:s.libraryPath,folderId:'F',entries:[{id:'I',before:null,value:'1234'}]};
+  assert.equal(vm.runInNewContext(nativeSyncScript(input),{$bodyScope:s}),false,name);
+  assert.equal(JSON.stringify(s),before,`${name}: nothing may change in memory`);
+ }
+});
 test('native item order is folder scoped and switches Eagle to manual order',()=>{
  const s=scope();const input={kind:'items',libraryPath:s.libraryPath,folderId:'F',entries:[{id:'I',before:null,value:'1234'}]};
  assert.equal(vm.runInNewContext(nativeSyncScript(input),{$bodyScope:s}),true);

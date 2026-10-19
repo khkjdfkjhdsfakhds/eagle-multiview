@@ -76,7 +76,7 @@ test('eagle-order:move writes only the moved items and switches the folder to ma
   const folder = { id: 'F', children: [], covers: [] };
   const items = Object.fromEntries(['a', 'b', 'c', 'd'].map((id, index) => [id, { id, folders: ['F'], modificationTime: 4000 - index * 1000 }]));
   items.c.order = { Other: '7' };
-  const scope = { libraryPath, folderMappings: { F: folder }, itemMappings: items, saveFolder() {}, calculateImageBinding() {} };
+  const scope = { libraryPath, folderMappings: { F: folder }, itemMappings: items, saveFolder() {}, calculateImageBinding() {}, resetFolderCover() {}, updateSidebarList() {} };
   const updates = [], published = [];
   main.hub.ensureLibraryPath = async value => assert.equal(value, libraryPath);
   main.hub.connect = async () => {};

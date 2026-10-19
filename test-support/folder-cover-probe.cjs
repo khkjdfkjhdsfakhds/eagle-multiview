@@ -24,7 +24,7 @@ main.client.getItems = async ids => Promise.all(ids.map(id => main.client.getIte
 main.client.appInfo = async () => ({version:'ui-test'});
 main.client.libraryInfo = async () => main.hub.library;
 const nativeScope = {libraryPath, folderMappings:Object.fromEntries(main.hub.library.folders.map(f=>[f.id,f])), itemMappings:{sample:{id:'sample'}},
-  saveFolder(){}, resetFolderCover(f){f.covers=[];}, calculateImageBinding(){}};
+  saveFolder(){}, resetFolderCover(f){f.covers=[];}, updateSidebarList(){}, calculateImageBinding(){}};
 main.client.request = async (url, {body}) => {
   assert.equal(url, '/api/script/inject');
   assert.equal(vm.runInNewContext(body.script, {$bodyScope:nativeScope}), true);
