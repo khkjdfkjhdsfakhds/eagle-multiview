@@ -8300,7 +8300,10 @@ function contextMenuMarkup(data) {
       contextMenuRow({ icon: 'copy', label: '从剪贴板设置…', action: 'thumbnail-clipboard' }),
       contextMenuRow({ label: '取消自定义：接口尚不支持', action: 'thumbnail-clear' })
     ].join('') })] : []),
-    contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename', disabled: !one }),
+    // Eagle: 重命名 for one item, 重命名 N 个项目... (batch rename) for several.
+    one
+      ? contextMenuRow({ icon: 'rename', label: '重命名', shortcut: '⌘ R', action: 'rename' })
+      : contextMenuRow({ icon: 'rename', label: `重命名 ${data.ids.length.toLocaleString()} 个项目...`, shortcut: '⌘ R', action: 'batch-rename' }),
     contextMenuRow({ icon: 'copy', label: one ? '复制素材名称' : `复制 ${data.ids.length} 个素材名称`, action: 'copy-name' }),
     contextMenuRow({ icon: 'tag', label: '添加标签', submenu: contextTagPicker('add-tag', '搜索或输入标签…') }),
     contextMenuRow({ icon: 'copy', label: '复制标签', shortcut: '⌘ ⇧ C', action: 'copy-tags' }),
@@ -8581,6 +8584,7 @@ async function executeContextAction(action, payload) {
   if (action === 'rename') {
     return renameItem(itemById(firstId));
   }
+  if (action === 'batch-rename') return openItemBatchRename(ids);
   if (action === 'trash') return setTrash(ids, !data.allDeleted);
 }
 
@@ -9110,6 +9114,72 @@ async function renameItem(item) {
   }
 }
 
+// Eagle's batch rename for several items (OPEN_RENAME type IMAGE): the
+// same dialog as for tags, starting from the last name used (else
+// 新名字 - %N), with thumbnails; ten or more ask first. Each item is renamed
+// through Eagle with the usual conflict check; a name changed elsewhere
+// meanwhile is left alone and reported.
+const ITEM_BATCH_RENAME_NAME_KEY = 'eaglemv.batchRename.lastName';
+async function openItemBatchRename(ids) {
+  const paneId = state.activePaneId;
+  const pane = paneById(paneId);
+  const libraryPath = state.library?.path;
+  if (!pane || !libraryPath || !state.connected || ids.length < 2) return false;
+  if (!confirmDiscardChanges()) return false;
+  const wanted = new Set(ids);
+  const loaded = withActivePane(paneId, () => sortedItems()).filter(item => wanted.has(item.id));
+  const missing = ids.filter(id => !pane.itemMap?.has(id));
+  let fetched = [];
+  if (missing.length) {
+    const outcome = await runForegroundOperation('正在读取所选素材…', { key: `batch-rename-read:${paneId}` }, () =>
+      settleWithConcurrency(missing, id => window.eagleMV.getItem(id), 6));
+    fetched = (outcome || []).filter(result => result?.ok && result.value).map(result => result.value);
+  }
+  const items = [...loaded, ...fetched];
+  if (items.length < 2) return false;
+  let initialPattern = '新名字 - %N';
+  try { initialPattern = localStorage.getItem(ITEM_BATCH_RENAME_NAME_KEY) || initialPattern; } catch {}
+  window.EagleMVBatchRename.openBatchRenameDialog({
+    items,
+    kind: 'file',
+    initialPattern,
+    historyKey: 'eaglemv.batchRename.findHistory.IMAGE',
+    folderNamesOf: item => (item.folders || []).map(id => findFolder(state.library?.folders, id)?.name).filter(Boolean),
+    thumbnailOf: item => mediaURL('thumb', item.id),
+    onRename: async (changes, total, { pattern }) => {
+      if (pattern) try { localStorage.setItem(ITEM_BATCH_RENAME_NAME_KEY, pattern); } catch {}
+      if (!changes.length) return;
+      if (total >= 10 && !confirm(`重命名提示\n\n将会重命名 ${total} 个文件，确定要重命名吗？`)) return;
+      if (state.library?.path !== libraryPath) return;
+      let operationToken = beginForegroundOperation('正在重命名素材…', { key: `batch-rename:${paneId}` });
+      if (!operationToken) return;
+      setSyncStatus('正在重命名…');
+      try {
+        const next = new Map(changes.map(change => [change.item.id, change]));
+        const outcome = await runItemBatch([...next.keys()], async id => {
+          const change = next.get(id);
+          const result = await window.eagleMV.mutate({ id, patch: { name: change.after }, base: { name: change.before }, libraryPath });
+          if (result?.conflict) throw new Error('名称已在其他窗口或 Eagle 中修改');
+          if (!result?.ok) throw new Error('重命名未完成');
+          return result;
+        }, 'Eagle 重命名请求超时');
+        endForegroundOperation(operationToken);
+        operationToken = null;
+        await refresh({ reset: true, preserveScroll: true, paneId });
+        toast(outcome.failed.length
+          ? `${outcome.succeeded.length} 个项目已重命名。 · ${outcome.failed.length} 个未重命名${batchFailureReason(outcome)}`
+          : `${outcome.succeeded.length} 个项目已重命名。`, outcome.failed.length ? 4200 : 2400);
+      } catch (error) {
+        toast(`重命名失败：${error.message}`, 4000);
+      } finally {
+        setSyncStatus('所有窗口已同步');
+        endForegroundOperation(operationToken);
+      }
+    }
+  });
+  return true;
+}
+
 let selectedFeatureController;
 let siteFeatureController;
 function siteFeatureUI() {
@@ -9421,7 +9491,7 @@ function renameInTagManager() {
 async function renameSelection() {
   if (state.currentView.kind === 'tags') return renameInTagManager();
   if (state.selected.size === 1) return renameItem(itemById([...state.selected][0]));
-  if (state.selected.size > 1) return false;
+  if (state.selected.size > 1) return openItemBatchRename([...state.selected]);
   if (state.selectedFolderCard) return renameFolderById(state.selectedFolderCard);
   const activeFolderRow = document.activeElement?.closest?.('[data-folder-id]');
   if (activeFolderRow?.dataset.folderId) return renameFolderById(activeFolderRow.dataset.folderId);

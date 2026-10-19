@@ -32,8 +32,23 @@
     };
   }
 
-  // Eagle's format(): each token is replaced once, longest spelling first.
-  function formatName(item, pattern, { originName = item?.name || '', idx = 1, now = new Date(), folderNames = [] } = {}) {
+  // Eagle cleans a formatted file name: no slash, emoji or %, then
+  // sanitize-filename (characters macOS/Windows refuse, control codes,
+  // reserved names, trailing spaces).
+  const EMOJI = /\p{Emoji_Presentation}|\p{Extended_Pictographic}|([0-9]\u{FE0F}\u{20E3})|([\*#\u{1F51F}]\u{FE0F}\u{20E3})/gmu;
+  function sanitizeFileName(name) {
+    return String(name)
+      .replace(/[/]/g, '').replace(EMOJI, '').replace(/%/g, '')
+      .replace(/[\/\?<>\\:\*\|":]/g, '')
+      .replace(/[\x00-\x1f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, '')
+      .replace(/^\.+$/, '')
+      .replace(/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i, '')
+      .replace(/[ ]+$/, '');
+  }
+
+  // Eagle's format(): each token is replaced once, longest spelling first;
+  // a file name (kind 'file') is then cleaned for the file system.
+  function formatName(item, pattern, { originName = item?.name || '', idx = 1, now = new Date(), folderNames = [], kind = 'tag' } = {}) {
     const modified = item?.mtime ? new Date(item.mtime) : (item?.modificationTime ? new Date(item.modificationTime) : now);
     const created = item?.btime ? new Date(item.btime) : (item?.modificationTime ? new Date(item.modificationTime) : now);
     const today = dateFormats(now, '-');
@@ -54,6 +69,7 @@
       name = name.replace(/\*/, () => originName);
       if (name.includes('%T')) name = name.replace(/%T/i, () => [...(item?.tags || [])].sort().join('-'));
       if (name.includes('%F')) name = name.replace(/%F/i, () => [...folderNames].sort().join('-'));
+      if (kind === 'file') name = sanitizeFileName(name);
       if (!name.length) name = originName;
     } catch {
       name = originName;
@@ -87,7 +103,7 @@
     return items.map((item, index) => {
       const next = options.method === 'replace'
         ? replaceName(item.name, options.find || '', options.replacement || '')
-        : formatName(item, options.pattern, { originName: item.name, idx: index + startAt, now: options.now, folderNames: options.folderNamesOf?.(item) || [] });
+        : formatName(item, options.pattern, { originName: item.name, idx: index + startAt, now: options.now, folderNames: options.folderNamesOf?.(item) || [], kind: options.kind });
       return { item, before: item.name, after: applyTextCase(next, options.textCase) };
     });
   }
@@ -133,7 +149,9 @@
 
   // The dialog. onRename(changes, total) is awaited; the dialog closes
   // first, the way Eagle closes before its writes run.
-  function openBatchRenameDialog({ items, title = '批量重命名', initialPattern = '*', historyKey = 'eaglemv.batchRename.findHistory', storage = globalThis.localStorage, onRename }) {
+  // Rows past the first PREVIEW_ROWS are renamed but not drawn.
+  const PREVIEW_ROWS = 500;
+  function openBatchRenameDialog({ items, title = '批量重命名', initialPattern = '*', historyKey = 'eaglemv.batchRename.findHistory', storage = globalThis.localStorage, kind = 'tag', folderNamesOf = null, thumbnailOf = null, onRename }) {
     if (!items?.length || typeof document === 'undefined') return null;
     if (document.querySelector('dialog.batch-rename-dialog')) return null;
     const previousFocus = document.activeElement;
@@ -228,9 +246,11 @@
       replacement.row.hidden = format;
       const present = { index: tokenPresent('%n'), date: ['%d', '%m', '%b'].some(tokenPresent), tags: tokenPresent('%t'), folders: tokenPresent('%f'), original: tokenPresent('*') };
       for (const button of insertButtons) button.disabled = present[button.dataset.renameInsert];
-      previews = renamed(items, { ...settings, now: new Date() });
-      const header = '<div class="batch-rename-preview-row head" role="row"><span role="columnheader">原名称</span><span role="columnheader">新名称</span></div>';
-      preview.innerHTML = header + previews.map(entry => `<div class="batch-rename-preview-row" role="row"><span role="cell">${format ? escapeHTML(entry.before) : marked(entry.before, settings.find, 's')}</span><span role="cell">${format || !settings.replacement ? escapeHTML(entry.after) : entry.after.split(settings.replacement).map(escapeHTML).join(`<b>${escapeHTML(settings.replacement)}</b>`)}</span></div>`).join('');
+      previews = renamed(items, { ...settings, now: new Date(), kind, folderNamesOf });
+      const thumb = entry => thumbnailOf ? `<span class="batch-rename-thumb" role="cell"><img src="${escapeHTML(thumbnailOf(entry.item))}" alt="" loading="lazy" draggable="false"></span>` : '';
+      const header = `<div class="batch-rename-preview-row head${thumbnailOf ? ' with-thumb' : ''}" role="row">${thumbnailOf ? '<span role="columnheader"></span>' : ''}<span role="columnheader">原名称</span><span role="columnheader">新名称</span></div>`;
+      const more = previews.length > PREVIEW_ROWS ? `<div class="batch-rename-preview-more">还有 ${(previews.length - PREVIEW_ROWS).toLocaleString()} 个未列出</div>` : '';
+      preview.innerHTML = header + previews.slice(0, PREVIEW_ROWS).map(entry => `<div class="batch-rename-preview-row${thumbnailOf ? ' with-thumb' : ''}" role="row">${thumb(entry)}<span role="cell">${format ? escapeHTML(entry.before) : marked(entry.before, settings.find, 's')}</span><span role="cell">${format || !settings.replacement ? escapeHTML(entry.after) : entry.after.split(settings.replacement).map(escapeHTML).join(`<b>${escapeHTML(settings.replacement)}</b>`)}</span></div>`).join('') + more;
       submit.disabled = format ? !settings.pattern : !settings.find;
     };
     const focusFirst = () => requestAnimationFrame(() => {
@@ -258,7 +278,7 @@
     const openInsertMenu = button => {
       const kind = button.dataset.renameInsert;
       const first = items[0];
-      const sample = token => formatName(first, settings.pattern + token, { originName: first.name, idx: Math.max(0, Number.parseInt(settings.startAt, 10) || 0), now: new Date() });
+      const sample = token => formatName(first, settings.pattern + token, { originName: first.name, idx: Math.max(0, Number.parseInt(settings.startAt, 10) || 0), now: new Date(), folderNames: folderNamesOf?.(first) || [], kind });
       const groups = kind === 'index' ? [['', ['%N', '%NN', '%NNN', '%NNNN']]]
         : kind === 'date' ? DATE_TOKENS
           : [['', [{ tags: '%T', folders: '%F', original: '*' }[kind]]]];
@@ -286,7 +306,7 @@
         try { storage?.setItem(historyKey, JSON.stringify(next)); } catch {}
       }
       close();
-      await onRename?.(chosen, previews.length);
+      await onRename?.(chosen, previews.length, { pattern: settings.method === 'format' ? settings.pattern : '' });
     };
 
     dialog.addEventListener('click', event => {
@@ -333,5 +353,5 @@
     return { dialog, close };
   }
 
-  return { formatName, replaceName, applyTextCase, parseFindPattern, renamed, planTagRenames, openBatchRenameDialog };
+  return { formatName, sanitizeFileName, replaceName, applyTextCase, parseFindPattern, renamed, planTagRenames, openBatchRenameDialog };
 });

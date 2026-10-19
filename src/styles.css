@@ -3284,6 +3284,9 @@ body.web-client .content-pane .heading-path-row .breadcrumb button { max-width: 
 .batch-rename-preview { min-width: 0; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--control-radius); font-size: 12px; }
 .batch-rename-preview-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; padding: 5px 10px; border-bottom: 1px solid rgba(255, 255, 255, .04); }
 .batch-rename-preview-row span { min-width: 0; overflow-wrap: anywhere; }
+.batch-rename-preview-row.with-thumb { grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
+.batch-rename-thumb img { display: block; width: 36px; height: 28px; object-fit: contain; border-radius: 3px; background: rgba(255, 255, 255, .04); }
+.batch-rename-preview-more { padding: 8px 10px; color: var(--muted); }
 .batch-rename-preview-row.head { position: sticky; top: 0; background: var(--dialog-bg); color: var(--muted); }
 .batch-rename-preview-row s { color: var(--muted); }
 .batch-rename-preview-row b { color: var(--accent-text); font-weight: 600; }

@@ -48,3 +48,12 @@ test('tag renames: taken names merge, chains wait, loops go through a temporary 
     { kind: 'rename', from: 'a (重命名中)', to: 'b' }
   ]);
 });
+
+test('file names are cleaned as Eagle cleans them', () => {
+  const { sanitizeFileName } = require('../src/batch-rename');
+  assert.equal(sanitizeFileName('图/a:b*?<>|"\\c'), '图abc');
+  assert.equal(sanitizeFileName('100% 好😀 '), '100 好');
+  assert.equal(sanitizeFileName('CON'), '');
+  assert.equal(formatName({ name: '原名' }, '/', { now, kind: 'file' }), '原名', 'nothing left keeps the name');
+  assert.equal(formatName({ name: 'a' }, 'x/y', { now }), 'x/y', 'tags are not file names');
+});
