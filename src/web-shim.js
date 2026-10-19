@@ -599,6 +599,10 @@
       return uploadBrowserFiles(files, data);
     },
     onUploadProgress: callback => on('upload:progress', callback),
+    // 导入本地文件夹 reads folders on the host's disk; a browser has none
+    // to give, so the menu row and the sidebar drop stay desktop-only.
+    planFolderImport: null,
+    runFolderImport: null,
     importClipboard: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     importURL: async () => ({ count: 0, ready: 0, rejected: [], source: 'unsupported' }),
     pathForFile: () => null,

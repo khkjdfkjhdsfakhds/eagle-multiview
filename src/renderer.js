@@ -4356,7 +4356,7 @@ function attachFolderDragTargets() {
       row.classList.remove('drop-target');
       const folderId = row.dataset.folderId;
       if (dropKind === 'external-files') {
-        scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId);
+        scheduleExternalFolderImport(event.dataTransfer, folderId, state.activePaneId, { ignoreDirectories: true });
         return;
       }
       const ids = drop.ids;
@@ -7735,7 +7735,7 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
   state.importing = true;
   setSyncStatus('正在导入到 Eagle…');
   try {
-    const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}) };
+    const payload = { folderId, libraryPath, ...(target.clipboardText ? { clipboardText: target.clipboardText } : {}), ...(target.ignoreDirectories ? { ignoreDirectories: true } : {}) };
     let result = source === 'clipboard'
       ? await window.eagleMV.importClipboard(payload)
       : source === 'url'
@@ -7748,12 +7748,17 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
       // Web uploads already imported the rest of the batch and the host holds
       // the duplicates, so a cancel is still sent to release them.
       if (choice === 'cancel' && !result.stagedUploads) return;
+      const { ignoredDirectories } = result;
       result = await window.eagleMV.importItems({ ...payload, paths: result.paths, duplicateChoice: choice });
       result.rejected = [...rejected, ...(result.rejected || [])];
+      result.ignoredDirectories = ignoredDirectories;
       if (result.canceled) return;
     }
+    // Eagle leaves folders dropped on a sidebar folder out; say where they go.
+    const ignored = result.ignoredDirectories ? `已忽略 ${result.ignoredDirectories} 个文件夹（拖到侧栏空白处可按目录结构导入）` : '';
     if (!result.count) {
       const uncertain = result.unknown?.length || result.notSubmitted?.length;
+      if (ignored && !result.error && !uncertain && !result.rejected?.length) { toast(ignored, 5000); return; }
       toast(result.error || result.duplicateFailed || uncertain ? importResultMessage(result)
         : source === 'clipboard' ? '剪贴板里没有可导入的文件或图片'
         : source === 'url' ? (result.source === 'unsupported' ? '网页端暂不支持拖入网址；请在主机窗口中拖入' : '没有可导入的网址')
@@ -7765,7 +7770,7 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     } else await window.eagleMV.focusWindow().catch(() => {});
     await refreshAllPanes({ reset: true, preserveScroll: true });
     const pending = Math.max(0, result.count - result.ready);
-    toast(importResultMessage(result, pending), result.partial || result.duplicateFailed ? 6500 : 4200);
+    toast(importResultMessage(result, pending) + (ignored ? ` · ${ignored}` : ''), result.partial || result.duplicateFailed || ignored ? 6500 : 4200);
     if (pending) {
       const refreshPaneIds = new Set([targetPaneId]);
       if (folderId && Array.isArray(state.panes)) {
@@ -7782,6 +7787,69 @@ async function importFiles(paths = null, source = 'picker', target = {}) {
     }
   } catch (error) {
     toast(`导入失败：${error.message}`, 4600);
+  } finally {
+    state.importing = false;
+    setSyncStatus('所有窗口已同步');
+    endForegroundOperation(operationToken);
+  }
+}
+
+// 导入本地文件夹 (P4-01): the 文件 menu, the 新建 menu and folders dropped on
+// the sidebar's blank area. As in Eagle, each picked folder becomes a folder
+// of the same name at the library root with the same sub-folders, each file
+// goes into the folder it sat in, and the last new folder opens.
+async function importFolders(paths = null, { paneId = state.activePaneId, dropped = false } = {}) {
+  if (!state.connected || state.importing || !window.eagleMV.planFolderImport) return false;
+  const libraryPath = state.library?.path;
+  const operationToken = beginForegroundOperation('正在导入到 Eagle…', { key: 'import' });
+  if (!operationToken) return false;
+  state.importing = true;
+  setSyncStatus('正在导入到 Eagle…');
+  try {
+    const plan = await window.eagleMV.planFolderImport({ libraryPath, ...(paths?.length ? { paths } : {}) });
+    if (plan.canceled) return false;
+    if (!plan.roots?.length) {
+      toast(plan.rejected?.[0]?.message || (dropped ? '侧栏空白处只接受文件夹（按目录结构导入）；文件请拖到文件夹或内容区' : '没有可导入的文件夹'), 4600);
+      return false;
+    }
+    // Eagle's two questions, asked per folder.
+    const accept = [];
+    plan.roots.forEach((root, index) => {
+      if (root.tooLarge) {
+        alert('批量导入提示\n\n导入的文件或文件夹过多，Eagle 不支持一次导入超过 15 阶层以上的文件夹。');
+        return;
+      }
+      if (root.needsConfirm && !confirm(`批量导入提示\n\n文件夹包含 ${root.fileCount} 个文件，导入可能需要花费一些时间，确定要导入吗？`)) return;
+      accept.push(index);
+    });
+    if (!accept.length) return false;
+    const payload = { token: plan.token, accept, parentId: null, libraryPath };
+    let result = await window.eagleMV.runFolderImport(payload);
+    if (result.needsDuplicateDecision) {
+      const choice = await chooseDuplicateAction(result.duplicates || [], result.total || 0) || 'cancel';
+      result = await window.eagleMV.runFolderImport({ ...payload, duplicateChoice: choice });
+    }
+    if (result.canceled) return false;
+    result.rejected = [...(plan.rejected || []), ...(result.rejected || [])];
+    const openId = result.rootIds?.at(-1);
+    if (openId && state.library?.path === libraryPath) {
+      const deadline = Date.now() + 3000;
+      while (state.library?.path === libraryPath && !findFolder(state.library?.folders, openId) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 60));
+      }
+      if (findFolder(state.library?.folders, openId) && paneById(paneId)) {
+        state.expandedFolders.add(openId);
+        withActivePane(paneId, () => navigate({ kind: 'folder', id: openId }));
+      }
+    }
+    await refreshAllPanes({ reset: true, preserveScroll: true });
+    const folders = `已创建 ${result.folders || 0} 个文件夹`;
+    toast(result.error && !result.count ? `${folders} · 导入未完成：${result.error.message}` : `${folders} · ${importResultMessage(result, Math.max(0, (result.count || 0) - (result.ready || 0)))}`,
+      result.error || result.rejected.length ? 6500 : 4200);
+    return true;
+  } catch (error) {
+    toast(`导入失败：${error.message}`, 4600);
+    return false;
   } finally {
     state.importing = false;
     setSyncStatus('所有窗口已同步');
@@ -7941,6 +8009,7 @@ function newCreationMenuMarkup({ folderId = null, paneId = state.activePaneId } 
     // Phones have no menu bar and no right-click: this row is the touch
     // entry point for imports (desktop keeps it too — same pipeline).
     ...(hasCapability('importLocal') ? [contextMenuRow({ icon: 'import', label: state.importing ? '正在导入…' : '导入文件…', shortcut: '⌘ ⇧ O', action: 'import', disabled: !state.connected || state.importing })] : []),
+    ...(hasCapability('importLocal') && window.eagleMV.planFolderImport ? [contextMenuRow({ icon: 'import', label: '导入本地文件夹…', action: 'import-folders', disabled: !state.connected || state.importing })] : []),
     ...(window.eagleMV.startSiteImport ? [contextMenuRow({ icon: 'import', label: '站点导入', submenu: [
       contextMenuRow({ label: 'ArtStation 作品挑选…', action: 'site-import', disabled: !state.connected }),
       contextMenuRow({ label: 'Pinterest 导入说明', action: 'pinterest-help' })
@@ -8549,6 +8618,7 @@ async function executeContextAction(action, payload) {
   if (action === 'set-folder-color') return setFolderColor(payload.folderId, payload.color);
   if (action === 'toggle-subfolder-content') return setCardDisplay({ subfolderContent: !cardDisplay.subfolderContent });
   if (action === 'import') return importFiles();
+  if (action === 'import-folders') return importFolders();
   if (action === 'refresh-all') return refreshAllPanes({ reset: true, preserveScroll: true });
   if (action === 'set-sort') return applySortFromMenu(payload.sort, payload.paneId || data.paneId);
   if (action === 'toggle-list-column') return toggleListColumn(payload.key);
@@ -8643,6 +8713,7 @@ function runMenuCommand(payload = {}) {
   switch (command) {
     case 'switch-library': return openLibraryPopover();
     case 'new-menu': $('#newButton')?.click(); return;
+    case 'import-folders': importFolders(); return;
     case 'export':
       if (hasCapability('export') && selectedIds.length) exportItems(selectedIds).catch(report);
       return;
@@ -9833,11 +9904,11 @@ function externalDropImportables(dataTransfer) {
   return paths.length ? paths : (window.eagleMV.platform === 'web' ? files : []);
 }
 
-function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId) {
+function scheduleExternalFolderImport(dataTransfer, folderId, paneId = state.activePaneId, { ignoreDirectories = false } = {}) {
   const importable = externalDropImportables(dataTransfer);
   const libraryPath = state.library?.path;
   if (importable.length) {
-    scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId }));
+    scheduleDropTask(() => importFiles(importable, 'drop', { folderId, libraryPath, paneId, ignoreDirectories }));
     return true;
   }
   // A browser image or link imports its address, like Eagle (D-08).
@@ -10916,7 +10987,7 @@ function bindPaneEvents(paneId) {
     event.stopPropagation();
     folder.classList.remove('drop-target');
     if (dropKind === 'external-files') {
-      scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId);
+      scheduleExternalFolderImport(event.dataTransfer, folder.dataset.openFolder, paneId, { ignoreDirectories: true });
       return;
     }
     const ids = drop.ids;
@@ -11731,6 +11802,31 @@ function bindEvents() {
     if (toggle) { event.stopPropagation(); toggleFolder(toggle.dataset.toggleFolder); return; }
     const row = event.target.closest('.folder-row');
     if (row) navigate(descriptorFromTarget(row));
+  });
+  // Folders from Finder dropped on the sidebar outside a folder row are
+  // imported with their structure at the library root (P4-01, Eagle's
+  // onDropSidebar); folder rows take their own drops first.
+  const folderTreeElement = $('#folderTree');
+  const sidebarBlankDrop = event => window.eagleMV.planFolderImport && !event.target.closest?.('[data-folder-id], [data-smart-folder-id]')
+    && classifyDrop(event.dataTransfer, activeDraggedItemIds()) === 'external-files' && dragHasType(event.dataTransfer, 'Files');
+  folderTreeElement.addEventListener('dragover', event => {
+    if (!sidebarBlankDrop(event)) { folderTreeElement.classList.remove('drop-target'); return; }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    folderTreeElement.classList.add('drop-target');
+  });
+  folderTreeElement.addEventListener('dragleave', event => {
+    if (!folderTreeElement.contains(event.relatedTarget)) folderTreeElement.classList.remove('drop-target');
+  });
+  folderTreeElement.addEventListener('drop', event => {
+    folderTreeElement.classList.remove('drop-target');
+    if (!sidebarBlankDrop(event)) return;
+    const drop = resolveItemDrop(event);
+    if (drop.kind !== 'external-files') return;
+    event.preventDefault();
+    const paths = externalDropImportables(event.dataTransfer).filter(entry => typeof entry === 'string');
+    if (!paths.length) return;
+    scheduleDropTask(() => importFolders(paths, { dropped: true }));
   });
   $('.sidebar').addEventListener('contextmenu', event => {
     event.preventDefault();

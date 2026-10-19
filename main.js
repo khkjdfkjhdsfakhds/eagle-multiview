@@ -25,6 +25,7 @@ const { readText, saveText } = require('./lib/text-file-service');
 const { createTextPluginBridge } = require('./lib/text-plugin-bridge');
 const { TextDraftStore } = require('./lib/text-draft-store');
 const { createImportService, prepareImportPaths, waitForImportedItems } = require('./lib/import-service');
+const { importFolderTrees, scanFolderTree } = require('./lib/folder-import');
 const { moveCreatedFolderToFront, setFolderSiblingOrder } = require('./lib/eagle-folder-order');
 const {
   keepImportedCopiesScript,
@@ -1325,6 +1326,7 @@ function setupMenu() {
         },
         { type: 'separator' },
         { label: '导入文件…', accelerator: 'CmdOrCtrl+Shift+O', click: (_item, window) => window?.webContents.send('command:import') },
+        { label: '导入本地文件夹…', click: send('import-folders') },
         {
           label: '导入其它',
           submenu: [
@@ -1772,9 +1774,10 @@ function folderAutoTags(folderId) {
   return folderId ? folderExtendTags(hub.library?.folders, folderId) : [];
 }
 
-async function importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice = null, origin = 0, waitTimeoutMs = 0 }) {
+async function importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice = null, origin = 0, waitTimeoutMs = 0, ignoreDirectories = false }) {
   await hub.ensureLibraryPath(libraryPath);
-  const prepared = await prepareImportPaths(filePaths);
+  const prepared = await prepareImportPaths(filePaths, { ignoreDirectories });
+  const { ignoredDirectories } = prepared;
   filePaths = prepared.paths;
   // The index is invalidated by Eagle-originated hub changes.  Keeping a
   // warm snapshot here avoids rescanning every metadata.json file before
@@ -1784,7 +1787,7 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
     await findDuplicateImports({ paths: filePaths, libraryPath, index: duplicateIndex, includeDeleted: true }),
     libraryPath
   );
-  if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected };
+  if (!duplicateChoice && duplicates.length) return { canceled: false, needsDuplicateDecision: true, paths: filePaths, duplicates, rejected: prepared.rejected, ignoredDirectories };
   if (duplicateChoice === 'cancel') return { canceled: true };
   const duplicateByPath = new Map();
   for (const duplicate of duplicates) if (!duplicateByPath.has(duplicate.path)) duplicateByPath.set(duplicate.path, duplicate);
@@ -1861,8 +1864,83 @@ async function importWithDuplicateDecision({ paths: filePaths, folderId, library
     ready: imported.ready + existingIds.length,
     ids: [...imported.ids, ...existingIds],
     duplicateCount: existingIds.length,
-    duplicateFailed
+    duplicateFailed,
+    ignoredDirectories
   };
+  return { canceled: false, ...result };
+}
+
+// 导入本地文件夹 (P4-01) runs in two steps: the scan says how big each folder
+// is so the window can ask Eagle's questions, then the run creates and
+// imports what was accepted. The scanned trees stay here, keyed by a token,
+// so the run only touches folders the user picked or dropped.
+const folderImportPlans = new Map();
+const FOLDER_IMPORT_PLAN_TTL_MS = 10 * 60 * 1000;
+
+async function planFolderImport({ paths: candidates = [], libraryPath }) {
+  await hub.ensureLibraryPath(libraryPath);
+  const roots = [];
+  const rejected = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const dir = path.resolve(String(candidate || ''));
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    let stat;
+    try { stat = await fsp.stat(dir); } catch (error) { rejected.push({ path: dir, message: error.message }); continue; }
+    // Eagle's sidebar drop and folder dialog only take folders.
+    if (!stat.isDirectory()) continue;
+    if (/\.(library|pxvlibrary)$/i.test(dir) || dir.split(path.sep).some(segment => /\.library$/i.test(segment))) {
+      rejected.push({ path: dir, message: '不能导入 Eagle 资源库本身或其中的文件夹' });
+      continue;
+    }
+    roots.push(await scanFolderTree(dir));
+  }
+  for (const [token, plan] of folderImportPlans) if (Date.now() - plan.createdAt > FOLDER_IMPORT_PLAN_TTL_MS) folderImportPlans.delete(token);
+  const token = `folder-import-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  if (roots.length) folderImportPlans.set(token, { libraryPath, roots, createdAt: Date.now() });
+  return {
+    token: roots.length ? token : null,
+    roots: roots.map(root => ({ name: root.tree.name, dir: root.tree.dir, depth: root.depth, fileCount: root.fileCount, folderCount: root.folderCount, tooLarge: root.tooLarge, needsConfirm: root.needsConfirm })),
+    rejected: [...rejected, ...roots.flatMap(root => root.skipped)]
+  };
+}
+
+async function runFolderImport({ token, accept = [], parentId = null, libraryPath, duplicateChoice = null, origin = 0 }) {
+  const plan = folderImportPlans.get(token);
+  if (!plan || plan.libraryPath !== libraryPath) throw new Error('导入已过期，请重新选择文件夹');
+  await hub.ensureLibraryPath(libraryPath);
+  const roots = plan.roots.filter((root, index) => accept.includes(index) && !root.tooLarge);
+  if (!roots.length || duplicateChoice === 'cancel') { folderImportPlans.delete(token); return { canceled: true }; }
+  if (parentId && !findFolder(await client.folderTree(), parentId)) throw new Error('目标文件夹已不存在，请刷新后重试');
+  const files = roots.flatMap(root => { const all = []; (function walk(node) { all.push(...node.files); node.folders.forEach(walk); })(root.tree); return all; });
+  if (!duplicateChoice) {
+    const duplicates = await liveDuplicateImports(
+      await findDuplicateImports({ paths: files, libraryPath, index: duplicateIndex, includeDeleted: true }), libraryPath);
+    if (duplicates.length) return { canceled: false, needsDuplicateDecision: true, duplicates, total: files.length };
+  }
+  folderImportPlans.delete(token);
+  let published = false;
+  const result = await importFolderTrees({
+    trees: roots.map(root => root.tree),
+    parentId,
+    ensureCurrent: () => hub.ensureLibraryPath(libraryPath),
+    createFolder: async (name, parent) => {
+      const created = await client.createFolder(name, parent);
+      return created?.id || created?.folder?.id || null;
+    },
+    readFolders: () => client.folderTree(),
+    setOrder: (parent, ids) => setFolderSiblingOrder({ client, ensureLibraryPath: value => hub.ensureLibraryPath(value), libraryPath, parent, ids }),
+    importInto: async (paths, folderId) => {
+      // Show the new folders before their files arrive, as Eagle does.
+      if (!published) { published = true; await hub.connect({ notify: true, origin }); }
+      // No duplicate of the library was found when the user was asked;
+      // a later match is a file repeated inside the picked folders, kept.
+      return importWithDuplicateDecision({ paths, folderId, libraryPath, duplicateChoice: duplicateChoice || 'keep-both', origin });
+    }
+  });
+  await hub.connect({ notify: true, origin }).catch(() => {});
+  broadcast('hub:query-invalidated', { reason: 'folder-import', libraryPath, origin });
   return { canceled: false, ...result };
 }
 
@@ -2111,6 +2189,7 @@ async function installProtocol() {
 const HOST_ONLY_CHANNELS = new Set([
   'item:thumbnail-file', 'item:thumbnail-clipboard',
   'item:set-custom-thumbnail', 'items:import', 'items:import-clipboard', 'items:import-url',
+  'items:import-folders:plan', 'items:import-folders:run',
   'item:show-in-finder', 'item:open-default', 'items:export', 'items:open-other',
   'items:share', 'clipboard:write-files', 'clipboard:write-text', 'shell:open-external',
   'item:start-drag', 'item:cancel-drag', 'window:new', 'window:initial-state',
@@ -2643,7 +2722,7 @@ function setupIPC() {
       }
     });
   });
-  handleRPC('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null }) => {
+  handleRPC('items:import', async (event, { folderId, libraryPath, paths, duplicateChoice = null, ignoreDirectories = false }) => {
     const parent = BrowserWindow.fromWebContents(event.sender);
     let filePaths = paths;
     if (!filePaths?.length) {
@@ -2660,7 +2739,7 @@ function setupIPC() {
     const wasFrontmost = Boolean(parent?.isFocused?.());
     let finished = false;
     try {
-      const result = await importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice, origin: event.sender.id });
+      const result = await importWithDuplicateDecision({ paths: filePaths, folderId, libraryPath, duplicateChoice, origin: event.sender.id, ignoreDirectories: Boolean(ignoreDirectories) });
       finished = !result.canceled && !result.needsDuplicateDecision;
       return result;
     } finally {
@@ -2669,6 +2748,19 @@ function setupIPC() {
       if (duplicateChoice !== 'keep-both' && wasFrontmost && finished) focusBrowserWindow(parent);
     }
   });
+  handleRPC('items:import-folders:plan', async (event, { paths, libraryPath } = {}) => {
+    let folderPaths = paths;
+    if (!folderPaths?.length) {
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: '导入本地文件夹',
+        properties: ['openDirectory', 'multiSelections']
+      });
+      if (result.canceled || !result.filePaths.length) return { canceled: true };
+      folderPaths = result.filePaths;
+    }
+    return planFolderImport({ paths: folderPaths, libraryPath });
+  });
+  handleRPC('items:import-folders:run', (event, data = {}) => runFolderImport({ ...data, origin: event.sender.id }));
   handleRPC('items:import-clipboard', (event, data) => importClipboard(data, payload => rpcRegistry.get('items:import')(event, payload)));
   handleRPC('items:import-url', (event, { url, image, folderId, libraryPath } = {}) => (
     /^data:/i.test(String(url || ''))
