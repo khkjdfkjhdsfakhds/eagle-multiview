@@ -1317,3 +1317,16 @@ Eagle HTTP API 没有删除文件夹的接口。改为用 Eagle 未公开的 `/a
 - `ELECTRON_RUN_AS_NODE=1` 带 `-e console.log(...)` 后台启动：无输出、进程作为 GUI 应用常驻 → 不再当 Node 运行。
 - 启动：`open -g -a <App> --args --remote-debugging-port=9333` 正常启动，CDP 可用，渲染端 `state.connected` 为 true、已载入资料库；`importFolders`、`runUndo`、`toggleFolderInSelection` 存在；System Events 只读读到菜单“文件 › 导入本地文件夹…”“整理 › 清除标签”。全程只读，未写资料库。测试版保持后台运行（41601，调试端口 9333）。
 - 未验：自动更新流程里的 `codesign --verify`（测试版是 Review 身份，不检查更新；要等正式构建验证）；P3-05/P4-01/多选/F-06/H-11 的 GUI 验收（第 2 项，待用户）。
+
+## 四十五、1.8.4 本机正式版（2026-10-20，本机）
+
+用户决定：第四十四节第 2 项的手动验收还没做，先把分支内容作为 1.8.4 正式版**只装本机**。不推送、不打远端标签、不发 GitHub Release、不出安卓 APK。1.8.3 源码由标签 `v1.8.3`（`4bccff1`）保留。
+
+- 合并：本地 `main` 上 `git merge --no-ff claude/kind-lamport-48izv4` → `0b923fc`。main 独有的 4 个提交（`ac99552`、`bc8564a`、`4891dea`、`14af2f9`，预览翻页/触屏箭头）在分支里都有补丁相同的副本（patch-id 一致），6 个冲突文件全部取分支的后续版本；合并后的树与分支 HEAD `6771af4` 完全相同。在独立 worktree 里合并，没有切换主目录的分支。
+- 测试：`node --check` 三件通过；全量 `npm test` 1032/1032（在树相同的主目录跑；worktree 里用 symlink 的 `node_modules` 会让 LSUIElement Electron 克隆报 `sandbox_extension_issue_file_to_process`，属环境问题）。
+- 版本提交 `9806790` “Release 1.8.4”：`package.json` 1.8.4；安卓 `versionCode 5`、`versionName 1.8.4`（与 1.8.3 一样同步改，但本次不构建 APK）。因为不发 GitHub Release，README、CHANGELOG、使用说明、`docs/release-notes-v1.8.4.md` **未改**，留到公开发布时补。本地附注标签 `v1.8.4`（未推送）。
+- 构建：`electron-builder --mac dir --arm64`，appId `local.eagle.multiview`，ad-hoc + hardened runtime（`identity: "-"`，与 1.8.3 相同）。`codesign --verify --deep --strict` 通过；Info.plist 版本 1.8.4、有 `ElectronAsarIntegrity`；fuses 读出 RunAsNode / NODE_OPTIONS / --inspect **Disabled**，asar 完整性校验与只从 asar 加载 **Enabled**（B5-01 符合）。app.asar 98 个运行文件与源码逐字节一致（只有 `package.json` 按 electron-builder 精简）。
+- 安装：替换 `/Applications/Eagle MultiView.app`（原 1.8.3），安装版严格 codesign 通过、fuses 同上，app.asar SHA-256 `ee02da0b…` 与构建一致。替换前正式版没在运行；测试版 `.8` 已正常退出。`open -g` 后台启动，41600 返回 200、与 Eagle 41595 已建立连接；只读，未写资料库。
+- 清理：删除 `dist/branchtest` 与本次临时构建；`lsregister -u` 注销测试版、临时构建、上百条已不存在的临时路径（`eaglemv-dmg-*`/`eaglemv-swap-*`、旧 Verify 副本、`.app.staging`）和 Codex 旧 worktree 里的 3 个 `installed-backups/features-*.app`（只注销未删除）。现在 LaunchServices 里 `local.eagle.multiview*` 只剩 `/Applications` 正式版。测试版数据目录 `eagle-multiview-review-20260905` 保留；`dist/` 里旧的 publish 包等未动。
+- GitHub：**未推送**（main、分支、`v1.8.4` 都只在本地）。远端 Latest 仍是 1.8.3，所以 1.8.4 的自动检查更新会显示“已是最新”；安卓设备仍是 1.8.3。
+- 仍待：用户按第四十四节第 2 项逐项验收（现在直接在正式版里做，写资料库的步骤只用测试文件夹）；自动更新流程的端到端验证要等下一个公开 Release。
