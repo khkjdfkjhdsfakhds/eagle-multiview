@@ -8862,7 +8862,9 @@ function selectedFeatureUI() {
       paneId: state.activePaneId, ids: [...state.selected] }),
     canStart: () => state.connected && confirmDiscardChanges(),
     refresh: () => refreshAllPanes({ reset: true, preserveScroll: true }),
-    notify: toast
+    notify: toast,
+    // This window's own store: its cached parse sees the copies at once.
+    cloneSortMemory: (libraryPath, folderMap) => sortMemory.cloneFolders(libraryPath, folderMap)
   });
   return selectedFeatureController;
 }

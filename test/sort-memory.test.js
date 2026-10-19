@@ -379,3 +379,13 @@ test('S-09: the renderer follows moved folders before replacing the tree', () =>
   assert.match(body, /sortMemory\.followMovedFolders\(payload\.library\.path, state\.library\.folders, payload\.library\.folders\);\s*\}\s*state\.library = payload\.library;/);
   assert.match(body, /if \(!pathChanged &&/);
 });
+
+test('copying a folder carries the remembered sorts through this window\'s own store', () => {
+  // The module object has no cloneFolders; the copy used to call it and
+  // silently do nothing.
+  assert.equal(typeof require('../src/sort-memory').cloneFolders, 'undefined');
+  const featureUI = fs.readFileSync(path.join(__dirname, '..', 'src', 'feature-ui.js'), 'utf8');
+  assert.ok(featureUI.includes('cloneSortMemory(ctx.libraryPath, result.folderMap);'));
+  assert.ok(!featureUI.includes('EagleMVSortMemory?.cloneFolders'));
+  assert.ok(renderer.includes('cloneSortMemory: (libraryPath, folderMap) => sortMemory.cloneFolders(libraryPath, folderMap)'));
+});

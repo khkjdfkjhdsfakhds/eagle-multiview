@@ -1,5 +1,5 @@
 'use strict';
-window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canStart }) {
+window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canStart, cloneSortMemory = () => {} }) {
   let activeDialog = null;
   let moving = false;
   function element(tag, text, attrs = {}) {
@@ -198,7 +198,8 @@ window.createSelectedFeatureUI = function ({ api, context, refresh, notify, canS
           ...(placement && parentId === target ? { anchorId: placement.anchorId, position: placement.position } : {}) });
         if (!result?.ok) throw new Error('Eagle 尚未确认复制结果，请先刷新核对。');
         form.close();
-        window.EagleMVSortMemory?.cloneFolders?.(ctx.libraryPath, result.folderMap);
+        // The copies keep the sorts MultiView remembers for their sources.
+        cloneSortMemory(ctx.libraryPath, result.folderMap);
         try { await refresh(); }
         catch (error) { notify(`文件夹已复制，但视图刷新失败：${error.message}。请刷新核对。`, 6000); return; }
         notify(`已复制 ${result.folderCount} 个文件夹和 ${result.copiedItems} 个素材${result.placed === false ? '；未能放到指定位置' : ''}`);
